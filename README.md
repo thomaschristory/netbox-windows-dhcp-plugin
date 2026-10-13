@@ -4,8 +4,8 @@ A NetBox plugin that keeps Microsoft Windows DHCP servers in step with the data 
 [netbox-plugin-dhcp](https://github.com/sys4/netbox-plugin-dhcp), over WinRM or SSH.
 
 > **Status: early development.** The models, REST and GraphQL API, connection test and the PowerShell layer are in
-> place. Import from Windows and push to Windows are being built next (see [docs/ROADMAP.md](docs/ROADMAP.md)).
-> The design is in [docs/DESIGN.md](docs/DESIGN.md).
+> place. Import from Windows and push to Windows are being built next (see [docs/ROADMAP.md](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/blob/main/docs/ROADMAP.md)).
+> The design is in [docs/DESIGN.md](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/blob/main/docs/DESIGN.md).
 
 ## Features
 
@@ -116,4 +116,4 @@ path, and are skipped otherwise.
 
 ## License
 
-Apache-2.0, see [LICENSE](LICENSE).
+Apache-2.0, see [LICENSE](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/blob/main/LICENSE).
