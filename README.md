@@ -71,12 +71,25 @@ Credentials are never stored in the database. Each Windows server names a creden
 PLUGINS_CONFIG = {
     "netbox_windows_dhcp_plugin": {
         "credentials": {
-            "dhcp-admin": {"username": "CORP\\svc-dhcp", "password_env": "DHCP_ADMIN_PASSWORD"},
-            "ssh-dhcp": {"username": "svc-dhcp", "private_key_file": "/run/secrets/dhcp_key"},
+            "dhcp-admin": {
+                "username": "CORP\\svc-dhcp",
+                "password_env": "DHCP_ADMIN_PASSWORD",
+                "allowed_hosts": ["dhcp*.corp.example"],
+            },
+            "ssh-dhcp": {
+                "username": "svc-dhcp",
+                "private_key_file": "/run/secrets/dhcp_key",
+                "allowed_hosts": ["10.0.0.5"],
+            },
         },
     },
 }
 ```
+
+Set `allowed_hosts` on every profile. It lists the host names or IP addresses (`*` and `?` wildcards allowed) the
+profile's credentials may be sent to, and applies to a server's `computer_name` as well. Without it, anyone who can
+edit a Windows server in NetBox can point it at a machine they control and capture the credentials; NetBox logs a
+warning at startup for each such profile.
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -92,7 +105,7 @@ PLUGINS_CONFIG = {
 ### Windows side
 
 The account needs membership of the `DHCP Administrators` group and WinRM (or OpenSSH server) enabled.
-Basic authentication is only allowed over HTTPS.
+Basic authentication is only allowed over HTTPS with certificate verification on.
 
 ## Permissions
 

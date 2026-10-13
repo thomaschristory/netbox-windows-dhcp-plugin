@@ -6,6 +6,7 @@ from netbox.models import PrimaryModel
 from netbox.models.features import JobsMixin
 
 from ..choices import TransportChoices, WinRMAuthChoices
+from ..conf import CredentialError, get_setting, host_allowed
 
 __all__ = ("WindowsServer",)
 
@@ -150,9 +151,33 @@ class WindowsServer(JobsMixin, PrimaryModel):
 
     def clean(self):
         super().clean()
+        self._clean_allowed_hosts()
         if self.transport != TransportChoices.WINRM:
             return
         if self.winrm_auth == WinRMAuthChoices.KERBEROS and not self.kerberos_realm:
             raise ValidationError({"kerberos_realm": _("A realm is required for Kerberos authentication.")})
         if self.winrm_auth == WinRMAuthChoices.BASIC and not self.winrm_https:
             raise ValidationError({"winrm_https": _("Basic authentication requires HTTPS.")})
+        if self.winrm_auth == WinRMAuthChoices.BASIC and not self.verify_tls:
+            # Basic sends the password itself; without verification anyone in the path can read it.
+            raise ValidationError({"verify_tls": _("Basic authentication requires certificate verification.")})
+
+    def _clean_allowed_hosts(self):
+        # Stop a profile's credentials from being pointed at a host it does not cover. The connection code checks
+        # again before connecting. An unknown profile is reported when a job runs, as before.
+        profile = get_setting("credentials").get(self.credential_profile)
+        if profile is None:
+            return
+        errors = {}
+        for field in ("host", "computer_name"):
+            value = getattr(self, field)
+            try:
+                allowed = not value or host_allowed(self.credential_profile, profile, value)
+            except CredentialError as exc:
+                raise ValidationError({"credential_profile": str(exc)}) from exc
+            if not allowed:
+                errors[field] = _("Credential profile {profile} may not be used with this host.").format(
+                    profile=self.credential_profile
+                )
+        if errors:
+            raise ValidationError(errors)

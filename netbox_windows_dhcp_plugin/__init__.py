@@ -23,8 +23,16 @@ if PluginConfig is not None:
 
         def ready(self):
             super().ready()
+            import logging
+
+            from .conf import profiles_without_allowed_hosts
             from .integrations import branching
 
             branching.register()
+            unrestricted = profiles_without_allowed_hosts()
+            if unrestricted:
+                logging.getLogger(__name__).warning(
+                    "credential profiles without allowed_hosts can be sent to any host: %s", ", ".join(unrestricted)
+                )
 
     config = WindowsDHCPConfig

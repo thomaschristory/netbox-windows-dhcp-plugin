@@ -64,7 +64,7 @@ Not branchable (bookkeeping; listed in branching's `exempt_models` so change con
 - `ImportProposal` and `ImportProposalItem`: the review queue used when branching is off.
 - `LeaseSnapshot`: optional lease cache.
 
-**Credentials** never go in the database, the change log or job logs. `WindowsServer` names a credential profile defined in `PLUGINS_CONFIG` (username, password or key, read from environment variables or files), the same way the terraform provider reads them from config and environment.
+**Credentials** never go in the database, the change log or job logs. `WindowsServer` names a credential profile defined in `PLUGINS_CONFIG` (username, password or key, read from environment variables or files), the same way the terraform provider reads them from config and environment. Each profile can list `allowed_hosts` (wildcards allowed); the server form refuses a `host` or `computer_name` outside it, and the connection code checks again before every connection, so editing a server cannot redirect credentials to another machine. Profiles without the list allow any host and are logged as a warning at startup.
 
 ## 5. Windows layer (ported from terraform-provider-windowsddi)
 

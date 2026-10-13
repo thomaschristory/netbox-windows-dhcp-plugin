@@ -53,6 +53,17 @@ class TestConnectionJobTest(TestCase):
         self.assertEqual(sync_run.status, SyncStatusChoices.FAILED)
         self.assertIn("Access is denied", sync_run.error)
 
+    def test_host_outside_profile_never_connects(self):
+        # A host changed behind the form's back must still not receive the credentials.
+        type(self.server).objects.filter(pk=self.server.pk).update(host="attacker.test")
+        self.server.refresh_from_db()
+        profiles = {"lab": {"username": "lab\\admin", "password": "x", "allowed_hosts": ["*.example.com"]}}
+        config = {**CREDENTIALS, "netbox_windows_dhcp_plugin": {"credentials": profiles}}
+        with override_settings(PLUGINS_CONFIG=config), self.assertRaises(JobFailed):
+            self._run()
+        self.assertEqual(self.fake.calls, [])
+        self.assertIn("may not be used with host", self.server.sync_runs.get().error)
+
 
 class TestConnectionViewTest(TestCase):
     def setUp(self):
