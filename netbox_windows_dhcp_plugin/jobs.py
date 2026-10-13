@@ -92,7 +92,7 @@ class ImportJob(JobRunner):
             sync_run.save()
 
         try:
-            with import_lock(server):
+            with server_lock(server, ImportBusy):
                 client = build_client(server, runner=runner)
                 state = windows_state.read(client)
                 client.close()
@@ -135,7 +135,140 @@ class ImportJob(JobRunner):
             raise JobFailed(sync_run.error)
 
 
-class ImportBusy(Exception):
+class PushJob(JobRunner):
+    """Make a Windows server match NetBox: create, update and delete what differs, in dependency order."""
+
+    class Meta:
+        name = "Windows DHCP push"
+
+    # Tests substitute a fake runner here.
+    runner_factory = None
+    dry_run = False
+
+    def run(self, *args, branch="", **kwargs):
+        server = self.job.object
+        if not self.dry_run and not server.sync_enabled:
+            self.logger.info(f"Sync is disabled for {server}: nothing pushed")
+            return
+        try:
+            with server_lock(server):
+                self._run(server, branch)
+        except ServerBusy as exc:
+            if self.dry_run:
+                raise JobFailed(str(exc)) from None
+            # An import (or another push) is running. Try again shortly rather than lose a merge's changes.
+            enqueue_push(server, self.job.user, delay=PUSH_RETRY, branch=branch)
+            self.logger.info(f"{exc}; push queued again in {PUSH_RETRY} seconds")
+
+    def _run(self, server, branch):
+        from .sync import pusher
+
+        sync_run = SyncRun.objects.create(
+            windows_server=server,
+            kind=SyncKindChoices.DRY_RUN if self.dry_run else SyncKindChoices.PUSH,
+            status=SyncStatusChoices.RUNNING,
+            job=self.job,
+            started=timezone.now(),
+            branch_name=branch[:255],
+        )
+        runner = self.runner_factory(server) if self.runner_factory else None
+        client = None
+        try:
+            client = build_client(server, runner=runner)
+            outcome = pusher.run(server, client, dry_run=self.dry_run, logger=self.logger)
+        except (CredentialError, WindowsLayerError, ValueError) as exc:
+            sync_run.status = SyncStatusChoices.FAILED
+            sync_run.error = str(exc)
+            self.logger.error(f"Push to {server.host} failed: {exc}")
+        else:
+            sync_run.summary = outcome.summary()
+            for note in outcome.notes:
+                self.logger.info(note)
+            for skip in outcome.plan.skipped:
+                c = skip.change
+                self.logger.warning(f"Not pushed: {c.action} {c.kind} {c.key}: {skip.reason}")
+            if outcome.failed:
+                sync_run.status = SyncStatusChoices.FAILED
+                sync_run.error = "\n".join(outcome.errors())
+            else:
+                sync_run.status = SyncStatusChoices.COMPLETED
+            verb = "would change" if self.dry_run else "changed"
+            self.logger.info(f"Push to {server.host}: {verb} {len(outcome.plan.changes)} object(s)")
+        finally:
+            if sync_run.status == SyncStatusChoices.RUNNING:
+                sync_run.status = SyncStatusChoices.FAILED
+                sync_run.error = "unexpected error, see the job log"
+            if client is not None:
+                client.close()
+            sync_run.completed = timezone.now()
+            sync_run.save()
+        if sync_run.status == SyncStatusChoices.FAILED:
+            raise JobFailed(sync_run.error)
+
+
+class DryRunJob(PushJob):
+    """Plan a push without writing anything; the planned changes go in the sync run summary."""
+
+    class Meta:
+        name = "Windows DHCP dry run"
+
+    dry_run = True
+
+
+# Seconds before a push that found its server busy tries again.
+PUSH_RETRY = 60
+
+# RQ's default timeout is 300 seconds; reading a large server takes one PowerShell call per scope and per
+# reservation, so allow more.
+PUSH_TIMEOUT = 3600
+
+# Advisory lock (with the server's key) taken while deciding whether to queue a push, so two saves at the same
+# moment do not both queue one.
+_QUEUE_LOCK_CLASS = 0x57444851  # "WDHQ"
+
+
+def _waiting(server, job_class):
+    """Jobs of this class for the server that have not started yet."""
+    from core.choices import JobStatusChoices
+
+    return job_class.get_jobs(server).filter(
+        status__in=(JobStatusChoices.STATUS_PENDING, JobStatusChoices.STATUS_SCHEDULED)
+    )
+
+
+def enqueue_push(server, user=None, delay=0, branch="", dry_run=False, notify_always=True):
+    """
+    Queue a push (or a dry run) for the server, ``delay`` seconds from now, unless one is already waiting to start:
+    that one will see the latest NetBox data anyway. Returns the job, or None.
+    """
+    from core.choices import JobNotificationChoices
+    from django.db import transaction
+
+    job_class = DryRunJob if dry_run else PushJob
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_QUEUE_LOCK_CLASS, server.pk])
+        if _waiting(server, job_class).exists():
+            return None
+        return job_class.enqueue(
+            instance=server,
+            user=user,
+            schedule_at=timezone.now() + timedelta(seconds=delay) if delay else None,
+            notifications=(
+                JobNotificationChoices.NOTIFICATION_ALWAYS
+                if notify_always
+                else JobNotificationChoices.NOTIFICATION_ON_FAILURE
+            ),
+            job_timeout=PUSH_TIMEOUT,
+            branch=branch,
+        )
+
+
+class ServerBusy(Exception):
+    pass
+
+
+class ImportBusy(ServerBusy):
     pass
 
 
@@ -144,15 +277,16 @@ _LOCK_CLASS = 0x57444843  # "WDHC"
 
 
 @contextmanager
-def import_lock(server):
+def server_lock(server, busy=ServerBusy):
     """
-    Allow one import per server at a time, across all workers: two at once would open two branches or proposals.
-    A session lock, so it holds across the many transactions an import runs, and is released even if the job dies.
+    Allow one import or push per server at a time, across all workers: two imports would open two branches or
+    proposals, and an import reading Windows while a push writes it would propose half-pushed changes back.
+    A session lock, so it holds across the many transactions a job runs, and is released even if the job dies.
     """
     with connection.cursor() as cursor:
         cursor.execute("SELECT pg_try_advisory_lock(%s, %s)", [_LOCK_CLASS, server.pk])
         if not cursor.fetchone()[0]:
-            raise ImportBusy(f"another import from {server} is running")
+            raise busy(f"another import or push for {server} is running")
     try:
         yield
     finally:
@@ -196,8 +330,8 @@ class ScheduleImportsJob(JobRunner):
 ABANDONED_JOB = timedelta(hours=2)
 
 
-def _busy_jobs(now=None):
-    """Import jobs queued or running, ignoring ones abandoned long ago."""
+def _busy_jobs(now=None, name=None):
+    """Import jobs (or jobs called ``name``) queued or running, ignoring ones abandoned long ago."""
     from core.choices import JobStatusChoices
     from core.models import Job
     from django.contrib.contenttypes.models import ContentType
@@ -207,7 +341,7 @@ def _busy_jobs(now=None):
     now = now or timezone.now()
     return Job.objects.filter(
         object_type=ContentType.objects.get_for_model(WindowsServer),
-        name=ImportJob.name,
+        name=name or ImportJob.name,
         status__in=JobStatusChoices.ENQUEUED_STATE_CHOICES,
         created__gte=now - ABANDONED_JOB,
     )

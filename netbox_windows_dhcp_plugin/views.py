@@ -12,7 +12,7 @@ from utilities.views import GetRelatedModelsMixin, GetReturnURLMixin, register_m
 
 from . import filtersets, forms, review, tables
 from .integrations import branching
-from .jobs import TestConnectionJob, enqueue_import
+from .jobs import TestConnectionJob, enqueue_import, enqueue_push
 from .models import (
     ExclusionRange,
     FailoverRelationship,
@@ -35,7 +35,9 @@ from .object_actions import (
     DismissItem,
     DismissProposal,
     DismissSelected,
+    DryRun,
     ImportNow,
+    PushNow,
     TestConnection,
 )
 from .ui import panels
@@ -110,7 +112,7 @@ def _pk_filter(name):
 class WindowsServerView(GetRelatedModelsMixin, generic.ObjectView):
     queryset = WindowsServer.objects.all()
     template_name = "generic/object.html"
-    actions = (ImportNow, TestConnection, CloneObject, EditObject, DeleteObject)
+    actions = (PushNow, DryRun, ImportNow, TestConnection, CloneObject, EditObject, DeleteObject)
     layout = layout.SimpleLayout(
         left_panels=[panels.WindowsServerPanel(), panels.WindowsServerSyncPanel(), TagsPanel(), CommentsPanel()],
         right_panels=[panels.WindowsServerSecurityPanel(), RelatedObjectsPanel(), CustomFieldsPanel()],
@@ -173,6 +175,29 @@ class WindowsServerImportView(WindowsServerTestConnectionView):
         else:
             messages.success(request, _("Queued import (job #{id}) from {server}").format(id=job.pk, server=server))
         return redirect(self.get_return_url(request, server))
+
+
+@register_model_view(WindowsServer, "push")
+class WindowsServerPushView(WindowsServerTestConnectionView):
+    dry_run = False
+
+    def post(self, request, pk):
+        server = self._server(request, pk)
+        what = _("dry run") if self.dry_run else _("push")
+        if not self.dry_run and not server.sync_enabled:
+            messages.error(request, _("Sync is disabled for {server}").format(server=server))
+        elif (job := enqueue_push(server, request.user, dry_run=self.dry_run)) is None:
+            messages.warning(request, _("A {what} for {server} is already queued").format(what=what, server=server))
+        else:
+            messages.success(
+                request, _("Queued {what} (job #{id}) for {server}").format(what=what, id=job.pk, server=server)
+            )
+        return redirect(self.get_return_url(request, server))
+
+
+@register_model_view(WindowsServer, "dry_run", path="dry-run")
+class WindowsServerDryRunView(WindowsServerPushView):
+    dry_run = True
 
 
 #

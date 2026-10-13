@@ -194,7 +194,16 @@ def apply_items(items, user=None):
 
     Each item is checked against what NetBox holds now. If someone changed the object since the import, the item
     fails instead of overwriting their edit; running the import again proposes a fresh change.
+
+    Saves made here queue no push: the objects then match Windows, so pushing them back would do nothing.
     """
+    from ..signals import push_suppressed
+
+    with push_suppressed():
+        return _apply_items(items, user)
+
+
+def _apply_items(items, user):
     items = sorted(items, key=lambda i: (i.proposal_id, i.sequence, i.pk))
     applied = failed = 0
     proposals = {}

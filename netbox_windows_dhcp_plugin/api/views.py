@@ -27,7 +27,7 @@ class WindowsServerViewSet(_viewset(models.WindowsServer, models.WindowsServer.o
     def get_permissions(self):
         # NetBox maps POST to the "add" permission. A connection test needs "change" on the server instead,
         # enforced below; here only check that the token may write (as NetBox does for render-config).
-        if self.action in ("test_connection", "run_import"):
+        if self.action in ("test_connection", "run_import", "push", "dry_run"):
             return [TokenWritePermission()]
         return super().get_permissions()
 
@@ -58,6 +58,28 @@ class WindowsServerViewSet(_viewset(models.WindowsServer, models.WindowsServer.o
         if job is None:
             return Response({"detail": "an import from this server is already queued or running"}, status=409)
         return Response(JobSerializer(job, context={"request": request}).data, status=202)
+
+    def _push(self, request, dry_run):
+        from ..jobs import enqueue_push
+
+        server = self._changeable_server(request)
+        if not dry_run and not server.sync_enabled:
+            return Response({"detail": "sync is disabled for this server"}, status=409)
+        job = enqueue_push(server, request.user, dry_run=dry_run)
+        if job is None:
+            what = "a dry run" if dry_run else "a push"
+            return Response({"detail": f"{what} for this server is already queued"}, status=409)
+        return Response(JobSerializer(job, context={"request": request}).data, status=202)
+
+    @action(detail=True, methods=["post"])
+    def push(self, request, pk):
+        """Queue a push to the server and return the job (409 if one is already waiting to run)."""
+        return self._push(request, dry_run=False)
+
+    @action(detail=True, methods=["post"], url_path="dry-run")
+    def dry_run(self, request, pk):
+        """Queue a dry run (plan a push without writing) and return the job."""
+        return self._push(request, dry_run=True)
 
 
 WindowsScopeViewSet = _viewset(models.WindowsScope, models.WindowsScope.objects.select_related("subnet"))
