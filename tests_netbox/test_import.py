@@ -426,10 +426,13 @@ class BranchImportTest(ImportTestMixin, TransactionTestCase):
         self.addCleanup(self._drop_branches)
 
     def _drop_branches(self):
+        from django.db import connections
         from netbox_branching.models import Branch
 
         for branch in Branch.objects.all():
-            branch.deprovision()
+            # Reading a branch (activate_branch) opens a connection to it; an open one stops the test database
+            # from being dropped at the end of the run.
+            connections[branch.connection_name].close()
             branch.delete()
 
     def test_import_creates_a_branch_with_the_changes(self):
