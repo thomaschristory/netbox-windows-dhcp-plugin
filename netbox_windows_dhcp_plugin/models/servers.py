@@ -29,7 +29,7 @@ class WindowsServer(JobsMixin, PrimaryModel):
     dhcp_server = models.OneToOneField(
         to="netbox_dhcp.DHCPServer",
         on_delete=models.CASCADE,
-        related_name="windows_server",
+        related_name="%(app_label)s_windows_server",
         verbose_name=_("DHCP server"),
     )
     host = models.CharField(

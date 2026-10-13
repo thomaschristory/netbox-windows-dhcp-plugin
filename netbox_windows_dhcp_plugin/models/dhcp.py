@@ -47,7 +47,7 @@ class WindowsScope(NetBoxModel):
     subnet = models.OneToOneField(
         to="netbox_dhcp.Subnet",
         on_delete=models.CASCADE,
-        related_name="windows_scope",
+        related_name="%(app_label)s_windows_scope",
         verbose_name=_("subnet"),
     )
     state = models.CharField(
@@ -103,7 +103,7 @@ class WindowsReservation(NetBoxModel):
     host_reservation = models.OneToOneField(
         to="netbox_dhcp.HostReservation",
         on_delete=models.CASCADE,
-        related_name="windows_reservation",
+        related_name="%(app_label)s_windows_reservation",
         verbose_name=_("host reservation"),
     )
     reservation_type = models.CharField(
@@ -131,7 +131,7 @@ class ExclusionRange(PrimaryModel):
     subnet = models.ForeignKey(
         to="netbox_dhcp.Subnet",
         on_delete=models.CASCADE,
-        related_name="windows_exclusion_ranges",
+        related_name="%(app_label)s_windows_exclusion_ranges",
         verbose_name=_("subnet"),
     )
     start_address = models.GenericIPAddressField(verbose_name=_("start address"))
@@ -178,7 +178,7 @@ class WindowsClass(PrimaryModel):
     dhcp_server = models.ForeignKey(
         to="netbox_dhcp.DHCPServer",
         on_delete=models.CASCADE,
-        related_name="windows_classes",
+        related_name="%(app_label)s_windows_classes",
         verbose_name=_("DHCP server"),
     )
     name = models.CharField(verbose_name=_("name"), max_length=255)
@@ -225,7 +225,7 @@ class WindowsOptionDefinition(NetBoxModel):
     option_definition = models.OneToOneField(
         to="netbox_dhcp.OptionDefinition",
         on_delete=models.CASCADE,
-        related_name="windows_option_definition",
+        related_name="%(app_label)s_windows_option_definition",
         verbose_name=_("option definition"),
     )
     vendor_class = models.ForeignKey(
@@ -256,13 +256,13 @@ class WindowsPolicy(PrimaryModel):
     dhcp_server = models.ForeignKey(
         to="netbox_dhcp.DHCPServer",
         on_delete=models.CASCADE,
-        related_name="windows_policies",
+        related_name="%(app_label)s_windows_policies",
         verbose_name=_("DHCP server"),
     )
     subnet = models.ForeignKey(
         to="netbox_dhcp.Subnet",
         on_delete=models.CASCADE,
-        related_name="windows_policies",
+        related_name="%(app_label)s_windows_policies",
         blank=True,
         null=True,
         verbose_name=_("subnet"),
@@ -341,7 +341,7 @@ class WindowsOptionQualifier(NetBoxModel):
     option = models.OneToOneField(
         to="netbox_dhcp.Option",
         on_delete=models.CASCADE,
-        related_name="windows_qualifier",
+        related_name="%(app_label)s_windows_qualifier",
         verbose_name=_("option"),
     )
     user_class = models.ForeignKey(
@@ -396,14 +396,14 @@ class FailoverRelationship(PrimaryModel):
     primary_server = models.ForeignKey(
         to="netbox_dhcp.DHCPServer",
         on_delete=models.CASCADE,
-        related_name="windows_failover_primary",
+        related_name="%(app_label)s_windows_failover_primary",
         verbose_name=_("primary server"),
         help_text=_("Changes are written here, then replicated to the partner"),
     )
     partner_server = models.ForeignKey(
         to="netbox_dhcp.DHCPServer",
         on_delete=models.CASCADE,
-        related_name="windows_failover_partner",
+        related_name="%(app_label)s_windows_failover_partner",
         verbose_name=_("partner server"),
     )
     mode = models.CharField(
@@ -449,7 +449,7 @@ class FailoverRelationship(PrimaryModel):
     )
     subnets = models.ManyToManyField(
         to="netbox_dhcp.Subnet",
-        related_name="windows_failover_relationships",
+        related_name="%(app_label)s_windows_failover_relationships",
         blank=True,
         verbose_name=_("subnets"),
     )
@@ -496,7 +496,7 @@ class MacFilter(PrimaryModel):
     dhcp_server = models.ForeignKey(
         to="netbox_dhcp.DHCPServer",
         on_delete=models.CASCADE,
-        related_name="windows_mac_filters",
+        related_name="%(app_label)s_windows_mac_filters",
         verbose_name=_("DHCP server"),
     )
     mac_address = models.CharField(

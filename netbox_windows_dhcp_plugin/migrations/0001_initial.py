@@ -192,7 +192,7 @@ class Migration(migrations.Migration):
                     "dhcp_server",
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="windows_classes",
+                        related_name="%(app_label)s_windows_classes",
                         to="netbox_dhcp.dhcpserver",
                     ),
                 ),
@@ -239,7 +239,7 @@ class Migration(migrations.Migration):
                     "option_definition",
                     models.OneToOneField(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="windows_option_definition",
+                        related_name="%(app_label)s_windows_option_definition",
                         to="netbox_dhcp.optiondefinition",
                     ),
                 ),
@@ -296,7 +296,7 @@ class Migration(migrations.Migration):
                     "dhcp_server",
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="windows_policies",
+                        related_name="%(app_label)s_windows_policies",
                         to="netbox_dhcp.dhcpserver",
                     ),
                 ),
@@ -316,7 +316,7 @@ class Migration(migrations.Migration):
                         blank=True,
                         null=True,
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="windows_policies",
+                        related_name="%(app_label)s_windows_policies",
                         to="netbox_dhcp.subnet",
                     ),
                 ),
@@ -353,7 +353,7 @@ class Migration(migrations.Migration):
                     "option",
                     models.OneToOneField(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="windows_qualifier",
+                        related_name="%(app_label)s_windows_qualifier",
                         to="netbox_dhcp.option",
                     ),
                 ),
@@ -423,7 +423,7 @@ class Migration(migrations.Migration):
                     "host_reservation",
                     models.OneToOneField(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="windows_reservation",
+                        related_name="%(app_label)s_windows_reservation",
                         to="netbox_dhcp.hostreservation",
                     ),
                 ),
@@ -469,7 +469,7 @@ class Migration(migrations.Migration):
                     "subnet",
                     models.OneToOneField(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="windows_scope",
+                        related_name="%(app_label)s_windows_scope",
                         to="netbox_dhcp.subnet",
                     ),
                 ),
@@ -521,7 +521,7 @@ class Migration(migrations.Migration):
                     "dhcp_server",
                     models.OneToOneField(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="windows_server",
+                        related_name="%(app_label)s_windows_server",
                         to="netbox_dhcp.dhcpserver",
                     ),
                 ),
@@ -645,7 +645,7 @@ class Migration(migrations.Migration):
                     "subnet",
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="windows_exclusion_ranges",
+                        related_name="%(app_label)s_windows_exclusion_ranges",
                         to="netbox_dhcp.subnet",
                     ),
                 ),
@@ -717,7 +717,7 @@ class Migration(migrations.Migration):
                     "partner_server",
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="windows_failover_partner",
+                        related_name="%(app_label)s_windows_failover_partner",
                         to="netbox_dhcp.dhcpserver",
                     ),
                 ),
@@ -725,7 +725,7 @@ class Migration(migrations.Migration):
                     "primary_server",
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="windows_failover_primary",
+                        related_name="%(app_label)s_windows_failover_primary",
                         to="netbox_dhcp.dhcpserver",
                     ),
                 ),
@@ -733,7 +733,7 @@ class Migration(migrations.Migration):
                     "subnets",
                     models.ManyToManyField(
                         blank=True,
-                        related_name="windows_failover_relationships",
+                        related_name="%(app_label)s_windows_failover_relationships",
                         to="netbox_dhcp.subnet",
                     ),
                 ),
@@ -780,7 +780,7 @@ class Migration(migrations.Migration):
                     "dhcp_server",
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="windows_mac_filters",
+                        related_name="%(app_label)s_windows_mac_filters",
                         to="netbox_dhcp.dhcpserver",
                     ),
                 ),
