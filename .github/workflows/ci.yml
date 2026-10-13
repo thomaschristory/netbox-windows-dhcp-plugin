@@ -105,7 +105,8 @@ jobs:
           sudo apt-get update && sudo apt-get install -y libpq-dev
           python -m pip install --upgrade pip
           pip install -r netbox/requirements.txt
-          if [ "$MODE" = "branching" ]; then pip install "./plugin[branching]"; else pip install ./plugin; fi
+          # Editable install: NetBox reads query-count baselines from <app>/tests, which the wheel leaves out.
+          if [ "$MODE" = "branching" ]; then pip install -e "./plugin[branching]"; else pip install -e ./plugin; fi
       - name: Configure NetBox
         env:
           MODE: ${{ matrix.mode }}
