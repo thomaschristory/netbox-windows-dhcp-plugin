@@ -12,7 +12,7 @@ import re
 from dcim.models import MACAddress
 from django.contrib.contenttypes.models import ContentType
 from ipam.models import IPAddress, IPRange, Prefix
-from netbox_dhcp.models import DHCPServer, HostReservation, Option, OptionDefinition, Pool, SharedNetwork, Subnet
+from netbox_dhcp.models import HostReservation, Option, OptionDefinition, Pool, SharedNetwork, Subnet
 
 from ..conf import get_setting
 from ..models import (
@@ -33,8 +33,12 @@ from ..models import (
 from ..windows import normalize
 from . import netbox_state, windows_state
 from .diff import CREATE, DELETE
+from .push import DUPLICATE
 
 __all__ = ("ApplyError", "Writer")
+
+# The widest prefix import creates to cover a superscope's scopes.
+MIN_SHARED_PREFIX_LENGTH = 8
 
 # PrimaryModel.description is limited to 200 characters.
 DESCRIPTION_LENGTH = 200
@@ -456,6 +460,15 @@ class Writer:
 
     # -- policies, superscopes, failover, MAC filters ----------------------------------------------------------------
 
+    @staticmethod
+    def _marked(change, queryset):
+        """
+        The extra copy a delete of a NetBox duplicate names (two policies differing only in case, say), looked up by
+        primary key within this server, so the lookup by name cannot pick the original instead.
+        """
+        pk = (change.before or {}).get(DUPLICATE) if change.action == DELETE else None
+        return queryset.filter(pk=pk).first() if pk is not None else None
+
     def windows_policy(self, scope_id, name, required=True):
         subnet = self.subnet(scope_id, required=required) if scope_id else None
         if scope_id and subnet is None:
@@ -467,7 +480,9 @@ class Writer:
 
     def _apply_policy(self, change):
         fields = change.after or change.before
-        obj = self.windows_policy(fields["scope_id"], fields["name"], required=False)
+        obj = self._marked(change, WindowsPolicy.objects.filter(dhcp_server=self.dhcp)) or self.windows_policy(
+            fields["scope_id"], fields["name"], required=False
+        )
         if change.action == DELETE:
             return self._delete(obj)
         values = {
@@ -501,6 +516,12 @@ class Writer:
         supernet = nets[0]
         while not all(n.subnet_of(supernet) for n in nets):
             supernet = supernet.supernet()
+        if supernet.prefixlen < MIN_SHARED_PREFIX_LENGTH:
+            # Superscopes often group unrelated subnets; a prefix as wide as 0.0.0.0/0 would only pollute IPAM.
+            raise ApplyError(
+                f"the scopes of this superscope are too far apart for one prefix (it would be {supernet}); "
+                "netbox-plugin-dhcp needs a prefix covering a shared network's subnets"
+            )
         return self._prefix(supernet)
 
     def _move_subnet(self, subnet, shared_network):
@@ -515,7 +536,9 @@ class Writer:
 
     def _apply_superscope(self, change):
         fields = change.after or change.before
-        network = self.shared_network(fields["name"])
+        network = self._marked(change, SharedNetwork.objects.filter(dhcp_server=self.dhcp)) or self.shared_network(
+            fields["name"]
+        )
         if change.action == DELETE:
             if network is not None:
                 # netbox-plugin-dhcp deletes a shared network's subnets with it; on Windows the scopes stay, so they
@@ -544,21 +567,24 @@ class Writer:
         return network
 
     def _partner(self, host):
-        """The DHCP server a Windows partner name points at: by Windows server host, then by DHCP server name."""
-        ws = WindowsServer.objects.filter(host__iexact=host).exclude(dhcp_server=self.dhcp).first()
-        if ws is not None:
-            return ws.dhcp_server
-        found = DHCPServer.objects.filter(name__iexact=host).exclude(pk=self.dhcp.pk).first()
-        if found is None:
-            raise ApplyError(f"failover partner {host!r} is not a Windows server in NetBox: add it first")
-        return found
+        """
+        The DHCP server a Windows partner name points at, through its Windows server (the DHCP server itself, so
+        computer_name when it connects through a management host). Only a Windows server will do: the push needs its
+        host to check where the failover secret may go.
+        """
+        for ws in WindowsServer.objects.exclude(dhcp_server=self.dhcp).select_related("dhcp_server"):
+            if windows_state.same_host(ws.dhcp_host, host):
+                return ws.dhcp_server
+        raise ApplyError(f"failover partner {host!r} is not a Windows server in NetBox: add it first")
 
     def failover(self, name):
         return FailoverRelationship.objects.filter(primary_server=self.dhcp, name__iexact=name).first()
 
     def _apply_failover(self, change):
         fields = change.after or change.before
-        obj = self.failover(fields["name"])
+        obj = self._marked(change, FailoverRelationship.objects.filter(primary_server=self.dhcp)) or self.failover(
+            fields["name"]
+        )
         if change.action == DELETE:
             return self._delete(obj)
         values = {
@@ -575,6 +601,15 @@ class Writer:
         # it, so a reviewer sets shared_secret_profile in NetBox; until then the difference stays visible.
         subnets = [self.subnet(sid) for sid in fields["scope_ids"]]
         if obj is None:
+            reverse = FailoverRelationship.objects.filter(
+                primary_server=values["partner_server"], partner_server=self.dhcp, name__iexact=fields["name"]
+            )
+            if reverse.exists():
+                # Both partners imported before either was applied: keep the first, synced from its primary.
+                raise ApplyError(
+                    f"failover relationship {fields['name']} is already in NetBox with {values['partner_server']} as "
+                    "its primary; it is synced from that server"
+                )
             obj = self._save(FailoverRelationship(primary_server=self.dhcp, **values))
         else:
             obj = self._update(obj, **values)
@@ -586,7 +621,8 @@ class Writer:
 
     def _apply_macfilter(self, change):
         fields = change.after or change.before
-        obj = MacFilter.objects.filter(dhcp_server=self.dhcp, mac_address__iexact=fields["mac_address"]).first()
+        filters = MacFilter.objects.filter(dhcp_server=self.dhcp)
+        obj = self._marked(change, filters) or filters.filter(mac_address__iexact=fields["mac_address"]).first()
         if change.action == DELETE:
             return self._delete(obj)
         values = {"list": fields["list"], "description": fields["description"][:DESCRIPTION_LENGTH]}

@@ -5,7 +5,7 @@ from netbox_windows_dhcp_plugin.sync import windows_state as ws
 from netbox_windows_dhcp_plugin.sync.diff import Record
 from netbox_windows_dhcp_plugin.sync.windows_writer import WindowsWriter
 from netbox_windows_dhcp_plugin.windows import DhcpClient
-from netbox_windows_dhcp_plugin.windows.client import OptionKey, Reservation
+from netbox_windows_dhcp_plugin.windows.client import OptionKey, Policy, Reservation, Scope
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
 from netbox_windows_dhcp_plugin.windows.runner import RunnerError
@@ -104,8 +104,8 @@ def test_stale_state_rows_are_dropped(client):
 
 
 def test_duplicate_netbox_keys_are_conflicts(client):
-    dup = Record("reservation", "10.1.0.0/10.1.0.50#7", wanted()[4].fields)
-    empty = Record("reservation", "10.1.0.0/#8", {**wanted()[4].fields, "ip_address": ""})
+    dup = Record("reservation", "10.1.0.0/10.1.0.50#7", {**wanted()[4].fields, push.DUPLICATE: 7})
+    empty = Record("reservation", "10.1.0.0/#8", {**wanted()[4].fields, "ip_address": "", push.DUPLICATE: 8})
     p, _ = run(client, [*wanted(), dup, empty])
     assert {s.change.key for s in p.skipped} == {dup.key, empty.key}
     assert all(c.key not in (dup.key, empty.key) for c in p.changes)
@@ -348,3 +348,42 @@ def test_last_scope_of_a_relationship_is_replaced_before_it_is_deleted(client, f
     assert p.changes[0].kind == "failover"
     assert "10.2.0.0" not in fake.scopes
     assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0"]
+
+
+def test_scope_added_to_a_managed_relationship_by_hand_stays(client, fake):
+    source = [scope(), failover()]
+    _, first = run(client, source)
+    client.add_scope(
+        Scope(
+            scope_id="10.2.0.0", name="W", start_range="10.2.0.10", end_range="10.2.0.20", subnet_mask="255.255.255.0"
+        )
+    )
+    client.add_failover_scopes("HA", ["10.2.0.0"])
+    p, result = run(client, source, state_after({}, first))
+    assert not [c for c in result.applied if c.kind == "failover"]
+    assert "added on Windows" in by_key(p)["failover", "ha"]
+    assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0", "10.2.0.0"]
+
+
+def test_policy_values_need_their_policy_in_netbox(client, fake):
+    client.add_policy(Policy(name="Printers", criteria={"mac_address": ["EQ", "00-15-5d*"]}))
+    p, result = run(client, [option("server", 6, ["10.9.9.9"], policy="Printers")])
+    assert not result.applied
+    assert "not in NetBox" in by_key(p)["option", "server/6;policy=printers"]
+
+
+def test_windows_names_ending_in_hash_digits_are_pushed(client):
+    record = Record(
+        "class", "user/phones#2", {"name": "Phones#2", "class_type": "user", "data": "x", "description": ""}
+    )
+    assert push.plan([record], [], {}).skipped == []
+
+
+def test_leased_scope_stays_in_its_relationship_when_the_update_runs_first(client, fake):
+    second = Record("scope", "10.2.0.0", {**scope().fields, "start_range": "10.2.0.10", "end_range": "10.2.0.200"})
+    _, first = run(client, [scope(), second, failover(scope_ids=["10.1.0.0", "10.2.0.0"])])
+    fake.add_lease("10.2.0.0", "10.2.0.15")
+    _, result = run(client, [scope(), failover(scope_ids=["10.1.0.0"])], state_after({}, first))
+    assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0", "10.2.0.0"]
+    assert "10.2.0.0" in fake.scopes
+    assert any("DHCP 20007" in msg for _, msg in result.failed)

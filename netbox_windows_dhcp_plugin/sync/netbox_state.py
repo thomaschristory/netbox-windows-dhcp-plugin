@@ -24,6 +24,7 @@ from ..models import (
 from ..windows import normalize
 from . import windows_state
 from .diff import Record
+from .push import DUPLICATE
 from .windows_state import class_key, mac_key, option_key, optiondef_key, policy_key, split_values
 
 __all__ = (
@@ -275,8 +276,9 @@ def partner_failovers(windows_server):
 
 
 def _partner_host(dhcp_server):
+    """The name the partner is known by on Windows: the DHCP server itself, not a management host in front of it."""
     ws = WindowsServer.objects.filter(dhcp_server=dhcp_server).first()
-    return ws.host.lower() if ws else ""
+    return windows_state.host_name(ws.dhcp_host) if ws else ""
 
 
 def _failovers(windows_server, scope_ids):
@@ -341,16 +343,17 @@ def _unique(pairs):
     """
     Make record keys unique. NetBox can hold what Windows cannot: two subnets on one prefix, two reservations for
     one address, a reservation without an address. The extra ones get "#<pk>" appended, so they show up as deletions
-    instead of making the import fail, and the writer finds exactly that object.
+    instead of making the import fail, and the writer finds exactly that object. They are also marked with a
+    ``_duplicate`` field (the primary key), since a Windows name can itself end in "#<digits>".
     """
     seen = set()
     out = []
     for record, pk in pairs:
-        key = record.key
+        key, fields = record.key, record.fields
         if key in seen or key.endswith("/"):
-            key = f"{key}#{pk}"
+            key, fields = f"{key}#{pk}", {**fields, DUPLICATE: pk}
         seen.add(key)
-        out.append((Record(record.kind, key, record.fields), pk))
+        out.append((Record(record.kind, key, fields), pk))
     return out
 
 
@@ -400,12 +403,13 @@ def _options(dhcp, scope_ids, reservation_parents):
 
 def _option_record(seen, pk, parent, code, value, vendor, user, policy):
     key = option_key(parent, code, vendor, user, policy)
+    fields = {"parent": parent, "option_id": code, "value": value, "vendor_class": vendor, "user_class": user}
+    if policy:
+        fields["policy"] = policy
     if key in seen:
         # netbox-plugin-dhcp lets the same option be set twice on one object; Windows cannot hold that, so the extra
         # copies show up as deletions.
         key = f"{key}#{pk}"
+        fields[DUPLICATE] = pk
     seen.add(key)
-    fields = {"parent": parent, "option_id": code, "value": value, "vendor_class": vendor, "user_class": user}
-    if policy:
-        fields["policy"] = policy
     return Record("option", key, fields)

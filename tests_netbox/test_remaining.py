@@ -6,7 +6,7 @@ definitions and values, failover relationships, MAC filters and option values co
 from core.exceptions import JobFailed
 from django.core.exceptions import ValidationError
 from django.test import TestCase, override_settings
-from netbox_dhcp.models import Option, SharedNetwork, Subnet
+from netbox_dhcp.models import HostReservation, Option, SharedNetwork, Subnet
 
 from netbox_windows_dhcp_plugin import signals
 from netbox_windows_dhcp_plugin.choices import POLICY_CRITERIA_KEYS, SyncStatusChoices
@@ -39,7 +39,7 @@ from netbox_windows_dhcp_plugin.windows.client import (
 )
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 
-from .fixtures import dhcp_servers, windows_server
+from .fixtures import dhcp_servers, subnets, windows_server
 from .test_jobs import CREDENTIALS
 from .test_push import PushTestMixin
 
@@ -153,6 +153,36 @@ class ImportRemainingTest(RemainingObjectsMixin, TestCase):
         self.assertNotIn("failover", {r.kind for r in records})
         self.assertTrue(any("failover" in n for n in notes))
 
+    def test_partner_is_matched_on_its_computer_name(self):
+        # The partner is reached through a management host; Windows knows it by its own name.
+        self.partner.host = "mgmt.example.com"
+        self.partner.computer_name = "dhcp2.example.com"
+        self.partner.save()
+        FailoverRelationship.objects.all().delete()
+        self.apply_all()
+        self.assertEqual(FailoverRelationship.objects.get().partner_server, self.partner_dhcp)
+        self.assertEqual(self.changes(), [])
+
+    def test_too_wide_superscope_is_refused_with_a_clear_message(self):
+        DhcpClient(self.fake).add_scope(
+            Scope(name="Far", start_range="172.16.0.10", end_range="172.16.0.20", subnet_mask="255.255.255.0")
+        )
+        DhcpClient(self.fake).add_superscope(Superscope(name="Campus", scope_ids=["172.16.0.0"]))
+        result = self.propose()
+        importer.apply_items(result.proposal.items.all())
+        item = result.proposal.items.get(kind="superscope")
+        self.assertIn("too far apart", item.error)
+
+    def test_vendor_items_need_the_vendor_model_permissions(self):
+        from users.models import User
+
+        from netbox_windows_dhcp_plugin.models import ImportProposalItem
+        from netbox_windows_dhcp_plugin.review import missing_permission
+
+        user = User.objects.create(username="reviewer")
+        item = ImportProposalItem(kind="option", action="create", after={"vendor_class": "MSFT"})
+        self.assertEqual(missing_permission(user, item), "netbox_windows_dhcp_plugin.add_windowsvendoroption")
+
     def test_unknown_partner_fails_the_item_clearly(self):
         DhcpClient(self.fake).add_failover(WinFailover(name="Other", partner_server="nowhere", scope_ids=["10.1.0.0"]))
         result = self.propose()
@@ -261,6 +291,20 @@ class PushRemainingTest(RemainingObjectsMixin, TestCase):
         self.assertIn("may not be used with host", run.error)
         self.assertEqual(self.fake.failover_secrets, {})
 
+    def test_secret_needs_the_partner_windows_server(self):
+        self._run()
+        relationship = FailoverRelationship.objects.get()
+        FailoverRelationship.objects.filter(pk=relationship.pk).update(shared_secret_profile="ha")
+        self.partner.delete()
+        run = self._run()
+        # Reported, not pushed, and the secret is never read.
+        reasons = {s["key"]: s["reason"] for s in run.summary["not_pushed"]}
+        self.assertIn("no Windows server", reasons["ha"])
+        self.assertEqual(self.fake.failover_secrets, {})
+        relationship.refresh_from_db()
+        with self.assertRaises(ValidationError):
+            relationship.full_clean()
+
     def test_partner_push_leaves_the_relationship_alone(self):
         self._run()
         # The partner holds the relationship too (Windows replicates it); NetBox has it under the primary only.
@@ -298,3 +342,20 @@ class ModelValidationTest(TestCase):
         with self.assertRaises(ValidationError):
             WindowsVendorOption(definition=definition, assigned_object=two, value=["1"]).full_clean()
         WindowsVendorOption(definition=definition, assigned_object=one, value=["1"]).full_clean()
+        other_user = WindowsClass.objects.create(dhcp_server=two, name="Phones", class_type="user", data="p")
+        with self.assertRaises(ValidationError):
+            WindowsVendorOption(
+                definition=definition, assigned_object=one, user_class=other_user, value=["1"]
+            ).full_clean()
+        (subnet,) = subnets(one, 1)
+        scope_policy = WindowsPolicy.objects.create(dhcp_server=one, subnet=subnet, name="p")
+        with self.assertRaises(ValidationError):
+            WindowsVendorOption(
+                definition=definition, assigned_object=one, policy=scope_policy, value=["1"]
+            ).full_clean()
+        WindowsVendorOption(
+            definition=definition, assigned_object=subnet, policy=scope_policy, value=["1"]
+        ).full_clean()
+        reservation = HostReservation.objects.create(name="r", dhcp_server=two)
+        with self.assertRaises(ValidationError):
+            WindowsVendorOption(definition=definition, assigned_object=reservation, value=["1"]).full_clean()

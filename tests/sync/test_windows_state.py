@@ -250,3 +250,22 @@ def test_names_compare_without_case():
     assert ws.equal("policy", "name", "Printers", "PRINTERS")
     assert ws.equal("option", "policy", "a", "A")
     assert not ws.equal("policy", "description", "a", "A")
+
+
+def test_failover_partner_names_match_short_and_qualified():
+    assert ws.same_host("DHCP2.corp.example.", "dhcp2.corp.example")
+    assert ws.same_host("dhcp2", "dhcp2.corp.example")
+    assert not ws.same_host("dhcp2.a.example", "dhcp2.b.example")
+    assert not ws.same_host("dhcp2", "dhcp3")
+    assert ws.equal("failover", "partner_server", "dhcp2", "dhcp2.corp.example")
+
+
+def test_backslashes_are_kept():
+    # A PXE boot path, stored before or after commas were escaped.
+    assert ws.split_values("boot\\x64\\wdsnbp.com") == ["boot\\x64\\wdsnbp.com"]
+    assert ws.split_values(ws.join_values(["\\\\srv\\share", "a\\,b"])) == ["\\\\srv\\share", "a\\,b"]
+
+
+def test_values_ending_in_a_backslash_are_not_stored():
+    state = ws.WindowsState(options=[ws.OptionValue(option_id=67, value=["boot\\"])])
+    assert ws.to_records(state)[0] == []

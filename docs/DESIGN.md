@@ -139,27 +139,41 @@ relationships, MAC filters, list switches.
 - **Policies.** A scope policy is a child of its scope, and a policy naming a class in its conditions a child of that
   class, so an unmanaged policy keeps its scope (the special case from milestone 4 is gone). IP ranges are diffed and
   added or removed one by one. Set cannot clear a condition, so that change is refused; a lease time left empty in
-  NetBox keeps the Windows one. A policy without conditions is not pushed (Windows requires one).
+  NetBox keeps the Windows one. A policy without conditions is not pushed (Windows requires one), nor are policies
+  sharing a processing order. A policy value is only pushed when NetBox holds its policy at the same level, since
+  Windows names the policy by name only; the models check the policy's server and level too.
 - **Superscopes.** A sys4 `SharedNetwork` named `<server>/<superscope>` with the Windows name as description. Its
-  prefix is the smallest supernet covering the member scopes, created in the import VRF when missing; sys4 checks
+  prefix is the smallest supernet covering the member scopes (at most a /8; wider is refused), created in the import
+  VRF when missing; sys4 checks
   that member subnets sit inside it. A subnet has one parent (server or shared network), so import moves subnets in
   and out, and moves them back to the server before deleting a shared network, which sys4 would otherwise delete
   with its subnets. On Windows, removing a superscope keeps its scopes. Deleting a shared network by hand in NetBox
   still deletes its subnets (sys4 behaviour), and the next push removes those scopes from Windows.
 - **Failover.** Pushed from the primary only: on the partner, the relationship is neither imported nor pushed
-  (`partner_failovers`). The partner is matched by its Windows server host. The shared secret comes from the
+  (`partner_failovers`). The partner is the DHCP server itself, so its Windows server's `computer_name` when it
+  connects through a management host, else its `host`; short and fully qualified names match. A partner without a
+  Windows server in NetBox is not pushed (there is no host to check the secret's profile against), and import
+  refuses a relationship already held with the other server as primary. The shared secret comes from the
   credential profile in `shared_secret_profile` (key `secret`), is checked against both partners' hosts when saved
   and before each push, and only travels from the profile to the cmdlet; records only say whether authentication is
   on, so a rotated secret is not noticed. Changing the partner or turning authentication off is refused. A scope a
   managed relationship no longer lists may be deleted: it leaves the relationship first in the same push (after a
-  lease check, so a refused delete changes nothing). Removing a relationship removes its scopes from the partner,
-  as Windows documents.
+  lease check, so a refused delete changes nothing; a scope whose delete fails stays in the relationship). A scope
+  only leaves a relationship that NetBox manages and that is unchanged on Windows since the last push, and never
+  when NetBox does not manage the scope: leaving removes it from the partner. Removing a relationship removes its
+  scopes from the partner, as Windows documents.
 - **MAC filters.** An update is a remove and an add (no Set cmdlet). The list switches are only pushed when NetBox
   holds a `MacFilterLists` for the server; deleting it stops managing them.
 - **Vendor class definitions and values.** Our own models, linked to the vendor class; values keep their list, so
   commas and spaces survive. Their option code 1 and 51 are ordinary vendor options, not the mask and lease time.
 - **Comma values.** sys4 keeps option values as one string; a comma inside a value is stored as `\,` (Kea's own
-  escape) and split back on unescaped commas. Values with surrounding spaces are still skipped.
+  escape) and split back on commas without a backslash before them. Other backslashes stay as typed (boot file
+  paths), so strings stored before this change read the same. Values with surrounding spaces, or ending in a
+  backslash, are still skipped. sys4 validates typed options (addresses, FQDNs) by splitting on commas, so escaped
+  commas only work in string options, which is where Windows values have them.
+- **Duplicates.** Extra NetBox copies of one Windows object carry a `_duplicate` field (their primary key) as well
+  as the `#<pk>` key suffix, so a Windows name ending in `#<digits>` is not mistaken for one, and import deletes
+  exactly the marked copy.
 
 ## 7. Import: Windows to NetBox
 

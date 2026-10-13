@@ -63,7 +63,10 @@ All notable changes to this project are documented here. The format follows
 - Option values containing a comma are imported and pushed: netbox-plugin-dhcp stores the comma as `\,`, Kea's own
   escape. Values starting or ending with a space are still skipped.
 - A scope removed from a failover relationship in NetBox leaves the relationship before it is deleted on Windows,
-  in the same push. A scope that still has leases is refused first, so a refused delete changes nothing.
+  in the same push. A scope that still has leases is refused first, so a refused delete changes nothing. Scopes
+  added to a relationship by hand on Windows, or not managed by NetBox, are never taken out of it.
+- Policy option values are only pushed when NetBox holds their policy at the same level, and the models check that
+  a qualifier's policy and user class belong to the option's server and level.
 
 ### Changed
 

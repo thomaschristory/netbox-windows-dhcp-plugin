@@ -89,8 +89,12 @@ def failover_secret_lookup(server):
         if relationship is None or not relationship.shared_secret_profile:
             return ""
         profile = relationship.shared_secret_profile
+        partner_hosts = _windows_hosts(relationship.partner_server)
+        if not partner_hosts:
+            # Without the partner's host there is nothing to check the profile's allowed_hosts against.
+            raise ValueError(f"failover {name}: the partner server has no Windows server in NetBox; add one")
         try:
-            check_host_allowed(profile, server.host, server.computer_name, *_windows_hosts(relationship.partner_server))
+            check_host_allowed(profile, server.host, server.computer_name, *partner_hosts)
             return get_credentials(profile).secret
         except CredentialError as exc:
             # The push reports ValueError as a failed change, with this message (which never holds the secret).

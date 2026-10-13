@@ -26,6 +26,8 @@ from ..models import (
     MacFilterLists,
     WindowsClass,
     WindowsPolicy,
+    WindowsVendorOption,
+    WindowsVendorOptionDefinition,
 )
 from . import netbox_state, windows_state
 from .diff import CREATE, DELETE, UPDATE, Change, Record, diff, index
@@ -33,6 +35,7 @@ from .mapping import ApplyError, Writer
 
 __all__ = (
     "KIND_MODELS",
+    "kind_model",
     "ImportResult",
     "apply_items",
     "compute",
@@ -44,8 +47,7 @@ __all__ = (
 log = logging.getLogger(__name__)
 
 # The NetBox model each kind of change creates, updates or deletes, for permission checks and links. Vendor class
-# definitions and values are WindowsVendorOptionDefinition and WindowsVendorOption; the writer checks every object it
-# saves against the reviewer's permissions anyway.
+# definitions and values use their own models (see kind_model).
 KIND_MODELS = {
     "class": WindowsClass,
     "optiondef": OptionDefinition,
@@ -59,6 +61,16 @@ KIND_MODELS = {
     "macfilter": MacFilter,
     "filterlists": MacFilterLists,
 }
+
+VENDOR_KIND_MODELS = {"optiondef": WindowsVendorOptionDefinition, "option": WindowsVendorOption}
+
+
+def kind_model(kind, fields):
+    """The model a change writes: vendor class definitions and values have models of their own."""
+    if (fields or {}).get("vendor_class") and kind in VENDOR_KIND_MODELS:
+        return VENDOR_KIND_MODELS[kind]
+    return KIND_MODELS.get(kind)
+
 
 # Errors one change can raise without the rest of the import being wrong.
 APPLY_ERRORS = (ApplyError, ValidationError, IntegrityError, ValueError)

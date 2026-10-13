@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -32,6 +31,7 @@ from ..windows.psscript import NotFound, WindowsLayerError
 from ..windows.runner import RunnerError
 from .diff import CREATE, DELETE, UPDATE, Change, Record, diff, index
 from .windows_state import NAME_FIELDS, SKIPPED_OPTION_IDS, class_key, equal, optiondef_key, policy_key
+from .windows_state import scope_ids as windows_scope_ids
 from .windows_writer import PushRefused, option_target
 
 __all__ = ("Plan", "Result", "Skip", "execute", "fingerprint", "parents", "plan")
@@ -40,6 +40,10 @@ Key = tuple[str, str]
 
 # What Windows gives a scope created without a lease duration (8 days), and what a push then sends.
 DEFAULT_LEASE_SECONDS = 8 * 86400
+
+# Field netbox_state sets on the extra copies of an object Windows can hold once ("#<pk>" keys): they name no Windows
+# object.
+DUPLICATE = "_duplicate"
 
 # What Windows gives a failover relationship created without these settings.
 FAILOVER_DEFAULTS = {"load_balance_percent": 50, "reserve_percent": 5, "max_client_lead_time": 3600}
@@ -199,7 +203,7 @@ def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] 
     f = record.fields
     # netbox_state marks extra copies with "#<pk>", and a reservation without an address ends in "/": neither names
     # a Windows object.
-    if re.search(r"#\d+$", record.key) or record.key.endswith("/"):
+    if DUPLICATE in f:
         return CONFLICT
     if record.kind == "scope" and not (f.get("start_range") and f.get("end_range")):
         return "the subnet has no pool (IP range) to use as the scope range; add one in NetBox"
@@ -306,9 +310,14 @@ def plan(
         defined = {str(c) for c in defined_options} | {r.key for r in source if r.kind == "optiondef"}
     skipped_ids = set(skipped_option_ids)
     orders = _shared_orders(source)
+    policies = {r.key for r in source if r.kind == "policy"}
     pushable = []
     for record in source:
-        reason = _unpushable(record, skipped_ids, defined) or orders.get((record.kind, record.key))
+        reason = (
+            _unpushable(record, skipped_ids, defined)
+            or orders.get((record.kind, record.key))
+            or _missing_policy(record, policies)
+        )
         if reason is None:
             pushable.append(_prepare(record, target_index))
         else:
@@ -322,6 +331,7 @@ def plan(
     # A NetBox object that cannot be pushed still says "keep this": never delete its Windows counterpart.
     held = {(s.change.kind, s.change.key) for s in result.skipped}
     changes = diff(pushable, [r for k, r in target_index.items() if k not in held], equal=equal)
+    changes = _protect_memberships(changes, managed, source_index, target_index, result)
     changed = {(c.kind, c.key) for c in changes}
     for key in source_index:
         if key in target_index and key not in changed:
@@ -358,6 +368,59 @@ def plan(
         result.changes.append(change)
     result.changes = _membership_updates_first(result.changes, target_index)
     return result
+
+
+def _missing_policy(record: Record, policies: set[str]) -> str | None:
+    """A policy value names a policy by name only: without that policy in NetBox it would land in a hand-made one."""
+    name = record.fields.get("policy") if record.kind == "option" else None
+    if not name:
+        return None
+    scope_id, _ = option_target(record.fields["parent"])
+    if policy_key(scope_id, name) in policies:
+        return None
+    level = f"scope {scope_id}" if scope_id else "the server"
+    return f"policy {name} is not in NetBox at the level of this value ({level}); add it, or remove the value"
+
+
+def _protect_memberships(
+    changes: list[Change],
+    managed: Mapping[Key, str],
+    source: Mapping[Key, Record],
+    target: Mapping[Key, Record],
+    plan: Plan,
+) -> list[Change]:
+    """
+    Removing a scope from a failover relationship removes it from the partner server. Only do that for scopes NetBox
+    manages, and only when the relationship is unchanged on Windows since the last push: a scope added by hand stays.
+    """
+    out = []
+    for c in changes:
+        if c.action != UPDATE or c.kind != "failover":
+            out.append(c)
+            continue
+        key = (c.kind, c.key)
+        trusted = key in managed and managed[key] == fingerprint(target[key])
+        before, after = (c.before or {}).get("scope_ids", []), (c.after or {}).get("scope_ids", [])
+        protected = [
+            s
+            for s in before
+            if s not in after and (not trusted or (("scope", s) not in managed and ("scope", s) not in source))
+        ]
+        if not protected:
+            out.append(c)
+            continue
+        plan.skipped.append(
+            Skip(
+                c,
+                f"scope(s) {', '.join(protected)} stay in the relationship: they were added on Windows, or are not "
+                "managed by NetBox, and leaving it would remove them from the partner",
+            )
+        )
+        fields = {**(c.after or {}), "scope_ids": windows_scope_ids([*after, *protected])}
+        if not diff([Record(c.kind, c.key, fields)], [Record(c.kind, c.key, c.before or {})], equal=equal):
+            continue  # nothing else to change
+        out.append(Change(c.action, c.kind, c.key, before=c.before, after=fields))
+    return out
 
 
 def _membership_updates_first(changes: list[Change], target: Mapping[Key, Record]) -> list[Change]:
@@ -408,8 +471,20 @@ def execute(plan: Plan, writer: Any) -> Result:
         elif change.action == CREATE:
             missing.add((change.kind, change.key))
 
+    # Scopes whose delete comes later in the plan, and those refused ahead of time because they still have leases.
+    pending = {c.key for c in plan.changes if c.action == DELETE and c.kind == "scope"}
+    refused: dict[str, str] = {}
+
     for change in plan.changes:
         key = (change.kind, change.key)
+        if change.action == DELETE and change.kind == "scope":
+            pending.discard(change.key)
+            if change.key in refused:
+                result.failed.append((change, refused[change.key]))
+                block(change)
+                continue
+        if change.action == UPDATE and change.kind == "failover":
+            change = _keep_undeleted_scopes(change, kept, pending, refused, writer)
         if result.aborted:
             result.skipped.append((change, "not attempted: the connection to the server failed"))
             continue
@@ -447,3 +522,27 @@ def execute(plan: Plan, writer: Any) -> Result:
         else:
             result.upserts[key] = fingerprint(Record(change.kind, change.key, change.after or {}))
     return result
+
+
+def _keep_undeleted_scopes(
+    change: Change, kept: set[Key], pending: set[str], refused: dict[str, str], writer: Any
+) -> Change:
+    """
+    A scope leaves its failover relationship only if it is really deleted: one whose delete failed stays in, and so
+    does one still to be deleted that has leases (Windows would refuse the delete with DHCP 20007, after the scope
+    had already left the partner).
+    """
+    before, after = (change.before or {}).get("scope_ids", []), (change.after or {}).get("scope_ids", [])
+    stay = []
+    for sid in (s for s in before if s not in after):
+        if ("scope", sid) in kept:
+            stay.append(sid)
+        elif sid in pending and getattr(writer, "scope_has_leases", None) and writer.scope_has_leases(sid):
+            refused[sid] = (
+                "the scope still has leases, so Windows would refuse to delete it (DHCP 20007); it stays in its "
+                "failover relationship"
+            )
+            stay.append(sid)
+    if not stay:
+        return change
+    return Change(change.action, change.kind, change.key, change.before, {**change.after, "scope_ids": [*after, *stay]})

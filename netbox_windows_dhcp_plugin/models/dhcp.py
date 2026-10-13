@@ -410,6 +410,22 @@ class WindowsOptionQualifier(NetBoxModel):
         # Set-DhcpServerv4OptionValue accepts -PolicyName with -VendorClass, but not with -UserClass.
         if self.policy_id is not None and self.user_class_id is not None:
             raise ValidationError({"user_class": _("A policy option cannot also have a user class.")})
+        if self.option_id is None:
+            return
+        option = self.option
+        server = _parent_server(option.assigned_object)
+        if self.user_class_id is not None and server is not None and self.user_class.dhcp_server_id != server.pk:
+            raise ValidationError({"user_class": _("The user class belongs to another DHCP server.")})
+        if self.policy_id is not None:
+            # A policy value names the policy only by name on Windows: it must be this server's policy, at the
+            # option's own level (a scope policy on its scope, a server policy on the server).
+            model = option.assigned_object_type.model
+            if model == "hostreservation":
+                raise ValidationError({"policy": _("Windows has no policy values on reservations.")})
+            if server is None or self.policy.dhcp_server_id != server.pk:
+                raise ValidationError({"policy": _("The policy belongs to another DHCP server.")})
+            if self.policy.subnet_id != (option.assigned_object_id if model == "subnet" else None):
+                raise ValidationError({"policy": _("The policy belongs to another scope (or level) than the option.")})
 
 
 class FailoverRelationship(PrimaryModel):
@@ -524,6 +540,10 @@ class FailoverRelationship(PrimaryModel):
         hosts = []
         for server_id in (self.primary_server_id, self.partner_server_id):
             ws = WindowsServer.objects.filter(dhcp_server_id=server_id).first() if server_id else None
+            if server_id and ws is None:
+                raise ValidationError(
+                    {"shared_secret_profile": _("Both servers need a Windows server, so their hosts can be checked.")}
+                )
             if ws is not None:
                 hosts += [ws.host, ws.computer_name]
         try:
@@ -734,14 +754,7 @@ class WindowsVendorOption(NetBoxModel):
     @property
     def dhcp_server(self):
         """The server the value is set on, through its parent."""
-        parent = self.assigned_object
-        if parent is None:
-            return None
-        if hasattr(parent, "parent_dhcp_server"):
-            return parent.parent_dhcp_server
-        if hasattr(parent, "subnet"):
-            return parent.subnet.parent_dhcp_server if parent.subnet_id else None
-        return parent
+        return _parent_server(self.assigned_object)
 
     def clean(self):
         super().clean()
@@ -753,14 +766,32 @@ class WindowsVendorOption(NetBoxModel):
             return
         if self.assigned_object is None:
             raise ValidationError({"assigned_object_id": _("The assigned object does not exist.")})
+        server_id = self.definition.vendor_class.dhcp_server_id
         server = self.dhcp_server
-        if server is not None and server.pk != self.definition.vendor_class.dhcp_server_id:
+        if server is None or server.pk != server_id:
             raise ValidationError(_("The value and its vendor class belong to different DHCP servers."))
+        if self.user_class_id is not None and self.user_class.dhcp_server_id != server_id:
+            raise ValidationError({"user_class": _("The user class belongs to another DHCP server.")})
         if self.policy_id is not None:
-            if self.policy.dhcp_server_id != self.definition.vendor_class.dhcp_server_id:
+            if self.policy.dhcp_server_id != server_id:
                 raise ValidationError({"policy": _("The policy belongs to another DHCP server.")})
-            if self.assigned_object_type.model == "hostreservation":
+            model = self.assigned_object_type.model
+            if model == "hostreservation":
                 raise ValidationError({"policy": _("Windows has no policy values on reservations.")})
+            # A scope policy's values live on its scope, a server policy's on the server.
+            if self.policy.subnet_id != (self.assigned_object_id if model == "subnet" else None):
+                raise ValidationError({"policy": _("The policy belongs to another scope (or level) than the value.")})
+
+
+def _parent_server(parent):
+    """The DHCP server of an option's parent: the server itself, a subnet's, or a reservation's (subnet or server)."""
+    if parent is None:
+        return None
+    if hasattr(parent, "parent_dhcp_server"):
+        return parent.parent_dhcp_server
+    if hasattr(parent, "subnet"):
+        return parent.subnet.parent_dhcp_server if parent.subnet_id else parent.dhcp_server
+    return parent
 
 
 def _is_string_list(value):

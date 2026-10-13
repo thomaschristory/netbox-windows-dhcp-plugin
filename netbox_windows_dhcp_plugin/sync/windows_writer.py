@@ -27,7 +27,7 @@ from ..windows.client import (
     Superscope,
 )
 from .diff import CREATE, DELETE, UPDATE, Change
-from .windows_state import NO_BOOTP_LIMIT
+from .windows_state import NO_BOOTP_LIMIT, same_host
 
 __all__ = ("PushRefused", "WindowsWriter", "option_target")
 
@@ -50,6 +50,9 @@ class WindowsWriter:
         # Returns the shared secret of a failover relationship (by name) from its credential profile. The secret
         # only ever goes from there to the cmdlet: it is never part of a change, a record or a log line.
         self.failover_secret = failover_secret or (lambda name: "")
+
+    def scope_has_leases(self, scope_id: str) -> bool:
+        return bool(self.client.list_leases(scope_id))
 
     def apply(self, change: Change) -> None:
         handler = getattr(self, f"_apply_{change.kind}", None)
@@ -318,7 +321,7 @@ class WindowsWriter:
             self.client.add_failover(rel, shared_secret=self._secret(change, f["name"]) if f["auth"] else "")
             return
         before = change.before or {}
-        if before.get("partner_server") != f["partner_server"]:
+        if not same_host(before.get("partner_server", ""), f["partner_server"]):
             raise PushRefused(
                 f"failover {change.key}: the partner server cannot change on Windows; delete the relationship and "
                 "create it again"

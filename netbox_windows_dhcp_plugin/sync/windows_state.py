@@ -44,6 +44,7 @@ __all__ = (
     "option_key",
     "policy_key",
     "read",
+    "same_host",
     "split_values",
     "to_records",
 )
@@ -57,8 +58,8 @@ DESCRIPTION_LENGTH = 200
 
 # Reasons a Windows object is not imported, as they appear in the job log.
 UNSTORABLE_VALUES = (
-    "option value(s) starting or ending with a space: netbox-plugin-dhcp stores option values as one comma-separated "
-    "string, which drops those spaces"
+    "option value(s) starting or ending with a space, or ending with a backslash: netbox-plugin-dhcp stores option "
+    "values as one comma-separated string, which cannot keep them"
 )
 PARTNER_FAILOVERS = "failover relationship(s) whose primary is another server: they are synced from that server"
 
@@ -155,6 +156,24 @@ def policy_key(scope_id: str, name: str) -> str:
     return f"{scope_id or 'server'}/{name.lower()}"
 
 
+def host_name(value: str) -> str:
+    """A host name as both sides spell it: lowercase, without the trailing dot of a fully qualified name."""
+    return value.strip().rstrip(".").lower()
+
+
+def same_host(a: str, b: str) -> bool:
+    """
+    Whether two names point at the same failover partner. Windows reports the partner as it was given when the
+    relationship was created, which may be the short name where NetBox holds the fully qualified one.
+    """
+    a, b = host_name(a), host_name(b)
+    if a == b:
+        return True
+    if not a or not b or ("." in a) == ("." in b):
+        return False
+    return a.split(".", 1)[0] == b.split(".", 1)[0]
+
+
 def mac_key(mac: str) -> str:
     """A MAC filter pattern as Windows matches it: ``00-15-5d-*``."""
     return mac.strip().lower().replace(":", "-")
@@ -166,31 +185,38 @@ def mac_key(mac: str) -> str:
 def join_values(values: Iterable[str]) -> str:
     """
     netbox-plugin-dhcp keeps a list of option values as one comma-separated string, like Kea's option data. A comma
-    inside a value is written ``\\,``, Kea's own escape, so it survives the round trip.
+    inside a value is written ``\\,``, Kea's own escape, so it survives the round trip. Other backslashes stay as they
+    are (boot file paths have them), which also keeps strings stored before commas were escaped readable.
     """
-    return ", ".join(v.replace("\\", "\\\\").replace(",", "\\,") for v in values)
+    return ", ".join(v.replace(",", "\\,") for v in values)
 
 
 def split_values(data: str) -> list[str]:
-    """The reverse of ``join_values``: split on commas that are not escaped, and trim the spaces around values."""
+    """The reverse of ``join_values``: split on commas not preceded by a backslash, and trim spaces around values."""
     if not data.strip():
         return []
-    out, current, chars = [], [], iter(data)
-    for ch in chars:
-        if ch == "\\":
-            current.append(next(chars, ""))
-        elif ch == ",":
+    out, current, i = [], [], 0
+    while i < len(data):
+        if data[i] == "\\" and data[i + 1 : i + 2] == ",":
+            current.append(",")
+            i += 2
+            continue
+        if data[i] == ",":
             out.append("".join(current).strip())
             current = []
         else:
-            current.append(ch)
+            current.append(data[i])
+        i += 1
     out.append("".join(current).strip())
     return out
 
 
 def _storable(values: list[str]) -> bool:
-    """A value with spaces around it would come back trimmed and be proposed again on every import."""
-    return all(v == v.strip() for v in values)
+    """
+    A value with spaces around it would come back trimmed, and one ending in a backslash would swallow the comma
+    after it, so either would be proposed again on every import.
+    """
+    return all(v == v.strip() and not v.endswith("\\") for v in values)
 
 
 # -- records -------------------------------------------------------------------------------------------------------
@@ -287,7 +313,7 @@ def failover_record(f: FailoverRelationship) -> Record:
         f.name.lower(),
         {
             "name": f.name,
-            "partner_server": f.partner_server.lower(),
+            "partner_server": host_name(f.partner_server),
             "mode": f.mode.lower(),
             "max_client_lead_time": f.max_client_lead_time,
             "load_balance_percent": None if hot else f.load_balance_percent,
@@ -469,6 +495,8 @@ def equal(kind: str, name: str, a: Any, b: Any) -> bool:
     """
     if (kind, name) in NAME_FIELDS and isinstance(a, str) and isinstance(b, str):
         return a.casefold() == b.casefold()
+    if (kind, name) == ("failover", "partner_server") and isinstance(a, str) and isinstance(b, str):
+        return same_host(a, b)
     if name in ("value", "default_value") and isinstance(a, list) and isinstance(b, list):
         if len(a) != len(b):
             return False
