@@ -2,7 +2,9 @@
 Apply or dismiss import proposal items for a reviewing user, from the UI or the REST API.
 
 Applying writes NetBox objects as that user, so on top of "change" on the items the user needs the add, change or
-delete permission on the objects each item writes. Items the user may not apply are left pending.
+delete permission on the objects each item writes. The main object's permission is checked up front (items the user
+may not apply are left pending); every object written, prefixes and addresses included, is then checked as it is
+saved, constraints included, and an item that breaks a permission is rolled back and marked failed.
 """
 
 from .choices import ProposalItemStatusChoices
@@ -48,7 +50,7 @@ def apply(user, items):
             denied.add(missing)
         else:
             allowed.append(item)
-    applied, failed = importer.apply_items(allowed)
+    applied, failed = importer.apply_items(allowed, user=user)
     return applied, failed, sorted(denied)
 
 

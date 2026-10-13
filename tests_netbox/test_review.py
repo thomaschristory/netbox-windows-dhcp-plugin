@@ -1,6 +1,7 @@
 """The review queue from the UI and the REST API: permissions, and writes made as the reviewing user."""
 
-from core.models import ObjectChange
+from core.models import ObjectChange, ObjectType
+from ipam.models import Prefix
 from netbox_dhcp.models import Subnet
 from utilities.testing import APITestCase, TestCase
 
@@ -16,6 +17,10 @@ from .fixtures import PluginAPIMixin, dhcp_servers, ensure_standard_option_defin
 SCOPE_PERMISSIONS = (
     "netbox_dhcp.add_subnet",
     "netbox_dhcp.view_subnet",
+    "netbox_dhcp.add_pool",
+    "ipam.add_prefix",
+    "ipam.add_iprange",
+    "netbox_windows_dhcp_plugin.add_windowsscope",
 )
 ITEM = "netbox_windows_dhcp_plugin.change_importproposalitem"
 PROPOSAL = "netbox_windows_dhcp_plugin.change_importproposal"
@@ -57,6 +62,30 @@ class ReviewViewTest(TestCase):
         self.item.refresh_from_db()
         self.assertEqual(self.item.status, ProposalItemStatusChoices.PENDING)
         self.assertFalse(Subnet.objects.exists())
+
+    def test_apply_needs_permission_on_every_object_written(self):
+        # add_subnet alone must not let a reviewer create prefixes and IP ranges through an import.
+        self.add_permissions(ITEM, *(p for p in SCOPE_PERMISSIONS if p != "ipam.add_prefix"))
+        self.client.post(f"/plugins/windows-dhcp/importproposalitems/{self.item.pk}/apply/")
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.status, ProposalItemStatusChoices.FAILED)
+        self.assertIn("ipam.add_prefix", self.item.error)
+        self.assertFalse(Subnet.objects.exists())
+        self.assertFalse(Prefix.objects.exists())
+
+    def test_apply_respects_permission_constraints(self):
+        from users.models import ObjectPermission
+
+        self.add_permissions(ITEM, *(p for p in SCOPE_PERMISSIONS if p != "ipam.add_prefix"))
+        permission = ObjectPermission.objects.create(
+            name="prefixes in 192.0.2.0/24 only", actions=["add"], constraints={"prefix": "192.0.2.0/24"}
+        )
+        permission.object_types.add(ObjectType.objects.get_for_model(Prefix))
+        permission.users.add(self.user)
+        self.client.post(f"/plugins/windows-dhcp/importproposalitems/{self.item.pk}/apply/")
+        self.item.refresh_from_db()
+        self.assertEqual(self.item.status, ProposalItemStatusChoices.FAILED)
+        self.assertFalse(Prefix.objects.exists())
 
     def test_apply_needs_change_on_items(self):
         self.add_permissions(*SCOPE_PERMISSIONS)

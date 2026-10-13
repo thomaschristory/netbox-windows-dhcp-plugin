@@ -178,10 +178,11 @@ def _set_item(item, status, error=""):
     item.save()
 
 
-def apply_items(items):
+def apply_items(items, user=None):
     """
     Apply proposal items in dependency order, one transaction each. Call from a request: NetBox then records the
-    reviewing user in the change log. Returns (applied, failed) counts.
+    reviewing user in the change log, and every object written is checked against ``user``'s permissions (a
+    refusal rolls the item back). Returns (applied, failed) counts.
 
     Each item is checked against what NetBox holds now. If someone changed the object since the import, the item
     fails instead of overwriting their edit; running the import again proposes a fresh change.
@@ -205,7 +206,7 @@ def apply_items(items):
             try:
                 with transaction.atomic():
                     if not _already_done(change, current):
-                        Writer(server).apply(change)
+                        Writer(server, user=user).apply(change)
             except APPLY_ERRORS as exc:
                 error = _message(exc)
         if error:

@@ -204,6 +204,22 @@ class ProposalImportTest(ImportTestMixin, TestCase):
         self.assertEqual((change.action, change.kind), ("delete", "option"))
         self.assertTrue(change.key.startswith("server/6#"))
 
+    def test_class_names_cannot_point_at_other_options(self):
+        # A "#<pk>" key suffix marks a duplicate option. A Windows class name ending in "#<pk>" must not make the
+        # import touch that option, here one belonging to another server.
+        (other,) = dhcp_servers(1, start=2)
+        definition = OptionDefinition.objects.get(standard=True, space="dhcp4", code=6)
+        victim = Option.objects.create(definition=definition, assigned_object=other, data="192.0.2.1")
+        self.client.add_class(DhcpClass(name=f"evil#{victim.pk}", type="User", data="evil"))
+        self.client.set_option_value(OptionKey(option_id=6, user_class=f"evil#{victim.pk}"), ["10.6.6.6"])
+        self.apply_all()
+        victim.refresh_from_db()
+        self.assertEqual(victim.data, "192.0.2.1")
+        self.assertEqual(
+            WindowsOptionQualifier.objects.get(user_class__name=f"evil#{victim.pk}").option.data, "10.6.6.6"
+        )
+        self.assertEqual(self.changes(), [])
+
     def test_rerun_replaces_pending_items_and_keeps_one_proposal(self):
         first = self.propose().proposal
         self.client.remove_reservation("10.1.0.50")

@@ -10,8 +10,8 @@ from netbox_windows_dhcp_plugin.models import WindowsServer
 PLUGIN = "netbox_windows_dhcp_plugin"
 
 
-def dhcp_servers(count=3):
-    return [DHCPServer.objects.create(name=f"dhcp{i}") for i in range(1, count + 1)]
+def dhcp_servers(count=3, start=1):
+    return [DHCPServer.objects.create(name=f"dhcp{i}") for i in range(start, start + count)]
 
 
 def subnets(server, count=3):

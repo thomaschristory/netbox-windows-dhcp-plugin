@@ -7,6 +7,7 @@ previous state.
 """
 
 import ipaddress
+import re
 
 from dcim.models import MACAddress
 from django.contrib.contenttypes.models import ContentType
@@ -23,7 +24,7 @@ from ..models import (
     WindowsScope,
 )
 from ..windows import normalize
-from . import netbox_state
+from . import netbox_state, windows_state
 from .diff import CREATE, DELETE
 
 __all__ = ("ApplyError", "Writer")
@@ -36,36 +37,50 @@ class ApplyError(Exception):
     """A change that cannot be written, with a message for the person reviewing the import."""
 
 
-def _save(obj):
-    obj.full_clean()
-    obj.save()
-    return obj
-
-
-def _update(obj, **values):
-    """Set fields and save only when something changed, so unchanged objects leave no change log entry."""
-    changed = {k: v for k, v in values.items() if getattr(obj, k) != v}
-    if not changed:
-        return obj
-    obj.snapshot()
-    for k, v in changed.items():
-        setattr(obj, k, v)
-    return _save(obj)
-
-
-def _delete(obj):
-    if obj is not None:
-        obj.snapshot()
-        obj.delete()
-
-
 class Writer:
     """Applies changes for one Windows server. Under activate_branch every read and write goes to the branch."""
 
-    def __init__(self, windows_server):
+    def __init__(self, windows_server, user=None):
         self.server = windows_server
         self.dhcp = windows_server.dhcp_server
         self.vrf = windows_server.import_vrf
+        # When set (a reviewer applying proposal items), every object written is checked against this user's
+        # permissions, constraints included, like NetBox's own edit views do. Imports run by a job leave it unset.
+        self.user = user
+
+    # -- writes ------------------------------------------------------------------------------------------------------
+
+    def _check(self, obj, action):
+        if self.user is None:
+            return
+        model = type(obj)
+        perm = f"{model._meta.app_label}.{action}_{model._meta.model_name}"
+        if not self.user.has_perm(perm) or not model.objects.restrict(self.user, action).filter(pk=obj.pk).exists():
+            raise ApplyError(f"permission {perm} does not allow this change to {model._meta.verbose_name} {obj}")
+
+    def _save(self, obj):
+        adding = obj._state.adding
+        obj.full_clean()
+        obj.save()
+        self._check(obj, "add" if adding else "change")
+        return obj
+
+    def _update(self, obj, **values):
+        """Set fields and save only when something changed, so unchanged objects leave no change log entry."""
+        changed = {k: v for k, v in values.items() if getattr(obj, k) != v}
+        if not changed:
+            return obj
+        self._check(obj, "change")
+        obj.snapshot()
+        for k, v in changed.items():
+            setattr(obj, k, v)
+        return self._save(obj)
+
+    def _delete(self, obj):
+        if obj is not None:
+            self._check(obj, "delete")
+            obj.snapshot()
+            obj.delete()
 
     # -- naming ------------------------------------------------------------------------------------------------------
 
@@ -131,9 +146,13 @@ class Writer:
         return self.subnet(parent, required=required)
 
     def option(self, key, fields):
-        """The Option for a record, or the exact duplicate a ``#<pk>`` key names."""
-        if "#" in key:
-            return Option.objects.filter(pk=int(key.rsplit("#", 1)[1])).first()
+        """The Option for a record, or the extra copy a duplicate's ``<key>#<pk>`` key names."""
+        # Keys contain Windows class names, which may themselves contain "#". A key only names a duplicate when it
+        # is exactly the record's own key plus "#<pk>", and that pk must be an option of the same parent and code.
+        base = windows_state.option_key(
+            fields["parent"], fields["option_id"], fields["vendor_class"], fields["user_class"]
+        )
+        duplicate = re.fullmatch(rf"{re.escape(base)}#(\d+)", key)
         parent = self._parent(fields["parent"], required=False)
         if parent is None:
             return None
@@ -146,6 +165,8 @@ class Writer:
             "netbox_windows_dhcp_plugin_windows_qualifier__user_class",
             "netbox_windows_dhcp_plugin_windows_qualifier__vendor_class",
         )
+        if duplicate:
+            return candidates.filter(pk=int(duplicate.group(1))).first()
         for o in candidates.order_by("pk"):
             q = getattr(o, "netbox_windows_dhcp_plugin_windows_qualifier", None)
             if q and q.policy_id:
@@ -160,7 +181,7 @@ class Writer:
 
     def _prefix(self, network):
         found = Prefix.objects.filter(prefix=str(network), vrf=self.vrf).first()
-        return found or _save(Prefix(prefix=str(network), vrf=self.vrf, description="Windows DHCP scope"))
+        return found or self._save(Prefix(prefix=str(network), vrf=self.vrf, description="Windows DHCP scope"))
 
     def _ip_range(self, start, end, prefixlen, current=None):
         found = IPRange.objects.filter(start_address__net_host=start, end_address__net_host=end, vrf=self.vrf).first()
@@ -168,19 +189,18 @@ class Writer:
             return found
         if current is not None and not current.netbox_dhcp_pools.exclude(subnet__dhcp_server=self.dhcp).exists():
             # The range only serves this scope: move it rather than leave the old one behind.
-            return _update(
+            return self._update(
                 current, start_address=f"{start}/{prefixlen}", end_address=f"{end}/{prefixlen}", vrf=self.vrf
             )
-        return _save(IPRange(start_address=f"{start}/{prefixlen}", end_address=f"{end}/{prefixlen}", vrf=self.vrf))
+        return self._save(IPRange(start_address=f"{start}/{prefixlen}", end_address=f"{end}/{prefixlen}", vrf=self.vrf))
 
     def _ip_address(self, ip, prefixlen):
         found = IPAddress.objects.filter(address__net_host=ip, vrf=self.vrf).first()
-        return found or _save(
+        return found or self._save(
             IPAddress(address=f"{ip}/{prefixlen}", vrf=self.vrf, description="Windows DHCP reservation")
         )
 
-    @staticmethod
-    def _mac(client_id):
+    def _mac(self, client_id):
         """A MACAddress for a six-byte client ID; longer client IDs stay a plain string on the reservation."""
         try:
             raw = normalize.canonical_mac(client_id)
@@ -189,7 +209,7 @@ class Writer:
         if raw.count("-") != 5:
             return None
         mac = raw.replace("-", ":").upper()
-        return MACAddress.objects.filter(mac_address=mac).first() or _save(MACAddress(mac_address=mac))
+        return MACAddress.objects.filter(mac_address=mac).first() or self._save(MACAddress(mac_address=mac))
 
     # -- apply -------------------------------------------------------------------------------------------------------
 
@@ -204,15 +224,15 @@ class Writer:
         fields = change.after or change.before
         obj = self.windows_class(fields["class_type"], fields["name"], required=False)
         if change.action == DELETE:
-            return _delete(obj)
+            return self._delete(obj)
         values = {"data": fields["data"], "description": fields["description"][:DESCRIPTION_LENGTH]}
         if obj is None:
-            return _save(
+            return self._save(
                 WindowsClass(
                     dhcp_server=self.dhcp, family=4, class_type=fields["class_type"], name=fields["name"], **values
                 )
             )
-        return _update(obj, **values)
+        return self._update(obj, **values)
 
     def _apply_optiondef(self, change):
         fields = change.after or change.before
@@ -220,7 +240,7 @@ class Writer:
         if obj is not None and obj.standard:
             obj = None  # never touch netbox-plugin-dhcp's own definitions
         if change.action == DELETE:
-            return _delete(obj)
+            return self._delete(obj)
         vendor = self.windows_class("vendor", fields["vendor_class"]) if fields["vendor_class"] else None
         values = {
             "name": fields["name"],
@@ -229,11 +249,11 @@ class Writer:
             "description": fields["description"][:DESCRIPTION_LENGTH],
         }
         if obj is None:
-            obj = _save(
+            obj = self._save(
                 OptionDefinition(dhcp_server=self.dhcp, family=4, space="dhcp4", code=fields["option_id"], **values)
             )
         else:
-            obj = _update(obj, **values)
+            obj = self._update(obj, **values)
         side = getattr(obj, "netbox_windows_dhcp_plugin_windows_option_definition", None)
         side_values = {
             "vendor_class": vendor,
@@ -241,16 +261,16 @@ class Writer:
             "default_value": list(fields["default_value"]),
         }
         if side is None:
-            _save(WindowsOptionDefinition(option_definition=obj, **side_values))
+            self._save(WindowsOptionDefinition(option_definition=obj, **side_values))
         else:
-            _update(side, **side_values)
+            self._update(side, **side_values)
         return obj
 
     def _apply_scope(self, change):
         fields = change.after or change.before
         subnet = self.subnet(change.key, required=False)
         if change.action == DELETE:
-            return _delete(subnet)
+            return self._delete(subnet)
         prefixlen = normalize.parse_mask(fields["subnet_mask"])
         network = ipaddress.IPv4Network(f"{change.key}/{prefixlen}")
         prefix = self._prefix(network)
@@ -262,18 +282,18 @@ class Writer:
             "valid_lifetime": fields["lease_seconds"],
         }
         if subnet is None:
-            subnet = _save(Subnet(name=name, dhcp_server=self.dhcp, **values))
+            subnet = self._save(Subnet(name=name, dhcp_server=self.dhcp, **values))
             pool = None
         else:
-            subnet = _update(subnet, **values)
+            subnet = self._update(subnet, **values)
             pool = subnet.child_pools.order_by("pk").first()
         ip_range = self._ip_range(
             fields["start_range"], fields["end_range"], prefixlen, pool.ip_range if pool else None
         )
         if pool is None:
-            _save(Pool(name=name, subnet=subnet, ip_range=ip_range))
+            self._save(Pool(name=name, subnet=subnet, ip_range=ip_range))
         else:
-            _update(pool, ip_range=ip_range)
+            self._update(pool, ip_range=ip_range)
         scope_values = {
             "state": fields["state"],
             "scope_type": fields["scope_type"],
@@ -283,9 +303,9 @@ class Writer:
         }
         ws = WindowsScope.objects.filter(subnet=subnet).first()
         if ws is None:
-            _save(WindowsScope(subnet=subnet, **scope_values))
+            self._save(WindowsScope(subnet=subnet, **scope_values))
         else:
-            _update(ws, **scope_values)
+            self._update(ws, **scope_values)
         return subnet
 
     def _apply_exclusion(self, change):
@@ -293,7 +313,7 @@ class Writer:
         subnet = self.subnet(fields["scope_id"], required=change.action == CREATE)
         if change.action == DELETE:
             if subnet is not None:
-                _delete(
+                self._delete(
                     ExclusionRange.objects.filter(
                         subnet=subnet, start_address=fields["start_range"], end_address=fields["end_range"]
                     )
@@ -302,7 +322,7 @@ class Writer:
                 )
             return None
         # The key holds every field, so an exclusion is only ever created or deleted.
-        return _save(
+        return self._save(
             ExclusionRange(subnet=subnet, start_address=fields["start_range"], end_address=fields["end_range"])
         )
 
@@ -310,7 +330,7 @@ class Writer:
         fields = change.after or change.before
         obj = self.reservation(fields["scope_id"], fields["ip_address"], required=False)
         if change.action == DELETE:
-            return _delete(obj)
+            return self._delete(obj)
         subnet = self.subnet(fields["scope_id"])
         prefixlen = subnet.prefix.prefix.prefixlen
         mac = self._mac(fields["client_id"])
@@ -322,30 +342,30 @@ class Writer:
         }
         if obj is None:
             _, name = self._names(fields["scope_id"], fields["ip_address"])
-            obj = _save(
+            obj = self._save(
                 HostReservation(
                     name=name, subnet=subnet, ipv4_address=self._ip_address(fields["ip_address"], prefixlen), **values
                 )
             )
         else:
-            obj = _update(obj, **values)
+            obj = self._update(obj, **values)
         side = WindowsReservation.objects.filter(host_reservation=obj).first()
         if side is None:
-            _save(WindowsReservation(host_reservation=obj, reservation_type=fields["reservation_type"]))
+            self._save(WindowsReservation(host_reservation=obj, reservation_type=fields["reservation_type"]))
         else:
-            _update(side, reservation_type=fields["reservation_type"])
+            self._update(side, reservation_type=fields["reservation_type"])
         return obj
 
     def _apply_option(self, change):
         fields = change.after or change.before
         obj = self.option(change.key, fields)
         if change.action == DELETE:
-            return _delete(obj)
+            return self._delete(obj)
         data = ", ".join(fields["value"])
         if obj is not None:
-            return _update(obj, data=data)
+            return self._update(obj, data=data)
         parent = self._parent(fields["parent"])
-        obj = _save(
+        obj = self._save(
             Option(
                 definition=self.definition(fields["option_id"], fields["vendor_class"]),
                 assigned_object=parent,
@@ -353,7 +373,7 @@ class Writer:
             )
         )
         if fields["vendor_class"] or fields["user_class"]:
-            _save(
+            self._save(
                 WindowsOptionQualifier(
                     option=obj,
                     vendor_class=self.windows_class("vendor", fields["vendor_class"])
