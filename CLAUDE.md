@@ -12,6 +12,7 @@
 - New Windows cmdlets get a fake server implementation and a pwsh stub test. Mark anything not checked on a real
   server with `# unverified:`.
 - Model changes need a migration (`makemigrations --check` runs in CI) and updated `tests/query_counts.json`
-  baselines (`UPDATE_QUERY_COUNTS=1`, without `--parallel`).
+  baselines (`UPDATE_QUERY_COUNTS=1`, without `--parallel`): record once standalone, and once with branching into
+  `tests_netbox/query_counts.branching.json`.
 - ruff, line length 120. No em dashes in code, docs or messages.
 - Update `CHANGELOG.md` under Unreleased with every user-visible change.
