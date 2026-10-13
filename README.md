@@ -99,7 +99,7 @@ warning at startup for each such profile.
 | `import_branch_prefix` | `dhcp-import` | Prefix of import branches |
 | `import_change_request` | `True` | Open a change request per import branch when change control is installed |
 | `push_debounce` | `10` | Seconds to group saves into one push (without branching) |
-| `max_concurrency` | `4` | PowerShell commands run at once against one server |
+| `max_concurrency` | `4` | PowerShell commands one job runs at once against a server |
 | `command_timeout` | `120` | Seconds before a PowerShell command is abandoned |
 
 ### Windows side

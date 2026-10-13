@@ -1375,6 +1375,12 @@ class DhcpClient:
         self.runner = runner
         self.computer_name = computer_name
 
+    def close(self) -> None:
+        """Release the transport (an SSH connection stays open until closed)."""
+        close = getattr(self.runner, "close", None)
+        if callable(close):
+            close()
+
     # -- plumbing -------------------------------------------------------------
 
     def _run(self, script: Script, params: Mapping[str, Any] | None = None) -> tuple[bool, Any]:

@@ -370,3 +370,18 @@ def test_concurrent_calls_through_limiter(fake: FakeDhcpServer) -> None:
     for t in threads:
         t.join()
     assert errors == [] and len(c.list_scopes()) == 20
+
+
+def test_client_close_delegates_to_runner() -> None:
+    closed = []
+
+    class R:
+        def run(self, script, params=None):  # pragma: no cover - not called
+            raise AssertionError
+
+        def close(self) -> None:
+            closed.append(True)
+
+    DhcpClient(R()).close()
+    DhcpClient(object()).close()  # runners without close() are fine
+    assert closed == [True]

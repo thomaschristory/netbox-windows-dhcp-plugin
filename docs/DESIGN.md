@@ -77,7 +77,7 @@ sync engine  ->  client (one function per cmdlet operation)  ->  psscript (envel
 - **psscript.** Same contract: each script runs in try/catch and prints one JSON envelope `{ok, data}` or `{ok: false, error}`. User values only enter as a single-quoted JSON literal `$p` with quotes doubled; nothing from NetBox is ever interpolated into PowerShell. Same preamble, including `$PSDefaultParameterValues['*:ErrorAction']='Stop'`, and the same base64 stdin bootstrap.
 - **Not found** uses the same rules: `ObjectNotFound`, `DHCP 20005`, `20010`, `20018`, or a null result. `DHCP 20007` (scope has leases) is a real error.
 - **Normalisation** is ported as is: scope ID from start and mask, MAC canonical form, lease durations, `InActive`/`Inactive` casing, option values compared hex-or-decimal.
-- **runner.** WinRM through pypsrp with a new connection per call, as the Go code learned the hard way with NTLM. SSH through paramiko with pinned host key or known_hosts. Concurrency is capped per server.
+- **runner.** WinRM through pypsrp with a new connection per call, as the Go code learned the hard way with NTLM. SSH through paramiko with pinned host key or known_hosts. Concurrency is capped per job (`max_concurrency`); a cap shared by all workers per server comes with push (milestone 4).
 - **New cmdlets** beyond the provider: DHCPv6 scopes, reservations and options, superscopes, option definitions, classes, policies, failover, MAC filters, server settings. These follow the same patterns and get the same fixture tests.
 
 ## 6. Push: NetBox to Windows

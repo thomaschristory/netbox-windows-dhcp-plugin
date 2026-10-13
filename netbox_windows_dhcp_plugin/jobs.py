@@ -28,11 +28,14 @@ class TestConnectionJob(JobRunner):
             started=timezone.now(),
         )
         runner = self.runner_factory(server) if self.runner_factory else None
+        client = None
         try:
             client = build_client(server, runner=runner)
             client.check_available()
             scopes = client.list_scopes()
-        except (CredentialError, WindowsLayerError) as exc:
+        # ValueError covers settings the transports reject, such as a profile without a password or a malformed
+        # SSH host key.
+        except (CredentialError, WindowsLayerError, ValueError) as exc:
             sync_run.status = SyncStatusChoices.FAILED
             sync_run.error = str(exc)
             self.logger.error(f"Connection to {server.host} failed: {exc}")
@@ -41,6 +44,12 @@ class TestConnectionJob(JobRunner):
             sync_run.summary = {"ipv4_scopes": len(scopes)}
             self.logger.info(f"Connected to {server.host}: {len(scopes)} IPv4 scopes")
         finally:
+            if sync_run.status == SyncStatusChoices.RUNNING:
+                # Anything else is a bug; record the type only and let the traceback reach the job log.
+                sync_run.status = SyncStatusChoices.FAILED
+                sync_run.error = "unexpected error, see the job log"
+            if client is not None:
+                client.close()
             sync_run.completed = timezone.now()
             sync_run.save()
         if sync_run.status == SyncStatusChoices.FAILED:

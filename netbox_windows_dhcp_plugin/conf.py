@@ -23,7 +23,7 @@ DEFAULTS = {
     "import_change_request": True,
     # Seconds to wait after a save before pushing, so a burst of edits becomes one push (without branching).
     "push_debounce": 10,
-    # Maximum number of PowerShell commands run at the same time against one server.
+    # Maximum number of PowerShell commands one job runs at the same time against a server.
     "max_concurrency": 4,
     # Seconds before a single PowerShell command is abandoned.
     "command_timeout": 120,
