@@ -194,7 +194,16 @@ def apply_items(items, user=None):
 
     Each item is checked against what NetBox holds now. If someone changed the object since the import, the item
     fails instead of overwriting their edit; running the import again proposes a fresh change.
+
+    Saves made here queue no push: the objects then match Windows, so pushing them back would do nothing.
     """
+    from ..signals import push_suppressed
+
+    with push_suppressed():
+        return _apply_items(items, user)
+
+
+def _apply_items(items, user):
     items = sorted(items, key=lambda i: (i.proposal_id, i.sequence, i.pk))
     applied = failed = 0
     proposals = {}
@@ -215,6 +224,7 @@ def apply_items(items, user=None):
                 with transaction.atomic():
                     if not _already_done(change, current):
                         Writer(server, user=user).apply(change)
+                    _record_managed(server, change)
             except APPLY_ERRORS as exc:
                 error = _message(exc)
         if error:
@@ -226,6 +236,25 @@ def apply_items(items, user=None):
     for proposal in proposals.values():
         update_status(proposal)
     return applied, failed
+
+
+def _record_managed(server, change):
+    """
+    NetBox and Windows now agree on this object, so later pushes manage it: deleting it in NetBox deletes it on
+    Windows. The fingerprint is of the Windows values, as a push would record them.
+    """
+    from ..models import SyncState
+    from .push import fingerprint
+
+    if change.action == DELETE:
+        SyncState.objects.filter(windows_server=server, kind=change.kind, key=change.key).delete()
+        return
+    SyncState.objects.update_or_create(
+        windows_server=server,
+        kind=change.kind,
+        key=change.key,
+        defaults={"fingerprint": fingerprint(Record(change.kind, change.key, change.after or {}))},
+    )
 
 
 def _same(a, b):

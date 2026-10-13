@@ -233,7 +233,11 @@ class FakeDhcpServer:
             "subnet_mask": _s(p, "subnet_mask"),
             "state": state,
             "type": _s(p, "type"),
-            "lease_duration": normalize.format_duration(_n(p, "lease_seconds")),
+            "lease_duration": (
+                normalize.format_duration(_n(p, "lease_seconds"))
+                if p.get("lease_seconds") is not None
+                else old.get("lease_duration", "8.00:00:00")
+            ),
             "delay": p["delay"] if p.get("delay") is not None else old.get("delay", 0),
             "max_bootp_clients": (
                 p["max_bootp_clients"]

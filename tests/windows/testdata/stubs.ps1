@@ -127,6 +127,7 @@ function Set-DhcpServerv4Scope {
         return
     }
     $old = $global:Scopes["$ScopeId"]
+    if (-not $PSBoundParameters.ContainsKey('LeaseDuration')) { $LeaseDuration = $old.LeaseDuration }
     $global:Scopes["$ScopeId"] = New-Scope @{ ScopeId = $ScopeId; SubnetMask = $old.SubnetMask; Name = $Name; State = $State
         StartRange = $StartRange; EndRange = $EndRange; LeaseDuration = $LeaseDuration; Description = $Description; Type = $Type }
 }

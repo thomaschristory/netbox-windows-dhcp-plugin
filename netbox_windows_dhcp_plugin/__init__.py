@@ -25,11 +25,15 @@ if PluginConfig is not None:
             super().ready()
             import logging
 
-            from . import jobs  # noqa: F401 - registers the import scheduler system job
+            from . import (
+                jobs,  # noqa: F401 - registers the import scheduler system job
+                signals,
+            )
             from .conf import profiles_without_allowed_hosts
             from .integrations import branching
 
             branching.register()
+            signals.connect()
             unrestricted = profiles_without_allowed_hosts()
             if unrestricted:
                 logging.getLogger(__name__).warning(

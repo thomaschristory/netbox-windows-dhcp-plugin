@@ -59,7 +59,7 @@ Branchable (DHCP configuration, reviewed and merged like sys4 objects): `Windows
 Not branchable (bookkeeping; listed in branching's `exempt_models` so change control's `protect_main` does not block them):
 
 - `WindowsServer`: OneToOne to `DHCPServer`. Host, transport (winrm or ssh), port, WinRM auth (ntlm, basic, kerberos), HTTPS (default on), TLS verification, Kerberos realm and SPN, SSH host key, optional `computer_name` for remoting, VRF for imports, sync enabled, import schedule, and a credential profile name.
-- `SyncState`: per managed Windows object, the last pushed fingerprint. This is what lets the push delete only objects NetBox created, and spot drift.
+- `SyncState`: per managed Windows object, the last pushed fingerprint. This is what lets the push delete only objects NetBox manages, and spot drift. A push records every object it creates or updates, and adopts every object it finds identical on both sides (which is how objects merged from an import branch become managed). Applying an import proposal item records it too, since NetBox and Windows then agree.
 - `SyncRun`: one row per push or import job with its result, linked to the NetBox `Job`.
 - `ImportProposal` and `ImportProposalItem`: the review queue used when branching is off.
 - `LeaseSnapshot`: optional lease cache.
@@ -77,14 +77,14 @@ sync engine  ->  client (one function per cmdlet operation)  ->  psscript (envel
 - **psscript.** Same contract: each script runs in try/catch and prints one JSON envelope `{ok, data}` or `{ok: false, error}`. User values only enter as a single-quoted JSON literal `$p` with quotes doubled; nothing from NetBox is ever interpolated into PowerShell. Same preamble, including `$PSDefaultParameterValues['*:ErrorAction']='Stop'`, and the same base64 stdin bootstrap.
 - **Not found** uses the same rules: `ObjectNotFound`, `DHCP 20005`, `20010`, `20018`, or a null result. `DHCP 20007` (scope has leases) is a real error.
 - **Normalisation** is ported as is: scope ID from start and mask, MAC canonical form, lease durations, `InActive`/`Inactive` casing, option values compared hex-or-decimal.
-- **runner.** WinRM through pypsrp with a new connection per call, as the Go code learned the hard way with NTLM. SSH through paramiko with pinned host key or known_hosts. Concurrency is capped per job (`max_concurrency`); a cap shared by all workers per server comes with push (milestone 4).
+- **runner.** WinRM through pypsrp with a new connection per call, as the Go code learned the hard way with NTLM. SSH through paramiko with pinned host key or known_hosts. Concurrency is capped per job (`max_concurrency`), and a PostgreSQL advisory lock per server lets only one import or push talk to a server at a time, across all workers. The lock is held by the database session, so the workers' database connection must not go through a transaction-pooling proxy (pgbouncer in transaction mode).
 - **New cmdlets** beyond the provider: DHCPv6 scopes, reservations and options, superscopes, option definitions, classes, policies, failover, MAC filters, server settings. These follow the same patterns and get the same fixture tests.
 
 ## 6. Push: NetBox to Windows
 
 The push is a **reconcile per server**, not a replay of the change log. For each affected server it reads the Windows state, compares it with NetBox, and applies the difference in dependency order (classes and definitions, then scopes, exclusions, reservations, options, policies, failover). It only deletes Windows objects listed in `SyncState`, so objects created by hand on Windows are left alone (they come back through import instead).
 
-**With branching.** A `post_merge` receiver reads `branch.get_merged_changes()`, keeps the `netbox_dhcp` and plugin changes, works out which servers are affected, and queues one push job per server. Because `post_merge` fires in the RQ worker after commit, nothing is pushed for an aborted merge. `post_revert` does the same, with affected IDs captured in `pre_revert`. Model `post_save` signals are ignored while branching is installed, since they also fire during merges.
+**With branching.** A `post_merge` receiver reads `branch.get_merged_changes()`, keeps the `netbox_dhcp` and plugin changes, works out which servers are affected, and queues one push job per server. Because `post_merge` fires in the RQ worker after commit, nothing is pushed for an aborted merge. `post_revert` does the same, with affected IDs captured in `pre_revert`. Model saves made inside a branch, or while a branch is merging or reverting, are ignored (the merge queues its own pushes); direct edits of main still push, as without branching.
 
 **With change control.** Nothing extra: it already refuses merges without an approved change request, so a push only ever follows an approved change.
 
@@ -93,6 +93,41 @@ The push is a **reconcile per server**, not a replay of the change log. For each
 **Always available.** A "Sync now" button and a dry-run that shows the planned changes without applying them.
 
 **Failover.** Writes go to one partner, then `Invoke-DhcpServerv4FailoverReplication` copies them to the other, as the provider's design notes describe.
+
+**How it is built (milestone 4).**
+
+- **Plan.** `sync/push.py` is pure Python. It diffs NetBox records (source) against Windows records (target) with
+  the import's diff engine, then applies the safety rules: delete only what `SyncState` lists; never delete a managed
+  object whose Windows fingerprint changed since the last push (someone edited it by hand); never delete an object
+  whose removal would take unmanaged objects with it (a scope holding a hand-made reservation, a vendor class or
+  policy option value, a value with a comma, a scope policy: `windows_state.hidden_records` and the scope's policies
+  count as children). NetBox data Windows cannot hold is reported, not pushed, and its Windows counterpart is kept:
+  duplicates (`#<pk>` keys), a scope without a pool, a reservation without a MAC or client ID, an option without a
+  value, options and definitions 1 and 51 (the mask and lease time come from the prefix and the subnet), and values
+  of codes Windows has no definition for. Class names compare without case, as on Windows. A lease time left empty in NetBox keeps the Windows one, and a reservation
+  without a name gets its IP, as Windows does, so neither shows as a change on every push.
+- **Write.** `sync/windows_writer.py` turns one change into client calls, back in Windows spelling (`InActive`,
+  `d.hh:mm:ss`, 2^32-1 for no BOOTP limit). An exclusion update is a remove and an add. Changing a scope subnet mask
+  or an option definition type or array flag is refused: Windows only allows it by removing the object with
+  everything under it. A scope with leases is never force-removed (DHCP 20007 fails that change).
+- **Run.** Changes run one at a time. A failure skips the children of an object that was not created and keeps the
+  parents of an object that was not deleted; other changes go ahead and the run ends failed with one line per
+  error. A lost connection stops the run. Fingerprints are sha256 of the record, with option numbers in decimal.
+- **Jobs.** `PushJob` and `DryRunJob` take the per-server lock shared with import. A push that finds the server busy
+  queues itself again a minute later, so a merge's push is never lost. A new push is not queued while one for the
+  same server is waiting to start (it will read the latest data anyway). `sync_enabled = False` stops pushes, not
+  dry runs.
+- **Triggers.** `signals.servers_for` maps a changed object (from its saved fields or a change log entry) to the
+  DHCP servers it affects: sys4 subnets, pools, reservations, options and definitions, our models, and the prefixes,
+  IP ranges, IP addresses and MAC addresses sys4 points at. With branching, `post_merge` reads the branch's merged
+  changes (before and after values, so moving a subnet pushes both servers); `pre_revert` captures the servers and
+  `post_revert` queues them. Other saves (`post_save`, and `pre_delete` so related rows still exist) use the object's
+  values and NetBox's pre-change snapshot, collect servers per request and queue after commit with `push_debounce`;
+  applying import items suppresses this. A queued job that never started within 15 minutes of being due counts as
+  lost and no longer blocks new pushes; a push that keeps finding its server busy gives up after two hours.
+- **Failover.** After a push to a relationship's primary, the touched scopes (all of the relationship's scopes when
+  a server-level object changed) are replicated. A push to a partner leaves the relationship's scopes to the primary.
+  Failover relationships themselves are pushed in milestone 5.
 
 ## 7. Import: Windows to NetBox
 
@@ -128,8 +163,8 @@ A scheduled job per server (and a manual button) reads the full Windows state an
 - **Deletes.** Any object linked to the server that Windows no longer has is proposed for deletion, including what
   Windows cannot hold: extra copies of an option, two subnets on one prefix, two reservations for one address, a
   reservation without an address. Those get a `#<pk>` key suffix, and the writer only follows it to an object of the
-  same server and parent. Until push exists (milestone 4), objects created in NetBox show up
-  as deletes and are dismissed by the reviewer.
+  same server and parent. Objects created in NetBox that no push has written yet (sync disabled, or a failed push)
+  show up as deletes; the reviewer dismisses them.
 - **Branch mode.** The diff is taken against the open import branch when there is one (matched on the full name, and
   never a stale one), so a repeated run only adds what changed. A new branch is created and provisioned
   synchronously in the job, with netbox-branching's `job_timeout`, only when there are differences; one that fails

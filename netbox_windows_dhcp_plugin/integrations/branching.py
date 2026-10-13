@@ -19,6 +19,26 @@ def branching_installed():
     return apps.is_installed("netbox_branching")
 
 
+def save_belongs_to_branching():
+    """
+    True when a model save is not an edit of main: it happens inside a branch (edits, imports, syncs from main), or
+    while a branch is being merged or reverted (the merge then queues its own pushes). Direct edits of main still
+    push, as without branching.
+    """
+    if not branching_installed():
+        return False
+    try:
+        from netbox_branching.choices import BranchStatusChoices
+        from netbox_branching.contextvars import active_branch
+        from netbox_branching.models import Branch
+    except ImportError:
+        return True
+    if active_branch.get() is not None:
+        return True
+    busy = (BranchStatusChoices.MERGING, BranchStatusChoices.REVERTING)
+    return Branch.objects.filter(status__in=busy).exists()
+
+
 def change_control_installed():
     return apps.is_installed("netbox_change_control")
 
@@ -32,6 +52,7 @@ def _resolver(model):
 def register():
     if not branching_installed():
         return
+    _connect_push_signals()
     try:
         from netbox_branching.utilities import register_branching_resolver
     except ImportError:
@@ -39,6 +60,73 @@ def register():
         log.warning("netbox-branching has no register_branching_resolver; Windows DHCP bookkeeping will be branched")
         return
     register_branching_resolver(_resolver)
+
+
+# -- pushes after a merge or a revert ------------------------------------------------------------------------------
+#
+# netbox-branching sends post_merge from the worker running the merge, after its transaction committed (an aborted
+# merge sends nothing, and neither does a merge with no changes). Settings and credential profiles must therefore be
+# available to netbox-worker too.
+
+# Servers touched by a branch being reverted, captured in pre_revert: once reverted, its changes no longer count as
+# merged and the objects it created are gone.
+_reverting = {}
+
+
+def _affected_servers(branch):
+    from ..signals import servers_for_change
+
+    ids = set()
+    for change in branch.get_merged_changes().select_related("changed_object_type"):
+        ids |= servers_for_change(change)
+    return ids
+
+
+def _queue(ids, user, branch):
+    from django.db import transaction
+
+    from ..signals import queue_pushes
+
+    if not ids:
+        return
+    name = branch.name
+    transaction.on_commit(lambda: queue_pushes(ids, user, branch=name), robust=True)
+
+
+def _on_merge(sender, branch, user=None, **kwargs):
+    try:
+        _queue(_affected_servers(branch), user, branch)
+    except Exception:
+        # Never break a merge that already happened; the push can be run by hand.
+        log.exception("could not queue Windows DHCP pushes after merging %s", branch)
+
+
+def _on_pre_revert(sender, branch, user=None, **kwargs):
+    # A revert that fails, or has nothing to revert, sends no post_revert: do not let those entries pile up.
+    if len(_reverting) > 50:
+        _reverting.clear()
+    try:
+        _reverting[branch.pk] = _affected_servers(branch)
+    except Exception:
+        log.exception("could not work out the Windows DHCP servers touched by %s", branch)
+
+
+def _on_revert(sender, branch, user=None, **kwargs):
+    try:
+        _queue(_reverting.pop(branch.pk, set()), user, branch)
+    except Exception:
+        log.exception("could not queue Windows DHCP pushes after reverting %s", branch)
+
+
+def _connect_push_signals():
+    try:
+        from netbox_branching.signals import post_merge, post_revert, pre_revert
+    except ImportError:
+        log.warning("netbox-branching has no merge signals; Windows DHCP will not push after merges")
+        return
+    post_merge.connect(_on_merge, dispatch_uid="netbox_windows_dhcp_plugin.push.merge")
+    pre_revert.connect(_on_pre_revert, dispatch_uid="netbox_windows_dhcp_plugin.push.pre_revert")
+    post_revert.connect(_on_revert, dispatch_uid="netbox_windows_dhcp_plugin.push.revert")
 
 
 # -- import branches -----------------------------------------------------------------------------------------------

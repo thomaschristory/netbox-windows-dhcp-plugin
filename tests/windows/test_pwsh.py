@@ -154,6 +154,9 @@ def test_scope(pw: PwshRunner) -> None:
     pw.seed = SEED_SCOPE
     got = c.get_scope("10.1.20.0")
     assert got.lease_duration == "8.00:00:00" and got.name == "Users"
+    # An empty lease duration on set keeps the scope's own (for example an unlimited lease).
+    c.set_scope(Scope(**{**got.to_dict(), "lease_duration": ""}))
+    assert "LeaseDuration" not in find_call(pw.last_calls(), "Set-DhcpServerv4Scope")
     with pytest.raises(NotFound) as ei:
         c.get_scope("10.9.9.0")  # non-terminating stub error becomes terminating via ErrorAction Stop
     assert str(ei.value).startswith("Get-DhcpServerv4Scope: Failed to get information for scope 10.9.9.0")

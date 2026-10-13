@@ -42,6 +42,28 @@ class ImportNow(_PostAction):
     color = "purple"
 
 
+class PushNow(_PostAction):
+    """Queue a push to a Windows server."""
+
+    name = "push"
+    label = _("Sync now")
+    permissions_required = {"change"}
+    url_kwargs = ["pk"]
+    icon = "mdi-database-export-outline"
+    color = "blue"
+
+
+class DryRun(_PostAction):
+    """Queue a dry run: plan a push without writing anything."""
+
+    name = "dry_run"
+    label = _("Dry run")
+    permissions_required = {"change"}
+    url_kwargs = ["pk"]
+    icon = "mdi-file-compare"
+    color = "gray"
+
+
 class ApplyProposal(_PostAction):
     """Apply every pending item of an import proposal."""
 

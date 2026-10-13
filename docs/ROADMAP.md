@@ -9,8 +9,10 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
    when change control is installed), an import proposal review queue without it. IPv4 scopes, exclusions,
    reservations, user and vendor classes, option definitions and values. A pure diff engine (`sync/diff.py`) that
    push will reuse. Scheduled by a system job from `import_interval`.
-4. Push to Windows: reconcile per server on branch merge, or after saves without branching. Dry-run and "Sync now".
-   Cap concurrent PowerShell sessions per server across all workers (a Redis lock), not only per job.
+4. **Done.** Push to Windows: a reconcile per server (`sync/push.py` plans, `sync/windows_writer.py` writes) on
+   branch merge or revert, or after saves without branching. Dry-run and "Sync now". Deletes only what sync state
+   records as managed. One import or push per server at a time across all workers (a PostgreSQL advisory lock, not
+   Redis: import already used one). Failover: replication after pushing to a primary.
 5. Remaining objects end to end: superscopes, policies (and policy-qualified option values), vendor class option
    definitions and values (they need a model of their own: sys4 allows one definition per code and server), failover,
    MAC filters, DHCPv6, live leases.

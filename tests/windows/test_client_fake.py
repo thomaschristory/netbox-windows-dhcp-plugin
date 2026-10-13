@@ -385,3 +385,22 @@ def test_client_close_delegates_to_runner() -> None:
     DhcpClient(R()).close()
     DhcpClient(object()).close()  # runners without close() are fine
     assert closed == [True]
+
+
+def test_scope_set_without_lease_keeps_it():
+    from netbox_windows_dhcp_plugin.windows.client import Scope
+
+    c = DhcpClient(FakeDhcpServer())
+    s = c.add_scope(
+        Scope(
+            name="a",
+            start_range="10.5.0.10",
+            end_range="10.5.0.20",
+            subnet_mask="255.255.255.0",
+            lease_duration="2.00:00:00",
+        )
+    )
+    s.lease_duration = ""
+    s.name = "b"
+    got = c.set_scope(s)
+    assert (got.name, got.lease_duration) == ("b", "2.00:00:00")

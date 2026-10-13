@@ -33,3 +33,24 @@ All notable changes to this project are documented here. The format follows
   `import_interval` minutes through a system job; `import_user` setting for scheduled imports. One import per server
   runs at a time.
 - `WindowsOptionDefinition` keeps the Windows data type and default value.
+- Windows class names are matched without case, in import and push alike.
+- Push to Windows: a reconcile per server that creates, updates and deletes classes, option definitions, IPv4
+  scopes, exclusion ranges, reservations and option values (server, scope, reservation and user-class qualified) so
+  Windows matches NetBox, in dependency order. Only objects recorded in sync state are deleted: objects created by
+  hand on Windows are left alone, and so are managed objects changed on Windows since the last push and objects
+  whose removal would take unmanaged ones with them (including vendor class and policy option values and scope
+  policies the push does not handle yet). Objects already identical on both sides are recorded as managed by the
+  next push, and applying an import proposal item records it straight away. NetBox data Windows cannot hold (a scope
+  without a pool, a reservation without a MAC address, options 1 and 51, values of codes Windows does not define) is
+  reported in the sync run instead of pushed. A scope subnet mask or an option definition type is never changed
+  in place (that would need a remove and re-add), and a scope with leases is never force-removed.
+- With netbox-branching, merging or reverting a branch queues a push for each Windows server it touched. Other saves
+  and deletes (all of them without branching, direct edits of main with it) queue one push per server after the
+  transaction commits, `push_debounce` seconds later; moving an object between servers pushes both. Applying an
+  import proposal queues no push.
+- "Sync now" and "Dry run" buttons, and `POST .../windows-servers/<id>/push/` and `.../dry-run/`. A dry run records
+  the planned changes in its sync run summary. `sync_enabled = False` stops pushes (dry runs still work).
+- One import or push per server runs at a time, across all workers; a push that finds its server busy tries again a
+  minute later.
+- After a push to the primary of a failover relationship, the changed scopes are replicated to the partner. Pushes
+  to a partner leave the relationship's scopes to the primary.
