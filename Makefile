@@ -7,8 +7,17 @@ PY = /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py
 test:
 	uv run pytest -v
 
+BASELINE = netbox_windows_dhcp_plugin/tests/query_counts.json
+BRANCHING_BASELINE = tests_netbox/query_counts.branching.json
+
+# The dev stack runs in branching mode, which adds queries to every page. Like CI, put the branching
+# baselines in place for the run, copy them back (so UPDATE_QUERY_COUNTS=1 refreshes the branching file),
+# then restore the standalone file.
 test-netbox:
-	$(EXEC) -e DEBUG=false netbox $(PY) test --keepdb --noinput --parallel 1 /plugin/tests_netbox
+	@cp $(BASELINE) $(BASELINE).standalone && cp $(BRANCHING_BASELINE) $(BASELINE); \
+	$(EXEC) -e DEBUG=false -e UPDATE_QUERY_COUNTS netbox $(PY) test --keepdb --noinput --parallel 1 \
+		/plugin/tests_netbox; status=$$?; \
+	cp $(BASELINE) $(BRANCHING_BASELINE); mv $(BASELINE).standalone $(BASELINE); exit $$status
 
 lint:
 	uv run ruff check .
