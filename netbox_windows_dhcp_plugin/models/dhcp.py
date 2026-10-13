@@ -319,7 +319,8 @@ class WindowsPolicy(PrimaryModel):
         super().clean()
         if self.ip_ranges and self.subnet_id is None:
             raise ValidationError({"ip_ranges": _("Only scope-level policies can have IP ranges.")})
-        if self.subnet_id is not None and self.subnet.parent_dhcp_server != self.dhcp_server:
+        # dhcp_server is required; when it is missing the form reports that, so skip the comparison here.
+        if self.subnet_id is not None and self.dhcp_server_id and self.subnet.parent_dhcp_server != self.dhcp_server:
             raise ValidationError({"subnet": _("The subnet belongs to another DHCP server.")})
         if not isinstance(self.ip_ranges, list):
             raise ValidationError({"ip_ranges": _("Must be a list of [start, end] pairs.")})
@@ -328,6 +329,8 @@ class WindowsPolicy(PrimaryModel):
                 start, end = (ipaddress.ip_address(a) for a in pair)
             except (TypeError, ValueError) as exc:
                 raise ValidationError({"ip_ranges": _("Must be a list of [start, end] pairs.")}) from exc
+            if start.version != end.version:
+                raise ValidationError({"ip_ranges": _("Start and end addresses must be of the same family.")})
             if start > end:
                 raise ValidationError({"ip_ranges": _("Range {start}-{end} is reversed.").format(start=start, end=end)})
 
