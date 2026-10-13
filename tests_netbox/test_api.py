@@ -146,3 +146,23 @@ class ReadOnlyAPITest(PluginAPIMixin, APITestCase):
         response = self.client.get("/api/plugins/windows-dhcp/import-proposals/", **self.header)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["count"], 2)
+
+
+class TestConnectionActionTest(PluginAPIMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
+        self.server = windows_server(dhcp_servers(1)[0])
+        self.url = f"/api/plugins/windows-dhcp/windows-servers/{self.server.pk}/test-connection/"
+
+    def test_change_permission_is_enough(self):
+        # POST normally means "add"; running a test only needs change on the server.
+        self.add_permissions(
+            "netbox_windows_dhcp_plugin.view_windowsserver", "netbox_windows_dhcp_plugin.change_windowsserver"
+        )
+        response = self.client.post(self.url, {}, format="json", **self.header)
+        self.assertEqual(response.status_code, 202)
+
+    def test_view_only_is_refused(self):
+        self.add_permissions("netbox_windows_dhcp_plugin.view_windowsserver")
+        response = self.client.post(self.url, {}, format="json", **self.header)
+        self.assertEqual(response.status_code, 404)
