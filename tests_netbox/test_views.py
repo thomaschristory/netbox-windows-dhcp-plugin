@@ -1,6 +1,6 @@
-from utilities.testing import ViewTestCases
+from utilities.testing import TestCase, ViewTestCases
 
-from netbox_windows_dhcp_plugin.models import ExclusionRange, MacFilter, WindowsServer
+from netbox_windows_dhcp_plugin.models import ExclusionRange, ImportProposal, MacFilter, WindowsServer
 
 from .fixtures import PluginViewMixin, dhcp_servers, subnets, windows_server
 
@@ -77,3 +77,14 @@ class MacFilterViewTest(PluginViewMixin, ViewTestCases.PrimaryObjectViewTestCase
         ids = list(MacFilter.objects.values_list("pk", flat=True))
         cls.csv_update_data = ("id,description", *(f"{pk},updated" for pk in ids))
         cls.bulk_edit_data = {"list": "deny"}
+
+
+class ImportProposalListViewTest(TestCase):
+    def test_list_is_ordered(self):
+        server = windows_server(dhcp_servers(1)[0])
+        ImportProposal.objects.create(windows_server=server)
+        ImportProposal.objects.create(windows_server=server)
+        self.add_permissions("netbox_windows_dhcp_plugin.view_importproposal")
+        response = self.client.get("/plugins/windows-dhcp/importproposals/")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["table"].data.data.ordered)

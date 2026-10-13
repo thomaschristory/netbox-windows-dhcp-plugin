@@ -48,9 +48,11 @@ FailoverRelationshipViewSet = _viewset(
 )
 MacFilterViewSet = _viewset(models.MacFilter, models.MacFilter.objects.select_related("dhcp_server"))
 SyncRunViewSet = _viewset(models.SyncRun, models.SyncRun.objects.all(), base=NetBoxReadOnlyModelViewSet)
+# The item count is an aggregate, and Django drops Meta.ordering on aggregate queries, so order explicitly
+# (the API paginator rejects an unordered queryset).
 ImportProposalViewSet = _viewset(
     models.ImportProposal,
-    models.ImportProposal.objects.annotate(item_count=Count("items")),
+    models.ImportProposal.objects.annotate(item_count=Count("items")).order_by("-created"),
     base=NetBoxReadOnlyModelViewSet,
 )
 ImportProposalItemViewSet = _viewset(

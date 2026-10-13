@@ -1,7 +1,14 @@
 from utilities.testing import APITestCase, APIViewTestCases
 
 from netbox_windows_dhcp_plugin.choices import ClassTypeChoices, MacFilterListChoices
-from netbox_windows_dhcp_plugin.models import ExclusionRange, MacFilter, WindowsClass, WindowsScope, WindowsServer
+from netbox_windows_dhcp_plugin.models import (
+    ExclusionRange,
+    ImportProposal,
+    MacFilter,
+    WindowsClass,
+    WindowsScope,
+    WindowsServer,
+)
 
 from .fixtures import PluginAPIMixin, dhcp_servers, subnets, windows_server
 
@@ -128,3 +135,14 @@ class ReadOnlyAPITest(PluginAPIMixin, APITestCase):
         self.add_permissions("netbox_windows_dhcp_plugin.add_syncrun")
         response = self.client.post("/api/plugins/windows-dhcp/sync-runs/", {}, format="json", **self.header)
         self.assertEqual(response.status_code, 405)
+
+    def test_import_proposals_list(self):
+        # The list annotates an item count; an aggregate drops the model's default ordering, which the
+        # paginator refuses.
+        server = windows_server(dhcp_servers(1)[0])
+        ImportProposal.objects.create(windows_server=server)
+        ImportProposal.objects.create(windows_server=server)
+        self.add_permissions("netbox_windows_dhcp_plugin.view_importproposal")
+        response = self.client.get("/api/plugins/windows-dhcp/import-proposals/", **self.header)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 2)
