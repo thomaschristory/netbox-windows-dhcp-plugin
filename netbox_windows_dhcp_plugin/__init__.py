@@ -25,6 +25,7 @@ if PluginConfig is not None:
             super().ready()
             import logging
 
+            from . import jobs  # noqa: F401 - registers the import scheduler system job
             from .conf import profiles_without_allowed_hosts
             from .integrations import branching
 

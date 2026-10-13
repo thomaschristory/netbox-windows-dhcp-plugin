@@ -1,0 +1,6 @@
+<form action="{{ url }}" method="post" class="d-inline">
+  {% csrf_token %}
+  <button type="submit" class="btn btn-{{ color }}">
+    <i class="mdi {{ icon }}" aria-hidden="true"></i> {{ label }}
+  </button>
+</form>

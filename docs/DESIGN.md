@@ -104,6 +104,50 @@ A scheduled job per server (and a manual button) reads the full Windows state an
 
 **Repeated runs.** If an open import branch or proposal already exists for a server, the job updates it instead of opening another.
 
+**How it is built (milestone 3).**
+
+- **Diff engine.** `sync/diff.py` is pure Python. Both sides become records (kind, Windows key, flat fields) and the
+  engine returns create, update and delete changes in dependency order: classes, option definitions, scopes,
+  exclusions, reservations, options; deletes in reverse. It does not know which side is Windows, so push reuses it.
+  `sync/windows_state.py` (pure) and `sync/netbox_state.py` (Django) produce the records; `sync/mapping.py` writes a
+  change into NetBox, one object at a time, with `snapshot()` before each update or delete.
+- **What is imported.** IPv4 scopes, exclusion ranges, reservations, user and vendor classes, option definitions and
+  option values at server, scope and reservation level, including user class qualifiers. Skipped and logged until
+  milestone 5: superscopes, policy-qualified values, and vendor class option definitions and values (sys4 allows one
+  `OptionDefinition` per code and server, and Windows ships several vendor classes defining the same codes, so they
+  need their own model). Option values containing a comma or surrounding spaces are skipped too: sys4 stores a list
+  as one comma-separated string, so they would never compare equal again.
+- **Mapping details.** The Windows scope or reservation name goes in `description`, the Windows description in
+  `comments`. Options 1 (subnet mask) and 51 (lease time) are not imported as options, since the prefix and
+  `valid_lifetime` already hold them. Windows definitions of codes sys4 defines itself are left to sys4; others become
+  server-scoped `OptionDefinition`s, with the exact Windows type and default value on `WindowsOptionDefinition`.
+  Existing prefixes, IP ranges, IP addresses and MAC addresses in the import VRF are reused, so failover partners
+  share one IP range, which moves when the scope range changes. Text going into 200-character description fields is
+  cut on the Windows side too, so both sides compare equal. Text option values compare exactly; numbers compare
+  equal in hex or decimal. "No BOOTP limit" (2^32-1) is stored as empty.
+- **Deletes.** Any object linked to the server that Windows no longer has is proposed for deletion, including what
+  Windows cannot hold: extra copies of an option, two subnets on one prefix, two reservations for one address, a
+  reservation without an address. Those get a `#<pk>` key suffix, and the writer only follows it to an object of the
+  same server and parent. Until push exists (milestone 4), objects created in NetBox show up
+  as deletes and are dismissed by the reviewer.
+- **Branch mode.** The diff is taken against the open import branch when there is one (matched on the full name, and
+  never a stale one), so a repeated run only adds what changed. A new branch is created and provisioned
+  synchronously in the job, with netbox-branching's `job_timeout`, only when there are differences; one that fails
+  to provision is deleted, and `max_working_branches` refusals fail the run. New subnets get IDs above those in main
+  and every open import branch, under a lock, so two import branches never merge the same `subnet_id`. The change
+  request is created and submitted for review; if that fails, the branch is still recorded on the sync run.
+  Branch writes need a real user (NetBox's change log records one).
+- **Proposal mode.** A repeated run replaces pending and failed items. A dismissal holds, across proposals, while
+  Windows proposes exactly the same values; a run with nothing new to review opens no proposal. Applying checks the
+  object still matches the item's "before" values and fails the item otherwise. Every object an apply writes
+  (prefixes and addresses included) is checked against the reviewer's permissions and constraints, and a refusal
+  rolls the item back.
+- **Who imports.** Manual imports run as the user who asked, who needs change on the server, plus add on branches
+  and change requests when those are installed. Scheduled imports, queued every minute by a system job for servers
+  whose `import_interval` has passed, run as the `import_user` setting; with branching they fail without it.
+- **One at a time.** A PostgreSQL advisory lock allows one import per server across all workers, and an import is
+  not queued while another is queued or running (jobs older than two hours count as abandoned).
+
 ## 8. UI and API
 
 - Tabs on sys4 server and subnet pages: connection status, last sync, drift, live leases.

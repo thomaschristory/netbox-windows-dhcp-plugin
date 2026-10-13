@@ -169,6 +169,8 @@ class ImportProposalItem(NetBoxModel):
         related_name="items",
         verbose_name=_("proposal"),
     )
+    # Dependency order from the diff engine (parents before children), so bulk apply can follow it.
+    sequence = models.PositiveIntegerField(verbose_name=_("sequence"), default=0)
     action = models.CharField(verbose_name=_("action"), max_length=10, choices=ProposalItemActionChoices)
     status = models.CharField(
         verbose_name=_("status"),
@@ -193,7 +195,7 @@ class ImportProposalItem(NetBoxModel):
     error = models.TextField(verbose_name=_("error"), blank=True)
 
     class Meta:
-        ordering = ("proposal", "kind", "key")
+        ordering = ("proposal", "sequence", "pk")
         verbose_name = _("import proposal item")
         verbose_name_plural = _("import proposal items")
 

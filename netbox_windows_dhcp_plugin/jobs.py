@@ -1,10 +1,16 @@
+from contextlib import contextmanager
+from datetime import timedelta
+
 from core.exceptions import JobFailed
+from django.core.exceptions import ValidationError
+from django.db import connection
 from django.utils import timezone
-from netbox.jobs import JobRunner
+from netbox.jobs import JobRunner, system_job
 
 from .choices import SyncKindChoices, SyncStatusChoices
-from .conf import CredentialError
+from .conf import CredentialError, get_setting
 from .connection import build_client
+from .integrations.branching import job_kwargs as branching_job_kwargs
 from .models import SyncRun
 from .windows.psscript import WindowsLayerError
 
@@ -54,3 +60,168 @@ class TestConnectionJob(JobRunner):
             sync_run.save()
         if sync_run.status == SyncStatusChoices.FAILED:
             raise JobFailed(sync_run.error)
+
+
+class ImportJob(JobRunner):
+    """Read a Windows server and bring its differences into NetBox: an import branch, or an import proposal."""
+
+    class Meta:
+        name = "Windows DHCP import"
+
+    # Tests substitute a fake runner here.
+    runner_factory = None
+
+    def run(self, *args, **kwargs):
+        from .integrations import branching
+        from .sync import importer, windows_state
+
+        server = self.job.object
+        sync_run = SyncRun.objects.create(
+            windows_server=server,
+            kind=SyncKindChoices.IMPORT,
+            status=SyncStatusChoices.RUNNING,
+            job=self.job,
+            started=timezone.now(),
+        )
+        runner = self.runner_factory(server) if self.runner_factory else None
+        client = None
+
+        def record_branch(branch):
+            # Saved straight away, so the run points at the branch even if a later step fails.
+            sync_run.branch_name = branch.name
+            sync_run.save()
+
+        try:
+            with import_lock(server):
+                client = build_client(server, runner=runner)
+                state = windows_state.read(client)
+                client.close()
+                client = None
+                if branching.branching_installed():
+                    user = self.job.user or _import_user()
+                    result = importer.import_to_branch(server, state, user, logger=self.logger, on_branch=record_branch)
+                else:
+                    result = importer.import_to_proposal(server, state, sync_run)
+        except (CredentialError, WindowsLayerError, ValueError, ImportBusy, branching.BranchError) as exc:
+            sync_run.status = SyncStatusChoices.FAILED
+            sync_run.error = str(exc)
+            self.logger.error(f"Import from {server.host} failed: {exc}")
+        except ValidationError as exc:
+            # For example netbox-branching refusing a new branch once max_working_branches is reached.
+            sync_run.status = SyncStatusChoices.FAILED
+            sync_run.error = "; ".join(exc.messages)
+            self.logger.error(f"Import from {server.host} failed: {sync_run.error}")
+        else:
+            sync_run.summary = result.summary()
+            if result.branch is not None:
+                sync_run.branch_name = result.branch.name
+            for note in result.notes:
+                self.logger.info(note)
+            if result.failed:
+                sync_run.status = SyncStatusChoices.FAILED
+                sync_run.error = "\n".join(result.failed)
+            else:
+                sync_run.status = SyncStatusChoices.COMPLETED
+            self.logger.info(f"Import from {server.host}: {len(result.changes)} difference(s)")
+        finally:
+            if sync_run.status == SyncStatusChoices.RUNNING:
+                sync_run.status = SyncStatusChoices.FAILED
+                sync_run.error = "unexpected error, see the job log"
+            if client is not None:
+                client.close()
+            sync_run.completed = timezone.now()
+            sync_run.save()
+        if sync_run.status == SyncStatusChoices.FAILED:
+            raise JobFailed(sync_run.error)
+
+
+class ImportBusy(Exception):
+    pass
+
+
+# Two numbers identify a PostgreSQL advisory lock: this plugin's, and the server's primary key.
+_LOCK_CLASS = 0x57444843  # "WDHC"
+
+
+@contextmanager
+def import_lock(server):
+    """
+    Allow one import per server at a time, across all workers: two at once would open two branches or proposals.
+    A session lock, so it holds across the many transactions an import runs, and is released even if the job dies.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_try_advisory_lock(%s, %s)", [_LOCK_CLASS, server.pk])
+        if not cursor.fetchone()[0]:
+            raise ImportBusy(f"another import from {server} is running")
+    try:
+        yield
+    finally:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_unlock(%s, %s)", [_LOCK_CLASS, server.pk])
+
+
+def enqueue_import(server, user):
+    """Queue an import unless one is already queued or running for the server. Returns the job, or None."""
+    if _busy_jobs().filter(object_id=server.pk).exists():
+        return None
+    return ImportJob.enqueue(instance=server, user=user, **branching_job_kwargs())
+
+
+def _import_user():
+    """The user scheduled imports run as (the import_user setting), or None."""
+    from django.contrib.auth import get_user_model
+
+    username = get_setting("import_user")
+    if not username:
+        return None
+    return get_user_model().objects.filter(username=username, is_active=True).first()
+
+
+@system_job(interval=1)
+class ScheduleImportsJob(JobRunner):
+    """Every minute, queue an import for each server whose import interval has passed."""
+
+    class Meta:
+        name = "Windows DHCP import scheduler"
+
+    def run(self, *args, **kwargs):
+        user = _import_user()
+        for server in due_servers():
+            enqueue_import(server, user)
+            self.logger.info(f"Queued an import for {server}")
+
+
+# A job still "running" after this long was abandoned (for example its worker was killed), so it no longer counts as
+# busy. Longer than netbox-branching's default job timeout, which an import can use for provisioning.
+ABANDONED_JOB = timedelta(hours=2)
+
+
+def _busy_jobs(now=None):
+    """Import jobs queued or running, ignoring ones abandoned long ago."""
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    from .models import WindowsServer
+
+    now = now or timezone.now()
+    return Job.objects.filter(
+        object_type=ContentType.objects.get_for_model(WindowsServer),
+        name=ImportJob.name,
+        status__in=JobStatusChoices.ENQUEUED_STATE_CHOICES,
+        created__gte=now - ABANDONED_JOB,
+    )
+
+
+def due_servers(now=None):
+    """Servers with an import interval whose last import started at least that long ago, and none queued."""
+    from .models import WindowsServer
+
+    now = now or timezone.now()
+    busy = set(_busy_jobs(now).values_list("object_id", flat=True))
+    for server in WindowsServer.objects.filter(import_interval__isnull=False).exclude(import_interval=0):
+        if server.pk in busy:
+            continue
+        last = server.sync_runs.filter(kind=SyncKindChoices.IMPORT).order_by("-created").first()
+        if last is None or last.created <= now - timedelta(minutes=server.import_interval):
+            yield server

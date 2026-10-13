@@ -237,6 +237,20 @@ class WindowsOptionDefinition(NetBoxModel):
         limit_choices_to={"class_type": ClassTypeChoices.VENDOR},
         verbose_name=_("vendor class"),
     )
+    # netbox-plugin-dhcp has fewer data types than Windows (BinaryData and EncapsulatedData are both "binary"), so
+    # keep the Windows type to push back exactly what was imported.
+    windows_type = models.CharField(
+        verbose_name=_("Windows type"),
+        max_length=50,
+        blank=True,
+        help_text=_("Windows data type, for example DWord or EncapsulatedData"),
+    )
+    default_value = models.JSONField(
+        verbose_name=_("default value"),
+        default=list,
+        blank=True,
+        help_text=_("Default value list, as Windows stores it"),
+    )
 
     class Meta:
         ordering = ("option_definition",)
