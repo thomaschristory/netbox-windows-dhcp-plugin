@@ -120,7 +120,7 @@ A scheduled job per server (and a manual button) reads the full Windows state an
 
 ## 10. Repo setup
 
-Matches `netbox-ipam-treeview-plugin` and `netbox-opentelemetry-plugin`: hatchling `pyproject.toml` with uv, ruff (line length 120), `Makefile` (test, test-netbox, lint, format, dev, seed, dist), `dev/` docker compose stack with seed scripts, `tests/` and `tests_netbox/`, `ci.yml` and `release.yml` with SHA-pinned actions, grouped weekly Dependabot, issue and PR templates, CODEOWNERS, CHANGELOG, Apache-2.0, `CLAUDE.md` conventions and `docs/`. The dev stack includes branching and change control so both modes are tested.
+Matches `netbox-ipam-treeview-plugin` and `netbox-opentelemetry-plugin`: hatchling `pyproject.toml` with uv, ruff (line length 120), `Makefile` (test, test-netbox, lint, format, dev, seed, dist), `dev/` docker compose stack with seed scripts, `tests/` and `tests_netbox/`, `ci.yml` and `release.yml` with SHA-pinned actions, grouped weekly Dependabot, issue and PR templates, CODEOWNERS, CHANGELOG, Apache-2.0 and `docs/`. The dev stack includes branching and change control so both modes are tested.
 
 ## 11. Milestones
 
