@@ -3,7 +3,7 @@ from django.db.models import Count
 from netbox.api.authentication import TokenWritePermission
 from netbox.api.viewsets import NetBoxModelViewSet, NetBoxReadOnlyModelViewSet
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from .. import filtersets, models, review
@@ -46,10 +46,17 @@ class WindowsServerViewSet(_viewset(models.WindowsServer, models.WindowsServer.o
 
     @action(detail=True, methods=["post"], url_path="import")
     def run_import(self, request, pk):
-        """Queue an import from the server and return the job."""
-        from ..jobs import ImportJob
+        """Queue an import from the server and return the job (409 if one is already queued or running)."""
+        from ..integrations import branching
+        from ..jobs import enqueue_import
 
-        job = ImportJob.enqueue(instance=self._changeable_server(request), user=request.user)
+        server = self._changeable_server(request)
+        missing = branching.missing_import_permissions(request.user)
+        if missing:
+            raise PermissionDenied(f"importing needs the permission: {', '.join(missing)}")
+        job = enqueue_import(server, request.user)
+        if job is None:
+            return Response({"detail": "an import from this server is already queued or running"}, status=409)
         return Response(JobSerializer(job, context={"request": request}).data, status=202)
 
 

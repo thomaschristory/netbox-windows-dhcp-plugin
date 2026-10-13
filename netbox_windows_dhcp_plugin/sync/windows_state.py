@@ -29,6 +29,21 @@ __all__ = ("SKIPPED_OPTION_IDS", "OptionValue", "WindowsState", "equal", "option
 # Subnet.valid_lifetime, so importing them as options would store the same setting twice.
 SKIPPED_OPTION_IDS = frozenset({1, 51})
 
+# PrimaryModel.description holds 200 characters.
+DESCRIPTION_LENGTH = 200
+
+# Reasons a Windows object is not imported (yet), as they appear in the job log.
+POLICY_VALUES = "policy option value(s): policies come in a later release"
+VENDOR_DEFINITIONS = (
+    "vendor class option definition(s): netbox-plugin-dhcp allows one definition per option code and server, "
+    "so they come in a later release"
+)
+VENDOR_VALUES = "vendor class option value(s): they need vendor class option definitions, which come in a later release"
+UNSTORABLE_VALUES = (
+    "option value(s) containing a comma or surrounding spaces: netbox-plugin-dhcp stores option values as one "
+    "comma-separated string"
+)
+
 # Windows reports "no BOOTP client limit" as 2^32-1, which does not fit a database integer field. NetBox stores it as
 # empty instead.
 NO_BOOTP_LIMIT = 0xFFFFFFFF
@@ -91,7 +106,7 @@ def _scope(s: Scope) -> Record:
         "scope",
         s.scope_id,
         {
-            "name": s.name,
+            "name": _text(s.name),
             "description": s.description or "",
             "start_range": s.start_range,
             "end_range": s.end_range,
@@ -113,6 +128,19 @@ def _client_id(value: str) -> str:
         return value
 
 
+def _text(value: str | None) -> str:
+    """Text that NetBox keeps in a 200-character description field, cut the same way on both sides."""
+    return (value or "")[:DESCRIPTION_LENGTH]
+
+
+def _storable(values: list[str]) -> bool:
+    """
+    netbox-plugin-dhcp keeps a list of option values as one comma-separated string, so a value that contains a comma
+    or starts or ends with a space would come back different and be proposed again on every import.
+    """
+    return all("," not in v and v == v.strip() for v in values)
+
+
 def to_records(
     state: WindowsState,
     standard_codes: Iterable[int] = (),
@@ -127,7 +155,10 @@ def to_records(
     standard = set(standard_codes)
     skipped = set(skipped_option_ids)
     records: list[Record] = []
-    notes: list[str] = []
+    skips: dict[str, int] = {}
+
+    def skip(reason: str) -> None:
+        skips[reason] = skips.get(reason, 0) + 1
 
     for c in state.classes:
         kind = c.type.lower()
@@ -135,26 +166,28 @@ def to_records(
             Record(
                 "class",
                 f"{kind}/{c.name}",
-                {"name": c.name, "class_type": kind, "data": c.data, "description": c.description or ""},
+                {"name": c.name, "class_type": kind, "data": c.data, "description": _text(c.description)},
             )
         )
 
     for d in state.option_definitions:
-        if not d.vendor_class and (d.option_id in standard or d.option_id in skipped):
+        if d.vendor_class:
+            skip(VENDOR_DEFINITIONS)
             continue
-        key = f"{d.vendor_class}/{d.option_id}" if d.vendor_class else str(d.option_id)
+        if d.option_id in standard or d.option_id in skipped:
+            continue
         records.append(
             Record(
                 "optiondef",
-                key,
+                str(d.option_id),
                 {
                     "option_id": d.option_id,
                     "name": d.name,
                     "type": d.type,
                     "multi_valued": bool(d.multi_valued),
                     "default_value": list(d.default_value),
-                    "description": d.description or "",
-                    "vendor_class": d.vendor_class,
+                    "description": _text(d.description),
+                    "vendor_class": "",
                 },
             )
         )
@@ -179,41 +212,58 @@ def to_records(
                     "scope_id": r.scope_id,
                     "ip_address": r.ip_address,
                     "client_id": _client_id(r.client_id),
-                    "name": r.name,
+                    "name": _text(r.name),
                     "description": r.description or "",
                     "reservation_type": r.type.lower(),
                 },
             )
         )
 
-    policy_values = 0
     for o in state.options:
+        values = [str(v) for v in o.value]
         if o.policy_name:
-            policy_values += 1
+            skip(POLICY_VALUES)
             continue
-        if o.option_id in skipped and not o.vendor_class:
+        if o.vendor_class:
+            skip(VENDOR_VALUES)
+            continue
+        if o.option_id in skipped:
+            continue
+        if not _storable(values):
+            skip(UNSTORABLE_VALUES)
             continue
         parent = f"{o.scope_id}/{o.reserved_ip}" if o.reserved_ip else o.scope_id or "server"
         records.append(
             Record(
                 "option",
-                option_key(parent, o.option_id, o.vendor_class, o.user_class),
+                option_key(parent, o.option_id, "", o.user_class),
                 {
                     "parent": parent,
                     "option_id": o.option_id,
-                    "value": [str(v) for v in o.value],
-                    "vendor_class": o.vendor_class,
+                    "value": values,
+                    "vendor_class": "",
                     "user_class": o.user_class,
                 },
             )
         )
-    if policy_values:
-        notes.append(f"skipped {policy_values} policy option value(s): policies come in a later release")
+    notes = [f"skipped {count} {reason}" for reason, count in skips.items()]
     return records, notes
 
 
+def _number(value: str) -> int | None:
+    try:
+        return normalize.parse_option_number(value)
+    except ValueError:
+        return None
+
+
 def equal(kind: str, name: str, a: Any, b: Any) -> bool:
-    """Field comparison for ``diff``: option values match when they are the same number in hex or decimal."""
+    """
+    Field comparison for ``diff``. Option values match when they are equal, or the same number written in hex or
+    decimal (Windows prints 0x0A, NetBox may hold 10). Text is compared exactly: a changed boot file name is a change.
+    """
     if name in ("value", "default_value") and isinstance(a, list) and isinstance(b, list):
-        return normalize.option_values_equivalent(a, b)
+        if len(a) != len(b):
+            return False
+        return all(x == y or (_number(x) is not None and _number(x) == _number(y)) for x, y in zip(a, b, strict=True))
     return a == b

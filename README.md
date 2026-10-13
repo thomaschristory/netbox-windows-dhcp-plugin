@@ -15,7 +15,7 @@ A NetBox plugin that keeps Microsoft Windows DHCP servers in step with the data 
   user and vendor classes, option definitions and qualifiers, policies, failover relationships and MAC filters.
 - A "Test connection" button and API action that runs a background job against the server.
 - Import from Windows (IPv4 scopes, exclusions, reservations, user and vendor classes, option definitions and option
-  values), on demand ("Import now" button and API action) or every `import_interval` minutes. With netbox-branching
+  values; vendor class options and policies later), on demand ("Import now" button and API action) or every `import_interval` minutes. With netbox-branching
   each import lands in a branch named `dhcp-import/<server>/<timestamp>` (plus a change request when change control
   is installed); without it, in an import proposal where each difference is applied or dismissed.
 - Full REST API and GraphQL for every model.
@@ -102,7 +102,7 @@ control and capture the credentials; NetBox logs a warning at startup for each s
 | `reservation_name_template` | `{server}/{scope_id}/{ip_address}` | Name of imported reservations |
 | `import_branch_prefix` | `dhcp-import` | Prefix of import branches |
 | `import_change_request` | `True` | Open a change request per import branch when change control is installed |
-| `import_user` | `None` | Username scheduled imports run as: owns import branches and requests their change requests |
+| `import_user` | `None` | Username scheduled imports run as (required for scheduled imports with branching) |
 | `push_debounce` | `10` | Seconds to group saves into one push (without branching) |
 | `max_concurrency` | `4` | PowerShell commands one job runs at once against a server |
 | `command_timeout` | `120` | Seconds before a PowerShell command is abandoned |

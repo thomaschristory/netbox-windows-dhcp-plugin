@@ -3,6 +3,7 @@ from datetime import timedelta
 from unittest import mock, skipUnless
 
 from core.choices import JobStatusChoices
+from core.exceptions import JobFailed
 from core.models import Job
 from dcim.models import MACAddress
 from django.apps import apps
@@ -10,7 +11,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from ipam.models import IPAddress, IPRange, Prefix
-from netbox_dhcp.models import HostReservation, Option, OptionDefinition, Pool, Subnet
+from netbox_dhcp.models import DHCPServer, HostReservation, Option, OptionDefinition, Pool, Subnet
 
 from netbox_windows_dhcp_plugin.choices import (
     ProposalItemStatusChoices,
@@ -110,8 +111,8 @@ class ProposalImportTest(ImportTestMixin, TestCase):
         kinds = sorted(result.proposal.items.values_list("kind", flat=True))
         self.assertEqual(
             kinds,
-            ["class", "class", "exclusion", "option", "option", "option", "option", "option", "option"]
-            + ["optiondef", "optiondef", "reservation", "scope"],
+            ["class", "class", "exclusion", "option", "option", "option", "option", "option"]
+            + ["optiondef", "reservation", "scope"],
         )
         self.assertTrue(all(i.action == "create" for i in result.proposal.items.all()))
         # Proposing writes nothing but the queue.
@@ -149,8 +150,9 @@ class ProposalImportTest(ImportTestMixin, TestCase):
 
         custom = OptionDefinition.objects.get(code=224, dhcp_server=self.dhcp)
         self.assertFalse(custom.standard)
-        vendor_def = WindowsOptionDefinition.objects.get(vendor_class__name="MSFT")
-        self.assertEqual(vendor_def.windows_type, "DWord")
+        self.assertEqual(WindowsOptionDefinition.objects.get().windows_type, "String")
+        # Vendor class definitions and values wait for a later release.
+        self.assertFalse(OptionDefinition.objects.filter(code=2, dhcp_server=self.dhcp).exists())
         self.assertEqual(WindowsClass.objects.count(), 2)
 
         server_dns = Option.objects.get(definition__code=6, assigned_object_id=self.dhcp.pk, definition__standard=True)
@@ -219,6 +221,42 @@ class ProposalImportTest(ImportTestMixin, TestCase):
             WindowsOptionQualifier.objects.get(user_class__name=f"evil#{victim.pk}").option.data, "10.6.6.6"
         )
         self.assertEqual(self.changes(), [])
+
+    def test_dismissals_survive_the_proposal_closing(self):
+        self.apply_all()
+        self.client.remove_reservation("10.1.0.50")
+        proposal = self.propose().proposal
+        importer.dismiss_items(list(proposal.items.all()))
+        proposal.refresh_from_db()
+        self.assertEqual(proposal.status, ProposalStatusChoices.DISMISSED)
+        # The next run finds the same difference: nothing new to review, so no new proposal.
+        self.assertIsNone(self.propose().proposal)
+        self.assertEqual(ImportProposal.objects.filter(status=ProposalStatusChoices.OPEN).count(), 0)
+
+    def test_netbox_duplicates_do_not_break_the_import(self):
+        self.apply_all()
+        subnet = Subnet.objects.get()
+        extra = Subnet.objects.create(name="dup", dhcp_server=self.dhcp, prefix=subnet.prefix)
+        no_ip = HostReservation.objects.create(name="no-ip", subnet=subnet)
+        changes = {(c.action, c.key) for c in self.changes()}
+        self.assertEqual(changes, {("delete", f"10.1.0.0#{extra.pk}"), ("delete", f"10.1.0.0/#{no_ip.pk}")})
+        self.apply_all()
+        self.assertFalse(Subnet.objects.filter(pk=extra.pk).exists())
+        self.assertFalse(HostReservation.objects.filter(pk=no_ip.pk).exists())
+        self.assertTrue(Subnet.objects.filter(pk=subnet.pk).exists())
+        self.assertEqual(self.changes(), [])
+
+    def test_failover_partners_share_and_move_one_ip_range(self):
+        self.apply_all()
+        partner = windows_server(dhcp_servers(1, start=2)[0])
+        state = windows_state.read(DhcpClient(self.fake))
+        result = importer.import_to_proposal(partner, state, None)
+        importer.apply_items(result.proposal.items.all())
+        self.assertEqual(IPRange.objects.count(), 1)
+        self.client.set_scope(Scope(scope_id="10.1.0.0", name="LAN", start_range="10.1.0.10", end_range="10.1.0.99"))
+        self.apply_all()
+        self.assertEqual(IPRange.objects.count(), 1)
+        self.assertEqual(str(IPRange.objects.get().end_address), "10.1.0.99/24")
 
     def test_rerun_replaces_pending_items_and_keeps_one_proposal(self):
         first = self.propose().proposal
@@ -306,12 +344,35 @@ class ImportJobTest(ImportTestMixin, TestCase):
         run = self._run()
         self.assertEqual(run.kind, SyncKindChoices.IMPORT)
         self.assertEqual(run.status, SyncStatusChoices.COMPLETED)
-        self.assertEqual(run.summary["create"], 13)
+        self.assertEqual(run.summary["create"], 11)
+        self.assertEqual(len(run.summary["notes"]), 2)  # vendor class definitions and values skipped
         self.assertEqual(ImportProposal.objects.get().sync_run, run)
 
-    def test_windows_errors_fail_the_run(self):
-        from core.exceptions import JobFailed
+    def test_one_import_per_server_at_a_time(self):
+        from django.db import connection
 
+        from netbox_windows_dhcp_plugin.jobs import _LOCK_CLASS
+
+        # Another worker. Advisory locks belong to a database session (one session may take its own lock twice),
+        # so hold it from a second connection.
+        other = connection.copy()
+        try:
+            with other.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", [_LOCK_CLASS, self.server.pk])
+            with self.assertRaises(JobFailed):
+                self._run()
+        finally:
+            other.close()
+        self.assertIn("another import", SyncRun.objects.get().error)
+        self.assertEqual(self._run().status, SyncStatusChoices.COMPLETED)
+
+    def test_duplicate_imports_are_not_queued(self):
+        from netbox_windows_dhcp_plugin.jobs import enqueue_import
+
+        self.assertIsNotNone(enqueue_import(self.server, None))
+        self.assertIsNone(enqueue_import(self.server, None))
+
+    def test_windows_errors_fail_the_run(self):
         from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
         self.fake.fail = lambda op, params: PSError(message="Access is denied", category="PermissionDenied")
@@ -339,6 +400,13 @@ class ScheduleTest(TestCase):
             object=self.server, name=ImportJob.name, status=JobStatusChoices.STATUS_PENDING, job_id=uuid.uuid4()
         )
         self.assertEqual(list(due_servers()), [])
+
+    def test_abandoned_jobs_do_not_block_the_schedule(self):
+        job = Job.objects.create(
+            object=self.server, name=ImportJob.name, status=JobStatusChoices.STATUS_RUNNING, job_id=uuid.uuid4()
+        )
+        Job.objects.filter(pk=job.pk).update(created=timezone.now() - timedelta(hours=3))
+        self.assertEqual(list(due_servers()), [self.server])
 
     def test_servers_without_interval_are_ignored(self):
         self.server.import_interval = None
@@ -386,6 +454,31 @@ class BranchImportTest(ImportTestMixin, TransactionTestCase):
         )
         third = importer.import_to_branch(self.server, self.state(), self.user)
         self.assertEqual(third.changes, [])
+
+    def test_branch_import_needs_a_user(self):
+        from netbox_windows_dhcp_plugin.integrations.branching import BranchError
+
+        with self.assertRaises(BranchError):
+            importer.import_to_branch(self.server, self.state(), None)
+
+    def test_branches_of_other_servers_are_not_reused(self):
+        # "dhcp1" must not pick up the branch of a server whose name starts with "dhcp1/".
+        other = windows_server(DHCPServer.objects.create(name="dhcp1/east"))
+        first = importer.import_to_branch(other, self.state(), self.user)
+        mine = importer.import_to_branch(self.server, self.state(), self.user)
+        self.assertNotEqual(first.branch.pk, mine.branch.pk)
+
+    def test_import_branches_get_distinct_subnet_ids(self):
+        from netbox_branching.utilities import activate_branch
+
+        other = windows_server(dhcp_servers(1, start=2)[0])
+        first = importer.import_to_branch(self.server, self.state(), self.user)
+        second = importer.import_to_branch(other, self.state(), self.user)
+        ids = []
+        for result in (first, second):
+            with activate_branch(result.branch):
+                ids += list(Subnet.objects.values_list("subnet_id", flat=True))
+        self.assertEqual(len(ids), len(set(ids)))
 
     def test_no_differences_create_no_branch(self):
         from netbox_branching.models import Branch

@@ -37,16 +37,27 @@ class ApplyError(Exception):
     """A change that cannot be written, with a message for the person reviewing the import."""
 
 
+def _duplicate_pk(key):
+    """
+    The primary key in a ``...#<pk>`` key that netbox_state gives extra copies of a scope, exclusion or reservation.
+    These keys are built from addresses only, so a "#" cannot come from Windows text.
+    """
+    match = re.search(r"#(\d+)$", key)
+    return int(match.group(1)) if match else None
+
+
 class Writer:
     """Applies changes for one Windows server. Under activate_branch every read and write goes to the branch."""
 
-    def __init__(self, windows_server, user=None):
+    def __init__(self, windows_server, user=None, subnet_ids=None):
         self.server = windows_server
         self.dhcp = windows_server.dhcp_server
         self.vrf = windows_server.import_vrf
         # When set (a reviewer applying proposal items), every object written is checked against this user's
         # permissions, constraints included, like NetBox's own edit views do. Imports run by a job leave it unset.
         self.user = user
+        # Subnet IDs to give new subnets (branch imports), instead of letting sys4 count from the current schema.
+        self.subnet_ids = subnet_ids
 
     # -- writes ------------------------------------------------------------------------------------------------------
 
@@ -94,6 +105,9 @@ class Writer:
     # -- lookups -----------------------------------------------------------------------------------------------------
 
     def subnet(self, scope_id, required=True):
+        """This server's subnet for a scope ID, or for a ``<scope ID>#<pk>`` key naming one of several."""
+        if (pk := _duplicate_pk(scope_id)) is not None:
+            return netbox_state.server_subnets(self.dhcp).filter(pk=pk).first()
         for s in netbox_state.server_subnets(self.dhcp).filter(prefix__prefix__net_contains_or_equals=scope_id):
             if netbox_state.scope_id_of(s) == scope_id:
                 return s
@@ -102,9 +116,12 @@ class Writer:
         return None
 
     def reservation(self, scope_id, ip_address, required=True):
+        """A reservation in this server's scope, or the one a ``<ip>#<pk>`` key names among several."""
         subnet = self.subnet(scope_id, required=required)
         found = None
-        if subnet is not None:
+        if subnet is not None and (pk := _duplicate_pk(ip_address)) is not None:
+            found = HostReservation.objects.filter(subnet=subnet, pk=pk).first()
+        elif subnet is not None and ip_address:
             found = (
                 HostReservation.objects.filter(subnet=subnet, ipv4_address__address__net_host=ip_address)
                 .order_by("pk")
@@ -141,8 +158,8 @@ class Writer:
     def _parent(self, parent, required=True):
         if parent == "server":
             return self.dhcp
-        if parent.count("/") == 1:
-            return self.reservation(*parent.split("/"), required=required)
+        if "/" in parent:
+            return self.reservation(*parent.split("/", 1), required=required)
         return self.subnet(parent, required=required)
 
     def option(self, key, fields):
@@ -183,16 +200,20 @@ class Writer:
         found = Prefix.objects.filter(prefix=str(network), vrf=self.vrf).first()
         return found or self._save(Prefix(prefix=str(network), vrf=self.vrf, description="Windows DHCP scope"))
 
-    def _ip_range(self, start, end, prefixlen, current=None):
-        found = IPRange.objects.filter(start_address__net_host=start, end_address__net_host=end, vrf=self.vrf).first()
+    def _ip_range(self, start, end, network, current=None):
+        vrf = current.vrf if current is not None else self.vrf
+        found = IPRange.objects.filter(start_address__net_host=start, end_address__net_host=end, vrf=vrf).first()
         if found:
             return found
-        if current is not None and not current.netbox_dhcp_pools.exclude(subnet__dhcp_server=self.dhcp).exists():
-            # The range only serves this scope: move it rather than leave the old one behind.
-            return self._update(
-                current, start_address=f"{start}/{prefixlen}", end_address=f"{end}/{prefixlen}", vrf=self.vrf
-            )
-        return self._save(IPRange(start_address=f"{start}/{prefixlen}", end_address=f"{end}/{prefixlen}", vrf=self.vrf))
+        prefixlen = network.prefixlen
+        if current is not None and all(
+            str(pool.subnet.prefix.prefix) == str(network)
+            for pool in current.netbox_dhcp_pools.select_related("subnet__prefix")
+        ):
+            # The range only serves this scope (on this server, or also on its failover partner, which holds the same
+            # scope): move it. A second range would overlap it, which NetBox refuses.
+            return self._update(current, start_address=f"{start}/{prefixlen}", end_address=f"{end}/{prefixlen}")
+        return self._save(IPRange(start_address=f"{start}/{prefixlen}", end_address=f"{end}/{prefixlen}", vrf=vrf))
 
     def _ip_address(self, ip, prefixlen):
         found = IPAddress.objects.filter(address__net_host=ip, vrf=self.vrf).first()
@@ -273,7 +294,9 @@ class Writer:
             return self._delete(subnet)
         prefixlen = normalize.parse_mask(fields["subnet_mask"])
         network = ipaddress.IPv4Network(f"{change.key}/{prefixlen}")
-        prefix = self._prefix(network)
+        # Keep the prefix the subnet already has (it may sit in another VRF) unless the mask changed.
+        keep = subnet is not None and str(subnet.prefix.prefix) == str(network)
+        prefix = subnet.prefix if keep else self._prefix(network)
         name, _ = self._names(change.key)
         values = {
             "prefix": prefix,
@@ -282,14 +305,14 @@ class Writer:
             "valid_lifetime": fields["lease_seconds"],
         }
         if subnet is None:
+            if self.subnet_ids is not None:
+                values["subnet_id"] = next(self.subnet_ids)
             subnet = self._save(Subnet(name=name, dhcp_server=self.dhcp, **values))
             pool = None
         else:
             subnet = self._update(subnet, **values)
             pool = subnet.child_pools.order_by("pk").first()
-        ip_range = self._ip_range(
-            fields["start_range"], fields["end_range"], prefixlen, pool.ip_range if pool else None
-        )
+        ip_range = self._ip_range(fields["start_range"], fields["end_range"], network, pool.ip_range if pool else None)
         if pool is None:
             self._save(Pool(name=name, subnet=subnet, ip_range=ip_range))
         else:
@@ -313,13 +336,12 @@ class Writer:
         subnet = self.subnet(fields["scope_id"], required=change.action == CREATE)
         if change.action == DELETE:
             if subnet is not None:
-                self._delete(
-                    ExclusionRange.objects.filter(
-                        subnet=subnet, start_address=fields["start_range"], end_address=fields["end_range"]
-                    )
-                    .order_by("pk")
-                    .first()
-                )
+                matches = ExclusionRange.objects.filter(subnet=subnet)
+                if (pk := _duplicate_pk(change.key)) is not None:
+                    matches = matches.filter(pk=pk)
+                else:
+                    matches = matches.filter(start_address=fields["start_range"], end_address=fields["end_range"])
+                self._delete(matches.order_by("pk").first())
             return None
         # The key holds every field, so an exclusion is only ever created or deleted.
         return self._save(
@@ -328,7 +350,8 @@ class Writer:
 
     def _apply_reservation(self, change):
         fields = change.after or change.before
-        obj = self.reservation(fields["scope_id"], fields["ip_address"], required=False)
+        # The key, not the fields, so a "#<pk>" key reaches exactly the duplicate it names.
+        obj = self.reservation(*change.key.split("/", 1), required=False)
         if change.action == DELETE:
             return self._delete(obj)
         subnet = self.subnet(fields["scope_id"])

@@ -7,8 +7,8 @@ Under ``activate_branch`` the queries read the branch, so a repeated import comp
 import ipaddress
 
 from django.contrib.contenttypes.models import ContentType
-from django.db.models import Q
-from netbox_dhcp.models import HostReservation, Option, OptionDefinition, Subnet
+from django.db.models import Prefetch, Q
+from netbox_dhcp.models import HostReservation, Option, OptionDefinition, Pool, Subnet
 
 from ..models import ExclusionRange, WindowsClass
 from ..windows import normalize
@@ -61,7 +61,7 @@ def server_subnets(dhcp_server):
         Subnet.objects.filter(Q(dhcp_server=dhcp_server) | Q(shared_network__dhcp_server=dhcp_server))
         .filter(prefix__prefix__family=4)
         .select_related("prefix", "netbox_windows_dhcp_plugin_windows_scope")
-        .prefetch_related("child_pools__ip_range")
+        .prefetch_related(Prefetch("child_pools", queryset=Pool.objects.order_by("pk").select_related("ip_range")))
     )
 
 
@@ -75,6 +75,7 @@ def _mask(prefix_length):
 
 def _scope(subnet):
     ws = getattr(subnet, "netbox_windows_dhcp_plugin_windows_scope", None)
+    # The first pool by primary key: the one the writer updates too.
     pool = next(iter(subnet.child_pools.all()), None)
     rng = pool.ip_range if pool else None
     return Record(
@@ -154,33 +155,58 @@ def read(windows_server):
     definitions = OptionDefinition.objects.filter(dhcp_server=dhcp, family=4, standard=False).select_related(
         "netbox_windows_dhcp_plugin_windows_option_definition__vendor_class"
     )
-    records.extend(_optiondef(d) for d in definitions)
+    # Vendor class definitions are not imported yet (see windows_state.VENDOR_DEFINITIONS): leave them alone.
+    records.extend(
+        _optiondef(d)
+        for d in definitions
+        if not getattr(d, "netbox_windows_dhcp_plugin_windows_option_definition", None)
+        or not d.netbox_windows_dhcp_plugin_windows_option_definition.vendor_class_id
+    )
 
     subnets = list(server_subnets(dhcp))
-    scope_ids = {s.pk: scope_id_of(s) for s in subnets}
-    records.extend(_scope(s) for s in subnets)
+    scopes = _unique((_scope(s), s.pk) for s in subnets)
+    scope_ids = {pk: record.key for record, pk in scopes}
+    records.extend(record for record, _ in scopes)
 
-    for e in ExclusionRange.objects.filter(subnet__in=subnets).order_by("pk"):
-        scope_id = scope_ids[e.subnet_id]
-        records.append(
-            Record(
-                "exclusion",
-                f"{scope_id}/{e.start_address}-{e.end_address}",
-                {"scope_id": scope_id, "start_range": e.start_address, "end_range": e.end_address},
-            )
-        )
+    exclusions = ExclusionRange.objects.filter(subnet__in=subnets).order_by("pk")
+    records.extend(record for record, _ in _unique((_exclusion(e, scope_ids[e.subnet_id]), e.pk) for e in exclusions))
 
-    reservations = HostReservation.objects.filter(subnet__in=subnets).select_related(
-        "ipv4_address", "hw_address", "netbox_windows_dhcp_plugin_windows_reservation"
+    reservations = (
+        HostReservation.objects.filter(subnet__in=subnets)
+        .select_related("ipv4_address", "hw_address", "netbox_windows_dhcp_plugin_windows_reservation")
+        .order_by("pk")
     )
-    reservation_parents = {}
-    for r in reservations:
-        record = _reservation(r, scope_ids[r.subnet_id])
-        reservation_parents[r.pk] = record.key
-        records.append(record)
+    unique = _unique((_reservation(r, scope_ids[r.subnet_id]), r.pk) for r in reservations)
+    reservation_parents = {pk: record.key for record, pk in unique}
+    records.extend(record for record, _ in unique)
 
     records.extend(_options(dhcp, scope_ids, reservation_parents))
     return records
+
+
+def _exclusion(e, scope_id):
+    return Record(
+        "exclusion",
+        f"{scope_id}/{e.start_address}-{e.end_address}",
+        {"scope_id": scope_id, "start_range": e.start_address, "end_range": e.end_address},
+    )
+
+
+def _unique(pairs):
+    """
+    Make record keys unique. NetBox can hold what Windows cannot: two subnets on one prefix, two reservations for
+    one address, a reservation without an address. The extra ones get "#<pk>" appended, so they show up as deletions
+    instead of making the import fail, and the writer finds exactly that object.
+    """
+    seen = set()
+    out = []
+    for record, pk in pairs:
+        key = record.key
+        if key in seen or key.endswith("/"):
+            key = f"{key}#{pk}"
+        seen.add(key)
+        out.append((Record(record.kind, key, record.fields), pk))
+    return out
 
 
 def option_parents(dhcp, scope_ids, reservation_parents):
@@ -209,8 +235,8 @@ def _options(dhcp, scope_ids, reservation_parents):
     seen = set()
     for o in options:
         qualifier = getattr(o, "netbox_windows_dhcp_plugin_windows_qualifier", None)
-        if qualifier and qualifier.policy_id:
-            continue  # policies are not imported yet
+        if qualifier and (qualifier.policy_id or qualifier.vendor_class_id):
+            continue  # policy and vendor class values are not imported yet
         vendor = qualifier.vendor_class.name if qualifier and qualifier.vendor_class_id else ""
         user = qualifier.user_class.name if qualifier and qualifier.user_class_id else ""
         parent = parents[o.assigned_object_type_id, o.assigned_object_id]

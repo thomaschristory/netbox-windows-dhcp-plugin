@@ -55,7 +55,7 @@ def test_reads_every_kind(client):
     records, notes = ws.to_records(ws.read(client))
     kinds = by_kind(records)
     assert set(kinds) == {"class", "optiondef", "scope", "exclusion", "reservation", "option"}
-    assert notes == []
+    assert notes == [f"skipped 1 {ws.VENDOR_DEFINITIONS}", f"skipped 1 {ws.VENDOR_VALUES}"]
 
 
 def test_scope_record(client):
@@ -103,22 +103,20 @@ def test_class_and_definition_records(client):
         "description": "",
     }
     assert kinds["optiondef"]["200"]["name"] == "Custom"
-    assert kinds["optiondef"]["MSFT/1"]["vendor_class"] == "MSFT"
+    # Vendor class definitions wait for a later release (sys4 allows one definition per code and server).
+    assert "MSFT/1" not in kinds["optiondef"]
 
 
 def test_standard_definitions_are_left_to_sys4(client):
     records, _ = ws.to_records(ws.read(client), standard_codes={6, 200})
     keys = set(by_kind(records)["optiondef"])
     assert "6" not in keys and "200" not in keys
-    # A vendor-class definition never matches a standard one.
-    assert "MSFT/1" in keys
 
 
 def test_option_records_and_skipped_ids(client):
     options = by_kind(ws.to_records(ws.read(client))[0])["option"]
     assert set(options) == {
         "server/6",
-        "server/1;vendor=MSFT",
         "10.1.0.0/3",
         "10.1.0.0/10.1.0.50/15",
     }
@@ -138,7 +136,28 @@ def test_policy_options_are_skipped_with_a_note():
     )
     records, notes = ws.to_records(state)
     assert records == []
-    assert notes == ["skipped 1 policy option value(s): policies come in a later release"]
+    assert notes == [f"skipped 1 {ws.POLICY_VALUES}"]
+
+
+def test_values_netbox_cannot_store_are_skipped():
+    state = ws.WindowsState(
+        options=[ws.OptionValue(option_id=15, value=["a,b"]), ws.OptionValue(option_id=15, value=[" x"], scope_id="s")]
+    )
+    records, notes = ws.to_records(state)
+    assert records == []
+    assert notes == [f"skipped 2 {ws.UNSTORABLE_VALUES}"]
+
+
+def test_long_names_are_cut_like_netbox_cuts_them(client):
+    client.set_scope(Scope(scope_id="10.1.0.0", name="n" * 300, start_range="10.1.0.10", end_range="10.1.0.200"))
+    scope = by_kind(ws.to_records(ws.read(client))[0])["scope"]["10.1.0.0"]
+    assert scope["name"] == "n" * 200
+
+
+def test_text_option_values_compare_exactly():
+    assert not ws.equal("option", "value", ["BootX64.efi"], ["bootx64.efi"])
+    assert ws.equal("option", "value", ["0x0A"], ["10"])
+    assert not ws.equal("option", "value", ["1"], ["1", "2"])
 
 
 def test_option_values_compare_hex_and_decimal():

@@ -11,6 +11,7 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
    push will reuse. Scheduled by a system job from `import_interval`.
 4. Push to Windows: reconcile per server on branch merge, or after saves without branching. Dry-run and "Sync now".
    Cap concurrent PowerShell sessions per server across all workers (a Redis lock), not only per job.
-5. Remaining objects end to end: superscopes, policies (and policy-qualified option values), failover, MAC filters,
-   DHCPv6, live leases.
+5. Remaining objects end to end: superscopes, policies (and policy-qualified option values), vendor class option
+   definitions and values (they need a model of their own: sys4 allows one definition per code and server), failover,
+   MAC filters, DHCPv6, live leases.
 6. Lab acceptance tests against a real Windows server, then the first release.

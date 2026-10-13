@@ -1,6 +1,9 @@
 """The review queue from the UI and the REST API: permissions, and writes made as the reviewing user."""
 
+from unittest import skipUnless
+
 from core.models import ObjectChange, ObjectType
+from django.apps import apps
 from ipam.models import Prefix
 from netbox_dhcp.models import Subnet
 from utilities.testing import APITestCase, TestCase
@@ -23,6 +26,15 @@ SCOPE_PERMISSIONS = (
     "netbox_windows_dhcp_plugin.add_windowsscope",
 )
 ITEM = "netbox_windows_dhcp_plugin.change_importproposalitem"
+# What starting an import needs when it opens a branch and a change request.
+BRANCH_PERMISSIONS = tuple(
+    perm
+    for perm, app in (
+        ("netbox_branching.add_branch", "netbox_branching"),
+        ("netbox_change_control.add_changerequest", "netbox_change_control"),
+    )
+    if apps.is_installed(app)
+)
 PROPOSAL = "netbox_windows_dhcp_plugin.change_importproposal"
 ITEMS_APPLY = "/api/plugins/windows-dhcp/import-proposal-items/apply/"
 
@@ -105,6 +117,19 @@ class ReviewViewTest(TestCase):
         self.client.post("/plugins/windows-dhcp/importproposalitems/apply/", {"pk": [self.item.pk]})
         self.assertTrue(Subnet.objects.exists())
 
+    def test_object_permissions_limit_which_server_can_be_imported(self):
+        from users.models import ObjectPermission
+
+        permission = ObjectPermission.objects.create(
+            name="other servers only", actions=["view", "change"], constraints={"host": "elsewhere.example.com"}
+        )
+        permission.object_types.add(ObjectType.objects.get_for_model(type(self.server)))
+        permission.users.add(self.user)
+        self.add_permissions(*BRANCH_PERMISSIONS)
+        response = self.client.post(f"/plugins/windows-dhcp/windowsservers/{self.server.pk}/import/")
+        self.assertEqual(response.status_code, 404)
+        self.assertFalse(self.server.jobs.exists())
+
     def test_detail_pages_show_review_buttons(self):
         self.add_permissions(
             "netbox_windows_dhcp_plugin.view_importproposal",
@@ -121,7 +146,9 @@ class ReviewViewTest(TestCase):
 
     def test_import_now_button_and_view(self):
         self.add_permissions(
-            "netbox_windows_dhcp_plugin.view_windowsserver", "netbox_windows_dhcp_plugin.change_windowsserver"
+            "netbox_windows_dhcp_plugin.view_windowsserver",
+            "netbox_windows_dhcp_plugin.change_windowsserver",
+            *BRANCH_PERMISSIONS,
         )
         response = self.client.get(self.server.get_absolute_url())
         self.assertContains(response, f"/windowsservers/{self.server.pk}/import/")
@@ -185,12 +212,26 @@ class ReviewAPITest(PluginAPIMixin, APITestCase):
 
     def test_import_action(self):
         self.add_permissions(
-            "netbox_windows_dhcp_plugin.view_windowsserver", "netbox_windows_dhcp_plugin.change_windowsserver"
+            "netbox_windows_dhcp_plugin.view_windowsserver",
+            "netbox_windows_dhcp_plugin.change_windowsserver",
+            *BRANCH_PERMISSIONS,
         )
         url = f"/api/plugins/windows-dhcp/windows-servers/{self.server.pk}/import/"
         response = self.client.post(url, {}, format="json", **self.header)
         self.assertEqual(response.status_code, 202)
         self.assertEqual(response.data["name"], "Windows DHCP import")
+        # A second request while the first is queued is refused.
+        response = self.client.post(url, {}, format="json", **self.header)
+        self.assertEqual(response.status_code, 409)
+
+    @skipUnless(apps.is_installed("netbox_branching"), "netbox-branching is not installed")
+    def test_import_action_needs_branch_permission_with_branching(self):
+        self.add_permissions(
+            "netbox_windows_dhcp_plugin.view_windowsserver", "netbox_windows_dhcp_plugin.change_windowsserver"
+        )
+        url = f"/api/plugins/windows-dhcp/windows-servers/{self.server.pk}/import/"
+        response = self.client.post(url, {}, format="json", **self.header)
+        self.assertEqual(response.status_code, 403)
 
     def test_import_action_needs_change(self):
         self.add_permissions("netbox_windows_dhcp_plugin.view_windowsserver")

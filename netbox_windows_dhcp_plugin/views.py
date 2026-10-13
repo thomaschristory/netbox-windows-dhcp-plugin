@@ -11,7 +11,8 @@ from netbox.views.generic.base import BaseObjectView
 from utilities.views import GetRelatedModelsMixin, GetReturnURLMixin, register_model_view
 
 from . import filtersets, forms, review, tables
-from .jobs import ImportJob, TestConnectionJob
+from .integrations import branching
+from .jobs import TestConnectionJob, enqueue_import
 from .models import (
     ExclusionRange,
     FailoverRelationship,
@@ -149,8 +150,12 @@ class WindowsServerTestConnectionView(GetReturnURLMixin, BaseObjectView):
     def get(self, request, pk):
         return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
 
+    def _server(self, request, pk):
+        # Object permissions may limit which servers the user may change.
+        return get_object_or_404(self.queryset.restrict(request.user, "change"), pk=pk)
+
     def post(self, request, pk):
-        server = get_object_or_404(self.queryset, pk=pk)
+        server = self._server(request, pk)
         job = TestConnectionJob.enqueue(instance=server, user=request.user)
         messages.success(request, _("Queued connection test (job #{id}) for {server}").format(id=job.pk, server=server))
         return redirect(self.get_return_url(request, server))
@@ -159,9 +164,14 @@ class WindowsServerTestConnectionView(GetReturnURLMixin, BaseObjectView):
 @register_model_view(WindowsServer, "import")
 class WindowsServerImportView(WindowsServerTestConnectionView):
     def post(self, request, pk):
-        server = get_object_or_404(self.queryset, pk=pk)
-        job = ImportJob.enqueue(instance=server, user=request.user)
-        messages.success(request, _("Queued import (job #{id}) from {server}").format(id=job.pk, server=server))
+        server = self._server(request, pk)
+        missing = branching.missing_import_permissions(request.user)
+        if missing:
+            messages.error(request, _("Importing needs the permission: {perms}").format(perms=", ".join(missing)))
+        elif (job := enqueue_import(server, request.user)) is None:
+            messages.warning(request, _("An import from {server} is already queued or running").format(server=server))
+        else:
+            messages.success(request, _("Queued import (job #{id}) from {server}").format(id=job.pk, server=server))
         return redirect(self.get_return_url(request, server))
 
 
@@ -373,7 +383,7 @@ class _ReviewView(GetReturnURLMixin, BaseObjectView):
         return ImportProposalItem.objects.restrict(request.user, "change").filter(pk=obj.pk)
 
     def post(self, request, pk=None):
-        obj = get_object_or_404(self.queryset, pk=pk) if pk is not None else None
+        obj = get_object_or_404(self.queryset.restrict(request.user, "change"), pk=pk) if pk is not None else None
         items = review.open_items(self._items(request, obj))
         if self.dismiss:
             count = review.dismiss(request.user, items)
@@ -409,7 +419,7 @@ class _BulkReviewView(_ReviewView):
         qs = ImportProposalItem.objects.restrict(request.user, "change")
         if request.POST.get("_all"):
             return self.filterset(request.GET, qs, request=request).qs
-        return qs.filter(pk__in=request.POST.getlist("pk"))
+        return qs.filter(pk__in=[pk for pk in request.POST.getlist("pk") if pk.isdigit()])
 
 
 for _dismiss, _verb in ((False, "apply"), (True, "dismiss")):
