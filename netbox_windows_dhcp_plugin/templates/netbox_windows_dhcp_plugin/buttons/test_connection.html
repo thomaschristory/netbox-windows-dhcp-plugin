@@ -1,0 +1,6 @@
+<form action="{{ url }}" method="post">
+  {% csrf_token %}
+  <button type="submit" class="btn btn-primary">
+    <i class="mdi mdi-lan-connect" aria-hidden="true"></i> {{ label }}
+  </button>
+</form>

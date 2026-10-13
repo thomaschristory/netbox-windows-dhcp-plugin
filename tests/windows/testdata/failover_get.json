@@ -1,0 +1,1 @@
+{"ok":true,"data":{"name":"dhcp01-dhcp02","partner_server":"dhcp02.example.local","mode":"HotStandby","scope_ids":["10.1.20.0","10.1.30.0"],"server_role":"Active","load_balance_percent":null,"reserve_percent":5,"max_client_lead_time":3600,"state_switch_interval":null,"auto_state_transition":false,"enable_auth":true,"state":"Normal"}}
