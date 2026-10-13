@@ -104,6 +104,35 @@ A scheduled job per server (and a manual button) reads the full Windows state an
 
 **Repeated runs.** If an open import branch or proposal already exists for a server, the job updates it instead of opening another.
 
+**How it is built (milestone 3).**
+
+- **Diff engine.** `sync/diff.py` is pure Python. Both sides become records (kind, Windows key, flat fields) and the
+  engine returns create, update and delete changes in dependency order: classes, option definitions, scopes,
+  exclusions, reservations, options; deletes in reverse. It does not know which side is Windows, so push reuses it.
+  `sync/windows_state.py` (pure) and `sync/netbox_state.py` (Django) produce the records; `sync/mapping.py` writes a
+  change into NetBox, one object at a time, with `snapshot()` before each update or delete.
+- **What is imported.** IPv4 scopes, exclusion ranges, reservations, user and vendor classes, option definitions and
+  option values at server, scope and reservation level, including user and vendor class qualifiers. Policy-qualified
+  values are skipped (and logged) until policies arrive in milestone 5, as are superscopes.
+- **Mapping details.** The Windows scope or reservation name goes in `description`, the Windows description in
+  `comments`. Options 1 (subnet mask) and 51 (lease time) are not imported as options, since the prefix and
+  `valid_lifetime` already hold them. Windows definitions of codes sys4 defines itself are left to sys4; others become
+  server-scoped `OptionDefinition`s, with the exact Windows type and default value on `WindowsOptionDefinition`.
+  Existing prefixes, IP ranges, IP addresses and MAC addresses in the import VRF are reused. "No BOOTP limit"
+  (2^32-1) is stored as empty.
+- **Deletes.** Any object linked to the server that Windows no longer has is proposed for deletion, including extra
+  copies of an option sys4 let someone set twice. Until push exists (milestone 4), objects created in NetBox show up
+  as deletes and are dismissed by the reviewer.
+- **Branch mode.** The diff is taken against the open import branch when there is one, so a repeated run only adds
+  what changed. A new branch is created and provisioned synchronously in the job, only when there are differences;
+  `max_working_branches` refusals fail the run. The change request is created and submitted for review.
+- **Proposal mode.** A repeated run replaces pending and failed items. An item someone dismissed stays dismissed while
+  Windows proposes exactly the same values. Applying checks the object still matches the item's "before" values and
+  fails the item otherwise; the reviewer needs add, change or delete on the objects an item writes.
+- **Who imports.** Manual imports run as the user who asked. Scheduled imports, queued every minute by a system job
+  for servers whose `import_interval` has passed, run as the `import_user` setting; without it, branch-mode imports
+  open no change request.
+
 ## 8. UI and API
 
 - Tabs on sys4 server and subnet pages: connection status, last sync, drift, live leases.

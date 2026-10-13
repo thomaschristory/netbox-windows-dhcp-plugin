@@ -23,6 +23,9 @@ DEFAULTS = {
     "import_branch_prefix": "dhcp-import",
     # Open a change request for each import branch when netbox-change-control is installed.
     "import_change_request": True,
+    # Username that scheduled imports run as. It owns import branches and requests their change requests (manual
+    # imports use the user who clicked). Without it, scheduled imports with branching open no change request.
+    "import_user": None,
     # Seconds to wait after a save before pushing, so a burst of edits becomes one push (without branching).
     "push_debounce": 10,
     # Maximum number of PowerShell commands one job runs at the same time against a server.

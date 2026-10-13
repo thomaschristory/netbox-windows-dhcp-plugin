@@ -3,8 +3,8 @@
 A NetBox plugin that keeps Microsoft Windows DHCP servers in step with the data modelled by
 [netbox-plugin-dhcp](https://github.com/sys4/netbox-plugin-dhcp), over WinRM or SSH.
 
-> **Status: early development.** The models, REST and GraphQL API, connection test and the PowerShell layer are in
-> place. Import from Windows and push to Windows are being built next (see [docs/ROADMAP.md](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/blob/main/docs/ROADMAP.md)).
+> **Status: early development.** The models, REST and GraphQL API, connection test, the PowerShell layer and import
+> from Windows are in place. Push to Windows is being built next (see [docs/ROADMAP.md](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/blob/main/docs/ROADMAP.md)).
 > The design is in [docs/DESIGN.md](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/blob/main/docs/DESIGN.md).
 
 ## Features
@@ -14,12 +14,16 @@ A NetBox plugin that keeps Microsoft Windows DHCP servers in step with the data 
 - Windows concepts that netbox-plugin-dhcp does not model: scope settings, reservation type, exclusion ranges,
   user and vendor classes, option definitions and qualifiers, policies, failover relationships and MAC filters.
 - A "Test connection" button and API action that runs a background job against the server.
+- Import from Windows (IPv4 scopes, exclusions, reservations, user and vendor classes, option definitions and option
+  values), on demand ("Import now" button and API action) or every `import_interval` minutes. With netbox-branching
+  each import lands in a branch named `dhcp-import/<server>/<timestamp>` (plus a change request when change control
+  is installed); without it, in an import proposal where each difference is applied or dismissed.
 - Full REST API and GraphQL for every model.
 - Works with [netbox-branching](https://github.com/netboxlabs/netbox-branching) and
   [netbox-change-control](https://github.com/antoinekh/netbox-change-control) when they are installed.
 
-Planned for v1: import from Windows as a new branch (or a review queue without branching), push to Windows on
-branch merge (or on save without branching), dry-run, live leases, DHCPv6.
+Planned for v1: push to Windows on branch merge (or on save without branching), dry-run, policies, failover, MAC
+filters, live leases, DHCPv6.
 
 ## Compatibility
 
@@ -98,6 +102,7 @@ control and capture the credentials; NetBox logs a warning at startup for each s
 | `reservation_name_template` | `{server}/{scope_id}/{ip_address}` | Name of imported reservations |
 | `import_branch_prefix` | `dhcp-import` | Prefix of import branches |
 | `import_change_request` | `True` | Open a change request per import branch when change control is installed |
+| `import_user` | `None` | Username scheduled imports run as: owns import branches and requests their change requests |
 | `push_debounce` | `10` | Seconds to group saves into one push (without branching) |
 | `max_concurrency` | `4` | PowerShell commands one job runs at once against a server |
 | `command_timeout` | `120` | Seconds before a PowerShell command is abandoned |

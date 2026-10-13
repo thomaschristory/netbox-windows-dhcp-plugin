@@ -19,3 +19,15 @@ All notable changes to this project are documented here. The format follows
 - REST API and GraphQL for every model.
 - netbox-branching and netbox-change-control integration: bookkeeping models are not branched.
 - PowerShell layer ported from terraform-provider-windowsddi, with a fake server for tests.
+- Import from Windows: IPv4 scopes, exclusion ranges, reservations, user and vendor classes, option definitions and
+  option values (server, scope, reservation and class-qualified) become netbox-plugin-dhcp objects plus the
+  prefixes, IP ranges, IP addresses and MAC addresses they need, in the server's import VRF. Objects missing on
+  Windows are proposed for deletion. Policy-qualified option values are skipped until policies are supported.
+- With netbox-branching, each import writes into a branch `dhcp-import/<server>/<timestamp>` (reused while it is
+  open) and opens a change request, submitted for review, when netbox-change-control is installed.
+- Without branching, each import fills an import proposal. Items are applied or dismissed one by one, in bulk or
+  for the whole proposal, from the UI or the REST API; applying writes as the reviewing user and refuses items whose
+  NetBox object changed since the import.
+- "Import now" button and `POST /api/plugins/windows-dhcp/windows-servers/<id>/import/`; scheduled imports every
+  `import_interval` minutes through a system job; `import_user` setting for scheduled imports.
+- `WindowsOptionDefinition` keeps the Windows data type and default value.

@@ -1,5 +1,9 @@
+import json
+from pathlib import Path
+
+import netbox_dhcp
 from ipam.models import Prefix
-from netbox_dhcp.models import DHCPServer, Subnet
+from netbox_dhcp.models import DHCPServer, OptionDefinition, Subnet
 
 from netbox_windows_dhcp_plugin.models import WindowsServer
 
@@ -16,6 +20,22 @@ def subnets(server, count=3):
         prefix = Prefix.objects.create(prefix=f"10.{i}.0.0/24")
         result.append(Subnet.objects.create(name=f"{server.name}/10.{i}.0.0", dhcp_server=server, prefix=prefix))
     return result
+
+
+def ensure_standard_option_definitions():
+    """
+    Recreate netbox-plugin-dhcp's standard option definitions when a test database lost them.
+
+    A data migration creates them, and a TransactionTestCase flushes every table when it ends, so a database kept
+    with --keepdb no longer has them on the next run.
+    """
+    if OptionDefinition.objects.filter(standard=True).exists():
+        return
+    path = Path(netbox_dhcp.__file__).parent / "migrations" / "initial_data" / "option_definitions.json"
+    # bulk_create, like the migration: sys4's save() rejects one of its own seeds (code 121 has type "internal").
+    OptionDefinition.objects.bulk_create(
+        OptionDefinition(standard=True, **definition) for definition in json.loads(path.read_text())
+    )
 
 
 def windows_server(dhcp_server, **kwargs):

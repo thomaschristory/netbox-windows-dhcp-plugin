@@ -3,15 +3,15 @@ from django.db.models import Count
 from django.shortcuts import get_object_or_404, redirect
 from django.utils.translation import gettext_lazy as _
 from extras.ui.panels import CustomFieldsPanel, TagsPanel
-from netbox.object_actions import CloneObject, DeleteObject, EditObject
+from netbox.object_actions import BulkDelete, BulkExport, CloneObject, DeleteObject, EditObject
 from netbox.ui import layout
 from netbox.ui.panels import CommentsPanel, JSONPanel, ObjectsTablePanel, RelatedObjectsPanel
 from netbox.views import generic
 from netbox.views.generic.base import BaseObjectView
 from utilities.views import GetRelatedModelsMixin, GetReturnURLMixin, register_model_view
 
-from . import filtersets, forms, tables
-from .jobs import TestConnectionJob
+from . import filtersets, forms, review, tables
+from .jobs import ImportJob, TestConnectionJob
 from .models import (
     ExclusionRange,
     FailoverRelationship,
@@ -27,7 +27,16 @@ from .models import (
     WindowsScope,
     WindowsServer,
 )
-from .object_actions import TestConnection
+from .object_actions import (
+    ApplyItem,
+    ApplyProposal,
+    ApplySelected,
+    DismissItem,
+    DismissProposal,
+    DismissSelected,
+    ImportNow,
+    TestConnection,
+)
 from .ui import panels
 
 
@@ -44,6 +53,8 @@ def _register(
     layout=None,
     detail_view=None,
     read_only=False,
+    list_actions=None,
+    detail_actions=None,
 ):
     """Register the standard list, detail, edit, import, bulk edit and delete views for a model."""
     name = model.__name__
@@ -51,11 +62,13 @@ def _register(
     def make(base, **attrs):
         return type(f"{name}{base.__name__}", (base,), {"queryset": queryset, **attrs})
 
+    list_attrs = {"actions": list_actions} if list_actions is not None else {}
     register_model_view(model, "list", path="", detail=False)(
-        make(generic.ObjectListView, table=table, filterset=filterset, filterset_form=filterset_form)
+        make(generic.ObjectListView, table=table, filterset=filterset, filterset_form=filterset_form, **list_attrs)
     )
+    detail_attrs = {"actions": detail_actions} if detail_actions is not None else {}
     register_model_view(model)(
-        detail_view or make(generic.ObjectView, layout=layout, template_name="generic/object.html")
+        detail_view or make(generic.ObjectView, layout=layout, template_name="generic/object.html", **detail_attrs)
     )
     register_model_view(model, "delete")(make(generic.ObjectDeleteView))
     register_model_view(model, "bulk_delete", path="delete", detail=False)(
@@ -96,7 +109,7 @@ def _pk_filter(name):
 class WindowsServerView(GetRelatedModelsMixin, generic.ObjectView):
     queryset = WindowsServer.objects.all()
     template_name = "generic/object.html"
-    actions = (TestConnection, CloneObject, EditObject, DeleteObject)
+    actions = (ImportNow, TestConnection, CloneObject, EditObject, DeleteObject)
     layout = layout.SimpleLayout(
         left_panels=[panels.WindowsServerPanel(), panels.WindowsServerSyncPanel(), TagsPanel(), CommentsPanel()],
         right_panels=[panels.WindowsServerSecurityPanel(), RelatedObjectsPanel(), CustomFieldsPanel()],
@@ -140,6 +153,15 @@ class WindowsServerTestConnectionView(GetReturnURLMixin, BaseObjectView):
         server = get_object_or_404(self.queryset, pk=pk)
         job = TestConnectionJob.enqueue(instance=server, user=request.user)
         messages.success(request, _("Queued connection test (job #{id}) for {server}").format(id=job.pk, server=server))
+        return redirect(self.get_return_url(request, server))
+
+
+@register_model_view(WindowsServer, "import")
+class WindowsServerImportView(WindowsServerTestConnectionView):
+    def post(self, request, pk):
+        server = get_object_or_404(self.queryset, pk=pk)
+        job = ImportJob.enqueue(instance=server, user=request.user)
+        messages.success(request, _("Queued import (job #{id}) from {server}").format(id=job.pk, server=server))
         return redirect(self.get_return_url(request, server))
 
 
@@ -315,6 +337,7 @@ _register(
         ],
     ),
     read_only=True,
+    detail_actions=(ApplyProposal, DismissProposal, DeleteObject),
 )
 
 _register(
@@ -328,4 +351,72 @@ _register(
         right_panels=[JSONPanel("before", title="NetBox"), JSONPanel("after", title="Windows")],
     ),
     read_only=True,
+    list_actions=(BulkExport, ApplySelected, DismissSelected, BulkDelete),
+    detail_actions=(ApplyItem, DismissItem, DeleteObject),
 )
+
+
+class _ReviewView(GetReturnURLMixin, BaseObjectView):
+    """POST-only views that apply or dismiss proposal items as the requesting user."""
+
+    queryset = ImportProposalItem.objects.all()
+    dismiss = False
+
+    def get_required_permission(self):
+        return "netbox_windows_dhcp_plugin.change_importproposalitem"
+
+    def get(self, request, **kwargs):
+        return redirect(self.get_return_url(request))
+
+    def _items(self, request, obj):
+        """The items to act on, restricted to those the user may change."""
+        return ImportProposalItem.objects.restrict(request.user, "change").filter(pk=obj.pk)
+
+    def post(self, request, pk=None):
+        obj = get_object_or_404(self.queryset, pk=pk) if pk is not None else None
+        items = review.open_items(self._items(request, obj))
+        if self.dismiss:
+            count = review.dismiss(request.user, items)
+            messages.success(request, _("Dismissed {count} item(s)").format(count=count))
+        else:
+            applied, failed, denied = review.apply(request.user, items)
+            messages.success(request, _("Applied {applied} item(s)").format(applied=applied))
+            if failed:
+                messages.warning(request, _("{failed} item(s) failed, see their error").format(failed=failed))
+            if denied:
+                messages.error(request, _("Not applied, missing permission: {perms}").format(perms=", ".join(denied)))
+        return redirect(self.get_return_url(request, obj))
+
+
+class _ProposalReviewView(_ReviewView):
+    queryset = ImportProposal.objects.all()
+
+    def get_required_permission(self):
+        return "netbox_windows_dhcp_plugin.change_importproposal"
+
+    def _items(self, request, obj):
+        return obj.items.restrict(request.user, "change")
+
+
+class _ItemReviewView(_ReviewView):
+    pass
+
+
+class _BulkReviewView(_ReviewView):
+    filterset = filtersets.ImportProposalItemFilterSet
+
+    def _items(self, request, obj):
+        qs = ImportProposalItem.objects.restrict(request.user, "change")
+        if request.POST.get("_all"):
+            return self.filterset(request.GET, qs, request=request).qs
+        return qs.filter(pk__in=request.POST.getlist("pk"))
+
+
+for _dismiss, _verb in ((False, "apply"), (True, "dismiss")):
+    _name = _verb.capitalize()
+    _attrs = {"dismiss": _dismiss}
+    register_model_view(ImportProposal, _verb)(type(f"ImportProposal{_name}View", (_ProposalReviewView,), _attrs))
+    register_model_view(ImportProposalItem, _verb)(type(f"ImportProposalItem{_name}View", (_ItemReviewView,), _attrs))
+    register_model_view(ImportProposalItem, f"bulk_{_verb}", path=_verb, detail=False)(
+        type(f"ImportProposalItemBulk{_name}View", (_BulkReviewView,), _attrs)
+    )
