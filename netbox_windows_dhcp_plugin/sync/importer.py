@@ -224,6 +224,7 @@ def _apply_items(items, user):
                 with transaction.atomic():
                     if not _already_done(change, current):
                         Writer(server, user=user).apply(change)
+                    _record_managed(server, change)
             except APPLY_ERRORS as exc:
                 error = _message(exc)
         if error:
@@ -235,6 +236,25 @@ def _apply_items(items, user):
     for proposal in proposals.values():
         update_status(proposal)
     return applied, failed
+
+
+def _record_managed(server, change):
+    """
+    NetBox and Windows now agree on this object, so later pushes manage it: deleting it in NetBox deletes it on
+    Windows. The fingerprint is of the Windows values, as a push would record them.
+    """
+    from ..models import SyncState
+    from .push import fingerprint
+
+    if change.action == DELETE:
+        SyncState.objects.filter(windows_server=server, kind=change.kind, key=change.key).delete()
+        return
+    SyncState.objects.update_or_create(
+        windows_server=server,
+        kind=change.kind,
+        key=change.key,
+        defaults={"fingerprint": fingerprint(Record(change.kind, change.key, change.after or {}))},
+    )
 
 
 def _same(a, b):

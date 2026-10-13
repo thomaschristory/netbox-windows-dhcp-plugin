@@ -96,7 +96,7 @@ def test_exclusion_and_reservation_records(client):
 
 def test_class_and_definition_records(client):
     kinds = by_kind(ws.to_records(ws.read(client))[0])
-    assert kinds["class"]["vendor/MSFT"] == {
+    assert kinds["class"]["vendor/msft"] == {
         "name": "MSFT",
         "class_type": "vendor",
         "data": "MSFT 5.0",

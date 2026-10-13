@@ -39,7 +39,7 @@ def scope(**over):
 def wanted():
     """What NetBox would hold for a small server, in the records' own spelling."""
     return [
-        Record("class", "user/Phones", {"name": "Phones", "class_type": "user", "data": "phone", "description": "IP"}),
+        Record("class", "user/phones", {"name": "Phones", "class_type": "user", "data": "phone", "description": "IP"}),
         Record(
             "optiondef",
             "200",
@@ -192,3 +192,23 @@ def test_unlimited_lease_keeps_the_windows_value(client, fake):
 def test_unknown_kind_is_refused(client):
     with pytest.raises(PushRefused):
         WindowsWriter(client).apply(Change("create", "policy", "x", after={}))
+
+
+def test_lease_unknown_on_both_sides_is_left_alone(client, fake):
+    push(client, wanted())
+    before = scope(lease_seconds=None).fields
+    WindowsWriter(client).apply(
+        Change("update", "scope", "10.1.0.0", before=before, after=scope(lease_seconds=None, name="y").fields)
+    )
+    set_call = [c for c in fake.calls if c.op == "scope.set"][-1]
+    assert set_call.params["lease_seconds"] is None
+    assert fake.scopes["10.1.0.0"]["lease_duration"] == "1.00:00:00"
+
+
+def test_clearing_a_default_value_is_refused(client):
+    push(client, wanted())
+    before = {**wanted()[1].fields, "default_value": ["x"]}
+    with pytest.raises(PushRefused, match="default value"):
+        WindowsWriter(client).apply(
+            Change("update", "optiondef", "200", before=before, after={**before, "default_value": []})
+        )

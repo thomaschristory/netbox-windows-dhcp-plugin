@@ -190,3 +190,59 @@ def test_summary_lists_the_planned_changes(client):
     assert s["create"] == len(wanted())
     assert len(s["planned"]) == len(wanted())
     assert s["planned"][0]["action"] == "create"
+
+
+def test_hidden_windows_objects_stop_their_parent_being_deleted(client, fake):
+    from netbox_windows_dhcp_plugin.sync import windows_state as ws
+    from netbox_windows_dhcp_plugin.windows.client import DhcpClass, OptionKey
+
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    client.add_class(DhcpClass(name="MSFT", type="Vendor", data="MSFT 5.0"))
+    client.set_option_value(OptionKey(option_id=15, scope_id="10.1.0.0"), ["a,b"])  # cannot be stored in NetBox
+    hidden = ws.hidden_records(ws.read(client))
+    source = [r for r in wanted() if r.kind in ("class", "optiondef")]
+    p = push.plan(source, windows_records(client), managed, hidden=hidden)
+    reasons = {(s.change.kind, s.change.key): s.reason for s in p.skipped}
+    assert "not managed by NetBox" in reasons["scope", "10.1.0.0"]
+
+
+def test_unpushable_netbox_data_is_reported_and_keeps_its_windows_twin(client, fake):
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    source = wanted()
+    source[4] = Record(source[4].kind, source[4].key, {**source[4].fields, "client_id": ""})
+    source.append(option("10.1.0.0", 51, ["3600"]))
+    source.append(option("server", 77, []))
+    p, result = run(client, source, managed)
+    reasons = {s.change.key: s.reason for s in p.skipped}
+    assert "MAC address" in reasons["10.1.0.0/10.1.0.50"]
+    assert "lease time" in reasons["10.1.0.0/51"]
+    assert "no value" in reasons["server/77"]
+    assert p.changes == []
+    assert "10.1.0.50" in fake.reservations
+
+
+def test_values_of_codes_windows_does_not_define_are_not_pushed(client):
+    p = push.plan([option("server", 121, ["x"])], [], {}, defined_options={6, 15})
+    assert "no definition for option 121" in p.skipped[0].reason
+    # Unless NetBox pushes the definition too.
+    source = [wanted()[1], option("server", 200, ["x"])]
+    assert push.plan(source, [], {}, defined_options={6}).skipped == []
+
+
+def test_class_names_differing_in_case_match(client, fake):
+    run(client, wanted())
+    source = [
+        Record(r.kind, r.key, {**r.fields, "name": r.fields["name"].upper()}) if r.kind == "class" else r
+        for r in wanted()
+    ]
+    p, _ = run(client, source)
+    assert p.changes == []
+
+
+def test_scope_without_name_is_named_after_its_id(client, fake):
+    run(client, [scope(name="")])
+    assert fake.scopes["10.1.0.0"]["name"] == "10.1.0.0"
+    p, _ = run(client, [scope(name="")])
+    assert p.changes == []

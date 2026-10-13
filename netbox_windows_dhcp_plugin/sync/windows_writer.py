@@ -70,6 +70,12 @@ class WindowsWriter:
                         f"option definition {change.key}: the {name.replace('_', ' ')} cannot change on Windows "
                         "without removing every value of the option; delete the definition and create it again"
                     )
+            if before.get("default_value") and not f.get("default_value"):
+                # Set-DhcpServerv4OptionDefinition cannot clear a default value, so it would be sent on every push.
+                raise PushRefused(
+                    f"option definition {change.key}: Windows cannot clear a default value; set another default, or "
+                    "delete the definition and create it again"
+                )
         d = OptionDefinition(
             option_id=f["option_id"],
             name=f["name"],
@@ -86,11 +92,15 @@ class WindowsWriter:
 
     # -- scopes --------------------------------------------------------------------------------------------------
 
-    def _scope(self, scope_id: str, f: dict[str, Any], current_lease: int | None) -> Scope:
+    def _scope(self, scope_id: str, f: dict[str, Any], current_lease: int | None, create: bool) -> Scope:
         lease = f["lease_seconds"]
         if lease is None:
             # NetBox has no lease time (Subnet.valid_lifetime is empty): keep what Windows has, or its 8 day default.
             lease = current_lease
+        # Without one, a new scope gets Windows' default; an existing one whose lease could not be read (unlimited)
+        # keeps it.
+        default = Scope.lease_duration if create else ""
+        duration = normalize.format_duration(lease) if lease else default
         return Scope(
             scope_id=scope_id,
             name=f["name"],
@@ -100,7 +110,7 @@ class WindowsWriter:
             subnet_mask=f["subnet_mask"],
             state=normalize.enum_of(f["state"], *normalize.SCOPE_STATES),
             type=normalize.enum_of(f["scope_type"], *normalize.SCOPE_TYPES),
-            lease_duration=normalize.format_duration(lease) if lease else Scope.lease_duration,
+            lease_duration=duration,
             delay=f["delay_ms"],
             max_bootp_clients=NO_BOOTP_LIMIT if f["max_bootp_clients"] is None else f["max_bootp_clients"],
             activate_policies=f["activate_policies"],
@@ -113,7 +123,7 @@ class WindowsWriter:
             return
         f = change.after or {}
         if change.action == CREATE:
-            self.client.add_scope(self._scope(change.key, f, None))
+            self.client.add_scope(self._scope(change.key, f, None, create=True))
             return
         before = change.before or {}
         if before.get("subnet_mask") != f["subnet_mask"]:
@@ -121,7 +131,7 @@ class WindowsWriter:
                 f"scope {change.key}: the subnet mask cannot change on Windows without removing the scope with its "
                 "reservations and leases; delete the scope and create it again"
             )
-        self.client.set_scope(self._scope(change.key, f, before.get("lease_seconds")))
+        self.client.set_scope(self._scope(change.key, f, before.get("lease_seconds"), create=False))
 
     # -- exclusions ----------------------------------------------------------------------------------------------
 

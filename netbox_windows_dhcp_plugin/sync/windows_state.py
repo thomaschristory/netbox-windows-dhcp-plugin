@@ -23,7 +23,17 @@ from ..windows.client import (
 )
 from .diff import Record
 
-__all__ = ("SKIPPED_OPTION_IDS", "OptionValue", "WindowsState", "equal", "option_key", "read", "to_records")
+__all__ = (
+    "SKIPPED_OPTION_IDS",
+    "OptionValue",
+    "WindowsState",
+    "class_key",
+    "equal",
+    "hidden_records",
+    "option_key",
+    "read",
+    "to_records",
+)
 
 # Windows keeps the subnet mask (1) and the lease time (51) as options too. NetBox holds them on the prefix and on
 # Subnet.valid_lifetime, so importing them as options would store the same setting twice.
@@ -84,13 +94,19 @@ def read(client: DhcpClient) -> WindowsState:
 
 
 def option_key(parent: str, option_id: int, vendor_class: str = "", user_class: str = "") -> str:
-    """``server/6``, ``10.1.0.0/3``, ``10.1.0.0/10.1.0.50/15;vendor=MSFT 5.0``."""
+    """``server/6``, ``10.1.0.0/3``, ``10.1.0.0/10.1.0.50/15;vendor=msft 5.0``."""
+    # Windows class names are not case sensitive, so neither are the keys naming them.
     key = f"{parent}/{option_id}"
     if vendor_class:
-        key += f";vendor={vendor_class}"
+        key += f";vendor={vendor_class.lower()}"
     if user_class:
-        key += f";user={user_class}"
+        key += f";user={user_class.lower()}"
     return key
+
+
+def class_key(class_type: str, name: str) -> str:
+    """``user/phones``: Windows class names are not case sensitive."""
+    return f"{class_type.lower()}/{name.lower()}"
 
 
 def _lease_seconds(value: str) -> int | None:
@@ -165,7 +181,7 @@ def to_records(
         records.append(
             Record(
                 "class",
-                f"{kind}/{c.name}",
+                class_key(kind, c.name),
                 {"name": c.name, "class_type": kind, "data": c.data, "description": _text(c.description)},
             )
         )
@@ -257,13 +273,59 @@ def _number(value: str) -> int | None:
         return None
 
 
+# Fields naming a Windows class, compared without case like Windows does.
+_CLASS_NAMES = {("class", "name"), ("option", "user_class"), ("option", "vendor_class")}
+
+
 def equal(kind: str, name: str, a: Any, b: Any) -> bool:
     """
     Field comparison for ``diff``. Option values match when they are equal, or the same number written in hex or
-    decimal (Windows prints 0x0A, NetBox may hold 10). Text is compared exactly: a changed boot file name is a change.
+    decimal (Windows prints 0x0A, NetBox may hold 10). Class names match without case, as on Windows. Other text is
+    compared exactly: a changed boot file name is a change.
     """
+    if (kind, name) in _CLASS_NAMES and isinstance(a, str) and isinstance(b, str):
+        return a.casefold() == b.casefold()
     if name in ("value", "default_value") and isinstance(a, list) and isinstance(b, list):
         if len(a) != len(b):
             return False
         return all(x == y or (_number(x) is not None and _number(x) == _number(y)) for x, y in zip(a, b, strict=True))
     return a == b
+
+
+def hidden_records(state: WindowsState, skipped_option_ids: Iterable[int] = SKIPPED_OPTION_IDS) -> list[Record]:
+    """
+    Windows objects ``to_records`` leaves out (vendor class definitions and values, policy values, values with a
+    comma), as records whose parents can be worked out. A push never touches them, but removing their parent on
+    Windows would remove them too, so they stop the parent from being deleted. Options 1 and 51 are not here: every
+    scope has them, and they mean nothing without it.
+    """
+    skipped = set(skipped_option_ids)
+    out = []
+    for d in state.option_definitions:
+        if d.vendor_class:
+            out.append(
+                Record(
+                    "optiondef",
+                    f"{d.vendor_class}/{d.option_id}",
+                    {"option_id": d.option_id, "vendor_class": d.vendor_class},
+                )
+            )
+    for o in state.options:
+        values = [str(v) for v in o.value]
+        if o.option_id in skipped or not (o.policy_name or o.vendor_class or not _storable(values)):
+            continue
+        parent = f"{o.scope_id}/{o.reserved_ip}" if o.reserved_ip else o.scope_id or "server"
+        out.append(
+            Record(
+                "option",
+                option_key(parent, o.option_id, o.vendor_class, o.user_class)
+                + (f";policy={o.policy_name}" if o.policy_name else ""),
+                {
+                    "parent": parent,
+                    "option_id": o.option_id,
+                    "vendor_class": o.vendor_class,
+                    "user_class": o.user_class,
+                },
+            )
+        )
+    return out

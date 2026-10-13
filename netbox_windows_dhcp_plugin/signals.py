@@ -1,17 +1,19 @@
 """
 Queue a push when DHCP data changes in NetBox.
 
-Without netbox-branching, every save or delete of an object a push reads queues a push of the servers it belongs to,
-after the transaction commits and ``push_debounce`` seconds later, so a burst of edits becomes one push. With
-branching these model signals are ignored (they also fire inside branches and during merges); merges and reverts
-queue pushes instead (see integrations/branching.py), using the same ``servers_for`` mapping.
+Every save or delete of an object a push reads queues a push of the servers it belongs to (before and after the
+change, so moving a subnet pushes both), after the transaction commits and ``push_debounce`` seconds later, so a
+burst of edits becomes one push. With netbox-branching, saves inside a branch or during a merge or revert are
+ignored; merges and reverts queue their own pushes (see integrations/branching.py) with the same ``servers_for``
+mapping.
 """
 
 import threading
 from contextlib import contextmanager
 
+from django.core.signals import request_started
 from django.db import transaction
-from django.db.models.signals import post_delete, post_save
+from django.db.models.signals import post_save, pre_delete
 
 __all__ = ("connect", "push_suppressed", "queue_pushes", "servers_for", "servers_for_change")
 
@@ -114,6 +116,12 @@ def _shared_network_servers(ids):
     return set(SharedNetwork.objects.filter(pk__in=ids).values_list("dhcp_server_id", flat=True))
 
 
+def _shared_network_subnet_servers(shared_network_id):
+    from netbox_dhcp.models import Subnet
+
+    return _subnet_servers(Subnet.objects.filter(shared_network_id=shared_network_id).values("pk"))
+
+
 # Model label -> function(primary key, field values) returning DHCPServer primary keys. Field values are what the
 # change log records: foreign keys as primary keys, under the field name.
 _RESOLVERS = {
@@ -122,12 +130,16 @@ _RESOLVERS = {
     "netbox_dhcp.hostreservation": lambda pk, d: {d.get("dhcp_server")} | _subnet_servers([d.get("subnet")]),
     "netbox_dhcp.option": lambda pk, d: _assigned_servers(d.get("assigned_object_type"), d.get("assigned_object_id")),
     "netbox_dhcp.optiondefinition": lambda pk, d: {d.get("dhcp_server")},
+    # A shared network's server owns the subnets in it (see netbox_state.server_subnets).
+    "netbox_dhcp.sharednetwork": lambda pk, d: {d.get("dhcp_server")} | _shared_network_subnet_servers(pk),
     f"{PLUGIN}.windowsscope": lambda pk, d: _subnet_servers([d.get("subnet")]),
     f"{PLUGIN}.windowsreservation": lambda pk, d: _reservation_servers([d.get("host_reservation")]),
     f"{PLUGIN}.exclusionrange": lambda pk, d: _subnet_servers([d.get("subnet")]),
     f"{PLUGIN}.windowsclass": lambda pk, d: {d.get("dhcp_server")},
     f"{PLUGIN}.windowsoptiondefinition": lambda pk, d: _definition_servers([d.get("option_definition")]),
     f"{PLUGIN}.windowsoptionqualifier": lambda pk, d: _option_servers([d.get("option")]),
+    # Decides which scopes a partner leaves alone and which a primary replicates.
+    f"{PLUGIN}.failoverrelationship": lambda pk, d: {d.get("primary_server"), d.get("partner_server")},
     # Core objects netbox-plugin-dhcp points at: the scope range, the prefix, a reservation's address and MAC.
     "ipam.iprange": lambda pk, d: _pool_servers(pk),
     "ipam.prefix": lambda pk, d: _prefix_servers(pk),
@@ -192,16 +204,25 @@ def _flush():
         queue_pushes(ids, user, delay=get_setting("push_debounce"), notify_always=False)
 
 
+def _forget_pending(**kwargs):
+    # Servers left pending by a rolled-back transaction belong to an earlier request: do not push them under this one.
+    _local.pending = None
+
+
 def _changed(sender, instance, **kwargs):
     # Connected for every model, so leave quickly for the ones a push does not read.
     label = sender._meta.label_lower
     if label not in WATCHED or getattr(_local, "suppressed", False):
         return
-    from .integrations.branching import branching_installed
+    from .integrations.branching import save_belongs_to_branching
 
-    if branching_installed():
+    if save_belongs_to_branching():
         return
     ids = servers_for(label, instance.pk, _data(instance))
+    # NetBox snapshots an object before editing it: the servers it belonged to before count too.
+    snapshot = getattr(instance, "_prechange_snapshot", None)
+    if snapshot:
+        ids |= servers_for(label, instance.pk, snapshot)
     if not ids:
         return
     from netbox.context import current_request
@@ -214,11 +235,13 @@ def _changed(sender, instance, **kwargs):
         _local.pending = {}
     for server_id in ids:
         _local.pending.setdefault(server_id, user)
-    # One callback per change; the first to run takes everything pending. A rolled-back transaction leaves its
-    # servers pending, and the next commit pushes them: a push with nothing to do is harmless.
-    transaction.on_commit(_flush)
+    # One callback per change; the first to run takes everything pending. robust: failing to queue a push must not
+    # turn a save that already committed into an error page.
+    transaction.on_commit(_flush, robust=True)
 
 
 def connect():
     post_save.connect(_changed, dispatch_uid=f"{PLUGIN}.push.save")
-    post_delete.connect(_changed, dispatch_uid=f"{PLUGIN}.push.delete")
+    # Before the delete, while the rows the object points at (and that point at it) are still there.
+    pre_delete.connect(_changed, dispatch_uid=f"{PLUGIN}.push.delete")
+    request_started.connect(_forget_pending, dispatch_uid=f"{PLUGIN}.push.request")

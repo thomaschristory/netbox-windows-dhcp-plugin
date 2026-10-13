@@ -30,7 +30,7 @@ from ..windows import normalize
 from ..windows.psscript import NotFound, WindowsLayerError
 from ..windows.runner import RunnerError
 from .diff import CREATE, DELETE, UPDATE, Change, Record, diff, index
-from .windows_state import equal
+from .windows_state import SKIPPED_OPTION_IDS, class_key, equal
 from .windows_writer import PushRefused, option_target
 
 __all__ = ("Plan", "Result", "Skip", "execute", "fingerprint", "parents", "plan")
@@ -48,6 +48,9 @@ DRIFTED = (
     "it back into NetBox"
 )
 CONFLICT = "NetBox holds more than one object for this Windows object (or one without an address); fix it in NetBox"
+LEASE_OR_MASK = (
+    "option {code} is the {what} on Windows, which a push sets from the {source}; remove the option from NetBox"
+)
 
 
 @dataclass(frozen=True)
@@ -132,6 +135,11 @@ def fingerprint(record: Record) -> str:
     for name in ("value", "default_value"):
         if isinstance(fields.get(name), list):
             fields[name] = [_canonical_value(v) for v in fields[name]]
+    # Windows class names are not case sensitive.
+    names = ("name",) if record.kind == "class" else ("user_class", "vendor_class") if record.kind == "option" else ()
+    for name in names:
+        if isinstance(fields.get(name), str):
+            fields[name] = fields[name].lower()
     data = json.dumps({"kind": record.kind, "key": record.key, "fields": fields}, sort_keys=True, default=str)
     return hashlib.sha256(data.encode()).hexdigest()
 
@@ -141,19 +149,22 @@ def fingerprint(record: Record) -> str:
 
 def parents(kind: str, fields: Mapping[str, Any]) -> list[Key]:
     """The objects this one needs on Windows (and that take it with them when removed)."""
-    if kind in ("exclusion", "reservation"):
+    if kind in ("exclusion", "reservation", "policy"):
         return [("scope", fields["scope_id"])]
+    if kind == "optiondef" and fields.get("vendor_class"):
+        return [("class", class_key("vendor", fields["vendor_class"]))]
     if kind == "option":
         scope_id, ip = option_target(fields["parent"])
-        out: list[Key] = [("optiondef", str(fields["option_id"]))]
+        vendor = fields.get("vendor_class", "")
+        out: list[Key] = [("optiondef", f"{vendor}/{fields['option_id']}" if vendor else str(fields["option_id"]))]
         if scope_id:
             out.append(("scope", scope_id))
         if ip:
             out.append(("reservation", f"{scope_id}/{ip}"))
         if fields.get("user_class"):
-            out.append(("class", f"user/{fields['user_class']}"))
-        if fields.get("vendor_class"):
-            out.append(("class", f"vendor/{fields['vendor_class']}"))
+            out.append(("class", class_key("user", fields["user_class"])))
+        if vendor:
+            out.append(("class", class_key("vendor", vendor)))
         return out
     return []
 
@@ -161,10 +172,32 @@ def parents(kind: str, fields: Mapping[str, Any]) -> list[Key]:
 # -- planning ------------------------------------------------------------------------------------------------------
 
 
-def _pushable(record: Record) -> bool:
+def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] | None) -> str | None:
+    """Why NetBox data cannot become a Windows object, or None."""
+    f = record.fields
     # netbox_state marks extra copies with "#<pk>", and a reservation without an address ends in "/": neither names
     # a Windows object.
-    return "#" not in record.key and not record.key.endswith("/")
+    if "#" in record.key or record.key.endswith("/"):
+        return CONFLICT
+    if record.kind == "scope" and not (f.get("start_range") and f.get("end_range")):
+        return "the subnet has no pool (IP range) to use as the scope range; add one in NetBox"
+    if record.kind == "reservation" and not f.get("client_id"):
+        return "the reservation has neither a MAC address nor a client ID; add one in NetBox"
+    if record.kind == "optiondef" and f["option_id"] in skipped_option_ids:
+        return f"Windows defines option {f['option_id']} itself; remove the definition from NetBox"
+    if record.kind == "option":
+        code = f["option_id"]
+        if code in skipped_option_ids:
+            what, source = ("subnet mask", "prefix length") if code == 1 else ("lease time", "subnet's valid lifetime")
+            return LEASE_OR_MASK.format(code=code, what=what, source=source)
+        if not f.get("value"):
+            return "the option has no value; set one or remove the option in NetBox"
+        if defined is not None and str(code) not in defined:
+            return (
+                f"Windows has no definition for option {code}; add a server option definition for it in NetBox, or "
+                "create it on Windows"
+            )
+    return None
 
 
 def _prepare(record: Record, target: Mapping[Key, Record]) -> Record:
@@ -173,31 +206,57 @@ def _prepare(record: Record, target: Mapping[Key, Record]) -> Record:
     if record.kind == "reservation" and not f.get("name"):
         # Windows names a reservation after its IP when given no name.
         return Record(record.kind, record.key, {**f, "name": f["ip_address"]})
+    if record.kind == "scope" and not f.get("name"):
+        # Windows requires a scope name: use the scope ID, as for an unnamed reservation.
+        record = Record(record.kind, record.key, {**f, "name": record.key})
+        f = record.fields
     if record.kind == "scope" and f.get("lease_seconds") is None:
-        # No lease time in NetBox: keep the one Windows has, or send Windows' own default for a new scope.
+        # No lease time in NetBox: keep the one Windows has (None when it could not be read, which the writer then
+        # leaves alone), or send Windows' own default for a new scope.
         current = target.get((record.kind, record.key))
         lease = current.fields["lease_seconds"] if current else DEFAULT_LEASE_SECONDS
         return Record(record.kind, record.key, {**f, "lease_seconds": lease})
     return record
 
 
-def plan(source: Iterable[Record], target: Iterable[Record], managed: Mapping[Key, str]) -> Plan:
-    """Work out what to change on Windows (``target``) so it matches NetBox (``source``)."""
+def plan(
+    source: Iterable[Record],
+    target: Iterable[Record],
+    managed: Mapping[Key, str],
+    hidden: Iterable[Record] = (),
+    defined_options: Iterable[int] | None = None,
+    skipped_option_ids: Iterable[int] = SKIPPED_OPTION_IDS,
+) -> Plan:
+    """
+    Work out what to change on Windows (``target``) so it matches NetBox (``source``).
+
+    ``hidden`` are Windows objects the push does not handle (see ``windows_state.hidden_records``): they only stop
+    their parents from being deleted. ``defined_options`` are the option codes Windows has a definition for; values
+    of other codes are not pushed unless NetBox also pushes a definition. None skips that check.
+    """
     result = Plan()
     target_index = index(target)
+    source = list(source)
+    defined = None
+    if defined_options is not None:
+        defined = {str(c) for c in defined_options} | {r.key for r in source if r.kind == "optiondef"}
+    skipped_ids = set(skipped_option_ids)
     pushable = []
     for record in source:
-        if _pushable(record):
+        reason = _unpushable(record, skipped_ids, defined)
+        if reason is None:
             pushable.append(_prepare(record, target_index))
         else:
-            result.skipped.append(Skip(Change(CREATE, record.kind, record.key, after=dict(record.fields)), CONFLICT))
+            result.skipped.append(Skip(Change(CREATE, record.kind, record.key, after=dict(record.fields)), reason))
     source_index = index(pushable)
 
-    for key, record in target_index.items():
+    for record in [*target_index.values(), *hidden]:
         for parent in parents(record.kind, record.fields):
-            result.children.setdefault(parent, []).append(key)
+            result.children.setdefault(parent, []).append((record.kind, record.key))
 
-    changes = diff(pushable, target_index.values(), equal=equal)
+    # A NetBox object that cannot be pushed still says "keep this": never delete its Windows counterpart.
+    held = {(s.change.kind, s.change.key) for s in result.skipped}
+    changes = diff(pushable, [r for k, r in target_index.items() if k not in held], equal=equal)
     changed = {(c.kind, c.key) for c in changes}
     for key in source_index:
         if key in target_index and key not in changed:

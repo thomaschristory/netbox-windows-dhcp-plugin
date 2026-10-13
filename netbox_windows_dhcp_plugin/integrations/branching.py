@@ -19,6 +19,26 @@ def branching_installed():
     return apps.is_installed("netbox_branching")
 
 
+def save_belongs_to_branching():
+    """
+    True when a model save is not an edit of main: it happens inside a branch (edits, imports, syncs from main), or
+    while a branch is being merged or reverted (the merge then queues its own pushes). Direct edits of main still
+    push, as without branching.
+    """
+    if not branching_installed():
+        return False
+    try:
+        from netbox_branching.choices import BranchStatusChoices
+        from netbox_branching.contextvars import active_branch
+        from netbox_branching.models import Branch
+    except ImportError:
+        return True
+    if active_branch.get() is not None:
+        return True
+    busy = (BranchStatusChoices.MERGING, BranchStatusChoices.REVERTING)
+    return Branch.objects.filter(status__in=busy).exists()
+
+
 def change_control_installed():
     return apps.is_installed("netbox_change_control")
 
@@ -70,7 +90,7 @@ def _queue(ids, user, branch):
     if not ids:
         return
     name = branch.name
-    transaction.on_commit(lambda: queue_pushes(ids, user, branch=name))
+    transaction.on_commit(lambda: queue_pushes(ids, user, branch=name), robust=True)
 
 
 def _on_merge(sender, branch, user=None, **kwargs):
@@ -82,6 +102,9 @@ def _on_merge(sender, branch, user=None, **kwargs):
 
 
 def _on_pre_revert(sender, branch, user=None, **kwargs):
+    # A revert that fails, or has nothing to revert, sends no post_revert: do not let those entries pile up.
+    if len(_reverting) > 50:
+        _reverting.clear()
     try:
         _reverting[branch.pk] = _affected_servers(branch)
     except Exception:

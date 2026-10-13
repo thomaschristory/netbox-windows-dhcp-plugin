@@ -107,13 +107,14 @@ class PushJobTest(PushTestMixin, TestCase):
 
     def test_dry_run_writes_nothing(self):
         self.target = FakeDhcpServer()
+        managed = set(SyncState.objects.values_list("kind", "key", "fingerprint"))
         run = self._run(DryRunJob)
         self.assertEqual(run.kind, SyncKindChoices.DRY_RUN)
         self.assertEqual(run.status, SyncStatusChoices.COMPLETED)
         self.assertGreater(run.summary["create"], 0)
         self.assertEqual(len(run.summary["planned"]), run.summary["changes"])
         self.assertEqual(self.target.scopes, {})
-        self.assertFalse(SyncState.objects.exists())
+        self.assertEqual(set(SyncState.objects.values_list("kind", "key", "fingerprint")), managed)
 
     def test_sync_disabled_pushes_nothing(self):
         self.server.sync_enabled = False
@@ -154,6 +155,60 @@ class PushJobTest(PushTestMixin, TestCase):
         self.assertIsNone(enqueue_push(self.server))
         # A dry run is queued on its own.
         self.assertIsNotNone(enqueue_push(self.server, dry_run=True))
+
+    def test_applying_an_import_records_the_objects_as_managed(self):
+        # No push has run yet, but a NetBox delete of an imported object still reaches Windows.
+        self.assertTrue(SyncState.objects.filter(kind="reservation").exists())
+        HostReservation.objects.get().delete()
+        self._run()
+        self.assertNotIn("10.1.0.50", self.fake.reservations)
+
+    def test_scope_with_policies_is_not_deleted(self):
+        from netbox_windows_dhcp_plugin.windows.client import Policy
+
+        DhcpClient(self.fake).add_policy(
+            Policy(name="phones", scope_id="10.1.0.0", criteria={"vendor_class": ["EQ,MSFT"]})
+        )
+        Subnet.objects.get().delete()
+        run = self._run()
+        self.assertIn("10.1.0.0", self.fake.scopes)
+        reasons = {s["key"]: s["reason"] for s in run.summary["not_pushed"]}
+        self.assertIn("policy 10.1.0.0/phones", reasons["10.1.0.0"])
+
+    def test_lease_time_option_is_not_pushed(self):
+        from netbox_dhcp.models import OptionDefinition
+
+        definition = OptionDefinition.objects.filter(code=51, space="dhcp4", standard=True).first()
+        if definition is None:  # netbox-plugin-dhcp (like Kea) may not define it: use a server definition
+            definition = OptionDefinition.objects.create(
+                dhcp_server=self.dhcp, family=4, space="dhcp4", code=51, name="lease-time", type="uint32"
+            )
+        Option.objects.create(definition=definition, data="3600", assigned_object=Subnet.objects.get())
+        run = self._run()
+        self.assertEqual(run.summary["changes"], 0)
+        self.assertTrue(any("lease time" in s["reason"] for s in run.summary["not_pushed"]))
+
+    def test_gives_up_after_the_last_attempt(self):
+        from netbox_windows_dhcp_plugin.jobs import PUSH_ATTEMPTS
+
+        other = connection.copy()
+        try:
+            with other.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_lock(%s, %s)", [_LOCK_CLASS, self.server.pk])
+            with self.assertRaises(JobFailed):
+                self._run(attempt=PUSH_ATTEMPTS)
+        finally:
+            other.close()
+        self.assertFalse(PushJob.get_jobs(self.server).filter(status=JobStatusChoices.STATUS_SCHEDULED).exists())
+
+    def test_orphaned_waiting_jobs_do_not_block_new_pushes(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        job = enqueue_push(self.server)
+        Job.objects.filter(pk=job.pk).update(created=timezone.now() - timedelta(hours=1))
+        self.assertIsNotNone(enqueue_push(self.server))
 
     def test_merge_branch_name_is_recorded(self):
         run = self._run(branch="feature/dhcp")
@@ -270,13 +325,37 @@ class StandaloneTriggerTest(ImportTestMixin, TestCase):
             Subnet.objects.get().save()
         self.assertFalse(self.push_jobs().exists())
 
-    def test_model_saves_are_ignored_with_branching(self):
+    def test_saves_inside_branches_or_merges_are_ignored(self):
         with (
-            mock.patch("netbox_windows_dhcp_plugin.integrations.branching.branching_installed", return_value=True),
+            mock.patch(
+                "netbox_windows_dhcp_plugin.integrations.branching.save_belongs_to_branching", return_value=True
+            ),
             self.captureOnCommitCallbacks(execute=True),
         ):
             Subnet.objects.get().save()
         self.assertFalse(self.push_jobs().exists())
+
+    def test_direct_edits_of_main_push_with_branching_too(self):
+        # No branch active and nothing merging: an edit of main is pushed, whether or not branching is installed.
+        with self.captureOnCommitCallbacks(execute=True):
+            Subnet.objects.get().save()
+        self.assertEqual(self.push_jobs().count(), 1)
+
+    def test_moving_a_subnet_pushes_both_servers(self):
+        (other_dhcp,) = dhcp_servers(1, start=7)
+        other = windows_server(other_dhcp)
+        subnet = Subnet.objects.get()
+        subnet.snapshot()
+        subnet.dhcp_server = other_dhcp
+        with STANDALONE, self.captureOnCommitCallbacks(execute=True):
+            subnet.save()
+        self.assertEqual(self.push_jobs().count(), 1)
+        self.assertEqual(PushJob.get_jobs(other).count(), 1)
+
+    def test_deleting_a_reservation_address_queues_a_push(self):
+        with STANDALONE, self.captureOnCommitCallbacks(execute=True):
+            HostReservation.objects.get().ipv4_address.delete()
+        self.assertEqual(self.push_jobs().count(), 1)
 
 
 class _Changes(list):

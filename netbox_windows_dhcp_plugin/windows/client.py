@@ -111,7 +111,7 @@ class Scope(_Model):
     subnet_mask: str = ""
     state: str = "Active"  # Active | InActive (the server reports "Inactive")
     type: str = "Dhcp"  # Dhcp | Bootp | Both
-    lease_duration: str = "8.00:00:00"  # d.hh:mm:ss
+    lease_duration: str = "8.00:00:00"  # d.hh:mm:ss; empty on set keeps the current lease time
     # Optional settings; None means "do not send" on add/set.
     delay: int | None = None  # offer delay, milliseconds
     max_bootp_clients: int | None = None
@@ -399,8 +399,9 @@ $a = @{
     EndRange      = $p.end_range
     State         = $p.state
     Type          = $p.type
-    LeaseDuration = [TimeSpan]::FromSeconds($p.lease_seconds)
 }
+# No lease time means "keep the one the scope has" (for example an unlimited lease that cannot be read back).
+if ($null -ne $p.lease_seconds) { $a['LeaseDuration'] = [TimeSpan]::FromSeconds($p.lease_seconds) }
 Add-WdScopeExtras $a
 Set-DhcpServerv4Scope @cn @a
 $out = ConvertTo-WdScope (Get-DhcpServerv4Scope @cn -ScopeId $p.scope_id)
@@ -1309,7 +1310,8 @@ def _scope_params(s: Scope) -> dict[str, Any]:
         "subnet_mask": mask,
         "state": normalize.enum_of(s.state, *normalize.SCOPE_STATES),
         "type": normalize.enum_of(s.type, *normalize.SCOPE_TYPES),
-        "lease_seconds": normalize.parse_duration(s.lease_duration),
+        # Empty only on set: keep the scope's lease time. Add needs one.
+        "lease_seconds": normalize.parse_duration(s.lease_duration) if s.lease_duration else None,
         "delay": s.delay,
         "max_bootp_clients": s.max_bootp_clients,
         "activate_policies": s.activate_policies,

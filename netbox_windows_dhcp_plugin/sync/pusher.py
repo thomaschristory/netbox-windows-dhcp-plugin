@@ -12,6 +12,7 @@ from netbox_dhcp.models import Subnet
 from ..models import FailoverRelationship, SyncState
 from ..windows.psscript import WindowsLayerError
 from . import netbox_state, push, windows_state
+from .diff import Record
 from .windows_writer import WindowsWriter, option_target
 
 log = logging.getLogger(__name__)
@@ -114,6 +115,32 @@ def _replicate(windows_server, client, applied, logger):
     return errors
 
 
+def _scope_policies(client, state, source, current):
+    """
+    Policies of the managed scopes NetBox no longer has, as hidden records: the push does not manage policies yet,
+    and removing a scope removes its policies too, so a scope with policies is not deleted.
+    """
+    wanted = {r.key for r in source if r.kind == "scope"}
+    out = []
+    for scope in state.scopes:
+        sid = scope.scope_id
+        if sid in wanted or ("scope", sid) not in current:
+            continue
+        try:
+            policies = client.list_policies(scope_id=sid)
+        except WindowsLayerError as exc:
+            # Not knowing is no reason to delete: keep the scope.
+            log.warning("could not list the policies of scope %s: %s", sid, exc)
+            out.append(_policy_record("policy", f"{sid}/?", sid))
+            continue
+        out.extend(_policy_record("policy", f"{sid}/{p.name}", sid) for p in policies)
+    return out
+
+
+def _policy_record(kind, key, scope_id):
+    return Record(kind, key, {"scope_id": scope_id})
+
+
 @transaction.atomic
 def _save_state(windows_server, result):
     if result.removals:
@@ -134,7 +161,10 @@ def run(windows_server, client, dry_run=False, logger=log):
     state = windows_state.read(client)
     target, notes = windows_state.to_records(state, standard_codes=netbox_state.standard_codes())
     source = netbox_state.read(windows_server)
-    plan = push.plan(source, target, managed(windows_server))
+    current = managed(windows_server)
+    hidden = windows_state.hidden_records(state) + _scope_policies(client, state, source, current)
+    defined = {d.option_id for d in state.option_definitions if not d.vendor_class}
+    plan = push.plan(source, target, current, hidden=hidden, defined_options=defined)
     _hold_partner_scopes(windows_server, plan, logger)
     outcome = PushOutcome(plan=plan, notes=notes)
     if dry_run:

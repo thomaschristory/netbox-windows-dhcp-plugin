@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from datetime import timedelta
 
+from core.choices import JobNotificationChoices
 from core.exceptions import JobFailed
 from django.core.exceptions import ValidationError
 from django.db import connection
@@ -145,7 +146,7 @@ class PushJob(JobRunner):
     runner_factory = None
     dry_run = False
 
-    def run(self, *args, branch="", **kwargs):
+    def run(self, *args, branch="", attempt=1, **kwargs):
         server = self.job.object
         if not self.dry_run and not server.sync_enabled:
             self.logger.info(f"Sync is disabled for {server}: nothing pushed")
@@ -154,10 +155,17 @@ class PushJob(JobRunner):
             with server_lock(server):
                 self._run(server, branch)
         except ServerBusy as exc:
-            if self.dry_run:
-                raise JobFailed(str(exc)) from None
+            if self.dry_run or attempt >= PUSH_ATTEMPTS:
+                raise JobFailed(f"{exc}; giving up after {attempt} attempt(s)") from None
             # An import (or another push) is running. Try again shortly rather than lose a merge's changes.
-            enqueue_push(server, self.job.user, delay=PUSH_RETRY, branch=branch)
+            enqueue_push(
+                server,
+                self.job.user,
+                delay=PUSH_RETRY,
+                branch=branch,
+                notify_always=self.job.notifications != JobNotificationChoices.NOTIFICATION_ON_FAILURE,
+                attempt=attempt + 1,
+            )
             self.logger.info(f"{exc}; push queued again in {PUSH_RETRY} seconds")
 
     def _run(self, server, branch):
@@ -215,8 +223,14 @@ class DryRunJob(PushJob):
     dry_run = True
 
 
-# Seconds before a push that found its server busy tries again.
+# Seconds before a push that found its server busy tries again, and how many times it tries (two hours: longer than
+# an import provisioning a branch should take).
 PUSH_RETRY = 60
+PUSH_ATTEMPTS = 120
+
+# A job still waiting this long after it was due never reached a worker (Redis lost it, or the worker died before
+# starting it). It no longer stops new pushes from being queued.
+ORPHANED_JOB = timedelta(minutes=15)
 
 # RQ's default timeout is 300 seconds; reading a large server takes one PowerShell call per scope and per
 # reservation, so allow more.
@@ -227,21 +241,23 @@ PUSH_TIMEOUT = 3600
 _QUEUE_LOCK_CLASS = 0x57444851  # "WDHQ"
 
 
-def _waiting(server, job_class):
-    """Jobs of this class for the server that have not started yet."""
+def _waiting(server, job_class, now=None):
+    """Jobs of this class for the server that have not started yet, and are not overdue enough to be orphans."""
     from core.choices import JobStatusChoices
+    from django.db.models import Q
 
+    cutoff = (now or timezone.now()) - ORPHANED_JOB
     return job_class.get_jobs(server).filter(
-        status__in=(JobStatusChoices.STATUS_PENDING, JobStatusChoices.STATUS_SCHEDULED)
+        Q(status=JobStatusChoices.STATUS_PENDING, created__gte=cutoff)
+        | Q(status=JobStatusChoices.STATUS_SCHEDULED, scheduled__gte=cutoff)
     )
 
 
-def enqueue_push(server, user=None, delay=0, branch="", dry_run=False, notify_always=True):
+def enqueue_push(server, user=None, delay=0, branch="", dry_run=False, notify_always=True, attempt=1):
     """
     Queue a push (or a dry run) for the server, ``delay`` seconds from now, unless one is already waiting to start:
     that one will see the latest NetBox data anyway. Returns the job, or None.
     """
-    from core.choices import JobNotificationChoices
     from django.db import transaction
 
     job_class = DryRunJob if dry_run else PushJob
@@ -261,6 +277,7 @@ def enqueue_push(server, user=None, delay=0, branch="", dry_run=False, notify_al
             ),
             job_timeout=PUSH_TIMEOUT,
             branch=branch,
+            attempt=attempt,
         )
 
 

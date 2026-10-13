@@ -13,7 +13,7 @@ from netbox_dhcp.models import HostReservation, Option, OptionDefinition, Pool, 
 from ..models import ExclusionRange, WindowsClass
 from ..windows import normalize
 from .diff import Record
-from .windows_state import option_key
+from .windows_state import class_key, option_key
 
 __all__ = ("SYS4_TYPE", "WINDOWS_TYPE", "read", "scope_id_of", "server_subnets", "split_value", "standard_codes")
 
@@ -100,7 +100,11 @@ def _scope(subnet):
 def _client_id(reservation):
     if reservation.hw_address_id:
         return normalize.canonical_mac(str(reservation.hw_address.mac_address))
-    return reservation.client_id or ""
+    # A free-text client ID: in the aa-bb-cc form Windows reports when it is a MAC address.
+    try:
+        return normalize.canonical_mac(reservation.client_id or "")
+    except ValueError:
+        return reservation.client_id or ""
 
 
 def _reservation(reservation, scope_id):
@@ -147,7 +151,7 @@ def read(windows_server):
         records.append(
             Record(
                 "class",
-                f"{c.class_type}/{c.name}",
+                class_key(c.class_type, c.name),
                 {"name": c.name, "class_type": c.class_type, "data": c.data, "description": c.description},
             )
         )
