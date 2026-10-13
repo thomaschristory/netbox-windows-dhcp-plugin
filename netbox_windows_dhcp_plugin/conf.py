@@ -1,5 +1,7 @@
-import fnmatch
+import contextlib
+import ipaddress
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -84,9 +86,37 @@ def get_credentials(profile_name, profiles=None, environ=None):
     )
 
 
-def _normalise_host(host):
+# One DNS label. Underscores appear in some Windows host names, so they are accepted.
+_LABEL = r"[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?"
+_HOSTNAME = re.compile(rf"{_LABEL}(?:\.{_LABEL})*")
+
+
+def normalise_host(host):
+    """
+    Return the host in a canonical form, or None when it is not a plain host name or IP address.
+
+    Anything else (a port, "user@", "/", "#", spaces, an IPv6 zone) is refused: the transport libraries would read
+    such a value differently from the allowed_hosts check, and could connect somewhere the check never saw.
+    """
     # "DHCP01.corp.example." and "dhcp01.corp.example" are the same host.
-    return host.strip().rstrip(".").lower()
+    host = host.rstrip(".").lower()
+    if "%" not in host:
+        try:
+            return str(ipaddress.ip_address(host))
+        except ValueError:
+            pass
+    if len(host) <= 253 and _HOSTNAME.fullmatch(host):
+        return host
+    return None
+
+
+def _pattern(pattern):
+    # Like a TLS wildcard, * and ? stay within one label: "dhcp*.corp.example" does not match
+    # "dhcp.evil.example.corp.example" through extra dots.
+    pattern = pattern.rstrip(".").lower()
+    with contextlib.suppress(ValueError):
+        pattern = str(ipaddress.ip_address(pattern))
+    return re.compile(re.escape(pattern).replace(r"\*", "[^.]*").replace(r"\?", "[^.]"))
 
 
 def host_allowed(profile_name, profile, host):
@@ -97,8 +127,8 @@ def host_allowed(profile_name, profile, host):
     if isinstance(patterns, str):
         # A bare string would otherwise be matched one character at a time.
         raise CredentialError(f"credential profile {profile_name!r}: allowed_hosts must be a list")
-    host = _normalise_host(host)
-    return any(fnmatch.fnmatchcase(host, _normalise_host(pattern)) for pattern in patterns)
+    host = normalise_host(host)
+    return host is not None and any(_pattern(pattern).fullmatch(host) for pattern in patterns)
 
 
 def check_host_allowed(profile_name, *hosts, profiles=None):
@@ -107,6 +137,8 @@ def check_host_allowed(profile_name, *hosts, profiles=None):
     if profile_name not in profiles:
         raise CredentialError(f"credential profile {profile_name!r} is not defined in PLUGINS_CONFIG")
     for host in hosts:
+        if host and normalise_host(host) is None:
+            raise CredentialError(f"{host!r} is not a valid host name or IP address")
         if host and not host_allowed(profile_name, profiles[profile_name], host):
             raise CredentialError(f"credential profile {profile_name!r} may not be used with host {host!r}")
 

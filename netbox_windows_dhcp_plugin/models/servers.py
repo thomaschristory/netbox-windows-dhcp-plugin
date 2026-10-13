@@ -6,7 +6,7 @@ from netbox.models import PrimaryModel
 from netbox.models.features import JobsMixin
 
 from ..choices import TransportChoices, WinRMAuthChoices
-from ..conf import CredentialError, get_setting, host_allowed
+from ..conf import CredentialError, get_setting, host_allowed, normalise_host
 
 __all__ = ("WindowsServer",)
 
@@ -165,10 +165,16 @@ class WindowsServer(JobsMixin, PrimaryModel):
     def _clean_allowed_hosts(self):
         # Stop a profile's credentials from being pointed at a host it does not cover. The connection code checks
         # again before connecting. An unknown profile is reported when a job runs, as before.
+        errors = {}
+        for field in ("host", "computer_name"):
+            value = getattr(self, field)
+            if value and normalise_host(value) is None:
+                errors[field] = _("Enter a host name or IP address only (no port, user, path or spaces).")
+        if errors:
+            raise ValidationError(errors)
         profile = get_setting("credentials").get(self.credential_profile)
         if profile is None:
             return
-        errors = {}
         for field in ("host", "computer_name"):
             value = getattr(self, field)
             try:

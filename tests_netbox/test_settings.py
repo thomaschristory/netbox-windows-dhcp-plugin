@@ -57,6 +57,26 @@ class AllowedHostsTest(SimpleTestCase):
         with self.assertRaisesMessage(CredentialError, "may not be used with host 'evil.example'"):
             check_host_allowed("corp", "dhcp01.corp.example", "evil.example", profiles=self.profiles)
 
+    def test_wildcard_stays_within_one_label(self):
+        with self.assertRaises(CredentialError):
+            check_host_allowed("corp", "dhcp.evil.example.corp.example", profiles=self.profiles)
+
+    def test_values_a_url_parser_reads_differently_are_refused(self):
+        # Each would match "dhcp*.corp.example" character by character, but a URL parser connects to evil.example.
+        for host in (
+            "dhcp.evil.example#.corp.example",
+            "dhcp.evil.example/.corp.example",
+            "dhcp@evil.example?.corp.example",
+            "dhcp01.corp.example:5986",
+            " dhcp01.corp.example",
+        ):
+            with self.subTest(host=host), self.assertRaisesMessage(CredentialError, "not a valid host"):
+                check_host_allowed("corp", host, profiles=self.profiles)
+
+    def test_ip_addresses_are_compared_canonically(self):
+        profiles = {"v6": {"allowed_hosts": ["2001:DB8::1"]}}
+        check_host_allowed("v6", "2001:db8:0::1", profiles=profiles)
+
     def test_empty_list_allows_nothing(self):
         with self.assertRaises(CredentialError):
             check_host_allowed("none", "dhcp01.corp.example", profiles=self.profiles)
@@ -84,6 +104,12 @@ class ServerValidationTest(TestCase):
 
     def test_host_outside_profile_is_rejected(self):
         self.server.host = "attacker.test"
+        with self.assertRaises(ValidationError) as ctx:
+            self.server.full_clean()
+        self.assertIn("host", ctx.exception.message_dict)
+
+    def test_host_with_url_parts_is_rejected(self):
+        self.server.host = "dhcp1.example.com:5986"
         with self.assertRaises(ValidationError) as ctx:
             self.server.full_clean()
         self.assertIn("host", ctx.exception.message_dict)
