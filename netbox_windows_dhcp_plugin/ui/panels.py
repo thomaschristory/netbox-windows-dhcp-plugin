@@ -68,7 +68,7 @@ class WindowsClassPanel(panels.ObjectAttributesPanel):
 class WindowsOptionDefinitionPanel(panels.ObjectAttributesPanel):
     title = _("Windows option definition")
     option_definition = attrs.RelatedObjectAttr("option_definition", linkify=True)
-    vendor_class = attrs.RelatedObjectAttr("vendor_class", linkify=True)
+    windows_type = attrs.TextAttr("windows_type", label=_("Windows type"))
 
 
 class WindowsPolicyPanel(panels.ObjectAttributesPanel):
@@ -87,7 +87,6 @@ class WindowsOptionQualifierPanel(panels.ObjectAttributesPanel):
     title = _("Option qualifier")
     option = attrs.RelatedObjectAttr("option", linkify=True)
     user_class = attrs.RelatedObjectAttr("user_class", linkify=True)
-    vendor_class = attrs.RelatedObjectAttr("vendor_class", linkify=True)
     policy = attrs.RelatedObjectAttr("policy", linkify=True)
 
 
@@ -113,6 +112,31 @@ class MacFilterPanel(panels.ObjectAttributesPanel):
     mac_address = attrs.TextAttr("mac_address", style="font-monospace", label=_("MAC address"))
     list = attrs.ChoiceAttr("list")
     description = attrs.TextAttr("description")
+
+
+class MacFilterListsPanel(panels.ObjectAttributesPanel):
+    title = _("MAC filter lists")
+    dhcp_server = attrs.RelatedObjectAttr("dhcp_server", linkify=True, label=_("DHCP server"))
+    allow_list_enabled = attrs.BooleanAttr("allow_list_enabled", label=_("Allow list enabled"))
+    deny_list_enabled = attrs.BooleanAttr("deny_list_enabled", label=_("Deny list enabled"))
+
+
+class WindowsVendorOptionDefinitionPanel(panels.ObjectAttributesPanel):
+    title = _("Vendor option definition")
+    vendor_class = attrs.RelatedObjectAttr("vendor_class", linkify=True)
+    code = attrs.NumericAttr("code")
+    name = attrs.TextAttr("name")
+    windows_type = attrs.TextAttr("windows_type", label=_("Windows type"))
+    multi_valued = attrs.BooleanAttr("multi_valued", label=_("Multi-valued"))
+    description = attrs.TextAttr("description")
+
+
+class WindowsVendorOptionPanel(panels.ObjectAttributesPanel):
+    title = _("Vendor option value")
+    definition = attrs.RelatedObjectAttr("definition", linkify=True)
+    assigned_object = attrs.GenericForeignKeyAttr("assigned_object", linkify=True, label=_("Set on"))
+    user_class = attrs.RelatedObjectAttr("user_class", linkify=True)
+    policy = attrs.RelatedObjectAttr("policy", linkify=True)
 
 
 class SyncRunPanel(panels.ObjectAttributesPanel):

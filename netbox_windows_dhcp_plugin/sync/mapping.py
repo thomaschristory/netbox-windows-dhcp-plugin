@@ -12,16 +12,23 @@ import re
 from dcim.models import MACAddress
 from django.contrib.contenttypes.models import ContentType
 from ipam.models import IPAddress, IPRange, Prefix
-from netbox_dhcp.models import HostReservation, Option, OptionDefinition, Pool, Subnet
+from netbox_dhcp.models import DHCPServer, HostReservation, Option, OptionDefinition, Pool, SharedNetwork, Subnet
 
 from ..conf import get_setting
 from ..models import (
     ExclusionRange,
+    FailoverRelationship,
+    MacFilter,
+    MacFilterLists,
     WindowsClass,
     WindowsOptionDefinition,
     WindowsOptionQualifier,
+    WindowsPolicy,
     WindowsReservation,
     WindowsScope,
+    WindowsServer,
+    WindowsVendorOption,
+    WindowsVendorOptionDefinition,
 )
 from ..windows import normalize
 from . import netbox_state, windows_state
@@ -132,22 +139,30 @@ class Writer:
         return found
 
     def windows_class(self, class_type, name, required=True):
-        found = WindowsClass.objects.filter(dhcp_server=self.dhcp, family=4, class_type=class_type, name=name).first()
+        # Windows class names are not case sensitive.
+        found = WindowsClass.objects.filter(
+            dhcp_server=self.dhcp, family=4, class_type=class_type, name__iexact=name
+        ).first()
         if found is None and required:
             raise ApplyError(f"{class_type} class {name!r} is not in NetBox yet: apply it first")
         return found
 
     def definition(self, option_id, vendor_class="", required=True):
-        """The definition an option value uses: a server one for a vendor class or a custom code, else sys4's own."""
-        qs = OptionDefinition.objects.filter(code=option_id, family=4)
-        custom = qs.filter(dhcp_server=self.dhcp, standard=False)
+        """
+        The definition an option value uses: for a vendor class, its WindowsVendorOptionDefinition; otherwise the
+        server's own netbox-plugin-dhcp definition of the code, else sys4's standard one.
+        """
         if vendor_class:
-            found = custom.filter(
-                netbox_windows_dhcp_plugin_windows_option_definition__vendor_class__name=vendor_class
+            found = WindowsVendorOptionDefinition.objects.filter(
+                vendor_class__dhcp_server=self.dhcp,
+                vendor_class__family=4,
+                vendor_class__name__iexact=vendor_class,
+                code=option_id,
             ).first()
         else:
+            qs = OptionDefinition.objects.filter(code=option_id, family=4)
             found = (
-                custom.exclude(netbox_windows_dhcp_plugin_windows_option_definition__vendor_class__isnull=False).first()
+                qs.filter(dhcp_server=self.dhcp, standard=False).first()
                 or qs.filter(standard=True, space="dhcp4").first()
             )
         if found is None and required:
@@ -166,31 +181,34 @@ class Writer:
         """The Option for a record, or the extra copy a duplicate's ``<key>#<pk>`` key names."""
         # Keys contain Windows class names, which may themselves contain "#". A key only names a duplicate when it
         # is exactly the record's own key plus "#<pk>", and that pk must be an option of the same parent and code.
-        base = windows_state.option_key(
-            fields["parent"], fields["option_id"], fields["vendor_class"], fields["user_class"]
-        )
+        vendor, user, policy = fields["vendor_class"], fields["user_class"], fields.get("policy", "")
+        base = windows_state.option_key(fields["parent"], fields["option_id"], vendor, user, policy)
         duplicate = re.fullmatch(rf"{re.escape(base)}#(\d+)", key)
         parent = self._parent(fields["parent"], required=False)
         if parent is None:
             return None
-        candidates = Option.objects.filter(
-            assigned_object_type=ContentType.objects.get_for_model(parent),
-            assigned_object_id=parent.pk,
-            definition__code=fields["option_id"],
-            definition__family=4,
-        ).select_related(
-            "netbox_windows_dhcp_plugin_windows_qualifier__user_class",
-            "netbox_windows_dhcp_plugin_windows_qualifier__vendor_class",
-        )
+        where = {"assigned_object_type": ContentType.objects.get_for_model(parent), "assigned_object_id": parent.pk}
+        if vendor:
+            candidates = WindowsVendorOption.objects.filter(
+                **where, definition__code=fields["option_id"], definition__vendor_class__name__iexact=vendor
+            ).select_related("user_class", "policy")
+            qualifiers = ((o, o) for o in candidates.order_by("pk"))
+        else:
+            candidates = Option.objects.filter(
+                **where, definition__code=fields["option_id"], definition__family=4
+            ).select_related(
+                "netbox_windows_dhcp_plugin_windows_qualifier__user_class",
+                "netbox_windows_dhcp_plugin_windows_qualifier__policy",
+            )
+            qualifiers = (
+                (o, getattr(o, "netbox_windows_dhcp_plugin_windows_qualifier", None)) for o in candidates.order_by("pk")
+            )
         if duplicate:
             return candidates.filter(pk=int(duplicate.group(1))).first()
-        for o in candidates.order_by("pk"):
-            q = getattr(o, "netbox_windows_dhcp_plugin_windows_qualifier", None)
-            if q and q.policy_id:
-                continue
-            vendor = q.vendor_class.name if q and q.vendor_class_id else ""
-            user = q.user_class.name if q and q.user_class_id else ""
-            if (vendor, user) == (fields["vendor_class"], fields["user_class"]):
+        for o, q in qualifiers:
+            found_user = q.user_class.name if q and q.user_class_id else ""
+            found_policy = q.policy.name if q and q.policy_id else ""
+            if (found_user.lower(), found_policy.lower()) == (user.lower(), policy.lower()):
                 return o
         return None
 
@@ -257,12 +275,13 @@ class Writer:
 
     def _apply_optiondef(self, change):
         fields = change.after or change.before
-        obj = self.definition(fields["option_id"], fields["vendor_class"], required=False)
+        if fields["vendor_class"]:
+            return self._apply_vendor_optiondef(change, fields)
+        obj = self.definition(fields["option_id"], required=False)
         if obj is not None and obj.standard:
             obj = None  # never touch netbox-plugin-dhcp's own definitions
         if change.action == DELETE:
             return self._delete(obj)
-        vendor = self.windows_class("vendor", fields["vendor_class"]) if fields["vendor_class"] else None
         values = {
             "name": fields["name"],
             "type": netbox_state.SYS4_TYPE.get(fields["type"], "binary"),
@@ -277,7 +296,6 @@ class Writer:
             obj = self._update(obj, **values)
         side = getattr(obj, "netbox_windows_dhcp_plugin_windows_option_definition", None)
         side_values = {
-            "vendor_class": vendor,
             "windows_type": fields["type"],
             "default_value": list(fields["default_value"]),
         }
@@ -286,6 +304,22 @@ class Writer:
         else:
             self._update(side, **side_values)
         return obj
+
+    def _apply_vendor_optiondef(self, change, fields):
+        obj = self.definition(fields["option_id"], fields["vendor_class"], required=False)
+        if change.action == DELETE:
+            return self._delete(obj)
+        values = {
+            "name": fields["name"],
+            "windows_type": fields["type"],
+            "multi_valued": bool(fields["multi_valued"]),
+            "default_value": list(fields["default_value"]),
+            "description": fields["description"][:DESCRIPTION_LENGTH],
+        }
+        if obj is None:
+            vendor = self.windows_class("vendor", fields["vendor_class"])
+            return self._save(WindowsVendorOptionDefinition(vendor_class=vendor, code=fields["option_id"], **values))
+        return self._update(obj, **values)
 
     def _apply_scope(self, change):
         fields = change.after or change.before
@@ -379,30 +413,193 @@ class Writer:
             self._update(side, reservation_type=fields["reservation_type"])
         return obj
 
+    def _policy(self, fields):
+        """The policy an option value is for, at the level of its parent (server or scope)."""
+        name = fields.get("policy", "")
+        if not name:
+            return None
+        scope_id = fields["parent"].split("/", 1)[0] if fields["parent"] != "server" else ""
+        policy = self.windows_policy(scope_id, name, required=True)
+        return policy
+
     def _apply_option(self, change):
         fields = change.after or change.before
         obj = self.option(change.key, fields)
         if change.action == DELETE:
             return self._delete(obj)
-        data = ", ".join(fields["value"])
-        if obj is not None:
-            return self._update(obj, data=data)
+        vendor = fields["vendor_class"]
+        if vendor:
+            if obj is not None:
+                return self._update(obj, value=list(fields["value"]))
+        else:
+            data = windows_state.join_values(fields["value"])
+            if obj is not None:
+                return self._update(obj, data=data)
         parent = self._parent(fields["parent"])
-        obj = self._save(
-            Option(
-                definition=self.definition(fields["option_id"], fields["vendor_class"]),
-                assigned_object=parent,
-                data=data,
-            )
-        )
-        if fields["vendor_class"] or fields["user_class"]:
-            self._save(
-                WindowsOptionQualifier(
-                    option=obj,
-                    vendor_class=self.windows_class("vendor", fields["vendor_class"])
-                    if fields["vendor_class"]
-                    else None,
-                    user_class=self.windows_class("user", fields["user_class"]) if fields["user_class"] else None,
+        user = self.windows_class("user", fields["user_class"]) if fields["user_class"] else None
+        policy = self._policy(fields)
+        definition = self.definition(fields["option_id"], vendor)
+        if vendor:
+            return self._save(
+                WindowsVendorOption(
+                    definition=definition,
+                    assigned_object=parent,
+                    user_class=user,
+                    policy=policy,
+                    value=list(fields["value"]),
                 )
             )
+        obj = self._save(Option(definition=definition, assigned_object=parent, data=data))
+        if user or policy:
+            self._save(WindowsOptionQualifier(option=obj, user_class=user, policy=policy))
         return obj
+
+    # -- policies, superscopes, failover, MAC filters ----------------------------------------------------------------
+
+    def windows_policy(self, scope_id, name, required=True):
+        subnet = self.subnet(scope_id, required=required) if scope_id else None
+        if scope_id and subnet is None:
+            return None
+        found = WindowsPolicy.objects.filter(dhcp_server=self.dhcp, subnet=subnet, name__iexact=name).first()
+        if found is None and required:
+            raise ApplyError(f"policy {name!r} is not in NetBox yet: apply it first")
+        return found
+
+    def _apply_policy(self, change):
+        fields = change.after or change.before
+        obj = self.windows_policy(fields["scope_id"], fields["name"], required=False)
+        if change.action == DELETE:
+            return self._delete(obj)
+        values = {
+            "name": fields["name"],
+            "description": fields["description"][:DESCRIPTION_LENGTH],
+            "enabled": fields["enabled"],
+            "processing_order": fields["processing_order"] or 1,
+            "condition": fields["condition"],
+            "criteria": fields["criteria"],
+            "lease_duration": fields["lease_seconds"],
+            "ip_ranges": fields["ip_ranges"],
+        }
+        if obj is None:
+            subnet = self.subnet(fields["scope_id"]) if fields["scope_id"] else None
+            return self._save(WindowsPolicy(dhcp_server=self.dhcp, subnet=subnet, **values))
+        return self._update(obj, **values)
+
+    def shared_network(self, name):
+        """This server's shared network for a Windows superscope (matched on its description, then its name)."""
+        networks = SharedNetwork.objects.filter(dhcp_server=self.dhcp)
+        return (
+            networks.filter(description__iexact=name).order_by("pk").first()
+            or networks.filter(name__iexact=name).order_by("pk").first()
+        )
+
+    def _covering_prefix(self, network, subnets):
+        """A prefix covering every member scope: netbox-plugin-dhcp requires one on a shared network."""
+        nets = [ipaddress.ip_network(str(s.prefix.prefix)) for s in subnets]
+        if network is not None and all(n.subnet_of(ipaddress.ip_network(str(network.prefix.prefix))) for n in nets):
+            return network.prefix
+        supernet = nets[0]
+        while not all(n.subnet_of(supernet) for n in nets):
+            supernet = supernet.supernet()
+        return self._prefix(supernet)
+
+    def _move_subnet(self, subnet, shared_network):
+        """Put a subnet in a shared network, or (None) back directly under the server: a subnet has one parent."""
+        if subnet.shared_network_id == (shared_network.pk if shared_network else None):
+            return
+        self._check(subnet, "change")
+        subnet.snapshot()
+        subnet.shared_network = shared_network
+        subnet.dhcp_server = None if shared_network else self.dhcp
+        self._save(subnet)
+
+    def _apply_superscope(self, change):
+        fields = change.after or change.before
+        network = self.shared_network(fields["name"])
+        if change.action == DELETE:
+            if network is not None:
+                # netbox-plugin-dhcp deletes a shared network's subnets with it; on Windows the scopes stay, so they
+                # move back under the server first.
+                for subnet in Subnet.objects.filter(shared_network=network):
+                    self._move_subnet(subnet, None)
+                self._delete(network)
+            return None
+        members = [self.subnet(sid) for sid in fields["scope_ids"]]
+        prefix = self._covering_prefix(network, members)
+        if network is None:
+            network = self._save(
+                SharedNetwork(
+                    name=f"{self.dhcp.name}/{fields['name']}",
+                    description=fields["name"][:DESCRIPTION_LENGTH],
+                    dhcp_server=self.dhcp,
+                    prefix=prefix,
+                )
+            )
+        else:
+            network = self._update(network, prefix=prefix, description=fields["name"][:DESCRIPTION_LENGTH])
+        for subnet in Subnet.objects.filter(shared_network=network).exclude(pk__in=[s.pk for s in members]):
+            self._move_subnet(subnet, None)
+        for subnet in members:
+            self._move_subnet(subnet, network)
+        return network
+
+    def _partner(self, host):
+        """The DHCP server a Windows partner name points at: by Windows server host, then by DHCP server name."""
+        ws = WindowsServer.objects.filter(host__iexact=host).exclude(dhcp_server=self.dhcp).first()
+        if ws is not None:
+            return ws.dhcp_server
+        found = DHCPServer.objects.filter(name__iexact=host).exclude(pk=self.dhcp.pk).first()
+        if found is None:
+            raise ApplyError(f"failover partner {host!r} is not a Windows server in NetBox: add it first")
+        return found
+
+    def failover(self, name):
+        return FailoverRelationship.objects.filter(primary_server=self.dhcp, name__iexact=name).first()
+
+    def _apply_failover(self, change):
+        fields = change.after or change.before
+        obj = self.failover(fields["name"])
+        if change.action == DELETE:
+            return self._delete(obj)
+        values = {
+            "name": fields["name"],
+            "partner_server": self._partner(fields["partner_server"]),
+            "mode": fields["mode"],
+            "max_client_lead_time": fields["max_client_lead_time"],
+            "load_balance_percent": fields["load_balance_percent"],
+            "reserve_percent": fields["reserve_percent"],
+            "server_role": fields["server_role"],
+            "state_switch_interval": fields["state_switch_interval"],
+        }
+        # Message authentication (fields["auth"]) needs a credential profile with the secret: Windows never reveals
+        # it, so a reviewer sets shared_secret_profile in NetBox; until then the difference stays visible.
+        subnets = [self.subnet(sid) for sid in fields["scope_ids"]]
+        if obj is None:
+            obj = self._save(FailoverRelationship(primary_server=self.dhcp, **values))
+        else:
+            obj = self._update(obj, **values)
+        if {s.pk for s in obj.subnets.all()} != {s.pk for s in subnets}:
+            self._check(obj, "change")
+            obj.snapshot()
+            obj.subnets.set(subnets)
+        return obj
+
+    def _apply_macfilter(self, change):
+        fields = change.after or change.before
+        obj = MacFilter.objects.filter(dhcp_server=self.dhcp, mac_address__iexact=fields["mac_address"]).first()
+        if change.action == DELETE:
+            return self._delete(obj)
+        values = {"list": fields["list"], "description": fields["description"][:DESCRIPTION_LENGTH]}
+        if obj is None:
+            return self._save(MacFilter(dhcp_server=self.dhcp, mac_address=fields["mac_address"], **values))
+        return self._update(obj, **values)
+
+    def _apply_filterlists(self, change):
+        obj = MacFilterLists.objects.filter(dhcp_server=self.dhcp).first()
+        if change.action == DELETE:
+            return self._delete(obj)
+        fields = change.after
+        values = {"allow_list_enabled": fields["allow"], "deny_list_enabled": fields["deny"]}
+        if obj is None:
+            return self._save(MacFilterLists(dhcp_server=self.dhcp, **values))
+        return self._update(obj, **values)

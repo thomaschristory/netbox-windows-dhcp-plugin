@@ -30,6 +30,7 @@ __all__ = (
     "FailoverRelationshipType",
     "ImportProposalItemType",
     "ImportProposalType",
+    "MacFilterListsType",
     "MacFilterType",
     "SyncRunType",
     "WindowsClassType",
@@ -39,6 +40,8 @@ __all__ = (
     "WindowsReservationType",
     "WindowsScopeType",
     "WindowsServerType",
+    "WindowsVendorOptionDefinitionType",
+    "WindowsVendorOptionType",
 )
 
 
@@ -76,7 +79,7 @@ class WindowsClassType(PrimaryObjectType):
 )
 class WindowsOptionDefinitionType(NetBoxObjectType):
     option_definition: Annotated["NetBoxDHCPOptionDefinitionType", strawberry.lazy(DHCP_TYPES)]
-    vendor_class: WindowsClassRef | None
+    default_value: strawberry.scalars.JSON
 
 
 @strawberry_django.type(models.WindowsPolicy, fields="__all__", filters=filters.WindowsPolicyFilter, pagination=True)
@@ -93,7 +96,6 @@ class WindowsPolicyType(PrimaryObjectType):
 class WindowsOptionQualifierType(NetBoxObjectType):
     option: Annotated["NetBoxDHCPOptionType", strawberry.lazy(DHCP_TYPES)]
     user_class: WindowsClassRef | None
-    vendor_class: WindowsClassRef | None
     policy: Annotated["WindowsPolicyType", strawberry.lazy(TYPES)] | None
 
 
@@ -109,6 +111,46 @@ class FailoverRelationshipType(PrimaryObjectType):
 @strawberry_django.type(models.MacFilter, fields="__all__", filters=filters.MacFilterFilter, pagination=True)
 class MacFilterType(PrimaryObjectType):
     dhcp_server: DHCPServerType
+
+
+@strawberry_django.type(models.MacFilterLists, fields="__all__", filters=filters.MacFilterListsFilter, pagination=True)
+class MacFilterListsType(NetBoxObjectType):
+    dhcp_server: DHCPServerType
+
+
+@strawberry_django.type(
+    models.WindowsVendorOptionDefinition,
+    fields="__all__",
+    filters=filters.WindowsVendorOptionDefinitionFilter,
+    pagination=True,
+)
+class WindowsVendorOptionDefinitionType(PrimaryObjectType):
+    vendor_class: WindowsClassRef
+    default_value: strawberry.scalars.JSON
+    values: list[Annotated["WindowsVendorOptionType", strawberry.lazy(TYPES)]]
+
+
+@strawberry_django.type(
+    models.WindowsVendorOption,
+    exclude=("assigned_object_type", "assigned_object_id"),
+    filters=filters.WindowsVendorOptionFilter,
+    pagination=True,
+)
+class WindowsVendorOptionType(NetBoxObjectType):
+    definition: Annotated["WindowsVendorOptionDefinitionType", strawberry.lazy(TYPES)]
+    user_class: WindowsClassRef | None
+    policy: Annotated["WindowsPolicyType", strawberry.lazy(TYPES)] | None
+    value: strawberry.scalars.JSON
+
+    # The parent is one of three netbox-plugin-dhcp types, so GraphQL sees a union.
+    @strawberry_django.field
+    def assigned_object(
+        self,
+    ) -> Annotated[
+        DHCPServerType | SubnetType | Annotated["NetBoxDHCPHostReservationType", strawberry.lazy(DHCP_TYPES)],
+        strawberry.union("WindowsVendorOptionAssignmentType"),
+    ]:
+        return self.assigned_object
 
 
 # NetBox has no GraphQL type for core jobs, so the job link is REST-only.

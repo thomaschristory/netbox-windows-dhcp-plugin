@@ -3,6 +3,7 @@ from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
 from netbox.filtersets import NetBoxModelFilterSet, PrimaryModelFilterSet
 from netbox_dhcp.models import DHCPServer, HostReservation, Option, OptionDefinition, Subnet
+from utilities.filters import ContentTypeFilter
 from utilities.filtersets import register_filterset
 
 from .choices import (
@@ -25,6 +26,7 @@ from .models import (
     ImportProposal,
     ImportProposalItem,
     MacFilter,
+    MacFilterLists,
     SyncRun,
     WindowsClass,
     WindowsOptionDefinition,
@@ -33,6 +35,8 @@ from .models import (
     WindowsReservation,
     WindowsScope,
     WindowsServer,
+    WindowsVendorOption,
+    WindowsVendorOptionDefinition,
 )
 
 __all__ = (
@@ -41,6 +45,7 @@ __all__ = (
     "ImportProposalFilterSet",
     "ImportProposalItemFilterSet",
     "MacFilterFilterSet",
+    "MacFilterListsFilterSet",
     "SyncRunFilterSet",
     "WindowsClassFilterSet",
     "WindowsOptionDefinitionFilterSet",
@@ -49,6 +54,8 @@ __all__ = (
     "WindowsReservationFilterSet",
     "WindowsScopeFilterSet",
     "WindowsServerFilterSet",
+    "WindowsVendorOptionDefinitionFilterSet",
+    "WindowsVendorOptionFilterSet",
 )
 
 
@@ -160,7 +167,6 @@ class WindowsOptionDefinitionFilterSet(NetBoxModelFilterSet):
     option_definition_id = _model_filter(
         "option_definition", OptionDefinition.objects.all(), _("Option definition (ID)")
     )
-    vendor_class_id = _model_filter("vendor_class", WindowsClass.objects.all(), _("Vendor class (ID)"))
 
     class Meta:
         model = WindowsOptionDefinition
@@ -191,7 +197,6 @@ class WindowsPolicyFilterSet(PrimaryModelFilterSet):
 class WindowsOptionQualifierFilterSet(NetBoxModelFilterSet):
     option_id = _model_filter("option", Option.objects.all(), _("Option (ID)"))
     user_class_id = _model_filter("user_class", WindowsClass.objects.all(), _("User class (ID)"))
-    vendor_class_id = _model_filter("vendor_class", WindowsClass.objects.all(), _("Vendor class (ID)"))
     policy_id = _model_filter("policy", WindowsPolicy.objects.all(), _("Policy (ID)"))
 
     class Meta:
@@ -201,7 +206,7 @@ class WindowsOptionQualifierFilterSet(NetBoxModelFilterSet):
     def search(self, queryset, name, value):
         if not value.strip():
             return queryset
-        return queryset.filter(Q(user_class__name__icontains=value) | Q(vendor_class__name__icontains=value))
+        return queryset.filter(Q(user_class__name__icontains=value) | Q(policy__name__icontains=value))
 
 
 @register_filterset
@@ -234,6 +239,61 @@ class MacFilterFilterSet(PrimaryModelFilterSet):
         if not value.strip():
             return queryset
         return queryset.filter(Q(mac_address__icontains=value) | Q(description__icontains=value))
+
+
+@register_filterset
+class MacFilterListsFilterSet(NetBoxModelFilterSet):
+    dhcp_server_id = _server_filter()
+
+    class Meta:
+        model = MacFilterLists
+        fields = ("id", "allow_list_enabled", "deny_list_enabled")
+
+    def search(self, queryset, name, value):
+        if not value.strip():
+            return queryset
+        return queryset.filter(dhcp_server__name__icontains=value)
+
+
+@register_filterset
+class WindowsVendorOptionDefinitionFilterSet(PrimaryModelFilterSet):
+    dhcp_server_id = _server_filter("vendor_class__dhcp_server")
+    vendor_class_id = _model_filter("vendor_class", WindowsClass.objects.all(), _("Vendor class (ID)"))
+
+    class Meta:
+        model = WindowsVendorOptionDefinition
+        fields = ("id", "code", "name", "windows_type", "multi_valued", "description")
+
+    def search(self, queryset, name, value):
+        if not value.strip():
+            return queryset
+        return queryset.filter(
+            Q(name__icontains=value) | Q(vendor_class__name__icontains=value) | Q(description__icontains=value)
+        )
+
+
+@register_filterset
+class WindowsVendorOptionFilterSet(NetBoxModelFilterSet):
+    dhcp_server_id = _server_filter("definition__vendor_class__dhcp_server")
+    vendor_class_id = _model_filter("definition__vendor_class", WindowsClass.objects.all(), _("Vendor class (ID)"))
+    definition_id = _model_filter(
+        "definition", WindowsVendorOptionDefinition.objects.all(), _("Vendor option definition (ID)")
+    )
+    code = django_filters.NumberFilter(field_name="definition__code", label=_("Code"))
+    assigned_object_type = ContentTypeFilter()
+    user_class_id = _model_filter("user_class", WindowsClass.objects.all(), _("User class (ID)"))
+    policy_id = _model_filter("policy", WindowsPolicy.objects.all(), _("Policy (ID)"))
+
+    class Meta:
+        model = WindowsVendorOption
+        fields = ("id", "assigned_object_id")
+
+    def search(self, queryset, name, value):
+        if not value.strip():
+            return queryset
+        return queryset.filter(
+            Q(definition__name__icontains=value) | Q(definition__vendor_class__name__icontains=value)
+        )
 
 
 @register_filterset

@@ -38,12 +38,12 @@ sys4 is modelled on Kea, so several Windows concepts have no model. We add our o
 | Superscope | `SharedNetwork` | Needs a covering Prefix; import creates it when missing |
 | Reservation | `HostReservation` | MAC to `hw_address`, IP to `ipv4_address`. Reservation type in our `WindowsReservation` |
 | Exclusion range | none | Our `ExclusionRange` (FK Subnet, start, end) |
-| Option definition | `OptionDefinition` | Server-scoped definitions. Vendor class on our side table. Type mapping table needed (Byte, Word, DWord, IPv4Address, String, BinaryData, ...) |
-| Option value | `Option` | GFK to server, subnet or reservation. User/vendor class and policy qualifiers in our `WindowsOptionQualifier` |
+| Option definition | `OptionDefinition` | Server-scoped definitions, with the Windows type and default on our `WindowsOptionDefinition`. Vendor class definitions are our `WindowsVendorOptionDefinition`: sys4 allows one definition per code and server, and Windows ships several vendor classes defining the same codes |
+| Option value | `Option` | GFK to server, subnet or reservation. User class and policy qualifiers in our `WindowsOptionQualifier`. Vendor class values are our `WindowsVendorOption` (same GFK, value kept as a list) |
 | User and vendor class | none | Our `WindowsClass`. sys4 `ClientClass` is a Kea expression, so we do not reuse it |
 | Policy | none | Our `WindowsPolicy` (server or scope level, conditions stored as structured JSON, ranges, processing order) |
 | Failover relationship | none (`DHCPCluster` is only a group) | Our `FailoverRelationship` (partner servers, mode, MCLT, ratio or standby, shared secret reference, scopes) |
-| MAC filter (allow/deny) | none | Our `MacFilter` |
+| MAC filter (allow/deny) | none | Our `MacFilter`, and `MacFilterLists` for the allow and deny list switches |
 | Lease | none | Read only. Shown live on the scope page, optionally cached in `LeaseSnapshot` |
 
 **Naming.** sys4 names are unique per model across all servers, so two servers with a scope called "LAN" would collide. Imported objects are named `<server>/<scope id>` for subnets and `<server>/<scope id>/<ip>` for reservations, with the Windows name kept in `description` (configurable template).
@@ -54,7 +54,7 @@ sys4 is modelled on Kea, so several Windows concepts have no model. We add our o
 
 ## 4. Our models
 
-Branchable (DHCP configuration, reviewed and merged like sys4 objects): `WindowsScope`, `WindowsReservation`, `ExclusionRange`, `WindowsClass`, `WindowsPolicy`, `FailoverRelationship`, `MacFilter`, `WindowsOptionQualifier`.
+Branchable (DHCP configuration, reviewed and merged like sys4 objects): `WindowsScope`, `WindowsReservation`, `ExclusionRange`, `WindowsClass`, `WindowsOptionDefinition`, `WindowsVendorOptionDefinition`, `WindowsVendorOption`, `WindowsPolicy`, `FailoverRelationship`, `MacFilter`, `MacFilterLists`, `WindowsOptionQualifier`.
 
 Not branchable (bookkeeping; listed in branching's `exempt_models` so change control's `protect_main` does not block them):
 
@@ -127,7 +127,39 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   lost and no longer blocks new pushes; a push that keeps finding its server busy gives up after two hours.
 - **Failover.** After a push to a relationship's primary, the touched scopes (all of the relationship's scopes when
   a server-level object changed) are replicated. A push to a partner leaves the relationship's scopes to the primary.
-  Failover relationships themselves are pushed in milestone 5.
+
+**Remaining objects (milestone 5).** Every kind goes through the same records, diff, plan and writers. Dependency
+order: classes, option definitions, scopes, superscopes, exclusions, reservations, policies, option values, failover
+relationships, MAC filters, list switches.
+
+- **Keys.** Windows names are not case sensitive, so keys use them lowercased and fields compare without case:
+  `vendor/msft`, `msft 5.0/1` (vendor definition), `server/printers` or `10.1.0.0/printers` (policy),
+  `...;policy=printers` (policy option value), `campus` (superscope), `ha` (failover), `00-15-5d-*` (MAC filter),
+  `server` (list switches). Only policy values carry a `policy` field, so other records keep their fingerprints.
+- **Policies.** A scope policy is a child of its scope, and a policy naming a class in its conditions a child of that
+  class, so an unmanaged policy keeps its scope (the special case from milestone 4 is gone). IP ranges are diffed and
+  added or removed one by one. Set cannot clear a condition, so that change is refused; a lease time left empty in
+  NetBox keeps the Windows one. A policy without conditions is not pushed (Windows requires one).
+- **Superscopes.** A sys4 `SharedNetwork` named `<server>/<superscope>` with the Windows name as description. Its
+  prefix is the smallest supernet covering the member scopes, created in the import VRF when missing; sys4 checks
+  that member subnets sit inside it. A subnet has one parent (server or shared network), so import moves subnets in
+  and out, and moves them back to the server before deleting a shared network, which sys4 would otherwise delete
+  with its subnets. On Windows, removing a superscope keeps its scopes. Deleting a shared network by hand in NetBox
+  still deletes its subnets (sys4 behaviour), and the next push removes those scopes from Windows.
+- **Failover.** Pushed from the primary only: on the partner, the relationship is neither imported nor pushed
+  (`partner_failovers`). The partner is matched by its Windows server host. The shared secret comes from the
+  credential profile in `shared_secret_profile` (key `secret`), is checked against both partners' hosts when saved
+  and before each push, and only travels from the profile to the cmdlet; records only say whether authentication is
+  on, so a rotated secret is not noticed. Changing the partner or turning authentication off is refused. A scope a
+  managed relationship no longer lists may be deleted: it leaves the relationship first in the same push (after a
+  lease check, so a refused delete changes nothing). Removing a relationship removes its scopes from the partner,
+  as Windows documents.
+- **MAC filters.** An update is a remove and an add (no Set cmdlet). The list switches are only pushed when NetBox
+  holds a `MacFilterLists` for the server; deleting it stops managing them.
+- **Vendor class definitions and values.** Our own models, linked to the vendor class; values keep their list, so
+  commas and spaces survive. Their option code 1 and 51 are ordinary vendor options, not the mask and lease time.
+- **Comma values.** sys4 keeps option values as one string; a comma inside a value is stored as `\,` (Kea's own
+  escape) and split back on unescaped commas. Values with surrounding spaces are still skipped.
 
 ## 7. Import: Windows to NetBox
 
@@ -147,11 +179,11 @@ A scheduled job per server (and a manual button) reads the full Windows state an
   `sync/windows_state.py` (pure) and `sync/netbox_state.py` (Django) produce the records; `sync/mapping.py` writes a
   change into NetBox, one object at a time, with `snapshot()` before each update or delete.
 - **What is imported.** IPv4 scopes, exclusion ranges, reservations, user and vendor classes, option definitions and
-  option values at server, scope and reservation level, including user class qualifiers. Skipped and logged until
-  milestone 5: superscopes, policy-qualified values, and vendor class option definitions and values (sys4 allows one
-  `OptionDefinition` per code and server, and Windows ships several vendor classes defining the same codes, so they
-  need their own model). Option values containing a comma or surrounding spaces are skipped too: sys4 stores a list
-  as one comma-separated string, so they would never compare equal again.
+  option values at server, scope and reservation level, including user class qualifiers; since milestone 5 also
+  superscopes, policies and policy values, vendor class definitions and values, failover relationships, MAC filters
+  and the list switches (see section 6). Option values with surrounding spaces are skipped: sys4 stores a list as one
+  comma-separated string, which drops them. A failover relationship with message authentication imports without a
+  secret profile; the difference stays visible until a reviewer sets one.
 - **Mapping details.** The Windows scope or reservation name goes in `description`, the Windows description in
   `comments`. Options 1 (subnet mask) and 51 (lease time) are not imported as options, since the prefix and
   `valid_lifetime` already hold them. Windows definitions of codes sys4 defines itself are left to sys4; others become

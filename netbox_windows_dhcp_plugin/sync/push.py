@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -198,7 +199,7 @@ def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] 
     f = record.fields
     # netbox_state marks extra copies with "#<pk>", and a reservation without an address ends in "/": neither names
     # a Windows object.
-    if "#" in record.key or record.key.endswith("/"):
+    if re.search(r"#\d+$", record.key) or record.key.endswith("/"):
         return CONFLICT
     if record.kind == "scope" and not (f.get("start_range") and f.get("end_range")):
         return "the subnet has no pool (IP range) to use as the scope range; add one in NetBox"
@@ -230,6 +231,24 @@ def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] 
                 "Windows"
             )
     return None
+
+
+def _shared_orders(source: list[Record]) -> dict[Key, str]:
+    """
+    Policies sharing a processing order at one level. Windows keeps policies in a strict order and renumbers the
+    others when one takes a used number, so both would show as changed on every push.
+    """
+    levels: dict[tuple[str, Any], list[Record]] = defaultdict(list)
+    for r in source:
+        if r.kind == "policy" and r.fields.get("processing_order") is not None:
+            levels[r.fields["scope_id"], r.fields["processing_order"]].append(r)
+    out = {}
+    for (_, order), records in levels.items():
+        if len(records) > 1:
+            names = ", ".join(sorted(r.fields["name"] for r in records))
+            for r in records:
+                out[r.kind, r.key] = f"policies {names} share processing order {order}; give each its own in NetBox"
+    return out
 
 
 def _prepare(record: Record, target: Mapping[Key, Record]) -> Record:
@@ -286,9 +305,10 @@ def plan(
     if defined_options is not None:
         defined = {str(c) for c in defined_options} | {r.key for r in source if r.kind == "optiondef"}
     skipped_ids = set(skipped_option_ids)
+    orders = _shared_orders(source)
     pushable = []
     for record in source:
-        reason = _unpushable(record, skipped_ids, defined)
+        reason = _unpushable(record, skipped_ids, defined) or orders.get((record.kind, record.key))
         if reason is None:
             pushable.append(_prepare(record, target_index))
         else:
@@ -336,7 +356,26 @@ def plan(
             deleting.discard(key)
             continue
         result.changes.append(change)
+    result.changes = _membership_updates_first(result.changes, target_index)
     return result
+
+
+def _membership_updates_first(changes: list[Change], target: Mapping[Key, Record]) -> list[Change]:
+    """
+    A scope leaving a superscope or failover relationship and being deleted: the membership update goes before the
+    deletes. Windows refuses to remove the last scope of a relationship, so it must first gain the scopes NetBox now
+    lists, which only works when those already exist on Windows (otherwise the usual order stands, and the next push
+    finishes the job).
+    """
+    deleted = {c.key for c in changes if c.action == DELETE and c.kind == "scope"}
+    first = []
+    for c in changes:
+        if c.action != UPDATE or c.kind not in MEMBERSHIPS:
+            continue
+        before, after = set((c.before or {}).get("scope_ids", [])), set((c.after or {}).get("scope_ids", []))
+        if (before - after) & deleted and all(("scope", s) in target for s in after - before):
+            first.append(c)
+    return first + [c for c in changes if c not in first] if first else changes
 
 
 def _released(child: Key, parent: Key, source: Mapping[Key, Record]) -> bool:

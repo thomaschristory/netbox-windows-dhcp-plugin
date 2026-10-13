@@ -12,12 +12,21 @@ from dataclasses import dataclass, field
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from netbox_dhcp.models import HostReservation, Option, OptionDefinition, Subnet
+from netbox_dhcp.models import HostReservation, Option, OptionDefinition, SharedNetwork, Subnet
 
 from ..choices import ProposalItemStatusChoices, ProposalStatusChoices
 from ..conf import get_setting
 from ..integrations import branching
-from ..models import ExclusionRange, ImportProposal, ImportProposalItem, WindowsClass
+from ..models import (
+    ExclusionRange,
+    FailoverRelationship,
+    ImportProposal,
+    ImportProposalItem,
+    MacFilter,
+    MacFilterLists,
+    WindowsClass,
+    WindowsPolicy,
+)
 from . import netbox_state, windows_state
 from .diff import CREATE, DELETE, UPDATE, Change, Record, diff, index
 from .mapping import ApplyError, Writer
@@ -34,7 +43,9 @@ __all__ = (
 
 log = logging.getLogger(__name__)
 
-# The NetBox model each kind of change creates, updates or deletes, for permission checks and links.
+# The NetBox model each kind of change creates, updates or deletes, for permission checks and links. Vendor class
+# definitions and values are WindowsVendorOptionDefinition and WindowsVendorOption; the writer checks every object it
+# saves against the reviewer's permissions anyway.
 KIND_MODELS = {
     "class": WindowsClass,
     "optiondef": OptionDefinition,
@@ -42,6 +53,11 @@ KIND_MODELS = {
     "exclusion": ExclusionRange,
     "reservation": HostReservation,
     "option": Option,
+    "superscope": SharedNetwork,
+    "policy": WindowsPolicy,
+    "failover": FailoverRelationship,
+    "macfilter": MacFilter,
+    "filterlists": MacFilterLists,
 }
 
 # Errors one change can raise without the rest of the import being wrong.
@@ -75,8 +91,12 @@ def _message(exc):
 
 def compute(windows_server, state):
     """Diff a Windows state against what NetBox (or the active branch) holds for the server."""
-    records, notes = windows_state.to_records(state, standard_codes=netbox_state.standard_codes())
-    changes = diff(records, netbox_state.read(windows_server), equal=windows_state.equal)
+    records, notes = windows_state.to_records(
+        state,
+        standard_codes=netbox_state.standard_codes(),
+        partner_failovers=netbox_state.partner_failovers(windows_server),
+    )
+    changes = diff(records, netbox_state.read(windows_server, for_import=True), equal=windows_state.equal)
     return changes, notes
 
 
@@ -97,6 +117,16 @@ def _target(writer, change):
             return writer.definition(fields["option_id"], fields["vendor_class"], required=False)
         if change.kind == "option":
             return writer.option(change.key, fields)
+        if change.kind == "policy":
+            return writer.windows_policy(fields["scope_id"], fields["name"], required=False)
+        if change.kind == "superscope":
+            return writer.shared_network(fields["name"])
+        if change.kind == "failover":
+            return writer.failover(fields["name"])
+        if change.kind == "macfilter":
+            return MacFilter.objects.filter(dhcp_server=writer.dhcp, mac_address__iexact=fields["mac_address"]).first()
+        if change.kind == "filterlists":
+            return MacFilterLists.objects.filter(dhcp_server=writer.dhcp).first()
     except ApplyError:
         return None
     return None
@@ -215,7 +245,7 @@ def _apply_items(items, user):
         proposals[proposal.pk] = proposal
         server = proposal.windows_server
         if server.pk not in current_by_server:
-            current_by_server[server.pk] = index(netbox_state.read(server))
+            current_by_server[server.pk] = index(netbox_state.read(server, for_import=True))
         current = current_by_server[server.pk].get((item.kind, item.key))
         change = _item_change(item)
         error = _stale(change, current)

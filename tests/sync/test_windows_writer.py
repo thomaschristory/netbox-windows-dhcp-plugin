@@ -341,7 +341,7 @@ def test_failover_secret_comes_from_the_callback_and_is_not_in_the_change(client
 
 def test_failover_without_a_secret_is_refused(client):
     push(client, [r for r in wanted() if r.kind != "failover"])
-    with pytest.raises(PushRefused, match="shared_secret"):
+    with pytest.raises(PushRefused, match="shared secret"):
         WindowsWriter(client).apply(Change("create", "failover", "ha", after=failover(auth=True).fields))
 
 

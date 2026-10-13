@@ -326,3 +326,25 @@ def test_every_kind_is_adopted_with_the_same_fingerprint_from_both_sides(client)
     for record in windows_records(client):
         match = next(r for r in wanted() if (r.kind, r.key) == (record.kind, record.key))
         assert push.fingerprint(match) == push.fingerprint(record), record.kind
+
+
+def test_policies_sharing_a_processing_order_are_reported():
+    source = [policy(), policy(name="Phones"), policy(name="Other", processing_order=2)]
+    reasons = by_key(push.plan(source, [], {}))
+    assert "share processing order 1" in reasons["policy", "10.1.0.0/printers"]
+    assert "share processing order 1" in reasons["policy", "10.1.0.0/phones"]
+    assert ("policy", "10.1.0.0/other") not in reasons
+
+
+def test_last_scope_of_a_relationship_is_replaced_before_it_is_deleted(client, fake):
+    second = Record("scope", "10.2.0.0", {**scope().fields, "start_range": "10.2.0.10", "end_range": "10.2.0.200"})
+    source = [*wanted(), second]
+    source = [failover(scope_ids=["10.2.0.0"]) if r.kind == "failover" else r for r in source]
+    _, first = run(client, source)
+    managed = state_after({}, first)
+    source = [failover(scope_ids=["10.1.0.0"]) if r.kind == "failover" else r for r in source if r is not second]
+    p, result = run(client, source, managed)
+    assert not result.failed, result.failed
+    assert p.changes[0].kind == "failover"
+    assert "10.2.0.0" not in fake.scopes
+    assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0"]

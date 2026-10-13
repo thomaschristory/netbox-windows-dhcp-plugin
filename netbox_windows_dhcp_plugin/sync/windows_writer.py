@@ -290,8 +290,8 @@ class WindowsWriter:
         secret = self.failover_secret(name)
         if not secret:
             raise PushRefused(
-                f"failover {change.key}: message authentication is on, but the relationship's shared secret profile "
-                "has no shared_secret; fix the credential profile"
+                f"failover {change.key}: message authentication is on, but the relationship has no shared secret "
+                "profile, or the profile has no secret; fix it in NetBox or in the plugin settings"
             )
         return secret
 

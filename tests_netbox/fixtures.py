@@ -5,7 +5,8 @@ import netbox_dhcp
 from ipam.models import Prefix
 from netbox_dhcp.models import DHCPServer, OptionDefinition, Subnet
 
-from netbox_windows_dhcp_plugin.models import WindowsServer
+from netbox_windows_dhcp_plugin.choices import ClassTypeChoices
+from netbox_windows_dhcp_plugin.models import WindowsClass, WindowsServer
 
 PLUGIN = "netbox_windows_dhcp_plugin"
 
@@ -36,6 +37,15 @@ def ensure_standard_option_definitions():
     OptionDefinition.objects.bulk_create(
         OptionDefinition(standard=True, **definition) for definition in json.loads(path.read_text())
     )
+
+
+def vendor_classes(server, count=1):
+    return [
+        WindowsClass.objects.create(
+            dhcp_server=server, name=f"vendor{i}", class_type=ClassTypeChoices.VENDOR, data=f"VENDOR{i}"
+        )
+        for i in range(1, count + 1)
+    ]
 
 
 def windows_server(dhcp_server, **kwargs):

@@ -6,6 +6,7 @@ from .types import (
     FailoverRelationshipType,
     ImportProposalItemType,
     ImportProposalType,
+    MacFilterListsType,
     MacFilterType,
     SyncRunType,
     WindowsClassType,
@@ -15,6 +16,8 @@ from .types import (
     WindowsReservationType,
     WindowsScopeType,
     WindowsServerType,
+    WindowsVendorOptionDefinitionType,
+    WindowsVendorOptionType,
 )
 
 
@@ -40,6 +43,12 @@ class WindowsDHCPQuery:
     windows_dhcp_failover_relationship_list: list[FailoverRelationshipType] = strawberry_django.field()
     windows_dhcp_mac_filter: MacFilterType = strawberry_django.field()
     windows_dhcp_mac_filter_list: list[MacFilterType] = strawberry_django.field()
+    windows_dhcp_mac_filter_lists: MacFilterListsType = strawberry_django.field()
+    windows_dhcp_mac_filter_lists_list: list[MacFilterListsType] = strawberry_django.field()
+    windows_dhcp_vendor_option_definition: WindowsVendorOptionDefinitionType = strawberry_django.field()
+    windows_dhcp_vendor_option_definition_list: list[WindowsVendorOptionDefinitionType] = strawberry_django.field()
+    windows_dhcp_vendor_option: WindowsVendorOptionType = strawberry_django.field()
+    windows_dhcp_vendor_option_list: list[WindowsVendorOptionType] = strawberry_django.field()
     windows_dhcp_sync_run: SyncRunType = strawberry_django.field()
     windows_dhcp_sync_run_list: list[SyncRunType] = strawberry_django.field()
     windows_dhcp_import_proposal: ImportProposalType = strawberry_django.field()

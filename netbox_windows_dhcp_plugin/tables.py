@@ -8,6 +8,7 @@ from .models import (
     ImportProposal,
     ImportProposalItem,
     MacFilter,
+    MacFilterLists,
     SyncRun,
     WindowsClass,
     WindowsOptionDefinition,
@@ -16,6 +17,8 @@ from .models import (
     WindowsReservation,
     WindowsScope,
     WindowsServer,
+    WindowsVendorOption,
+    WindowsVendorOptionDefinition,
 )
 
 __all__ = (
@@ -23,6 +26,7 @@ __all__ = (
     "FailoverRelationshipTable",
     "ImportProposalItemTable",
     "ImportProposalTable",
+    "MacFilterListsTable",
     "MacFilterTable",
     "SyncRunTable",
     "WindowsClassTable",
@@ -32,6 +36,8 @@ __all__ = (
     "WindowsReservationTable",
     "WindowsScopeTable",
     "WindowsServerTable",
+    "WindowsVendorOptionDefinitionTable",
+    "WindowsVendorOptionTable",
 )
 
 
@@ -158,13 +164,12 @@ class WindowsClassTable(PrimaryModelTable):
 
 class WindowsOptionDefinitionTable(NetBoxTable):
     option_definition = tables.Column(verbose_name=_("Option definition"), linkify=True)
-    vendor_class = tables.Column(verbose_name=_("Vendor class"), linkify=True)
     tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowsoptiondefinition_list")
 
     class Meta(NetBoxTable.Meta):
         model = WindowsOptionDefinition
-        fields = ("pk", "id", "option_definition", "vendor_class", "tags", "created", "last_updated")
-        default_columns = ("option_definition", "vendor_class")
+        fields = ("pk", "id", "option_definition", "windows_type", "tags", "created", "last_updated")
+        default_columns = ("option_definition", "windows_type")
 
 
 class WindowsPolicyTable(PrimaryModelTable):
@@ -198,14 +203,13 @@ class WindowsPolicyTable(PrimaryModelTable):
 class WindowsOptionQualifierTable(NetBoxTable):
     option = tables.Column(verbose_name=_("Option"), linkify=True)
     user_class = tables.Column(verbose_name=_("User class"), linkify=True)
-    vendor_class = tables.Column(verbose_name=_("Vendor class"), linkify=True)
     policy = tables.Column(verbose_name=_("Policy"), linkify=True)
     tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowsoptionqualifier_list")
 
     class Meta(NetBoxTable.Meta):
         model = WindowsOptionQualifier
-        fields = ("pk", "id", "option", "user_class", "vendor_class", "policy", "tags", "created", "last_updated")
-        default_columns = ("option", "user_class", "vendor_class", "policy")
+        fields = ("pk", "id", "option", "user_class", "policy", "tags", "created", "last_updated")
+        default_columns = ("option", "user_class", "policy")
 
 
 class FailoverRelationshipTable(PrimaryModelTable):
@@ -250,6 +254,79 @@ class MacFilterTable(PrimaryModelTable):
         model = MacFilter
         fields = ("pk", "id", "mac_address", "dhcp_server", "list", "description", "tags", "created", "last_updated")
         default_columns = ("mac_address", "dhcp_server", "list", "description")
+
+
+class MacFilterListsTable(NetBoxTable):
+    dhcp_server = tables.Column(verbose_name=_("DHCP server"), linkify=True)
+    allow_list_enabled = columns.BooleanColumn(verbose_name=_("Allow list"))
+    deny_list_enabled = columns.BooleanColumn(verbose_name=_("Deny list"))
+    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:macfilterlists_list")
+
+    class Meta(NetBoxTable.Meta):
+        model = MacFilterLists
+        fields = (
+            "pk",
+            "id",
+            "dhcp_server",
+            "allow_list_enabled",
+            "deny_list_enabled",
+            "tags",
+            "created",
+            "last_updated",
+        )
+        default_columns = ("id", "dhcp_server", "allow_list_enabled", "deny_list_enabled")
+
+
+class WindowsVendorOptionDefinitionTable(PrimaryModelTable):
+    name = tables.Column(verbose_name=_("Name"), linkify=True)
+    vendor_class = tables.Column(verbose_name=_("Vendor class"), linkify=True)
+    multi_valued = columns.BooleanColumn(verbose_name=_("Multi-valued"))
+    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowsvendoroptiondefinition_list")
+
+    class Meta(PrimaryModelTable.Meta):
+        model = WindowsVendorOptionDefinition
+        fields = (
+            "pk",
+            "id",
+            "name",
+            "vendor_class",
+            "code",
+            "windows_type",
+            "multi_valued",
+            "description",
+            "tags",
+            "created",
+            "last_updated",
+        )
+        default_columns = ("name", "vendor_class", "code", "windows_type", "multi_valued")
+
+
+class WindowsVendorOptionTable(NetBoxTable):
+    definition = tables.Column(verbose_name=_("Definition"), linkify=True)
+    assigned_object = tables.Column(verbose_name=_("Set on"), linkify=True, orderable=False)
+    user_class = tables.Column(verbose_name=_("User class"), linkify=True)
+    policy = tables.Column(verbose_name=_("Policy"), linkify=True)
+    value = tables.Column(verbose_name=_("Value"), orderable=False)
+    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowsvendoroption_list")
+
+    class Meta(NetBoxTable.Meta):
+        model = WindowsVendorOption
+        fields = (
+            "pk",
+            "id",
+            "definition",
+            "assigned_object",
+            "user_class",
+            "policy",
+            "value",
+            "tags",
+            "created",
+            "last_updated",
+        )
+        default_columns = ("id", "definition", "assigned_object", "user_class", "policy", "value")
+
+    def render_value(self, value):
+        return ", ".join(str(v) for v in value) if isinstance(value, list) else value
 
 
 class SyncRunTable(NetBoxTable):

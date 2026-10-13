@@ -15,6 +15,7 @@ __all__ = (
     "ImportProposalFilter",
     "ImportProposalItemFilter",
     "MacFilterFilter",
+    "MacFilterListsFilter",
     "SyncRunFilter",
     "WindowsClassFilter",
     "WindowsOptionDefinitionFilter",
@@ -23,6 +24,8 @@ __all__ = (
     "WindowsReservationFilter",
     "WindowsScopeFilter",
     "WindowsServerFilter",
+    "WindowsVendorOptionDefinitionFilter",
+    "WindowsVendorOptionFilter",
 )
 
 
@@ -86,6 +89,26 @@ class MacFilterFilter(PrimaryModelFilter):
     mac_address: StrFilterLookup[str] | None = strawberry_django.filter_field()
     list: StrFilterLookup[str] | None = strawberry_django.filter_field()
     dhcp_server_id: strawberry_django.ComparisonFilterLookup[int] | None = strawberry_django.filter_field()
+
+
+@strawberry_django.filter_type(models.MacFilterLists, lookups=True)
+class MacFilterListsFilter(NetBoxModelFilter):
+    dhcp_server_id: strawberry_django.ComparisonFilterLookup[int] | None = strawberry_django.filter_field()
+
+
+@strawberry_django.filter_type(models.WindowsVendorOptionDefinition, lookups=True)
+class WindowsVendorOptionDefinitionFilter(PrimaryModelFilter):
+    name: StrFilterLookup[str] | None = strawberry_django.filter_field()
+    code: strawberry_django.ComparisonFilterLookup[int] | None = strawberry_django.filter_field()
+    vendor_class_id: strawberry_django.ComparisonFilterLookup[int] | None = strawberry_django.filter_field()
+
+
+@strawberry_django.filter_type(models.WindowsVendorOption, lookups=True)
+class WindowsVendorOptionFilter(NetBoxModelFilter):
+    definition_id: strawberry_django.ComparisonFilterLookup[int] | None = strawberry_django.filter_field()
+    assigned_object_id: strawberry_django.ComparisonFilterLookup[int] | None = strawberry_django.filter_field()
+    user_class_id: strawberry_django.ComparisonFilterLookup[int] | None = strawberry_django.filter_field()
+    policy_id: strawberry_django.ComparisonFilterLookup[int] | None = strawberry_django.filter_field()
 
 
 @strawberry_django.filter_type(models.SyncRun, lookups=True)

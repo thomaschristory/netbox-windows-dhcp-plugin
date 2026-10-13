@@ -92,6 +92,20 @@ def _definition_servers(ids):
     return set(OptionDefinition.objects.filter(pk__in=ids).values_list("dhcp_server_id", flat=True))
 
 
+def _class_servers(ids):
+    from .models import WindowsClass
+
+    return set(WindowsClass.objects.filter(pk__in=ids).values_list("dhcp_server_id", flat=True))
+
+
+def _vendor_definition_servers(ids):
+    from .models import WindowsVendorOptionDefinition
+
+    return set(
+        WindowsVendorOptionDefinition.objects.filter(pk__in=ids).values_list("vendor_class__dhcp_server_id", flat=True)
+    )
+
+
 def _pool_servers(ip_range_id):
     from netbox_dhcp.models import Pool
 
@@ -138,7 +152,15 @@ _RESOLVERS = {
     f"{PLUGIN}.windowsclass": lambda pk, d: {d.get("dhcp_server")},
     f"{PLUGIN}.windowsoptiondefinition": lambda pk, d: _definition_servers([d.get("option_definition")]),
     f"{PLUGIN}.windowsoptionqualifier": lambda pk, d: _option_servers([d.get("option")]),
-    # Decides which scopes a partner leaves alone and which a primary replicates.
+    f"{PLUGIN}.windowspolicy": lambda pk, d: {d.get("dhcp_server")},
+    f"{PLUGIN}.windowsvendoroptiondefinition": lambda pk, d: _class_servers([d.get("vendor_class")]),
+    f"{PLUGIN}.windowsvendoroption": lambda pk, d: (
+        _assigned_servers(d.get("assigned_object_type"), d.get("assigned_object_id"))
+        | _vendor_definition_servers([d.get("definition")])
+    ),
+    f"{PLUGIN}.macfilter": lambda pk, d: {d.get("dhcp_server")},
+    f"{PLUGIN}.macfilterlists": lambda pk, d: {d.get("dhcp_server")},
+    # The primary pushes the relationship; the partner's push decides which scopes it leaves to the primary.
     f"{PLUGIN}.failoverrelationship": lambda pk, d: {d.get("primary_server"), d.get("partner_server")},
     # Core objects netbox-plugin-dhcp points at: the scope range, the prefix, a reservation's address and MAC.
     "ipam.iprange": lambda pk, d: _pool_servers(pk),

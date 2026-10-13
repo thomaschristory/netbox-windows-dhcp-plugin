@@ -19,6 +19,7 @@ from .models import (
     ImportProposal,
     ImportProposalItem,
     MacFilter,
+    MacFilterLists,
     SyncRun,
     WindowsClass,
     WindowsOptionDefinition,
@@ -27,6 +28,8 @@ from .models import (
     WindowsReservation,
     WindowsScope,
     WindowsServer,
+    WindowsVendorOption,
+    WindowsVendorOptionDefinition,
 )
 from .object_actions import (
     ApplyItem,
@@ -242,7 +245,7 @@ _register(
 
 
 #
-# Classes, option definitions, policies and option qualifiers
+# Classes, option definitions, policies, option qualifiers and vendor class options
 #
 
 _register(
@@ -254,12 +257,23 @@ _register(
     form=forms.WindowsClassForm,
     import_form=forms.WindowsClassImportForm,
     bulk_edit_form=forms.WindowsClassBulkEditForm,
-    layout=_simple_layout(panels.WindowsClassPanel(), comments=True),
+    layout=_simple_layout(
+        panels.WindowsClassPanel(),
+        bottom=(
+            ObjectsTablePanel(
+                model="netbox_windows_dhcp_plugin.WindowsVendorOptionDefinition",
+                filters=_pk_filter("vendor_class_id"),
+                exclude_columns=["vendor_class"],
+                title="Vendor option definitions",
+            ),
+        ),
+        comments=True,
+    ),
 )
 
 _register(
     WindowsOptionDefinition,
-    WindowsOptionDefinition.objects.select_related("option_definition", "vendor_class"),
+    WindowsOptionDefinition.objects.select_related("option_definition"),
     table=tables.WindowsOptionDefinitionTable,
     filterset=filtersets.WindowsOptionDefinitionFilterSet,
     filterset_form=forms.WindowsOptionDefinitionFilterForm,
@@ -292,12 +306,48 @@ _register(
 
 _register(
     WindowsOptionQualifier,
-    WindowsOptionQualifier.objects.select_related("option", "user_class", "vendor_class", "policy"),
+    WindowsOptionQualifier.objects.select_related("option", "user_class", "policy"),
     table=tables.WindowsOptionQualifierTable,
     filterset=filtersets.WindowsOptionQualifierFilterSet,
     filterset_form=forms.WindowsOptionQualifierFilterForm,
     form=forms.WindowsOptionQualifierForm,
     layout=_simple_layout(panels.WindowsOptionQualifierPanel()),
+)
+
+_register(
+    WindowsVendorOptionDefinition,
+    WindowsVendorOptionDefinition.objects.select_related("vendor_class"),
+    table=tables.WindowsVendorOptionDefinitionTable,
+    filterset=filtersets.WindowsVendorOptionDefinitionFilterSet,
+    filterset_form=forms.WindowsVendorOptionDefinitionFilterForm,
+    form=forms.WindowsVendorOptionDefinitionForm,
+    import_form=forms.WindowsVendorOptionDefinitionImportForm,
+    bulk_edit_form=forms.WindowsVendorOptionDefinitionBulkEditForm,
+    layout=_simple_layout(
+        panels.WindowsVendorOptionDefinitionPanel(),
+        right=(JSONPanel("default_value", title="Default value"),),
+        bottom=(
+            ObjectsTablePanel(
+                model="netbox_windows_dhcp_plugin.WindowsVendorOption",
+                filters=_pk_filter("definition_id"),
+                exclude_columns=["definition"],
+                title="Values",
+            ),
+        ),
+        comments=True,
+    ),
+)
+
+_register(
+    WindowsVendorOption,
+    WindowsVendorOption.objects.select_related(
+        "definition__vendor_class", "assigned_object_type", "user_class", "policy"
+    ).prefetch_related("assigned_object"),
+    table=tables.WindowsVendorOptionTable,
+    filterset=filtersets.WindowsVendorOptionFilterSet,
+    filterset_form=forms.WindowsVendorOptionFilterForm,
+    form=forms.WindowsVendorOptionForm,
+    layout=_simple_layout(panels.WindowsVendorOptionPanel(), right=(JSONPanel("value", title="Value"),)),
 )
 
 
@@ -326,6 +376,17 @@ _register(
     import_form=forms.MacFilterImportForm,
     bulk_edit_form=forms.MacFilterBulkEditForm,
     layout=_simple_layout(panels.MacFilterPanel(), comments=True),
+)
+
+_register(
+    MacFilterLists,
+    MacFilterLists.objects.select_related("dhcp_server"),
+    table=tables.MacFilterListsTable,
+    filterset=filtersets.MacFilterListsFilterSet,
+    filterset_form=forms.MacFilterListsFilterForm,
+    form=forms.MacFilterListsForm,
+    bulk_edit_form=forms.MacFilterListsBulkEditForm,
+    layout=_simple_layout(panels.MacFilterListsPanel()),
 )
 
 

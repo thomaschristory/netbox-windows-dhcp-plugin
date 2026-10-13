@@ -8,14 +8,34 @@ import ipaddress
 
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Prefetch, Q
-from netbox_dhcp.models import HostReservation, Option, OptionDefinition, Pool, Subnet
+from netbox_dhcp.models import HostReservation, Option, OptionDefinition, Pool, SharedNetwork, Subnet
 
-from ..models import ExclusionRange, WindowsClass
+from ..models import (
+    ExclusionRange,
+    FailoverRelationship,
+    MacFilter,
+    MacFilterLists,
+    WindowsClass,
+    WindowsPolicy,
+    WindowsServer,
+    WindowsVendorOption,
+    WindowsVendorOptionDefinition,
+)
 from ..windows import normalize
+from . import windows_state
 from .diff import Record
-from .windows_state import class_key, option_key
+from .windows_state import class_key, mac_key, option_key, optiondef_key, policy_key, split_values
 
-__all__ = ("SYS4_TYPE", "WINDOWS_TYPE", "read", "scope_id_of", "server_subnets", "split_value", "standard_codes")
+__all__ = (
+    "SYS4_TYPE",
+    "WINDOWS_TYPE",
+    "partner_failovers",
+    "read",
+    "scope_id_of",
+    "server_subnets",
+    "split_values",
+    "standard_codes",
+)
 
 # Windows option data types to netbox-plugin-dhcp types. Types sys4 has no equivalent for are kept as binary, and
 # WindowsOptionDefinition.windows_type remembers the original.
@@ -43,11 +63,6 @@ WINDOWS_TYPE = {
     "string": "String",
     "fqdn": "String",
 }
-
-
-def split_value(data):
-    """Option.data holds a list as one comma-separated string."""
-    return [v.strip() for v in data.split(",")] if data.strip() else []
 
 
 def standard_codes():
@@ -126,10 +141,9 @@ def _reservation(reservation, scope_id):
 
 def _optiondef(definition):
     wd = getattr(definition, "netbox_windows_dhcp_plugin_windows_option_definition", None)
-    vendor = wd.vendor_class.name if wd and wd.vendor_class_id else ""
     return Record(
         "optiondef",
-        f"{vendor}/{definition.code}" if vendor else str(definition.code),
+        optiondef_key(definition.code),
         {
             "option_id": definition.code,
             "name": definition.name,
@@ -137,13 +151,33 @@ def _optiondef(definition):
             "multi_valued": bool(definition.array),
             "default_value": list(wd.default_value) if wd else [],
             "description": definition.description,
-            "vendor_class": vendor,
+            "vendor_class": "",
         },
     )
 
 
-def read(windows_server):
-    """Return the records NetBox holds for this server."""
+def _vendor_optiondef(d):
+    return Record(
+        "optiondef",
+        optiondef_key(d.code, d.vendor_class.name),
+        {
+            "option_id": d.code,
+            "name": d.name,
+            "type": d.windows_type,
+            "multi_valued": bool(d.multi_valued),
+            "default_value": list(d.default_value),
+            "description": d.description,
+            "vendor_class": d.vendor_class.name,
+        },
+    )
+
+
+def read(windows_server, for_import=False):
+    """
+    Return the records NetBox holds for this server. ``for_import`` reads a server without MAC filter list switches
+    as having Windows' defaults (both lists off), so an import only proposes them when Windows differs; a push leaves
+    the switches alone instead.
+    """
     dhcp = windows_server.dhcp_server
     records = []
 
@@ -157,20 +191,19 @@ def read(windows_server):
         )
 
     definitions = OptionDefinition.objects.filter(dhcp_server=dhcp, family=4, standard=False).select_related(
-        "netbox_windows_dhcp_plugin_windows_option_definition__vendor_class"
+        "netbox_windows_dhcp_plugin_windows_option_definition"
     )
-    # Vendor class definitions are not imported yet (see windows_state.VENDOR_DEFINITIONS): leave them alone.
-    records.extend(
-        _optiondef(d)
-        for d in definitions
-        if not getattr(d, "netbox_windows_dhcp_plugin_windows_option_definition", None)
-        or not d.netbox_windows_dhcp_plugin_windows_option_definition.vendor_class_id
-    )
+    records.extend(_optiondef(d) for d in definitions)
+    vendor_definitions = WindowsVendorOptionDefinition.objects.filter(
+        vendor_class__dhcp_server=dhcp, vendor_class__family=4
+    ).select_related("vendor_class")
+    records.extend(_vendor_optiondef(d) for d in vendor_definitions)
 
     subnets = list(server_subnets(dhcp))
     scopes = _unique((_scope(s), s.pk) for s in subnets)
     scope_ids = {pk: record.key for record, pk in scopes}
     records.extend(record for record, _ in scopes)
+    records.extend(_superscopes(dhcp))
 
     exclusions = ExclusionRange.objects.filter(subnet__in=subnets).order_by("pk")
     records.extend(record for record, _ in _unique((_exclusion(e, scope_ids[e.subnet_id]), e.pk) for e in exclusions))
@@ -184,7 +217,115 @@ def read(windows_server):
     reservation_parents = {pk: record.key for record, pk in unique}
     records.extend(record for record, _ in unique)
 
+    records.extend(_policies(dhcp, scope_ids))
     records.extend(_options(dhcp, scope_ids, reservation_parents))
+    records.extend(_failovers(windows_server, scope_ids))
+    records.extend(_mac_filters(dhcp, for_import))
+    return records
+
+
+def _superscopes(dhcp):
+    networks = (
+        SharedNetwork.objects.filter(dhcp_server=dhcp, prefix__prefix__family=4)
+        .prefetch_related(Prefetch("child_subnets", queryset=Subnet.objects.select_related("prefix")))
+        .order_by("pk")
+    )
+    pairs = []
+    for network in networks:
+        # The Windows name is the description (the name is "<server>/<superscope>", unique across servers); a shared
+        # network made by hand in NetBox may only have a name.
+        name = network.description or network.name
+        members = windows_state.scope_ids(scope_id_of(s) for s in network.child_subnets.all())
+        pairs.append((Record("superscope", name.lower(), {"name": name, "scope_ids": members}), network.pk))
+    return [record for record, _ in _unique(pairs)]
+
+
+def _policies(dhcp, scope_ids):
+    policies = WindowsPolicy.objects.filter(dhcp_server=dhcp).order_by("pk")
+    pairs = []
+    for p in policies:
+        if p.subnet_id is not None and p.subnet_id not in scope_ids:
+            continue  # an IPv6 subnet, or one of another server
+        scope_id = scope_ids.get(p.subnet_id, "")
+        record = Record(
+            "policy",
+            policy_key(scope_id, p.name),
+            {
+                "name": p.name,
+                "scope_id": scope_id,
+                "description": p.description,
+                "enabled": p.enabled,
+                "processing_order": p.processing_order,
+                "condition": p.condition,
+                "criteria": windows_state.criteria(p.criteria or {}),
+                "lease_seconds": p.lease_duration,
+                "ip_ranges": windows_state.ip_ranges(p.ip_ranges or []) if scope_id else [],
+            },
+        )
+        pairs.append((record, p.pk))
+    return [record for record, _ in _unique(pairs)]
+
+
+def partner_failovers(windows_server):
+    """Lowercase names of the relationships this server is the partner in: they are synced from the primary."""
+    names = FailoverRelationship.objects.filter(partner_server=windows_server.dhcp_server).values_list(
+        "name", flat=True
+    )
+    return {n.lower() for n in names}
+
+
+def _partner_host(dhcp_server):
+    ws = WindowsServer.objects.filter(dhcp_server=dhcp_server).first()
+    return ws.host.lower() if ws else ""
+
+
+def _failovers(windows_server, scope_ids):
+    relationships = (
+        FailoverRelationship.objects.filter(primary_server=windows_server.dhcp_server)
+        .select_related("partner_server")
+        .prefetch_related("subnets")
+        .order_by("pk")
+    )
+    pairs = []
+    for f in relationships:
+        hot = f.mode == "hotstandby"
+        record = Record(
+            "failover",
+            f.name.lower(),
+            {
+                "name": f.name,
+                "partner_server": _partner_host(f.partner_server),
+                "mode": f.mode,
+                "max_client_lead_time": f.max_client_lead_time,
+                "load_balance_percent": None if hot else f.load_balance_percent,
+                "reserve_percent": f.reserve_percent if hot else None,
+                "server_role": f.server_role if hot else "",
+                "state_switch_interval": f.state_switch_interval,
+                # Windows only says whether a secret is set; the secret itself never leaves the credential profile.
+                "auth": bool(f.shared_secret_profile),
+                # Subnets of other servers cannot be in the relationship on this one; they are left out.
+                "scope_ids": windows_state.scope_ids(scope_ids[s.pk] for s in f.subnets.all() if s.pk in scope_ids),
+            },
+        )
+        pairs.append((record, f.pk))
+    return [record for record, _ in _unique(pairs)]
+
+
+def _mac_filters(dhcp, for_import):
+    pairs = []
+    for m in MacFilter.objects.filter(dhcp_server=dhcp).order_by("pk"):
+        key = mac_key(m.mac_address)
+        pairs.append(
+            (Record("macfilter", key, {"mac_address": key, "list": m.list, "description": m.description}), m.pk)
+        )
+    records = [record for record, _ in _unique(pairs)]
+    lists = MacFilterLists.objects.filter(dhcp_server=dhcp).first()
+    if lists is not None:
+        records.append(
+            Record("filterlists", "server", {"allow": lists.allow_list_enabled, "deny": lists.deny_list_enabled})
+        )
+    elif for_import:
+        records.append(Record("filterlists", "server", {"allow": False, "deny": False}))
     return records
 
 
@@ -232,32 +373,39 @@ def _options(dhcp, scope_ids, reservation_parents):
         .select_related(
             "definition",
             "netbox_windows_dhcp_plugin_windows_qualifier__user_class",
-            "netbox_windows_dhcp_plugin_windows_qualifier__vendor_class",
+            "netbox_windows_dhcp_plugin_windows_qualifier__policy",
         )
         .order_by("pk")
     )
     seen = set()
     for o in options:
         qualifier = getattr(o, "netbox_windows_dhcp_plugin_windows_qualifier", None)
-        if qualifier and (qualifier.policy_id or qualifier.vendor_class_id):
-            continue  # policy and vendor class values are not imported yet
-        vendor = qualifier.vendor_class.name if qualifier and qualifier.vendor_class_id else ""
         user = qualifier.user_class.name if qualifier and qualifier.user_class_id else ""
+        policy = qualifier.policy.name if qualifier and qualifier.policy_id else ""
         parent = parents[o.assigned_object_type_id, o.assigned_object_id]
-        key = option_key(parent, o.definition.code, vendor, user)
-        if key in seen:
-            # netbox-plugin-dhcp lets the same option be set twice on one object; Windows cannot hold that, so the
-            # extra copies show up as deletions.
-            key = f"{key}#{o.pk}"
-        seen.add(key)
-        yield Record(
-            "option",
-            key,
-            {
-                "parent": parent,
-                "option_id": o.definition.code,
-                "value": split_value(o.data),
-                "vendor_class": vendor,
-                "user_class": user,
-            },
-        )
+        yield _option_record(seen, o.pk, parent, o.definition.code, split_values(o.data), "", user, policy)
+
+    vendor_options = (
+        WindowsVendorOption.objects.filter(q)
+        .select_related("definition__vendor_class", "user_class", "policy")
+        .order_by("pk")
+    )
+    for o in vendor_options:
+        parent = parents[o.assigned_object_type_id, o.assigned_object_id]
+        user = o.user_class.name if o.user_class_id else ""
+        policy = o.policy.name if o.policy_id else ""
+        vendor = o.definition.vendor_class.name
+        yield _option_record(seen, o.pk, parent, o.definition.code, list(o.value), vendor, user, policy)
+
+
+def _option_record(seen, pk, parent, code, value, vendor, user, policy):
+    key = option_key(parent, code, vendor, user, policy)
+    if key in seen:
+        # netbox-plugin-dhcp lets the same option be set twice on one object; Windows cannot hold that, so the extra
+        # copies show up as deletions.
+        key = f"{key}#{pk}"
+    seen.add(key)
+    fields = {"parent": parent, "option_id": code, "value": value, "vendor_class": vendor, "user_class": user}
+    if policy:
+        fields["policy"] = policy
+    return Record("option", key, fields)

@@ -22,8 +22,7 @@ All notable changes to this project are documented here. The format follows
 - Import from Windows: IPv4 scopes, exclusion ranges, reservations, user and vendor classes, option definitions and
   option values (server, scope, reservation and user-class qualified) become netbox-plugin-dhcp objects plus the
   prefixes, IP ranges, IP addresses and MAC addresses they need, in the server's import VRF. Objects missing on
-  Windows are proposed for deletion. Policy and vendor class option values, vendor class option definitions and
-  option values containing commas are skipped (and logged) for now.
+  Windows are proposed for deletion.
 - With netbox-branching, each import writes into a branch `dhcp-import/<server>/<timestamp>` (reused while it is
   open) and opens a change request, submitted for review, when netbox-change-control is installed.
 - Without branching, each import fills an import proposal. Items are applied or dismissed one by one, in bulk or
@@ -54,3 +53,25 @@ All notable changes to this project are documented here. The format follows
   minute later.
 - After a push to the primary of a failover relationship, the changed scopes are replicated to the partner. Pushes
   to a partner leave the relationship's scopes to the primary.
+- Import and push now cover superscopes (netbox-plugin-dhcp shared networks, with a covering prefix created in the
+  import VRF; removing a superscope keeps its scopes), server and scope policies (conditions, IP ranges, processing
+  order, lease time) and policy option values, vendor class option definitions and values (new models
+  `WindowsVendorOptionDefinition` and `WindowsVendorOption`, since netbox-plugin-dhcp allows one definition per code
+  and server), failover relationships (created, updated and removed on the primary, with scope membership and the
+  shared secret read from the credential profile named in `shared_secret_profile`, whose `allowed_hosts` must cover
+  both partners), MAC filters and the allow and deny list switches (new model `MacFilterLists`).
+- Option values containing a comma are imported and pushed: netbox-plugin-dhcp stores the comma as `\,`, Kea's own
+  escape. Values starting or ending with a space are still skipped.
+- A scope removed from a failover relationship in NetBox leaves the relationship before it is deleted on Windows,
+  in the same push. A scope that still has leases is refused first, so a refused delete changes nothing.
+
+### Changed
+
+- Policies are now pushed like any other object, so a scope holding a policy NetBox does not manage is still kept,
+  but a managed one goes with its scope.
+- `WindowsOptionDefinition.vendor_class` and `WindowsOptionQualifier.vendor_class` are removed: vendor class
+  definitions and values have their own models. Vendor class option definition keys in sync state now use the
+  lowercase class name, like every other Windows name.
+- Policy, superscope and failover relationship names compare without case, like class names. Policy criteria are
+  validated (known condition names, `EQ` or `NE` first).
+- Saving and deleting policies, MAC filters and the new models now queue a push, as other DHCP objects do.
