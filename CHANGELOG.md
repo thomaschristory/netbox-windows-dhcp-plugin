@@ -11,6 +11,7 @@ All notable changes to this project are documented here. The format follows
   SSH transports and credential profiles in `PLUGINS_CONFIG`.
 - `allowed_hosts` on credential profiles limits which hosts their credentials can be sent to. Checked when a Windows
   server is saved and again before every connection. Basic authentication requires HTTPS with certificate checks.
+- SSH always verifies the host key (pinned key or the worker's known_hosts).
 - Models for Windows scope and reservation settings, exclusion ranges, classes, option definitions and qualifiers,
   policies, failover relationships and MAC filters.
 - Sync bookkeeping models: sync state, sync runs and import proposals.

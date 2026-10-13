@@ -35,7 +35,8 @@ def build_runner(server):
                 private_key=creds.private_key,
                 port=server.effective_port,
                 host_key=server.ssh_host_key,
-                insecure=not server.verify_tls,
+                # Never skip the host key check: a machine in the middle would receive the password.
+                insecure=False,
                 command_timeout=timeout,
             )
         )

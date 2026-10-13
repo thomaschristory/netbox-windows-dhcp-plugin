@@ -152,6 +152,14 @@ class WindowsServer(JobsMixin, PrimaryModel):
     def clean(self):
         super().clean()
         self._clean_allowed_hosts()
+        if self.transport == TransportChoices.SSH and not self.verify_tls:
+            raise ValidationError(
+                {
+                    "verify_tls": _(
+                        "SSH always checks the host key; set an SSH host key or use the worker's known_hosts."
+                    )
+                }
+            )
         if self.transport != TransportChoices.WINRM:
             return
         if self.winrm_auth == WinRMAuthChoices.KERBEROS and not self.kerberos_realm:

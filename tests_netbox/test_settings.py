@@ -120,6 +120,13 @@ class ServerValidationTest(TestCase):
             self.server.full_clean()
         self.assertIn("computer_name", ctx.exception.message_dict)
 
+    def test_ssh_cannot_skip_host_key_check(self):
+        self.server.transport = "ssh"
+        self.server.verify_tls = False
+        with self.assertRaises(ValidationError) as ctx:
+            self.server.full_clean()
+        self.assertIn("verify_tls", ctx.exception.message_dict)
+
     def test_basic_auth_needs_tls_verification(self):
         self.server.winrm_auth = "basic"
         self.server.verify_tls = False

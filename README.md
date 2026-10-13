@@ -86,10 +86,10 @@ PLUGINS_CONFIG = {
 }
 ```
 
-Set `allowed_hosts` on every profile. It lists the host names or IP addresses (`*` and `?` wildcards allowed) the
-profile's credentials may be sent to, and applies to a server's `computer_name` as well. Without it, anyone who can
-edit a Windows server in NetBox can point it at a machine they control and capture the credentials; NetBox logs a
-warning at startup for each such profile.
+Set `allowed_hosts` on every profile. It lists the host names or IP addresses the profile's credentials may be sent
+to; `*` and `?` match within one dot-separated label, as in TLS certificates. It applies to a server's
+`computer_name` as well. Without it, anyone who can edit a Windows server in NetBox can point it at a machine they
+control and capture the credentials; NetBox logs a warning at startup for each such profile.
 
 | Setting | Default | Meaning |
 |---|---|---|

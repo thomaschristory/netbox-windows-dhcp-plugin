@@ -12,7 +12,7 @@ DEFAULTS = {
     # FailoverRelationship.shared_secret_profile. Each value is a dict; every secret can be given inline, from an
     # environment variable (<key>_env) or from a file (<key>_file):
     #   {"dhcp-admin": {"username": "CORP\\svc-dhcp", "password_env": "DHCP_ADMIN_PASSWORD"}}
-    # Add "allowed_hosts" (a list of host names or IPs, * and ? wildcards allowed) to limit which hosts a profile's
+    # Add "allowed_hosts" (a list of host names or IPs; * and ? match within one label) to limit which hosts a profile's
     # credentials may be sent to. Without it, anyone allowed to edit a Windows server can point it at a machine
     # they control and capture the credentials.
     "credentials": {},
