@@ -15,9 +15,22 @@ from typing import Any
 
 __all__ = ("KIND_ORDER", "Change", "Record", "diff", "index")
 
-# Parents before children: a reservation needs its scope, an option value needs its definition, its parent and its
-# class. Creates and updates follow this order, deletes run in reverse.
-KIND_ORDER = ("class", "optiondef", "scope", "exclusion", "reservation", "option")
+# Parents before children: a reservation needs its scope, an option value needs its definition, its parent, its
+# class and its policy; a superscope or failover relationship needs its scopes. Creates and updates follow this order,
+# deletes run in reverse.
+KIND_ORDER = (
+    "class",
+    "optiondef",
+    "scope",
+    "superscope",
+    "exclusion",
+    "reservation",
+    "policy",
+    "option",
+    "failover",
+    "macfilter",
+    "filterlists",
+)
 
 CREATE = "create"
 UPDATE = "update"

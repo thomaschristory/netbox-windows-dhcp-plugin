@@ -1,15 +1,16 @@
 import pytest
 
 from netbox_windows_dhcp_plugin.sync import push
+from netbox_windows_dhcp_plugin.sync import windows_state as ws
 from netbox_windows_dhcp_plugin.sync.diff import Record
 from netbox_windows_dhcp_plugin.sync.windows_writer import WindowsWriter
 from netbox_windows_dhcp_plugin.windows import DhcpClient
-from netbox_windows_dhcp_plugin.windows.client import Reservation
+from netbox_windows_dhcp_plugin.windows.client import OptionKey, Reservation
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
 from netbox_windows_dhcp_plugin.windows.runner import RunnerError
 
-from .test_windows_writer import option, scope, wanted, windows_records
+from .test_windows_writer import failover, option, policy, scope, wanted, windows_records
 
 
 @pytest.fixture
@@ -187,21 +188,18 @@ def test_option_value_in_hex_or_decimal_has_one_fingerprint():
 def test_summary_lists_the_planned_changes(client):
     p = push.plan(wanted(), windows_records(client), {})
     s = p.summary()
-    assert s["create"] == len(wanted())
+    # The filter list switches always exist on Windows: they are updated, not created.
+    assert (s["create"], s["update"]) == (len(wanted()) - 1, 1)
     assert len(s["planned"]) == len(wanted())
     assert s["planned"][0]["action"] == "create"
 
 
 def test_hidden_windows_objects_stop_their_parent_being_deleted(client, fake):
-    from netbox_windows_dhcp_plugin.sync import windows_state as ws
-    from netbox_windows_dhcp_plugin.windows.client import DhcpClass, OptionKey
-
     _, first = run(client, wanted())
     managed = state_after({}, first)
-    client.add_class(DhcpClass(name="MSFT", type="Vendor", data="MSFT 5.0"))
-    client.set_option_value(OptionKey(option_id=15, scope_id="10.1.0.0"), ["a,b"])  # cannot be stored in NetBox
+    client.set_option_value(OptionKey(option_id=15, scope_id="10.1.0.0"), [" x"])  # cannot be stored in NetBox
     hidden = ws.hidden_records(ws.read(client))
-    source = [r for r in wanted() if r.kind in ("class", "optiondef")]
+    source = [r for r in wanted() if r.kind in ("class", "optiondef", "filterlists")]
     p = push.plan(source, windows_records(client), managed, hidden=hidden)
     reasons = {(s.change.kind, s.change.key): s.reason for s in p.skipped}
     assert "not managed by NetBox" in reasons["scope", "10.1.0.0"]
@@ -246,3 +244,85 @@ def test_scope_without_name_is_named_after_its_id(client, fake):
     assert fake.scopes["10.1.0.0"]["name"] == "10.1.0.0"
     p, _ = run(client, [scope(name="")])
     assert p.changes == []
+
+
+def by_key(p):
+    return {(s.change.kind, s.change.key): s.reason for s in p.skipped}
+
+
+def test_policy_lease_left_empty_keeps_the_windows_value(client, fake):
+    _, first = run(client, wanted())
+    source = [policy(lease_seconds=None) if r.kind == "policy" and r.fields["scope_id"] else r for r in wanted()]
+    p, _ = run(client, source, state_after({}, first))
+    assert p.changes == []
+
+
+def test_failover_settings_left_empty_keep_windows_values(client, fake):
+    source = [failover(load_balance_percent=None) if r.kind == "failover" else r for r in wanted()]
+    _, first = run(client, source)
+    assert fake.failovers["ha"]["load_balance_percent"] == 50
+    fake.failovers["ha"]["load_balance_percent"] = 70
+    p, _ = run(client, source, state_after({}, first))
+    assert p.changes == []
+
+
+def test_policy_needs_a_condition_and_memberships_a_scope(client):
+    source = [policy(criteria={}), failover(scope_ids=[]), Record("superscope", "x", {"name": "x", "scope_ids": []})]
+    reasons = by_key(push.plan(source, [], {}))
+    assert "condition" in reasons["policy", "10.1.0.0/printers"]
+    assert "at least one scope" in reasons["failover", "ha"]
+    assert "at least one scope" in reasons["superscope", "x"]
+
+
+def test_values_of_vendor_options_need_a_vendor_definition(client):
+    p = push.plan([option("server", 1, ["1"], vendor_class="MSFT")], [], {}, defined_options={"1", "6"})
+    assert "no definition for vendor class MSFT option 1" in p.skipped[0].reason
+    assert (
+        push.plan([option("server", 1, ["1"], vendor_class="MSFT")], [], {}, defined_options={"msft/1"}).skipped == []
+    )
+
+
+def test_unmanaged_policy_keeps_its_scope(client, fake):
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    managed.pop(("policy", "10.1.0.0/printers"))
+    managed.pop(("option", "10.1.0.0/6;policy=printers"))
+    keep = ("class", "optiondef", "filterlists", "macfilter")
+    p, _ = run(client, [r for r in wanted() if r.kind in keep], managed)
+    assert "not managed by NetBox" in by_key(p)["scope", "10.1.0.0"]
+    assert "10.1.0.0" in fake.scopes
+
+
+def test_scope_removed_from_a_managed_failover_is_deleted(client, fake):
+    second = Record("scope", "10.2.0.0", {**scope().fields, "start_range": "10.2.0.10", "end_range": "10.2.0.200"})
+    source = [*wanted(), second]
+    source = [failover(scope_ids=["10.1.0.0", "10.2.0.0"]) if r.kind == "failover" else r for r in source]
+    _, first = run(client, source)
+    assert not first.failed
+    managed = state_after({}, first)
+    source = [failover(scope_ids=["10.1.0.0"]) if r.kind == "failover" else r for r in source if r is not second]
+    p, result = run(client, source, managed)
+    assert not result.failed, result.failed
+    assert "10.2.0.0" not in fake.scopes
+    assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0"]
+    # And a second push changes nothing.
+    p2, _ = run(client, source, state_after(managed, result))
+    assert p2.changes == []
+
+
+def test_unmanaged_failover_keeps_its_scope(client, fake):
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    managed.pop(("failover", "ha"))
+    source = [r for r in wanted() if r.kind not in ("scope", "exclusion", "reservation", "option", "policy")]
+    source = [r for r in source if r.kind not in ("failover", "superscope")]
+    p, _ = run(client, source, managed)
+    assert "10.1.0.0" in fake.scopes
+    assert "not managed by NetBox" in by_key(p)["scope", "10.1.0.0"]
+
+
+def test_every_kind_is_adopted_with_the_same_fingerprint_from_both_sides(client):
+    _, first = run(client, wanted())
+    for record in windows_records(client):
+        match = next(r for r in wanted() if (r.kind, r.key) == (record.kind, record.key))
+        assert push.fingerprint(match) == push.fingerprint(record), record.kind

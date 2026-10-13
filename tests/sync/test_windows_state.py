@@ -6,10 +6,15 @@ from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows.client import (
     DhcpClass,
     ExclusionRange,
+    FailoverRelationship,
+    MacFilter,
     OptionDefinition,
     OptionKey,
+    Policy,
+    PolicyIPRange,
     Reservation,
     Scope,
+    Superscope,
 )
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 
@@ -54,8 +59,8 @@ def by_kind(records):
 def test_reads_every_kind(client):
     records, notes = ws.to_records(ws.read(client))
     kinds = by_kind(records)
-    assert set(kinds) == {"class", "optiondef", "scope", "exclusion", "reservation", "option"}
-    assert notes == [f"skipped 1 {ws.VENDOR_DEFINITIONS}", f"skipped 1 {ws.VENDOR_VALUES}"]
+    assert set(kinds) == {"class", "optiondef", "scope", "exclusion", "reservation", "option", "filterlists"}
+    assert notes == []
 
 
 def test_scope_record(client):
@@ -103,8 +108,8 @@ def test_class_and_definition_records(client):
         "description": "",
     }
     assert kinds["optiondef"]["200"]["name"] == "Custom"
-    # Vendor class definitions wait for a later release (sys4 allows one definition per code and server).
-    assert "MSFT/1" not in kinds["optiondef"]
+    # Vendor class definitions are keyed by the lowercase class name, and code 1 is not skipped for them.
+    assert kinds["optiondef"]["msft/1"]["vendor_class"] == "MSFT"
 
 
 def test_standard_definitions_are_left_to_sys4(client):
@@ -119,6 +124,7 @@ def test_option_records_and_skipped_ids(client):
         "server/6",
         "10.1.0.0/3",
         "10.1.0.0/10.1.0.50/15",
+        "server/1;vendor=msft",
     }
     assert options["server/6"] == {
         "parent": "server",
@@ -130,22 +136,43 @@ def test_option_records_and_skipped_ids(client):
     assert options["10.1.0.0/10.1.0.50/15"]["parent"] == "10.1.0.0/10.1.0.50"
 
 
-def test_policy_options_are_skipped_with_a_note():
+def test_policy_option_records():
     state = ws.WindowsState(
-        options=[ws.OptionValue(option_id=6, value=["1.1.1.1"], policy_name="printers", scope_id="10.1.0.0")]
+        options=[ws.OptionValue(option_id=6, value=["1.1.1.1"], policy_name="Printers", scope_id="10.1.0.0")]
     )
-    records, notes = ws.to_records(state)
-    assert records == []
-    assert notes == [f"skipped 1 {ws.POLICY_VALUES}"]
+    (record,), notes = ws.to_records(state)
+    assert notes == []
+    assert record.key == "10.1.0.0/6;policy=printers"
+    assert record.fields["policy"] == "Printers"
 
 
 def test_values_netbox_cannot_store_are_skipped():
     state = ws.WindowsState(
-        options=[ws.OptionValue(option_id=15, value=["a,b"]), ws.OptionValue(option_id=15, value=[" x"], scope_id="s")]
+        options=[
+            ws.OptionValue(option_id=15, value=["a,b"]),
+            ws.OptionValue(option_id=15, value=[" x"], scope_id="s"),
+            # Vendor class values keep their list, so surrounding spaces are fine there.
+            ws.OptionValue(option_id=2, value=[" y"], vendor_class="MSFT"),
+        ]
     )
     records, notes = ws.to_records(state)
-    assert records == []
-    assert notes == [f"skipped 2 {ws.UNSTORABLE_VALUES}"]
+    assert [r.key for r in records] == ["server/15", "server/2;vendor=msft"]
+    assert notes == [f"skipped 1 {ws.UNSTORABLE_VALUES}"]
+    assert [r.key for r in ws.hidden_records(state)] == ["s/15"]
+
+
+@pytest.mark.parametrize(
+    "values",
+    [[], ["a"], ["a", "b"], ["a,b", "c"], ["back\\slash", "x,"], ["10.0.0.1", "10.0.0.2"]],
+)
+def test_values_survive_the_netbox_string(values):
+    assert ws.split_values(ws.join_values(values)) == values
+
+
+def test_netbox_strings_are_split_like_before():
+    assert ws.split_values("10.0.0.1, 10.0.0.2") == ["10.0.0.1", "10.0.0.2"]
+    assert ws.split_values("  ") == []
+    assert ws.join_values(["a,b", "c"]) == "a\\,b, c"
 
 
 def test_long_names_are_cut_like_netbox_cuts_them(client):
@@ -173,3 +200,53 @@ def test_unparseable_lease_duration_reads_as_none():
     state.scopes[0].lease_duration = "Unlimited"
     (scope,) = ws.to_records(state)[0]
     assert scope.fields["lease_seconds"] is None
+
+
+def test_policy_superscope_failover_and_filter_records(client):
+
+    client.add_scope(Scope(name="B", start_range="10.2.0.10", end_range="10.2.0.20", subnet_mask="255.255.255.0"))
+    client.add_superscope(Superscope(name="Campus", scope_ids=["10.2.0.0", "10.1.0.0"]))
+    client.add_policy(
+        Policy(name="Printers", scope_id="10.1.0.0", criteria={"mac_address": ["eq", "00-15-5d*"]}, lease_duration="")
+    )
+    client.add_policy_ip_range(PolicyIPRange("10.1.0.0", "Printers", "10.1.0.150", "10.1.0.160"))
+    client.add_policy_ip_range(PolicyIPRange("10.1.0.0", "Printers", "10.1.0.100", "10.1.0.120"))
+    client.add_failover(FailoverRelationship(name="HA", partner_server="DHCP2", scope_ids=["10.2.0.0"]))
+    client.add_filter(MacFilter(mac_address="00-15-5D-*", list="Deny"))
+    kinds = by_kind(ws.to_records(ws.read(client))[0])
+    assert kinds["superscope"] == {"campus": {"name": "Campus", "scope_ids": ["10.1.0.0", "10.2.0.0"]}}
+    assert kinds["policy"]["10.1.0.0/printers"] == {
+        "name": "Printers",
+        "scope_id": "10.1.0.0",
+        "description": "",
+        "enabled": True,
+        "processing_order": 1,
+        "condition": "or",
+        "criteria": {"mac_address": ["EQ", "00-15-5d*"]},
+        "lease_seconds": None,
+        "ip_ranges": [["10.1.0.100", "10.1.0.120"], ["10.1.0.150", "10.1.0.160"]],
+    }
+    assert kinds["failover"]["ha"] == {
+        "name": "HA",
+        "partner_server": "dhcp2",
+        "mode": "loadbalance",
+        "max_client_lead_time": 3600,
+        "load_balance_percent": 50,
+        "reserve_percent": None,
+        "server_role": "",
+        "state_switch_interval": None,
+        "auth": False,
+        "scope_ids": ["10.2.0.0"],
+    }
+    assert kinds["macfilter"] == {
+        "00-15-5d-*": {"mac_address": "00-15-5d-*", "list": "deny", "description": ""},
+    }
+    records, notes = ws.to_records(ws.read(client), partner_failovers={"HA"})
+    assert "failover" not in by_kind(records)
+    assert notes == [f"skipped 1 {ws.PARTNER_FAILOVERS}"]
+
+
+def test_names_compare_without_case():
+    assert ws.equal("policy", "name", "Printers", "PRINTERS")
+    assert ws.equal("option", "policy", "a", "A")
+    assert not ws.equal("policy", "description", "a", "A")

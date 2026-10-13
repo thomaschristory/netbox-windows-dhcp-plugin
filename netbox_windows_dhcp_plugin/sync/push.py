@@ -30,7 +30,7 @@ from ..windows import normalize
 from ..windows.psscript import NotFound, WindowsLayerError
 from ..windows.runner import RunnerError
 from .diff import CREATE, DELETE, UPDATE, Change, Record, diff, index
-from .windows_state import SKIPPED_OPTION_IDS, class_key, equal
+from .windows_state import NAME_FIELDS, SKIPPED_OPTION_IDS, class_key, equal, optiondef_key, policy_key
 from .windows_writer import PushRefused, option_target
 
 __all__ = ("Plan", "Result", "Skip", "execute", "fingerprint", "parents", "plan")
@@ -39,6 +39,9 @@ Key = tuple[str, str]
 
 # What Windows gives a scope created without a lease duration (8 days), and what a push then sends.
 DEFAULT_LEASE_SECONDS = 8 * 86400
+
+# What Windows gives a failover relationship created without these settings.
+FAILOVER_DEFAULTS = {"load_balance_percent": 50, "reserve_percent": 5, "max_client_lead_time": 3600}
 
 # A dry run records at most this many planned changes in the sync run summary.
 PLANNED_LIMIT = 1000
@@ -135,10 +138,9 @@ def fingerprint(record: Record) -> str:
     for name in ("value", "default_value"):
         if isinstance(fields.get(name), list):
             fields[name] = [_canonical_value(v) for v in fields[name]]
-    # Windows class names are not case sensitive.
-    names = ("name",) if record.kind == "class" else ("user_class", "vendor_class") if record.kind == "option" else ()
-    for name in names:
-        if isinstance(fields.get(name), str):
+    # Windows names are not case sensitive.
+    for kind, name in NAME_FIELDS:
+        if kind == record.kind and isinstance(fields.get(name), str):
             fields[name] = fields[name].lower()
     data = json.dumps({"kind": record.kind, "key": record.key, "fields": fields}, sort_keys=True, default=str)
     return hashlib.sha256(data.encode()).hexdigest()
@@ -147,16 +149,33 @@ def fingerprint(record: Record) -> str:
 # -- dependencies --------------------------------------------------------------------------------------------------
 
 
+# Objects that list their scopes ("scope_ids"): a scope leaving them is an update of theirs, not a removal.
+MEMBERSHIPS = ("superscope", "failover")
+
+
+def _criteria_classes(criteria: Mapping[str, list[str]]) -> list[Key]:
+    """Classes a policy condition names (operator first, then names; a wildcard names no single class)."""
+    out = []
+    for name, class_type in (("vendor_class", "vendor"), ("user_class", "user")):
+        out.extend(("class", class_key(class_type, v)) for v in criteria.get(name, [])[1:] if "*" not in v)
+    return out
+
+
 def parents(kind: str, fields: Mapping[str, Any]) -> list[Key]:
     """The objects this one needs on Windows (and that take it with them when removed)."""
-    if kind in ("exclusion", "reservation", "policy"):
+    if kind in ("exclusion", "reservation"):
         return [("scope", fields["scope_id"])]
+    if kind == "policy":
+        out: list[Key] = [("scope", fields["scope_id"])] if fields.get("scope_id") else []
+        return out + _criteria_classes(fields.get("criteria") or {})
+    if kind in MEMBERSHIPS:
+        return [("scope", s) for s in fields.get("scope_ids", [])]
     if kind == "optiondef" and fields.get("vendor_class"):
         return [("class", class_key("vendor", fields["vendor_class"]))]
     if kind == "option":
         scope_id, ip = option_target(fields["parent"])
         vendor = fields.get("vendor_class", "")
-        out: list[Key] = [("optiondef", f"{vendor}/{fields['option_id']}" if vendor else str(fields["option_id"]))]
+        out = [("optiondef", optiondef_key(fields["option_id"], vendor))]
         if scope_id:
             out.append(("scope", scope_id))
         if ip:
@@ -165,6 +184,8 @@ def parents(kind: str, fields: Mapping[str, Any]) -> list[Key]:
             out.append(("class", class_key("user", fields["user_class"])))
         if vendor:
             out.append(("class", class_key("vendor", vendor)))
+        if fields.get("policy"):
+            out.append(("policy", policy_key(scope_id, fields["policy"])))
         return out
     return []
 
@@ -183,19 +204,30 @@ def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] 
         return "the subnet has no pool (IP range) to use as the scope range; add one in NetBox"
     if record.kind == "reservation" and not f.get("client_id"):
         return "the reservation has neither a MAC address nor a client ID; add one in NetBox"
-    if record.kind == "optiondef" and f["option_id"] in skipped_option_ids:
+    if record.kind == "optiondef" and f["option_id"] in skipped_option_ids and not f.get("vendor_class"):
         return f"Windows defines option {f['option_id']} itself; remove the definition from NetBox"
+    if record.kind == "policy" and not f.get("criteria"):
+        return "a policy needs at least one condition on Windows; add one in NetBox"
+    if record.kind in MEMBERSHIPS and not f.get("scope_ids"):
+        return f"a {record.kind} needs at least one scope on Windows; add one in NetBox, or delete it"
+    if record.kind == "failover":
+        if not f.get("partner_server"):
+            return "the partner server has no Windows server (host) in NetBox; add one"
+        if f["mode"] == "hotstandby" and not f.get("server_role"):
+            return "a hot standby relationship needs the primary server's role (active or standby); set it in NetBox"
     if record.kind == "option":
         code = f["option_id"]
-        if code in skipped_option_ids:
+        vendor = f.get("vendor_class", "")
+        if code in skipped_option_ids and not vendor:
             what, source = ("subnet mask", "prefix length") if code == 1 else ("lease time", "subnet's valid lifetime")
             return LEASE_OR_MASK.format(code=code, what=what, source=source)
         if not f.get("value"):
             return "the option has no value; set one or remove the option in NetBox"
-        if defined is not None and str(code) not in defined:
+        if defined is not None and optiondef_key(code, vendor) not in defined:
+            what = f"vendor class {vendor} option {code}" if vendor else f"option {code}"
             return (
-                f"Windows has no definition for option {code}; add a server option definition for it in NetBox, or "
-                "create it on Windows"
+                f"Windows has no definition for {what}; add an option definition for it in NetBox, or create it on "
+                "Windows"
             )
     return None
 
@@ -210,10 +242,22 @@ def _prepare(record: Record, target: Mapping[Key, Record]) -> Record:
         # Windows requires a scope name: use the scope ID, as for an unnamed reservation.
         record = Record(record.kind, record.key, {**f, "name": record.key})
         f = record.fields
+    current = target.get((record.kind, record.key))
+    if record.kind == "policy" and f.get("lease_seconds") is None and current:
+        # No lease time in NetBox: keep the one Windows has (Set cannot clear it anyway).
+        return Record(record.kind, record.key, {**f, "lease_seconds": current.fields["lease_seconds"]})
+    if record.kind == "failover":
+        # Settings left empty in NetBox keep what Windows has, or get Windows' own defaults.
+        defaults = current.fields if current else FAILOVER_DEFAULTS
+        filled = {k: defaults.get(k, FAILOVER_DEFAULTS[k]) for k in FAILOVER_DEFAULTS if f.get(k) is None}
+        if f["mode"] == "hotstandby":
+            filled.pop("load_balance_percent", None)
+        else:
+            filled.pop("reserve_percent", None)
+        return Record(record.kind, record.key, {**f, **filled}) if filled else record
     if record.kind == "scope" and f.get("lease_seconds") is None:
         # No lease time in NetBox: keep the one Windows has (None when it could not be read, which the writer then
         # leaves alone), or send Windows' own default for a new scope.
-        current = target.get((record.kind, record.key))
         lease = current.fields["lease_seconds"] if current else DEFAULT_LEASE_SECONDS
         return Record(record.kind, record.key, {**f, "lease_seconds": lease})
     return record
@@ -231,8 +275,9 @@ def plan(
     Work out what to change on Windows (``target``) so it matches NetBox (``source``).
 
     ``hidden`` are Windows objects the push does not handle (see ``windows_state.hidden_records``): they only stop
-    their parents from being deleted. ``defined_options`` are the option codes Windows has a definition for; values
-    of other codes are not pushed unless NetBox also pushes a definition. None skips that check.
+    their parents from being deleted. ``defined_options`` are the option definition keys (``windows_state
+    .optiondef_key``) Windows has; values of other options are not pushed unless NetBox also pushes a definition.
+    None skips that check.
     """
     result = Plan()
     target_index = index(target)
@@ -278,7 +323,7 @@ def plan(
             result.skipped.append(Skip(change, DRIFTED))
             deleting.discard(key)
             continue
-        kept = [c for c in result.children.get(key, []) if c not in deleting]
+        kept = [c for c in result.children.get(key, []) if c not in deleting and not _released(c, key, source_index)]
         if kept:
             kind, name = kept[0]
             result.skipped.append(
@@ -292,6 +337,17 @@ def plan(
             continue
         result.changes.append(change)
     return result
+
+
+def _released(child: Key, parent: Key, source: Mapping[Key, Record]) -> bool:
+    """A superscope or failover relationship lets a scope go when NetBox still holds it, without that scope."""
+    wanted = source.get(child)
+    return (
+        child[0] in MEMBERSHIPS
+        and parent[0] == "scope"
+        and wanted is not None
+        and parent[1] not in wanted.fields["scope_ids"]
+    )
 
 
 # -- execution -----------------------------------------------------------------------------------------------------
