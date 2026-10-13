@@ -1,0 +1,1 @@
+{"ok":true,"data":[{"option_id":6,"name":"DNS Servers","type":"IPv4Address","description":"Array of DNS servers, by preference","vendor_class":"","multi_valued":true,"default_value":[]},{"option_id":252,"name":"WPAD","type":"String","description":"","vendor_class":"","multi_valued":false,"default_value":["http://wpad/wpad.dat"]}]}

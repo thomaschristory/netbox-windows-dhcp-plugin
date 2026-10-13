@@ -1,0 +1,142 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  unit:
+    name: unit tests on Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ matrix.python }}
+      # The Windows layer is plain Python; NetBox is not needed. pwsh (preinstalled on the runner) runs the real
+      # scripts against stub cmdlets.
+      - run: pwsh -Version
+      - run: uv sync --locked
+      - run: uv run pytest -v
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      - run: uv build
+      - run: uvx twine check --strict dist/*
+      - run: python3 dev/scripts/check_dist.py dist
+
+  netbox-integration:
+    name: integration tests on NetBox ${{ matrix.netbox }} (${{ matrix.mode }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        netbox: ["v4.7.3"]
+        mode: ["standalone", "branching"]
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: netbox
+          POSTGRES_PASSWORD: netbox
+          POSTGRES_DB: netbox
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U netbox"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: valkey/valkey:9.1-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: plugin
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: netbox-community/netbox
+          ref: ${{ matrix.netbox }}
+          path: netbox
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install NetBox and plugin
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          sudo apt-get update && sudo apt-get install -y libpq-dev
+          python -m pip install --upgrade pip
+          pip install -r netbox/requirements.txt
+          # Editable install: NetBox reads query-count baselines from <app>/tests, which the wheel leaves out.
+          if [ "$MODE" = "branching" ]; then pip install -e "./plugin[branching]"; else pip install -e ./plugin; fi
+      - name: Configure NetBox
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          cp netbox/netbox/netbox/configuration_testing.py netbox/netbox/netbox/configuration.py
+          if [ "$MODE" = "branching" ]; then
+            cat >> netbox/netbox/netbox/configuration.py <<'EOF'
+
+          from netbox_branching.utilities import DynamicSchemaDict
+
+          PLUGINS = ["netbox_dhcp", "netbox_windows_dhcp_plugin", "netbox_change_control", "netbox_branching"]
+          DATABASES = DynamicSchemaDict(DATABASES)
+          DATABASE_ROUTERS = ["netbox_branching.database.BranchAwareRouter"]
+          EOF
+          else
+            cat >> netbox/netbox/netbox/configuration.py <<'EOF'
+
+          PLUGINS = ["netbox_dhcp", "netbox_windows_dhcp_plugin"]
+          EOF
+          fi
+      - name: System check
+        run: python netbox/netbox/manage.py check
+      - name: Missing migrations
+        run: python netbox/netbox/manage.py makemigrations netbox_windows_dhcp_plugin --check --dry-run
+      - name: Integration tests
+        env:
+          MODE: ${{ matrix.mode }}
+        run: |
+          # netbox-branching adds queries to every page, so branching mode has its own query-count baselines.
+          if [ "$MODE" = "branching" ]; then
+            cp plugin/tests_netbox/query_counts.branching.json plugin/netbox_windows_dhcp_plugin/tests/query_counts.json
+          fi
+          python netbox/netbox/manage.py test --noinput --parallel 1 "$GITHUB_WORKSPACE/plugin/tests_netbox"

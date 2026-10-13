@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "netbox-windows-dhcp-plugin"
+dynamic = ["version"]
+description = "Sync netbox-plugin-dhcp data with Microsoft Windows DHCP servers over WinRM or SSH."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "Thomas Christory" }]
+keywords = ["netbox", "netbox-plugin", "dhcp", "windows", "winrm", "ddi"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Framework :: Django",
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: System :: Networking",
+]
+dependencies = [
+    "netbox-plugin-dhcp>=0.2,<0.3",
+    "pypsrp>=0.8",
+    "paramiko>=3.5",
+]
+
+[project.optional-dependencies]
+kerberos = ["pypsrp[kerberos]>=0.8"]
+branching = ["netboxlabs-netbox-branching>=1.2.2", "netbox-change-control>=0.6"]
+
+[project.urls]
+Homepage = "https://github.com/thomaschristory/netbox-windows-dhcp-plugin"
+Repository = "https://github.com/thomaschristory/netbox-windows-dhcp-plugin"
+Changelog = "https://github.com/thomaschristory/netbox-windows-dhcp-plugin/blob/main/CHANGELOG.md"
+Issues = "https://github.com/thomaschristory/netbox-windows-dhcp-plugin/issues"
+
+[project.entry-points."netbox.plugins"]
+netbox_windows_dhcp_plugin = "netbox_windows_dhcp_plugin:config"
+
+[dependency-groups]
+dev = ["pytest>=8.3", "ruff>=0.12", "pypsrp>=0.8", "paramiko>=3.5"]
+
+[tool.hatch.version]
+path = "netbox_windows_dhcp_plugin/version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["netbox_windows_dhcp_plugin"]
+# NetBox's query-count baselines are only read by the test suite.
+exclude = ["netbox_windows_dhcp_plugin/tests"]
+
+[tool.hatch.build.targets.sdist]
+# Allowlist: hatchling honours .gitignore but not .git/info/exclude.
+only-include = ["netbox_windows_dhcp_plugin", "README.md", "CHANGELOG.md", "LICENSE"]
+exclude = ["netbox_windows_dhcp_plugin/tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff.lint.isort]
+# NetBox's own apps are importable only inside a NetBox install; sort them as third-party.
+known-third-party = [
+    "core", "dcim", "extras", "ipam", "netbox", "tenancy", "users", "utilities", "virtualization",
+    "netbox_dhcp", "netbox_branching", "netbox_change_control",
+]
+known-first-party = ["netbox_windows_dhcp_plugin"]
