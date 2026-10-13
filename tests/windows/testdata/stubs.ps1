@@ -422,8 +422,13 @@ function Add-DhcpServerv4Superscope {
 
 function Remove-DhcpServerv4Superscope {
     [CmdletBinding(SupportsShouldProcess)]
-    param([string]$ComputerName, [Parameter(Mandatory)][string]$SuperscopeName, [switch]$PassThru)
+    param([string]$ComputerName, [Parameter(Mandatory)][string]$SuperscopeName, [ipaddress[]]$ScopeId,
+        [switch]$PassThru)
     Record 'Remove-DhcpServerv4Superscope' $PSBoundParameters
+    if ($ScopeId) {
+        foreach ($id in $ScopeId) { $global:SuperscopeMembers[$SuperscopeName].Remove("$id") }
+        if ($global:SuperscopeMembers[$SuperscopeName].Count -gt 0) { return }
+    }
     $global:SuperscopeMembers.Remove($SuperscopeName)
 }
 

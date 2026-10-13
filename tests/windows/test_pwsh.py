@@ -279,6 +279,22 @@ def test_leases(pw: PwshRunner) -> None:
     assert find_call(pw.last_calls(), "Get-DhcpServerv4Lease")["AllLeases"] is True
 
 
+def test_lease_expiry_ignores_server_culture(pw: PwshRunner) -> None:
+    # Thai uses the Buddhist calendar (year 2569); the expiry must still be an ISO date.
+    pw.seed = (
+        SEED_SCOPE
+        + """
+[cultureinfo]::CurrentCulture = 'th-TH'
+[void]$global:Leases.Add([pscustomobject]@{ IPAddress = [ipaddress]'10.1.20.11'; ScopeId = [ipaddress]'10.1.20.0'
+    ClientId = '00-11-22-33-44-55'; HostName = 'pc01'; AddressState = 'Active'
+    LeaseExpiryTime = [datetime]::new(2026, 10, 9, 8, 0, 0, [DateTimeKind]::Utc)
+    Description = $null; ClientType = 'Dhcp' })
+"""
+    )
+    (got,) = DhcpClient(pw).list_leases("10.1.20.0")
+    assert got.lease_expiry_time == "2026-10-09T08:00:00Z"
+
+
 def test_single_item_list_stays_a_list(pw: PwshRunner) -> None:
     pw.seed = SEED_SCOPE
     got = DhcpClient(pw).list_scopes()
@@ -392,7 +408,11 @@ def test_superscopes(pw: PwshRunner) -> None:
     assert find_call(calls, "Add-DhcpServerv4Superscope")["ScopeId"] == ["10.1.40.0"]
     assert c.set_superscope(Superscope("A", ["10.1.30.0"])).scope_ids == ["10.1.30.0"]
     calls = pw.last_calls()
-    find_call(calls, "Remove-DhcpServerv4Superscope")
+    # Only the departing scope is removed; the superscope itself is never dropped.
+    assert find_call(calls, "Remove-DhcpServerv4Superscope")["ScopeId"] == ["10.1.20.0"]
+    assert not [x for x in calls if x["cmd"] == "Add-DhcpServerv4Superscope"]
+    with pytest.raises(ValueError, match="remove_superscope"):
+        c.set_superscope(Superscope("A", []))
     assert c.rename_superscope("A", "B") == Superscope("B", ["10.1.20.0", "10.1.30.0"])
     with pytest.raises(NotFound):
         c.get_superscope("nope")

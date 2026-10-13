@@ -735,10 +735,15 @@ class FakeDhcpServer:
     def _op_superscope_set(self, p: dict) -> Any:
         name, want = _s(p, "name"), list(p.get("scope_ids") or [])
         cur = self._superscope_view(name)
-        if cur and any(s not in want for s in cur["scope_ids"]):
-            self._op_superscope_remove({"name": name})
+        have = cur["scope_ids"] if cur else []
         if want:
             self._superscope_add("Add-DhcpServerv4Superscope", name, want)
+        gone = [s for s in have if s not in want]
+        if gone:
+            key = self._superscope_view(name)["name"]
+            self.superscopes[key] = [s for s in self.superscopes[key] if s not in gone]
+            self.superscopes = {k: v for k, v in self.superscopes.items() if v}
+            self._sync_superscope_names()
         return self._superscope_view(name)
 
     def _op_superscope_rename(self, p: dict) -> Any:

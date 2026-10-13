@@ -585,7 +585,11 @@ $a = @{ ScopeId = $p.scope_id }
 if ($p.all_leases) { $a['AllLeases'] = $true }
 $out = @(Get-DhcpServerv4Lease @cn @a | ForEach-Object {
     $exp = ''
-    if ($_.LeaseExpiryTime) { $exp = $_.LeaseExpiryTime.ToUniversalTime().ToString("yyyy-MM-dd'T'HH:mm:ss'Z'") }
+    # Invariant culture: the server's own calendar and time separator would otherwise end up in the date.
+    if ($_.LeaseExpiryTime) {
+        $utc = $_.LeaseExpiryTime.ToUniversalTime()
+        $exp = $utc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [cultureinfo]::InvariantCulture)
+    }
     [ordered]@{
         ip_address        = "$($_.IPAddress)"
         scope_id          = "$($_.ScopeId)"
@@ -858,6 +862,7 @@ Add-DhcpServerv4Superscope @cn -SuperscopeName $p.name -ScopeId ([string[]]@($p.
 $out = Get-WdSuperscope
 """,
 )
+# unverified: Remove-DhcpServerv4Superscope -ScopeId removing only some members (documented by Microsoft).
 S_SUPERSCOPE_SET = Script(
     "superscope.set",
     _SUPERSCOPE_FUNC
@@ -865,14 +870,12 @@ S_SUPERSCOPE_SET = Script(
 $want = [string[]]@($p.scope_ids)
 $cur = Get-WdSuperscope
 $have = if ($cur) { [string[]]@($cur.scope_ids) } else { [string[]]@() }
-$gone = @($have | Where-Object { $want -notcontains $_ })
-if ($gone.Count -gt 0) {
-    Remove-DhcpServerv4Superscope @cn -SuperscopeName $p.name -Confirm:$false
-    $add = $want
-} else {
-    $add = [string[]]@($want | Where-Object { $have -notcontains $_ })
-}
+$add = [string[]]@($want | Where-Object { $have -notcontains $_ })
+$gone = [string[]]@($have | Where-Object { $want -notcontains $_ })
+# Add before removing: Windows deletes a superscope left with no scopes, and a failure half way then leaves extra
+# members rather than no superscope at all.
 if ($add.Count -gt 0) { Add-DhcpServerv4Superscope @cn -SuperscopeName $p.name -ScopeId $add }
+if ($gone.Count -gt 0) { Remove-DhcpServerv4Superscope @cn -SuperscopeName $p.name -ScopeId $gone -Confirm:$false }
 $out = Get-WdSuperscope
 """,
 )
@@ -1623,6 +1626,9 @@ class DhcpClient:
 
     def set_superscope(self, s: Superscope) -> Superscope:
         """Make the superscope's members exactly ``s.scope_ids``."""
+        if not s.scope_ids:
+            # Windows has no empty superscope: removing the last scope deletes it.
+            raise ValueError("superscope: scope_ids is empty; use remove_superscope to delete it")
         return self._get(S_SUPERSCOPE_SET, {"name": s.name, "scope_ids": [_ipv4(x) for x in s.scope_ids]}, Superscope)
 
     def rename_superscope(self, name: str, new_name: str) -> Superscope:
