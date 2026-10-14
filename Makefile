@@ -14,7 +14,7 @@ test-lab:
 
 # Opt-in: Windows -> NetBox -> Windows on the dev stack against the lab server (see dev/scripts/lab_e2e.py).
 lab-e2e:
-	$(EXEC) netbox $(PY) shell < dev/scripts/lab_e2e.py
+	$(EXEC) netbox $(PY) shell -c "exec(open('/plugin/dev/scripts/lab_e2e.py').read())"
 
 BASELINE = netbox_windows_dhcp_plugin/tests/query_counts.json
 BRANCHING_BASELINE = tests_netbox/query_counts.branching.json

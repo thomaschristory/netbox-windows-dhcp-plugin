@@ -143,9 +143,15 @@ class Lab:
         self._cleanups.append((label, fn))
 
     def run_cleanups(self) -> list[str]:
-        errors = []
+        """Undo in reverse order. What fails is tried once more at the end: Windows may refuse to remove a class or
+        option definition while a scope still holds values using it, and the scope goes last."""
+        failed: list[tuple[str, Callable[[], None]]] = []
         while self._cleanups:
             label, fn = self._cleanups.pop()
+            if not self._attempt(fn):
+                failed.append((label, fn))
+        errors = []
+        for label, fn in failed:
             try:
                 fn()
             except wc.NotFound:
@@ -153,6 +159,16 @@ class Lab:
             except Exception as exc:  # noqa: BLE001 - keep cleaning up, report at the end
                 errors.append(f"{label}: {exc}")
         return errors
+
+    @staticmethod
+    def _attempt(fn: Callable[[], None]) -> bool:
+        try:
+            fn()
+        except wc.NotFound:
+            pass
+        except Exception:  # noqa: BLE001 - retried once by run_cleanups
+            return False
+        return True
 
     # -- allocation --------------------------------------------------------------------------------------------------
 
@@ -340,10 +356,12 @@ def make_runner(env: dict[str, str]) -> Any:
         password=env["WINDOWS_DHCP_PASSWORD"],
         port=int(env["WINDOWS_DHCP_LAB_PORT"]) if env.get("WINDOWS_DHCP_LAB_PORT") else None,
         auth=env.get("WINDOWS_DHCP_LAB_AUTH", "ntlm"),
+        kerberos_realm=env.get("WINDOWS_DHCP_LAB_REALM", ""),
         cert_validation=env.get("WINDOWS_DHCP_LAB_INSECURE") != "1",
         timeout=120,
     )
     runner: Any = WinRMRunner(cfg)
-    if env.get("WINDOWS_DHCP_LAB_RECORD"):
-        runner = RecordingRunner(runner, Path(env["WINDOWS_DHCP_LAB_RECORD"]))
+    if env.get("WINDOWS_DHCP_LAB_RECORD") == "1":
+        # Raw server data: kept under the gitignored .lab/ only, and scrubbed by hand before becoming a fixture.
+        runner = RecordingRunner(runner, REPO / ".lab" / "record")
     return runner

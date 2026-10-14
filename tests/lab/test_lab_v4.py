@@ -47,22 +47,20 @@ def test_scope_round_trip_with_extras(lab: Lab, probe_out) -> None:
 
 
 def test_unlimited_lease(lab: Lab, probe_out) -> None:
-    """windows_state.py: how an unlimited lease is reported."""
+    """windows_state.py: how an unlimited lease is reported. Tries both spellings of "unlimited" and records each."""
     s = lab.scope("nbwd-test-unlimited")
-    # The DHCP console's "Unlimited" is 0xFFFFFFFF seconds.
-    lab.raw(
-        "probe.unlimited",
-        "Set-DhcpServerv4Scope -ScopeId $p.s -LeaseDuration ([TimeSpan]::FromSeconds(4294967295))",
-        {"s": s.scope_id},
-    )
-    save_probe(
-        probe_out,
-        "v4-scope-unlimited",
-        lab.dump("probe.scope", "Get-DhcpServerv4Scope -ScopeId $p.s", {"s": s.scope_id}),
-    )
-    got = lab.client.get_scope(s.scope_id)
-    save_probe(probe_out, "v4-scope-unlimited-client", got.to_dict())
-    assert got.lease_duration, "an unlimited lease must still read back as something"
+    sid = {"s": s.scope_id}
+    seen = {}
+    for label, expr in (("maxvalue", "[TimeSpan]::MaxValue"), ("uint32", "[TimeSpan]::FromSeconds(4294967295)")):
+        try:
+            lab.raw("probe.unlimited", f"Set-DhcpServerv4Scope -ScopeId $p.s -LeaseDuration ({expr})", sid)
+        except wc.PSError as exc:
+            seen[label] = f"refused: {exc}"
+            continue
+        dump = lab.dump("probe.scope", "Get-DhcpServerv4Scope -ScopeId $p.s", sid)
+        seen[label] = {"raw": dump[0]["LeaseDuration"], "client": lab.client.get_scope(s.scope_id).lease_duration}
+    save_probe(probe_out, "v4-scope-unlimited", seen)
+    assert any(isinstance(v, dict) for v in seen.values()), seen
 
 
 def test_superscope_lifecycle(lab: Lab, probe_out) -> None:

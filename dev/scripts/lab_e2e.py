@@ -1,8 +1,9 @@
 """
 End-to-end lab run against the dev stack: Windows -> NetBox -> Windows, for every kind, IPv4 and DHCPv6.
 
-Run with ``make lab-e2e`` (inside the netbox container, through ``manage.py shell``). Needs the lab variables in
-dev/env/netbox.env (see tests/lab/conftest.py) and the ``lab`` credential profile of dev/configuration/plugins.py.
+Run with ``make lab-e2e`` (inside the netbox container, through ``manage.py shell -c``; exits non-zero on
+failure). Needs the lab variables in dev/env/netbox.env (see tests/lab/conftest.py) and the ``lab`` credential
+profile of dev/configuration/plugins.py.
 
 Steps:
 
@@ -15,12 +16,14 @@ Steps:
 7. Delete every test object in NetBox, then push (delete path).
 After every push: a second dry-run push and an import change nothing.
 
-Safety: before every real push, a dry run must only touch test objects (keys in the lab ranges or named
-``nbwd-test-``). Anything else aborts the run before Windows is written. Objects the lab server already had are
+Safety: before every real push, a dry run must only touch test objects, decided per kind from the record key
+(``is_test``: scope IDs in 198.19.0.0/16, the DHCPv6 test prefix, ``nbwd-test-`` names, ``02-4e-42-`` MACs), and the
+changes the push applied are checked again afterwards. Anything else aborts the run before Windows is written. Objects the lab server already had are
 imported into NetBox (read only) and never pushed. The test objects are swept from Windows at the end, pass or fail.
 The NetBox server record is created with sync_enabled off, so saves never queue pushes of their own.
 """
 
+import ipaddress
 import sys
 import time
 import traceback
@@ -30,11 +33,11 @@ sys.path.insert(0, "/plugin")
 from django.contrib.auth import get_user_model  # noqa: E402
 from django.test import Client  # noqa: E402
 from django.urls import reverse  # noqa: E402
-from netbox_dhcp.models import DHCPServer, Subnet  # noqa: E402
+from netbox_dhcp.models import DHCPServer  # noqa: E402
 
 from netbox_windows_dhcp_plugin.connection import build_client  # noqa: E402
 from netbox_windows_dhcp_plugin.jobs import enqueue_leases  # noqa: E402
-from netbox_windows_dhcp_plugin.models import SyncRun, WindowsServer  # noqa: E402
+from netbox_windows_dhcp_plugin.models import FailoverRelationship, SyncRun, WindowsServer  # noqa: E402
 from netbox_windows_dhcp_plugin.sync import importer, netbox_state, pusher, windows_state  # noqa: E402
 from netbox_windows_dhcp_plugin.sync.diff import DELETE, UPDATE, Change  # noqa: E402
 from netbox_windows_dhcp_plugin.sync.mapping import Writer  # noqa: E402
@@ -42,7 +45,7 @@ from netbox_windows_dhcp_plugin.windows import client as wc  # noqa: E402
 from tests.lab.labkit import MAC_PREFIX, V6_PREFIX, Lab, lab_env, make_runner  # noqa: E402
 
 SERVER_NAME = "nbwd-lab"
-MARKERS = ("198.19.", "nbwd-test-", "2001:db8:4e42:", MAC_PREFIX)
+TEST_V4 = ipaddress.ip_network("198.19.0.0/16")
 DUID = "00-01-00-01-4e-42-00-00-02-4e-42-00-00-01"
 
 
@@ -54,9 +57,45 @@ def log(msg):
     print(f"[lab-e2e] {msg}", flush=True)
 
 
-def is_test(kind, key, fields=None):
-    text = key.lower() + " " + " ".join(str(v).lower() for v in (fields or {}).values())
-    return kind != "filterlists" and any(m in text for m in MARKERS)
+def _in_test_v4(text):
+    try:
+        return ipaddress.ip_address(text) in TEST_V4
+    except ValueError:
+        return False
+
+
+def _ours(name):
+    return name.startswith("nbwd-test-")
+
+
+def is_test(kind, key):
+    """
+    True only for objects this run creates, decided from the record key alone (never from field values, which can
+    mention anything). Used both to pick what to edit or delete in NetBox and to check every planned push.
+    """
+    key = key.lower()
+    head, _, rest = key.partition("/")
+    if kind in ("scope", "exclusion", "reservation", "option"):
+        # Keys start with the scope ID: 198.19.0.0, 198.19.0.0/..., never "server/..." for these runs.
+        return _in_test_v4(head)
+    if kind == "policy":
+        return _in_test_v4(head) and _ours(rest)
+    if kind == "class":
+        return head in ("user", "vendor") and _ours(rest)
+    if kind == "optiondef":
+        # Only vendor class definitions ("<class>/<code>"): plain codes name no test object.
+        return bool(rest) and _ours(head)
+    if kind == "superscope":
+        return _ours(key)
+    if kind == "macfilter":
+        return key.startswith(MAC_PREFIX)
+    if kind in ("scope6", "reservation6", "option6"):
+        # v6/2001:db8:4e42::, v6/2001:db8:4e42::/..., never v6/server/...
+        return head == "v6" and rest.partition("/")[0] == V6_PREFIX
+    if kind == "class6":
+        return key.startswith("v6/user/") and _ours(key.removeprefix("v6/user/"))
+    # failover, filterlists and anything new: never ours.
+    return False
 
 
 # -- Windows side ----------------------------------------------------------------------------------------------------
@@ -123,6 +162,8 @@ def netbox_server(env):
     server.port = int(env["WINDOWS_DHCP_LAB_PORT"]) if env.get("WINDOWS_DHCP_LAB_PORT") else None
     server.credential_profile = "lab"
     server.verify_tls = env.get("WINDOWS_DHCP_LAB_INSECURE") != "1"
+    server.winrm_auth = env.get("WINDOWS_DHCP_LAB_AUTH", "ntlm").lower()
+    server.kerberos_realm = env.get("WINDOWS_DHCP_LAB_REALM", "")
     server.sync_enabled = False
     server.full_clean()
     server.save()
@@ -178,7 +219,7 @@ def expect_push_noop(server, step):
 
 def guarded_push(server, step, expect_actions):
     plan = dry_run(server).plan
-    foreign = [c for c in plan.changes if not is_test(c.kind, c.key, c.after or c.before)]
+    foreign = [c for c in plan.changes if not is_test(c.kind, c.key)]
     if foreign:
         lines = [f"{c.action} {c.kind} {c.key}" for c in foreign]
         raise Abort(f"{step}: the push would touch objects the lab run did not create:\n  " + "\n  ".join(lines))
@@ -194,6 +235,13 @@ def guarded_push(server, step, expect_actions):
         outcome = pusher.run(server, client)
     finally:
         client.close()
+    # The push plans again: check what it really did as well (nothing else edits the dev stack meanwhile).
+    done = outcome.result.applied if outcome.result else []
+    foreign = [c for c in done if not is_test(c.kind, c.key)]
+    if foreign:
+        raise Abort(
+            f"{step}: the push changed objects outside the test set: " + ", ".join(f"{c.kind} {c.key}" for c in foreign)
+        )
     kinds = sorted({c.kind for c in plan.changes})
     log(f"{step}: pushed {len(plan.changes)} change(s) over kinds {kinds}")
     if outcome.failed:
@@ -202,7 +250,7 @@ def guarded_push(server, step, expect_actions):
 
 
 def test_records(server):
-    return [r for r in netbox_state.read(server) if is_test(r.kind, r.key, r.fields)]
+    return [r for r in netbox_state.read(server) if is_test(r.kind, r.key)]
 
 
 def edit_descriptions(server):
@@ -236,7 +284,8 @@ def delete_test_objects(server):
 
 
 def read_leases_tab(server, scope_id, expect_ip):
-    subnet = Subnet.objects.get(dhcp_server=server.dhcp_server, prefix__prefix=f"{scope_id}/24")
+    # Through the superscope too: a scope in one sits in a shared network, not directly under the server.
+    subnet = netbox_state.server_subnets(server.dhcp_server).get(prefix__prefix=f"{scope_id}/24")
     admin = get_user_model().objects.filter(is_superuser=True).first()
     job = enqueue_leases(subnet, admin)
     if job is None:
@@ -272,6 +321,10 @@ def main():
     if leftovers:
         raise Abort(f"sweep: {leftovers}")
     server = netbox_server(env)
+    if FailoverRelationship.objects.filter(primary_server=server.dhcp_server).exists():
+        # A push to a failover primary replicates whole relationships to the partner, outside the plan the guard
+        # checks. The lab is a single server; refuse rather than guess.
+        raise Abort("the lab server is a failover primary in NetBox: not supported by this script")
     ok = False
     try:
         scope_a = create_windows_objects(lab)
@@ -320,13 +373,17 @@ def main():
         if errors:
             log(f"final sweep errors: {errors}")
         log("PASSED" if ok and not errors else "FAILED")
+    return ok and not errors
 
 
 try:
-    main()
+    passed = main()
 except Abort as exc:
     log(f"ABORTED: {exc}")
     log("FAILED")
+    passed = False
 except Exception:
     traceback.print_exc()
     log("FAILED")
+    passed = False
+sys.exit(0 if passed else 1)

@@ -10,7 +10,9 @@ committed):
     WINDOWS_DHCP_LAB_PORT        optional, default 5986 (HTTPS)
     WINDOWS_DHCP_LAB_AUTH        optional, ntlm (default), basic or kerberos
     WINDOWS_DHCP_LAB_INSECURE    optional, 1 skips TLS certificate checks (self-signed lab certificate)
-    WINDOWS_DHCP_LAB_RECORD      optional, a directory where every raw JSON envelope is saved, for new fixtures
+    WINDOWS_DHCP_LAB_REALM       optional, Kerberos realm
+    WINDOWS_DHCP_LAB_RECORD      optional, 1 saves every raw JSON envelope under .lab/record/ (gitignored), to
+                                 turn into fixtures after scrubbing
 
 Safety rules, enforced by ``Lab`` below:
 
@@ -19,8 +21,9 @@ Safety rules, enforced by ``Lab`` below:
 * every delete re-reads the object from the server and checks name and range first;
 * cleanup is registered before an object is created, so it runs even when the test fails;
 * a sweep at the start and end of the session removes leftovers of earlier runs, under the same checks;
-* nothing server-wide is changed: no unqualified server-level option values, and the MAC filter lists are only
-  ever set to the values they already have.
+* nothing server-wide changes behaviour: no unqualified server-level option values; the one server-level policy is
+  disabled and only matches 02-4e-42 MACs; the MAC filter list switches are only written back with the values they
+  already have.
 """
 
 from __future__ import annotations
@@ -43,7 +46,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         return
     here = Path(__file__).parent
     for item in items:
-        if here in Path(str(item.fspath)).parents:
+        if here in item.path.parents:
             item.add_marker(pytest.mark.skip(reason=reason))
 
 

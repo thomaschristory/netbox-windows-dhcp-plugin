@@ -20,7 +20,8 @@ def test_v6_scope_defaults_and_lifetimes(lab: Lab, probe_out) -> None:
     assert s.name == "nbwd-test-v6" and s.description == "lab"
     assert normalize.parse_duration(s.preferred_lifetime) == 8 * 86400
     assert normalize.parse_duration(s.valid_lifetime) == 12 * 86400
-    # What push.V6_LIFETIME_DEFAULTS assumes.
+    # What push.V6_LIFETIME_DEFAULTS assumes (the scope wizard's values; 0.5 and 0.8 of the preferred lifetime would
+    # give 6 days 9:36 for T2, so a failure here is a real finding).
     assert normalize.parse_duration(s.t1, allow_zero=True) == 4 * 86400
     assert normalize.parse_duration(s.t2, allow_zero=True) == 6 * 86400 + 10 * 3600
 
@@ -81,9 +82,9 @@ def test_v6_reservation_exclusion_lease_and_options(lab: Lab, probe_out) -> None
 
     lab.raw(
         "probe.v6lease",
-        "Add-DhcpServerv6Lease -Prefix $p.x -IPAddress $p.ip -ClientDuid $p.d -Iaid 9 -HostName 'nbwd-test-v6lease' "
+        "Add-DhcpServerv6Lease -IPAddress $p.ip -ClientDuid $p.d -Iaid 9 -HostName 'nbwd-test-v6lease' "
         "-LeaseExpiryTime ((Get-Date).AddDays(1))",
-        {"x": V6_PREFIX, "ip": "2001:db8:4e42::30", "d": DUID.replace("-01", "-02", 1)},
+        {"ip": "2001:db8:4e42::30", "d": DUID.replace("-01", "-02", 1)},
     )
     save_probe(probe_out, "v6-lease", lab.dump("probe.v6lease", "Get-DhcpServerv6Lease -Prefix $p.x", {"x": V6_PREFIX}))
     leases = [x for x in lab.client.list_v6_leases(V6_PREFIX) if x.ip_address == "2001:db8:4e42::30"]
