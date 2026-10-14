@@ -76,8 +76,16 @@ Leases
   Viewing needs the subnet and its Windows server, loading needs permission to change the server, and is refused
   inside a branch. Leases are not stored.
 
+Documentation
+
+- A documentation site (https://thomaschristory.github.io/netbox-windows-dhcp-plugin/): installation, preparing
+  Windows, configuration, a first-sync walkthrough, how objects map, import, push, DHCPv6, failover, leases,
+  permissions, REST API and GraphQL, security, workers and jobs, troubleshooting and limitations.
+
 Development
 
+- `dev/scripts/lab-server-setup.ps1` prepares a Windows Server VM as the lab server (DHCP role, a least-privilege
+  account, WinRM over HTTPS).
 - Opt-in lab tests against a real Windows DHCP server: `make test-lab` (the client over WinRM, one round trip per
   unverified cmdlet) and `make lab-e2e` (import, push and leases on the dev stack). They only touch `nbwd-test-`
   objects in `198.18.0.0/15` and `2001:db8:4e42::/64`.
