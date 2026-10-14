@@ -18,9 +18,10 @@ After every push: a second dry-run push and an import change nothing.
 
 Safety: before every real push, a dry run must only touch test objects, decided per kind from the record key
 (``is_test``: scope IDs in 198.19.0.0/16, the DHCPv6 test prefix, ``nbwd-test-`` names, ``02-4e-42-`` MACs), and the
-changes the push applied are checked again afterwards. Anything else aborts the run before Windows is written. Objects the lab server already had are
-imported into NetBox (read only) and never pushed. The test objects are swept from Windows at the end, pass or fail.
-The NetBox server record is created with sync_enabled off, so saves never queue pushes of their own.
+changes the push applied are checked again afterwards. Anything else aborts the run before Windows is written.
+Objects the lab server already had are imported into NetBox (read only) and never pushed. The test objects are
+swept from Windows at the end, pass or fail. The NetBox server record is created with sync_enabled off, so saves
+never queue pushes of their own.
 """
 
 import ipaddress
