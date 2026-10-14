@@ -11,6 +11,8 @@ x-netbox: &netbox
     - ./configuration/plugins.py:/etc/netbox/config/plugins.py:ro
     - ../netbox_windows_dhcp_plugin:/plugin/netbox_windows_dhcp_plugin:ro
     - ../tests_netbox:/plugin/tests_netbox:ro
+    # The lab helpers (tests/lab/labkit.py), for make lab-e2e.
+    - ../tests:/plugin/tests:ro
     - ./scripts:/plugin/dev/scripts:ro
 
 services:

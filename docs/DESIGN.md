@@ -279,7 +279,7 @@ A scheduled job per server (and a manual button) reads the full Windows state an
 - **Unit** (`tests/`): psscript rendering and envelope parsing, normalisation, mapping, diff engine, all against recorded JSON fixtures and an in-memory fake server, as in the provider.
 - **PowerShell** tests: run the real scripts in `pwsh` against stub cmdlets, reusing the provider's approach.
 - **NetBox** (`tests_netbox/`): models, views, API, push and import against the fake server, with and without branching.
-- **Lab** acceptance tests against a real Windows server, opt-in through environment variables, scopes in `198.18.0.0/15`.
+- **Lab** acceptance tests against a real Windows server, opt-in through environment variables (`make test-lab` for the client over WinRM, `make lab-e2e` for import, push and leases on the dev stack). They only create `nbwd-test-` objects in `198.18.0.0/15` and `2001:db8:4e42::/64`, check name and range before every delete, and clean up even when a test fails. Not run in CI.
 
 ## 10. Repo setup
 
@@ -294,9 +294,13 @@ Matches `netbox-ipam-treeview-plugin` and `netbox-opentelemetry-plugin`: hatchli
 5. Remaining objects: policies, failover, MAC filters, DHCPv6.
 6. Lab acceptance tests and first release.
 
-## 12. Open questions
+## 12. Decisions on the former open questions
 
-1. **Credentials.** Credential profiles in `PLUGINS_CONFIG` read from environment variables (proposed), or encrypted in the database?
-2. **Unmanaged objects.** Leave objects created by hand on Windows alone until imported (proposed), or let push delete anything NetBox does not have?
-3. **Leases.** Live view only (proposed), or also keep IP addresses in NetBox updated from leases?
-4. **sys4 is beta.** Accept pinning to 0.2.x and following its releases, or also contribute fixes upstream (for example the `available_client_classes` bug)?
+1. **Credentials.** Credential profiles in `PLUGINS_CONFIG`, each secret inline, from an environment variable or a
+   file, limited to `allowed_hosts`. Nothing secret is stored in the database, the change log or job logs.
+2. **Unmanaged objects.** Left alone. A push only deletes Windows objects recorded in `SyncState` (created by a push
+   or adopted by an import); objects made by hand on Windows come into NetBox through import.
+3. **Leases.** Live view only (a background job and an HTMX panel on the subnet page). NetBox IP addresses are not
+   updated from leases, and there is no lease cache.
+4. **sys4 is beta.** Pinned to `>=0.2,<0.3`, following its releases. Upstream bugs are worked around here (for
+   example `available_client_classes` is never called) and can be reported upstream separately.
