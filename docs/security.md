@@ -65,4 +65,10 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
 - Restrict the WinRM or SSH port on the DHCP servers to the NetBox hosts.
 - Protect the NetBox hosts, the worker's environment and `known_hosts`, and the database backups (they hold the DHCP
   configuration, though not the credentials).
-- Do not report security issues in a public GitHub issue; contact the maintainer privately first.
+
+## Reporting a vulnerability
+
+Do not open a public issue. Report it privately through GitHub's
+[private vulnerability reporting](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/security/advisories/new)
+(**Security > Report a vulnerability** on the repository). Only the maintainer sees the report; the fix and an
+advisory are published together.

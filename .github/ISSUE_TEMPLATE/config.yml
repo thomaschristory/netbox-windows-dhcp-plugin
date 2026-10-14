@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: 📖 Documentation
-    url: https://github.com/thomaschristory/netbox-windows-dhcp-plugin#readme
+    url: https://thomaschristory.github.io/netbox-windows-dhcp-plugin/
     about: Installation, settings and permissions. Please check here first.
   - name: 🔐 Security vulnerability
     url: https://github.com/thomaschristory/netbox-windows-dhcp-plugin/security/advisories/new
