@@ -9,6 +9,7 @@ import pytest
 
 from netbox_windows_dhcp_plugin.windows.client import (
     ALL_SCRIPTS,
+    DhcpClass,
     DhcpClient,
     ExclusionRange,
     FailoverRelationship,
@@ -295,3 +296,43 @@ def test_every_script_splats_cn_and_has_unique_op() -> None:
                 assert "@cn" in line, f"{s.op}: cmdlet without @cn: {line.strip()}"
             # User data only ever comes from $p, never from Python string formatting.
             assert "{p" not in line
+
+
+def test_v6_classes() -> None:
+    c, r = new_client("v6class_list.json")
+    got = c.list_v6_classes()
+    assert [(x.name, x.type) for x in got] == [("Microsoft Windows Options", "Vendor"), ("lab", "User")]
+    assert r.op == "v6class.list"
+    c, r = new_client("ok_object.json")
+    c.add_v6_class(DhcpClass(name="lab", type="user", data="LabComputers"))
+    assert r.op == "v6class.add" and r.params == {
+        "name": "lab",
+        "type": "User",
+        "data": "LabComputers",
+        "description": "",
+    }
+    assert "Add-DhcpServerv6Class @cn @a" in r.script
+    c.set_v6_class(DhcpClass(name="lab", type="User", data="Lab2", description="d"))
+    assert r.op == "v6class.set" and r.params["data"] == "Lab2"
+    c.remove_v6_class("lab", "user")
+    assert r.op == "v6class.remove" and r.params == {"name": "lab", "type": "User"}
+    # A vendor class needs an enterprise number, which the plugin does not keep: only user classes are written.
+    with pytest.raises(ValueError, match="user classes"):
+        c.add_v6_class(DhcpClass(name="v", type="Vendor", data="x"))
+
+
+def test_v6_exclusions_and_leases() -> None:
+    c, r = new_client("v6exclusion_list.json")
+    (e,) = c.list_v6_exclusion_ranges("2001:DB8:1::")
+    assert e.start_range == "2001:db8:1::1" and r.params == {"prefix": "2001:db8:1::"}
+    c, r = new_client("v6lease_list.json")
+    (lease,) = c.list_v6_leases("2001:db8:1::")
+    assert lease.iaid == 33554432 and lease.client_duid.startswith("00-01-00-01")
+    assert lease.lease_expiry_time == "2026-10-20T08:00:00Z"
+    assert r.op == "v6lease.list" and r.params == {"prefix": "2001:db8:1::"}
+
+
+def test_v6_option_list_all() -> None:
+    c, r = new_client("ok_null.json")
+    c.list_v6_option_values(prefix="2001:db8:1::", all=True)
+    assert r.op == "v6option.list" and r.params["all"] is True

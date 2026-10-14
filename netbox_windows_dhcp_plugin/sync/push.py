@@ -30,7 +30,20 @@ from ..windows import normalize
 from ..windows.psscript import NotFound, WindowsLayerError
 from ..windows.runner import RunnerError
 from .diff import CREATE, DELETE, UPDATE, Change, Record, diff, index
-from .windows_state import NAME_FIELDS, SKIPPED_OPTION_IDS, class_key, equal, optiondef_key, policy_key
+from .windows_state import (
+    NAME_FIELDS,
+    SKIPPED_OPTION_IDS,
+    V6_PREFIX_LENGTH,
+    class6_key,
+    class_key,
+    equal,
+    ipv6,
+    option6_target,
+    optiondef_key,
+    policy_key,
+    reservation6_key,
+    scope6_key,
+)
 from .windows_state import scope_ids as windows_scope_ids
 from .windows_writer import PushRefused, option_target
 
@@ -40,6 +53,15 @@ Key = tuple[str, str]
 
 # What Windows gives a scope created without a lease duration (8 days), and what a push then sends.
 DEFAULT_LEASE_SECONDS = 8 * 86400
+
+# What Windows gives a DHCPv6 scope created without lifetimes.
+# unverified: T1 and T2 defaults (4 days, and 6 days 10 hours, as the scope wizard shows).
+V6_LIFETIME_DEFAULTS = {
+    "preferred_lifetime": 8 * 86400,
+    "valid_lifetime": 12 * 86400,
+    "t1": 4 * 86400,
+    "t2": 6 * 86400 + 10 * 3600,
+}
 
 # Field netbox_state sets on the extra copies of an object Windows can hold once ("#<pk>" keys): they name no Windows
 # object.
@@ -131,7 +153,9 @@ def _canonical_value(v: Any) -> Any:
     try:
         return str(normalize.parse_option_number(v))
     except (ValueError, TypeError):
-        return v
+        pass
+    # An IPv6 address in one spelling; anything else is returned as it is.
+    return ipv6(v) if isinstance(v, str) else v
 
 
 def fingerprint(record: Record) -> str:
@@ -177,6 +201,16 @@ def parents(kind: str, fields: Mapping[str, Any]) -> list[Key]:
         return [("scope", s) for s in fields.get("scope_ids", [])]
     if kind == "optiondef" and fields.get("vendor_class"):
         return [("class", class_key("vendor", fields["vendor_class"]))]
+    if kind in ("reservation6", "exclusion6"):
+        return [("scope6", scope6_key(fields["prefix"]))]
+    if kind == "option6":
+        prefix, ip = option6_target(fields["parent"])
+        out = [("scope6", scope6_key(prefix))] if prefix else []
+        if ip:
+            out.append(("reservation6", reservation6_key(prefix, ip)))
+        if fields.get("user_class"):
+            out.append(("class6", class6_key(fields["user_class"])))
+        return out
     if kind == "option":
         scope_id, ip = option_target(fields["parent"])
         vendor = fields.get("vendor_class", "")
@@ -220,6 +254,19 @@ def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] 
             return "the partner server has no Windows server (host) in NetBox; add one"
         if f["mode"] == "hotstandby" and not f.get("server_role"):
             return "a hot standby relationship needs the primary server's role (active or standby); set it in NetBox"
+    if record.kind == "scope6" and f.get("prefix_length") != V6_PREFIX_LENGTH:
+        return f"Windows DHCPv6 scopes are /{V6_PREFIX_LENGTH} prefixes; this subnet is /{f.get('prefix_length')}"
+    if record.kind == "reservation6":
+        if not f.get("ip_address"):
+            return "the reservation has no IPv6 address; add one in NetBox"
+        if not f.get("client_duid"):
+            return "the reservation has no DUID; add one in NetBox"
+        if f.get("iaid") is None:
+            return "the reservation has no IAID; set it on its Windows reservation in NetBox"
+    if record.kind == "class6" and f.get("class_type") != "user":
+        return "only DHCPv6 user classes are synced"
+    if record.kind == "option6" and not f.get("value"):
+        return "the option has no value; set one or remove the option in NetBox"
     if record.kind == "option":
         code = f["option_id"]
         vendor = f.get("vendor_class", "")
@@ -261,6 +308,10 @@ def _prepare(record: Record, target: Mapping[Key, Record]) -> Record:
     if record.kind == "reservation" and not f.get("name"):
         # Windows names a reservation after its IP when given no name.
         return Record(record.kind, record.key, {**f, "name": f["ip_address"]})
+    if record.kind == "reservation6" and not f.get("name"):
+        return Record(record.kind, record.key, {**f, "name": f["ip_address"]})
+    if record.kind == "scope6":
+        return _prepare_scope6(record, target.get((record.kind, record.key)))
     if record.kind == "scope" and not f.get("name"):
         # Windows requires a scope name: use the scope ID, as for an unnamed reservation.
         record = Record(record.kind, record.key, {**f, "name": record.key})
@@ -284,6 +335,17 @@ def _prepare(record: Record, target: Mapping[Key, Record]) -> Record:
         lease = current.fields["lease_seconds"] if current else DEFAULT_LEASE_SECONDS
         return Record(record.kind, record.key, {**f, "lease_seconds": lease})
     return record
+
+
+def _prepare_scope6(record: Record, current: Record | None) -> Record:
+    """Lifetimes left empty in NetBox keep what Windows has, or get Windows' defaults; a name is required."""
+    f = dict(record.fields)
+    if not f.get("name"):
+        f["name"] = f["prefix"]
+    for name, default in V6_LIFETIME_DEFAULTS.items():
+        if f.get(name) is None:
+            f[name] = current.fields.get(name) if current else default
+    return Record(record.kind, record.key, f)
 
 
 def plan(

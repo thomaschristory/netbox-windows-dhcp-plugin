@@ -63,6 +63,97 @@ class TestConnectionJob(JobRunner):
             raise JobFailed(sync_run.error)
 
 
+class LeaseJob(JobRunner):
+    """
+    Read the live leases of one scope into the job's data. The job belongs to the Windows server (netbox-plugin-dhcp
+    subnets cannot hold jobs); ``data["subnet"]`` says which subnet it read, from the moment it is queued.
+    """
+
+    class Meta:
+        name = "Windows DHCP leases"
+
+    # Tests substitute a fake runner here.
+    runner_factory = None
+
+    def run(self, *args, subnet_id=None, **kwargs):
+        from netbox_dhcp.models import Subnet
+
+        from . import leases
+        from .windows.psscript import NotFound
+
+        self.subnet_id = subnet_id
+        server = self.job.object
+        subnet = Subnet.objects.select_related("prefix").filter(pk=subnet_id).first()
+        if subnet is None:
+            self._fail("the subnet no longer exists")
+        if server is None or leases.windows_server_for(subnet) != server:
+            self._fail(f"{subnet} no longer belongs to this Windows server")
+        family, scope = leases.scope_of(subnet)
+        runner = self.runner_factory(server) if self.runner_factory else None
+        client = None
+        try:
+            client = build_client(server, runner=runner)
+            found = client.list_v6_leases(scope) if family == 6 else client.list_leases(scope)
+        except NotFound:
+            self._fail(f"scope {scope} is not on {server.host}")
+        except (CredentialError, WindowsLayerError, ValueError) as exc:
+            self._fail(f"reading leases from {server.host} failed: {exc}")
+        finally:
+            if client is not None:
+                client.close()
+        kept, total = leases.rows(found, family)
+        self.job.data = {
+            "subnet": subnet_id,
+            "server": str(server),
+            "scope": scope,
+            "family": family,
+            "total": total,
+            "truncated": total > len(kept),
+            "leases": kept,
+        }
+        self.logger.info(f"Read {total} lease(s) of scope {scope} from {server.host}")
+
+    def _fail(self, message):
+        # Job.terminate saves the job, data included: the page shows the reason without reading the job log.
+        self.job.data = {"subnet": self.subnet_id, "error": message}
+        self.logger.error(message)
+        raise JobFailed(message)
+
+
+def lease_jobs(subnet, server):
+    """Lease reads of this subnet, newest first."""
+    return LeaseJob.get_jobs(server).filter(data__subnet=subnet.pk).order_by("-created")
+
+
+def enqueue_leases(subnet, user):
+    """Queue a lease read for the subnet unless one is already waiting or running. Returns the job, or None."""
+    from core.choices import JobStatusChoices
+    from django.db import transaction
+
+    from . import leases
+
+    server = leases.windows_server_for(subnet)
+    if server is None:
+        return None
+    busy = lease_jobs(subnet, server).filter(
+        status__in=JobStatusChoices.ENQUEUED_STATE_CHOICES, created__gte=timezone.now() - ORPHANED_JOB
+    )
+    if busy.exists():
+        return None
+    # RQ only gets the job once this transaction commits, so the subnet is recorded before the job can start.
+    with transaction.atomic():
+        job = LeaseJob.enqueue(
+            instance=server,
+            user=user,
+            # Never notify: the person who asked is watching the page, which updates itself.
+            notifications=JobNotificationChoices.NOTIFICATION_NEVER,
+            subnet_id=subnet.pk,
+        )
+        job.data = {"subnet": subnet.pk}
+        job.save(update_fields=["data"])
+    return job
+
+
 class ImportJob(JobRunner):
     """Read a Windows server and bring its differences into NetBox: an import branch, or an import proposal."""
 

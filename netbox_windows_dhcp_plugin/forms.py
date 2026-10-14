@@ -292,13 +292,13 @@ class WindowsReservationForm(NetBoxModelForm):
     host_reservation = DynamicModelChoiceField(queryset=HostReservation.objects.all(), label=_("Host reservation"))
 
     fieldsets = (
-        FieldSet("host_reservation", "reservation_type", name=_("Windows reservation")),
+        FieldSet("host_reservation", "reservation_type", "iaid", name=_("Windows reservation")),
         FieldSet("tags", name=_("Tags")),
     )
 
     class Meta:
         model = WindowsReservation
-        fields = ("host_reservation", "reservation_type", "tags")
+        fields = ("host_reservation", "reservation_type", "iaid", "tags")
 
 
 class WindowsReservationImportForm(NetBoxModelImportForm):
@@ -309,7 +309,7 @@ class WindowsReservationImportForm(NetBoxModelImportForm):
 
     class Meta:
         model = WindowsReservation
-        fields = ("host_reservation", "reservation_type", "tags")
+        fields = ("host_reservation", "reservation_type", "iaid", "tags")
 
 
 class WindowsReservationBulkEditForm(NetBoxModelBulkEditForm):
@@ -318,8 +318,10 @@ class WindowsReservationBulkEditForm(NetBoxModelBulkEditForm):
         choices=add_blank_choice(ReservationTypeChoices), required=False, label=_("Type")
     )
 
-    fieldsets = (FieldSet("reservation_type"),)
-    nullable_fields = ()
+    iaid = forms.IntegerField(min_value=0, max_value=0xFFFFFFFF, required=False, label=_("IAID"))
+
+    fieldsets = (FieldSet("reservation_type", "iaid"),)
+    nullable_fields = ("iaid",)
 
 
 class WindowsReservationFilterForm(NetBoxModelFilterSetForm):

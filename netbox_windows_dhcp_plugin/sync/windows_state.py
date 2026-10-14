@@ -17,15 +17,19 @@ from ..windows.client import (
     DhcpClass,
     DhcpClient,
     ExclusionRange,
+    ExclusionRangeV6,
     FailoverRelationship,
     FilterListState,
     MacFilter,
     OptionDefinition,
     OptionValue,
+    OptionValueV6,
     Policy,
     PolicyIPRange,
     Reservation,
+    ReservationV6,
     Scope,
+    ScopeV6,
     Superscope,
 )
 from .diff import Record
@@ -35,16 +39,20 @@ __all__ = (
     "SKIPPED_OPTION_IDS",
     "OptionValue",
     "WindowsState",
+    "class6_key",
     "class_key",
     "equal",
     "hidden_records",
     "join_values",
     "mac_key",
+    "option6_key",
     "optiondef_key",
     "option_key",
     "policy_key",
     "read",
+    "reservation6_key",
     "same_host",
+    "scope6_key",
     "split_values",
     "to_records",
 )
@@ -62,6 +70,16 @@ UNSTORABLE_VALUES = (
     "values as one comma-separated string, which cannot keep them"
 )
 PARTNER_FAILOVERS = "failover relationship(s) whose primary is another server: they are synced from that server"
+V6_VENDOR_CLASSES = "DHCPv6 vendor class(es): the plugin syncs DHCPv6 user classes only"
+V6_VENDOR_VALUES = "DHCPv6 vendor class option value(s): the plugin syncs DHCPv6 standard and user class values only"
+V6_UNDEFINED = (
+    "DHCPv6 option value(s) of codes netbox-plugin-dhcp has no standard definition for: DHCPv6 custom option "
+    "definitions are not synced"
+)
+V6_EXCLUSIONS = "DHCPv6 exclusion range(s): they are not synced, and a push leaves them alone"
+
+# Windows DHCPv6 scopes are always /64.
+V6_PREFIX_LENGTH = 64
 
 # Windows reports "no BOOTP client limit" as 2^32-1, which does not fit a database integer field. NetBox stores it as
 # empty instead.
@@ -83,6 +101,12 @@ class WindowsState:
     failovers: list[FailoverRelationship] = field(default_factory=list)
     filters: list[MacFilter] = field(default_factory=list)
     filter_lists: FilterListState | None = None
+    v6_classes: list[DhcpClass] = field(default_factory=list)
+    v6_scopes: list[ScopeV6] = field(default_factory=list)
+    v6_exclusions: list[ExclusionRangeV6] = field(default_factory=list)
+    v6_reservations: list[ReservationV6] = field(default_factory=list)
+    # Every DHCPv6 option value, with prefix and reserved_ip filled in for scope and reservation values.
+    v6_options: list[OptionValueV6] = field(default_factory=list)
 
 
 def _scope_options(client: DhcpClient, scope_id: str, reserved_ip: str = "", policy_name: str = "") -> list:
@@ -121,7 +145,30 @@ def read(client: DhcpClient) -> WindowsState:
             state.policies.append(policy)
             state.policy_ranges.extend(client.list_policy_ip_ranges(sid, policy.name))
             state.options.extend(_scope_options(client, sid, policy_name=policy.name))
+    _read_v6(client, state)
     return state
+
+
+def _read_v6(client: DhcpClient, state: WindowsState) -> None:
+    state.v6_classes = client.list_v6_classes()
+    state.v6_scopes = client.list_v6_scopes()
+    # unverified: -All is expected to return the values of every user and vendor class at each level, as for IPv4.
+    state.v6_options.extend(client.list_v6_option_values(all=True))
+    for scope in state.v6_scopes:
+        prefix = scope.prefix
+        state.v6_exclusions.extend(client.list_v6_exclusion_ranges(prefix))
+        reservations = client.list_v6_reservations(prefix)
+        state.v6_reservations.extend(reservations)
+        state.v6_options.extend(_v6_options(client, prefix))
+        for r in reservations:
+            state.v6_options.extend(_v6_options(client, prefix, r.ip_address))
+
+
+def _v6_options(client: DhcpClient, prefix: str, reserved_ip: str = "") -> list:
+    out = client.list_v6_option_values(prefix=prefix, reserved_ip=reserved_ip, all=True)
+    for o in out:
+        o.prefix, o.reserved_ip = prefix, reserved_ip
+    return out
 
 
 # -- keys ----------------------------------------------------------------------------------------------------------
@@ -172,6 +219,42 @@ def same_host(a: str, b: str) -> bool:
     if not a or not b or ("." in a) == ("." in b):
         return False
     return a.split(".", 1)[0] == b.split(".", 1)[0]
+
+
+def ipv6(value: str) -> str:
+    """An IPv6 address in one spelling (lowercase, compressed), whatever form either side wrote it in."""
+    try:
+        return str(ipaddress.IPv6Address(value.strip()))
+    except ValueError:
+        return value
+
+
+def scope6_key(prefix: str) -> str:
+    """``v6/2001:db8:1::``. The ``v6/`` start keeps DHCPv6 keys apart from IPv4 ones in every message."""
+    return f"v6/{ipv6(prefix)}"
+
+
+def reservation6_key(prefix: str, ip_address: str) -> str:
+    """``v6/2001:db8:1::/2001:db8:1::10``."""
+    return f"v6/{ipv6(prefix)}/{ipv6(ip_address)}"
+
+
+def class6_key(name: str) -> str:
+    """``v6/user/lab``: only DHCPv6 user classes are synced."""
+    return f"v6/user/{name.lower()}"
+
+
+def option6_key(parent: str, option_id: int, user_class: str = "") -> str:
+    """``v6/server/23``, ``v6/2001:db8:1::/24``, ``v6/2001:db8:1::/2001:db8:1::10/23;user=lab``."""
+    return option_key(f"v6/{parent}", option_id, user_class=user_class)
+
+
+def option6_target(parent: str) -> tuple[str, str]:
+    """``server``, ``2001:db8:1::`` or ``2001:db8:1::/2001:db8:1::10`` -> (prefix, reserved IP)."""
+    if parent == "server":
+        return "", ""
+    prefix, _, ip = parent.partition("/")
+    return prefix, ip
 
 
 def mac_key(mac: str) -> str:
@@ -346,20 +429,128 @@ def option_record(o: OptionValue) -> Record:
     return Record("option", option_key(parent, o.option_id, o.vendor_class, o.user_class, o.policy_name), fields)
 
 
+def scope6_record(s: ScopeV6) -> Record:
+    prefix = ipv6(s.prefix)
+    return Record(
+        "scope6",
+        scope6_key(prefix),
+        {
+            "prefix": prefix,
+            "prefix_length": V6_PREFIX_LENGTH,
+            "name": _text(s.name),
+            "description": s.description or "",
+            "state": s.state.lower(),
+            "preference": int(s.preference or 0),
+            "preferred_lifetime": _lease_seconds(s.preferred_lifetime),
+            "valid_lifetime": _lease_seconds(s.valid_lifetime),
+            # Zero: the server works the renewal and rebinding times out itself, which NetBox writes as empty.
+            "t1": _lease_seconds(s.t1) or None,
+            "t2": _lease_seconds(s.t2) or None,
+        },
+    )
+
+
+def reservation6_record(r: ReservationV6) -> Record:
+    prefix, ip = ipv6(r.prefix), ipv6(r.ip_address)
+    return Record(
+        "reservation6",
+        reservation6_key(prefix, ip),
+        {
+            "prefix": prefix,
+            "ip_address": ip,
+            "client_duid": _client_id(r.client_duid),
+            "iaid": int(r.iaid),
+            "name": _text(r.name),
+            "description": r.description or "",
+        },
+    )
+
+
+def _option6_parent(o: OptionValueV6) -> str:
+    prefix = ipv6(o.prefix) if o.prefix else ""
+    if o.reserved_ip:
+        return f"{prefix}/{ipv6(o.reserved_ip)}"
+    return prefix or "server"
+
+
+def option6_record(o: OptionValueV6) -> Record:
+    parent = _option6_parent(o)
+    fields = {
+        "parent": parent,
+        "option_id": o.option_id,
+        "value": [str(v) for v in o.value],
+        "user_class": o.user_class,
+    }
+    if o.vendor_class:
+        # Only on the hidden records of vendor class values, which a push never writes.
+        fields["vendor_class"] = o.vendor_class
+        key = option_key(f"v6/{parent}", o.option_id, vendor_class=o.vendor_class, user_class=o.user_class)
+        return Record("option6", key, fields)
+    return Record("option6", option6_key(parent, o.option_id, o.user_class), fields)
+
+
+def exclusion6_record(e: ExclusionRangeV6) -> Record:
+    prefix, start, end = ipv6(e.prefix), ipv6(e.start_range), ipv6(e.end_range)
+    return Record(
+        "exclusion6", f"v6/{prefix}/{start}-{end}", {"prefix": prefix, "start_range": start, "end_range": end}
+    )
+
+
+def _v6_option_skip(o: OptionValueV6, standard6: set[int] | None) -> str | None:
+    """Why a DHCPv6 option value is not synced, or None."""
+    if o.vendor_class:
+        return V6_VENDOR_VALUES
+    if standard6 is not None and o.option_id not in standard6:
+        return V6_UNDEFINED
+    if not _storable([str(v) for v in o.value]):
+        return UNSTORABLE_VALUES
+    return None
+
+
+def _v6_records(state: WindowsState, standard6: set[int] | None, skip) -> list[Record]:
+    records = []
+    for c in state.v6_classes:
+        if c.type.lower() != "user":
+            skip(V6_VENDOR_CLASSES)
+            continue
+        records.append(
+            Record(
+                "class6",
+                class6_key(c.name),
+                {"name": c.name, "class_type": "user", "data": c.data, "description": _text(c.description)},
+            )
+        )
+    records.extend(scope6_record(s) for s in state.v6_scopes)
+    for _ in state.v6_exclusions:
+        skip(V6_EXCLUSIONS)
+    records.extend(reservation6_record(r) for r in state.v6_reservations)
+    for o in state.v6_options:
+        reason = _v6_option_skip(o, standard6)
+        if reason is not None:
+            skip(reason)
+            continue
+        records.append(option6_record(o))
+    return records
+
+
 def to_records(
     state: WindowsState,
     standard_codes: Iterable[int] = (),
     skipped_option_ids: Iterable[int] = SKIPPED_OPTION_IDS,
     partner_failovers: Iterable[str] = (),
+    standard_codes6: Iterable[int] | None = None,
 ) -> tuple[list[Record], list[str]]:
     """
     Turn a WindowsState into records, and return notes about what was left out.
 
     ``standard_codes`` are the DHCPv4 option codes netbox-plugin-dhcp already defines: their Windows definitions are
     not imported (values still are, against the standard definition). ``partner_failovers`` are the (lowercase)
-    names of failover relationships NetBox syncs from the other server.
+    names of failover relationships NetBox syncs from the other server. ``standard_codes6`` are the DHCPv6 codes
+    netbox-plugin-dhcp defines: DHCPv6 definitions are not synced, so values of other codes are left out (None keeps
+    them all).
     """
     standard = set(standard_codes)
+    standard6 = None if standard_codes6 is None else set(standard_codes6)
     skipped = set(skipped_option_ids)
     partners = {n.lower() for n in partner_failovers}
     records: list[Record] = []
@@ -461,6 +652,8 @@ def to_records(
     if (lists := state.filter_lists) is not None:
         records.append(Record("filterlists", "server", {"allow": bool(lists.allow), "deny": bool(lists.deny)}))
 
+    records.extend(_v6_records(state, standard6, skip))
+
     notes = [f"skipped {count} {reason}" for reason, count in skips.items()]
     return records, notes
 
@@ -483,6 +676,8 @@ NAME_FIELDS = frozenset(
         ("policy", "name"),
         ("superscope", "name"),
         ("failover", "name"),
+        ("class6", "name"),
+        ("option6", "user_class"),
     }
 )
 
@@ -500,12 +695,31 @@ def equal(kind: str, name: str, a: Any, b: Any) -> bool:
     if name in ("value", "default_value") and isinstance(a, list) and isinstance(b, list):
         if len(a) != len(b):
             return False
-        return all(x == y or (_number(x) is not None and _number(x) == _number(y)) for x, y in zip(a, b, strict=True))
+        return all(_same_value(x, y) for x, y in zip(a, b, strict=True))
     return a == b
+
+
+def _same_value(x: Any, y: Any) -> bool:
+    if x == y:
+        return True
+    if (n := _number(x)) is not None and n == _number(y):
+        return True
+    # DHCPv6 addresses: Windows prints them compressed and lowercase, NetBox keeps what was typed.
+    x, y = str(x), str(y)
+    return _is_ipv6(x) and _is_ipv6(y) and ipv6(x) == ipv6(y)
+
+
+def _is_ipv6(value: str) -> bool:
+    try:
+        ipaddress.IPv6Address(value.strip())
+    except ValueError:
+        return False
+    return True
 
 
 def hidden_records(
     state: WindowsState,
+    standard_codes6: Iterable[int] | None = None,
     skipped_option_ids: Iterable[int] = SKIPPED_OPTION_IDS,
     partner_failovers: Iterable[str] = (),
 ) -> list[Record]:
@@ -523,4 +737,7 @@ def hidden_records(
             continue
         out.append(option_record(o))
     out.extend(failover_record(f) for f in state.failovers if f.name.lower() in partners)
+    standard6 = None if standard_codes6 is None else set(standard_codes6)
+    out.extend(option6_record(o) for o in state.v6_options if _v6_option_skip(o, standard6))
+    out.extend(exclusion6_record(e) for e in state.v6_exclusions)
     return out

@@ -45,6 +45,7 @@ class WindowsReservationPanel(panels.ObjectAttributesPanel):
     title = _("Windows reservation")
     host_reservation = attrs.RelatedObjectAttr("host_reservation", linkify=True)
     reservation_type = attrs.ChoiceAttr("reservation_type", label=_("Type"))
+    iaid = attrs.NumericAttr("iaid", label=_("IAID"))
 
 
 class ExclusionRangePanel(panels.ObjectAttributesPanel):

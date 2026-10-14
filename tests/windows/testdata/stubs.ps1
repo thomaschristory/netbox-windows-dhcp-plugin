@@ -684,3 +684,56 @@ function Remove-DhcpServerv6OptionValue {
         [string]$VendorClass, [string]$UserClass, [switch]$PassThru)
     Record 'Remove-DhcpServerv6OptionValue' $PSBoundParameters
 }
+
+$global:V6Classes = [System.Collections.ArrayList]::new()
+$global:V6Exclusions = [System.Collections.ArrayList]::new()
+$global:V6Leases = [System.Collections.ArrayList]::new()
+
+function Get-DhcpServerv6Class {
+    [CmdletBinding()]
+    param([string]$ComputerName, [Parameter(Position = 0)][string[]]$Name, [ValidateSet('Vendor', 'User')][string]$Type)
+    Record 'Get-DhcpServerv6Class' $PSBoundParameters
+    $global:V6Classes
+}
+
+function Add-DhcpServerv6Class {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([string]$ComputerName, [string]$Description, [uint32]$VendorId, [Parameter(Mandatory)][string]$Data,
+        [Parameter(Mandatory)][ValidateSet('Vendor', 'User')][string]$Type, [Parameter(Mandatory)][string]$Name,
+        [switch]$PassThru)
+    Record 'Add-DhcpServerv6Class' $PSBoundParameters
+    [void]$global:V6Classes.Add([pscustomobject]@{ Name = $Name; Type = $Type; Data = $Data
+        AsciiData = $Data; Description = $Description; VendorId = $VendorId })
+}
+
+function Set-DhcpServerv6Class {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([string]$ComputerName, [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][ValidateSet('Vendor', 'User')][string]$Type, [string]$Data, [string]$Description,
+        [switch]$PassThru)
+    Record 'Set-DhcpServerv6Class' $PSBoundParameters
+    $c = $global:V6Classes | Where-Object { $_.Name -eq $Name -and $_.Type -eq $Type } | Select-Object -First 1
+    if ($PSBoundParameters.ContainsKey('Data')) { $c.Data = $Data; $c.AsciiData = $Data }
+    if ($PSBoundParameters.ContainsKey('Description')) { $c.Description = $Description }
+}
+
+function Remove-DhcpServerv6Class {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([string]$ComputerName, [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][ValidateSet('Vendor', 'User')][string]$Type, [switch]$PassThru)
+    Record 'Remove-DhcpServerv6Class' $PSBoundParameters
+}
+
+function Get-DhcpServerv6ExclusionRange {
+    [CmdletBinding()]
+    param([string]$ComputerName, [Parameter(Position = 0)][ipaddress[]]$Prefix)
+    Record 'Get-DhcpServerv6ExclusionRange' $PSBoundParameters
+    $global:V6Exclusions | Where-Object { "$($_.Prefix)" -eq "$Prefix" }
+}
+
+function Get-DhcpServerv6Lease {
+    [CmdletBinding()]
+    param([string]$ComputerName, [Parameter(Position = 0)][ipaddress]$Prefix, [ipaddress[]]$IPAddress)
+    Record 'Get-DhcpServerv6Lease' $PSBoundParameters
+    $global:V6Leases | Where-Object { "$($_.Prefix)" -eq "$Prefix" }
+}

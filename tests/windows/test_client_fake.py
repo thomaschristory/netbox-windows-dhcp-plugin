@@ -404,3 +404,43 @@ def test_scope_set_without_lease_keeps_it():
     s.name = "b"
     got = c.set_scope(s)
     assert (got.name, got.lease_duration) == ("b", "2.00:00:00")
+
+
+def test_v6_classes(c: DhcpClient) -> None:
+    c.add_v6_class(DhcpClass(name="Lab", type="User", data="LabComputers", description="x"))
+    with pytest.raises(PSError):
+        c.add_v6_class(DhcpClass(name="lab", type="User", data="dup"))
+    assert c.set_v6_class(DhcpClass(name="lab", type="User", data="Lab2")).data == "Lab2"
+    assert [x.name for x in c.list_v6_classes()] == ["Lab"]
+    # The v4 and v6 class lists are separate on Windows.
+    assert c.list_classes() == []
+    c.remove_v6_class("LAB", "User")
+    assert c.list_v6_classes() == []
+    with pytest.raises(NotFound):
+        c.remove_v6_class("lab", "User")
+
+
+def test_v6_option_list_all_returns_every_class(c: DhcpClient) -> None:
+    c.add_v6_scope(ScopeV6(prefix="2001:db8:1::", name="v6"))
+    c.add_v6_class(DhcpClass(name="lab", type="User", data="Lab"))
+    c.set_v6_option_value(OptionKeyV6(23, prefix="2001:db8:1::"), ["2001:db8::53"])
+    c.set_v6_option_value(OptionKeyV6(23, prefix="2001:db8:1::", user_class="lab"), ["2001:db8::54"])
+    assert len(c.list_v6_option_values(prefix="2001:db8:1::")) == 1
+    got = c.list_v6_option_values(prefix="2001:db8:1::", all=True)
+    assert sorted(o.user_class for o in got) == ["", "lab"]
+    # Server level values are not scope values.
+    assert c.list_v6_option_values(all=True) == []
+
+
+def test_v6_exclusions_and_leases(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    c.add_v6_scope(ScopeV6(prefix="2001:db8:1::", name="v6"))
+    fake.add_v6_exclusion("2001:db8:1::", "2001:db8:1::1", "2001:db8:1::ff")
+    fake.add_v6_lease("2001:db8:1::", "2001:db8:1::1:10", iaid=5)
+    (e,) = c.list_v6_exclusion_ranges("2001:db8:1::")
+    assert (e.start_range, e.end_range) == ("2001:db8:1::1", "2001:db8:1::ff")
+    (lease,) = c.list_v6_leases("2001:db8:1::")
+    assert lease.ip_address == "2001:db8:1::1:10" and lease.iaid == 5
+    with pytest.raises(PSError, match="used by a client"):
+        c.remove_v6_scope("2001:db8:1::")
+    with pytest.raises(NotFound):
+        c.list_v6_leases("2001:db8:2::")

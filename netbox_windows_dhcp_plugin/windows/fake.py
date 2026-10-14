@@ -145,6 +145,9 @@ class FakeDhcpServer:
         self.v6_scopes: dict[str, dict[str, Any]] = {}
         self.v6_reservations: dict[str, dict[str, Any]] = {}
         self.v6_options: dict[tuple, dict[str, Any]] = {}
+        self.v6_classes: dict[tuple[str, str], dict[str, Any]] = {}  # (type, lower name)
+        self.v6_exclusions: list[dict[str, Any]] = []
+        self.v6_leases: dict[str, list[dict[str, Any]]] = {}  # keyed by prefix
         self.calls: list[Call] = []
         self.fail: Callable[[str, dict[str, Any]], PSError | None] | None = None
 
@@ -198,6 +201,35 @@ class FakeDhcpServer:
             }
             lease.update(extra)
             self.leases.setdefault(scope_id, []).append(lease)
+
+    def add_v6_lease(self, prefix: str, ip_address: str, client_duid: str = "00-01-00-01-aa-bb", **extra: Any) -> None:
+        with self._lock:
+            lease = {
+                "ip_address": ip_address,
+                "prefix": prefix,
+                "client_duid": client_duid,
+                "iaid": 1,
+                "host_name": "",
+                "address_state": "Active",
+                "lease_expiry_time": "2030-01-01T00:00:00Z",
+                "description": "",
+            }
+            lease.update(extra)
+            self.v6_leases.setdefault(prefix, []).append(lease)
+
+    def add_v6_exclusion(self, prefix: str, start_range: str, end_range: str) -> None:
+        with self._lock:
+            self.v6_exclusions.append({"prefix": prefix, "start_range": start_range, "end_range": end_range})
+
+    def add_v6_class(self, name: str, type: str = "Vendor", data: str = "", description: str = "") -> None:  # noqa: A002
+        """Seed a class the client cannot create (a DHCPv6 vendor class)."""
+        with self._lock:
+            self.v6_classes[(type.lower(), name.lower())] = {
+                "name": name,
+                "type": type,
+                "data": data,
+                "description": description,
+            }
 
     # -- helpers -------------------------------------------------------------------
 
@@ -970,7 +1002,17 @@ class FakeDhcpServer:
     def _op_v6scope_remove(self, p: dict) -> Any:
         prefix = _s(p, "prefix")
         self._v6scope("Remove-DhcpServerv6Scope", prefix)
+        if self.v6_leases.get(prefix) and p.get("force") is not True:
+            raise _err(
+                "Remove-DhcpServerv6Scope",
+                20007,
+                "PermissionDenied",
+                f"Failed to delete scope {prefix}. The specified DHCP element has been used by a client "
+                "and cannot be removed.",
+            )
         del self.v6_scopes[prefix]
+        self.v6_leases.pop(prefix, None)
+        self.v6_exclusions = [e for e in self.v6_exclusions if e["prefix"] != prefix]
         for ip in [ip for ip, r in self.v6_reservations.items() if r["prefix"] == prefix]:
             del self.v6_reservations[ip]
         for k in [k for k in self.v6_options if k[1] == prefix]:
@@ -1045,11 +1087,16 @@ class FakeDhcpServer:
 
     def _op_v6option_list(self, p: dict) -> Any:
         self._check_v6option_level(p)
-        level = self._v6option_key(p)[1:]
-        return [v for k, v in sorted(self.v6_options.items()) if k[1:] == level]
+        key = self._v6option_key(p)
+        # -All: every class at that level; otherwise only the values of the class asked for (none: standard ones).
+        width = 3 if p.get("all") is True else 5
+        return [v for k, v in sorted(self.v6_options.items()) if k[1:width] == key[1:width]]
 
     def _op_v6option_set(self, p: dict) -> Any:
         self._check_v6option_level(p)
+        user = _s(p, "user_class")
+        if user and ("user", user.lower()) not in self.v6_classes:
+            raise _invalid("Set-DhcpServerv6OptionValue", f"The class {user} does not exist.", 20049)
         oid = _n(p, "option_id")
         v = {
             "option_id": oid,
@@ -1069,4 +1116,47 @@ class FakeDhcpServer:
         if k not in self.v6_options:
             raise _err("Remove-DhcpServerv6OptionValue", 20010, "NotSpecified", "Failed to delete option value")
         del self.v6_options[k]
+        return None
+
+    # -- DHCPv6 exclusions, leases and classes ---------------------------------------------
+
+    def _op_v6exclusion_list(self, p: dict) -> Any:
+        prefix = _s(p, "prefix")
+        self._v6scope("Get-DhcpServerv6ExclusionRange", prefix)
+        return [e for e in self.v6_exclusions if e["prefix"] == prefix]
+
+    def _op_v6lease_list(self, p: dict) -> Any:
+        prefix = _s(p, "prefix")
+        self._v6scope("Get-DhcpServerv6Lease", prefix)
+        return list(self.v6_leases.get(prefix, []))
+
+    def _op_v6class_list(self, p: dict) -> Any:
+        return [c for _, c in sorted(self.v6_classes.items())]
+
+    def _op_v6class_add(self, p: dict) -> Any:
+        k = self._class_key(p)
+        if k in self.v6_classes:
+            raise _invalid("Add-DhcpServerv6Class", f"The class {_s(p, 'name')} already exists.", 20045)
+        c = {"name": _s(p, "name"), "type": _s(p, "type"), "data": _s(p, "data"), "description": _s(p, "description")}
+        self.v6_classes[k] = c
+        return c
+
+    def _op_v6class_set(self, p: dict) -> Any:
+        c = self.v6_classes.get(self._class_key(p))
+        if c is None:
+            raise _err("Set-DhcpServerv6Class", 20049, "ObjectNotFound", f"The class {_s(p, 'name')} does not exist.")
+        c["data"] = _s(p, "data")
+        c["description"] = _s(p, "description")
+        return c
+
+    def _op_v6class_remove(self, p: dict) -> Any:
+        k = self._class_key(p)
+        if k not in self.v6_classes:
+            raise _err(
+                "Remove-DhcpServerv6Class", 20049, "ObjectNotFound", f"The class {_s(p, 'name')} does not exist."
+            )
+        del self.v6_classes[k]
+        idx = 3 if k[0] == "vendor" else 4  # vendor_class or user_class in the option key
+        for ok in [ok for ok in self.v6_options if ok[idx].lower() == k[1]]:
+            del self.v6_options[ok]
         return None

@@ -165,7 +165,8 @@ _RESOLVERS = {
     # Core objects netbox-plugin-dhcp points at: the scope range, the prefix, a reservation's address and MAC.
     "ipam.iprange": lambda pk, d: _pool_servers(pk),
     "ipam.prefix": lambda pk, d: _prefix_servers(pk),
-    "ipam.ipaddress": lambda pk, d: _address_servers(ipv4_address_id=pk),
+    # An IPv4 reservation points at its address; a DHCPv6 one lists its addresses.
+    "ipam.ipaddress": lambda pk, d: _address_servers(ipv4_address_id=pk) | _address_servers(ipv6_addresses=pk),
     "dcim.macaddress": lambda pk, d: _address_servers(hw_address_id=pk),
 }
 

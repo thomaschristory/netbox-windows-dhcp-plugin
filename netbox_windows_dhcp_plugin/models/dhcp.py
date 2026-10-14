@@ -118,6 +118,13 @@ class WindowsReservation(NetBoxModel):
         choices=ReservationTypeChoices,
         default=ReservationTypeChoices.BOTH,
     )
+    iaid = models.PositiveBigIntegerField(
+        verbose_name=_("IAID"),
+        blank=True,
+        null=True,
+        validators=[MaxValueValidator(0xFFFFFFFF)],
+        help_text=_("DHCPv6 reservations only: the identity association ID the client sends with its DUID"),
+    )
 
     class Meta:
         ordering = ("host_reservation",)

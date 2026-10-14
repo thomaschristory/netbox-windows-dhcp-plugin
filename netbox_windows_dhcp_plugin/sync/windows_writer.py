@@ -20,14 +20,17 @@ from ..windows.client import (
     MacFilter,
     OptionDefinition,
     OptionKey,
+    OptionKeyV6,
     Policy,
     PolicyIPRange,
     Reservation,
+    ReservationV6,
     Scope,
+    ScopeV6,
     Superscope,
 )
 from .diff import CREATE, DELETE, UPDATE, Change
-from .windows_state import NO_BOOTP_LIMIT, same_host
+from .windows_state import NO_BOOTP_LIMIT, option6_target, same_host
 
 __all__ = ("PushRefused", "WindowsWriter", "option_target")
 
@@ -365,3 +368,74 @@ class WindowsWriter:
             return
         f = change.after or {}
         self.client.set_filter_lists(allow=f["allow"], deny=f["deny"])
+
+    # -- DHCPv6 --------------------------------------------------------------------------------------------------
+
+    def _apply_class6(self, change: Change) -> None:
+        f = change.after or change.before or {}
+        if change.action == DELETE:
+            self.client.remove_v6_class(f["name"], "User")
+            return
+        c = DhcpClass(name=f["name"], type="User", data=f["data"], description=f["description"])
+        if change.action == CREATE:
+            self.client.add_v6_class(c)
+        else:
+            self.client.set_v6_class(c)
+
+    def _apply_scope6(self, change: Change) -> None:
+        if change.action == DELETE:
+            # Never forced: a scope that still has leases fails with DHCP 20007, and that error is reported.
+            self.client.remove_v6_scope((change.before or {})["prefix"])
+            return
+        f = change.after or {}
+
+        def lifetime(name: str) -> str:
+            # The plan fills empty lifetimes in from Windows, so None here only means "Windows could not say".
+            return normalize.format_duration(f[name]) if f.get(name) else ""
+
+        s = ScopeV6(
+            prefix=f["prefix"],
+            name=f["name"],
+            description=f["description"],
+            state=normalize.enum_of(f["state"], *normalize.SCOPE_STATES),
+            preference=int(f["preference"] or 0),
+            preferred_lifetime=lifetime("preferred_lifetime"),
+            valid_lifetime=lifetime("valid_lifetime"),
+            t1=lifetime("t1"),
+            t2=lifetime("t2"),
+        )
+        if change.action == CREATE:
+            self.client.add_v6_scope(s)
+        else:
+            self.client.set_v6_scope(s)
+
+    def _apply_reservation6(self, change: Change) -> None:
+        if change.action == DELETE:
+            self.client.remove_v6_reservation((change.before or {})["ip_address"])
+            return
+        f = change.after or {}
+        r = ReservationV6(
+            prefix=f["prefix"],
+            ip_address=f["ip_address"],
+            client_duid=f["client_duid"],
+            iaid=int(f["iaid"]),
+            # Windows names a reservation after its IP when given no name.
+            name=f["name"] or f["ip_address"],
+            description=f["description"],
+        )
+        if change.action == CREATE:
+            self.client.add_v6_reservation(r)
+        else:
+            self.client.set_v6_reservation(r)
+
+    def _apply_option6(self, change: Change) -> None:
+        f = change.after or change.before or {}
+        prefix, reserved_ip = option6_target(f["parent"])
+        key = OptionKeyV6(
+            option_id=f["option_id"], prefix=prefix, reserved_ip=reserved_ip, user_class=f.get("user_class", "")
+        )
+        if change.action == DELETE:
+            self.client.remove_v6_option_value(key)
+        else:
+            # Set-DhcpServerv6OptionValue is an upsert, like the IPv4 cmdlet.
+            self.client.set_v6_option_value(key, f["value"])

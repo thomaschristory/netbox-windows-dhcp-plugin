@@ -20,13 +20,18 @@ __all__ = ("KIND_ORDER", "Change", "Record", "diff", "index")
 # deletes run in reverse.
 KIND_ORDER = (
     "class",
+    "class6",
     "optiondef",
     "scope",
+    "scope6",
     "superscope",
     "exclusion",
+    "exclusion6",
     "reservation",
+    "reservation6",
     "policy",
     "option",
+    "option6",
     "failover",
     "macfilter",
     "filterlists",
