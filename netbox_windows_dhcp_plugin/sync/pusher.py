@@ -54,7 +54,10 @@ def managed(windows_server):
 
 
 def _scope_of(change):
-    """The Windows scope a change lives in, or "" for server-level objects."""
+    """The Windows IPv4 scope a change lives in, "" for server-level objects, None for DHCPv6 ones."""
+    if change.kind.endswith("6"):
+        # Windows has no DHCPv6 failover: nothing to replicate or to leave to a primary.
+        return None
     fields = change.after or change.before or {}
     if change.kind == "scope":
         return change.key
@@ -97,7 +100,7 @@ def _replicate(windows_server, client, applied, logger):
     """After writing to a failover primary, copy the changed scopes to the partner. Returns error lines."""
     if not applied:
         return []
-    touched = {_scope_of(c) for c in applied}
+    touched = {_scope_of(c) for c in applied} - {None}
     server_level = "" in touched
     errors = []
     for relationship in FailoverRelationship.objects.filter(primary_server=windows_server.dhcp_server):
@@ -134,12 +137,13 @@ def run(windows_server, client, dry_run=False, logger=log):
     """Push NetBox to the server, or only plan it with ``dry_run``. Errors reading Windows raise."""
     state = windows_state.read(client)
     partners = netbox_state.partner_failovers(windows_server)
+    codes6 = netbox_state.standard_codes6()
     target, notes = windows_state.to_records(
-        state, standard_codes=netbox_state.standard_codes(), partner_failovers=partners
+        state, standard_codes=netbox_state.standard_codes(), partner_failovers=partners, standard_codes6=codes6
     )
     source = netbox_state.read(windows_server)
     current = managed(windows_server)
-    hidden = windows_state.hidden_records(state, partner_failovers=partners)
+    hidden = windows_state.hidden_records(state, standard_codes6=codes6, partner_failovers=partners)
     defined = {windows_state.optiondef_key(d.option_id, d.vendor_class) for d in state.option_definitions}
     plan = push.plan(source, target, current, hidden=hidden, defined_options=defined)
     _hold_partner_scopes(windows_server, plan, logger)

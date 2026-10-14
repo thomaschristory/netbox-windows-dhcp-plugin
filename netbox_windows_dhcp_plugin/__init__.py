@@ -28,6 +28,7 @@ if PluginConfig is not None:
             from . import (
                 jobs,  # noqa: F401 - registers the import scheduler system job
                 signals,
+                views,  # noqa: F401 - the Leases tab on subnets, registered before netbox-plugin-dhcp builds its URLs
             )
             from .conf import profiles_without_allowed_hosts
             from .integrations import branching

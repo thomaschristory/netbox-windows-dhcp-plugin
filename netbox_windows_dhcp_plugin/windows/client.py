@@ -42,9 +42,11 @@ __all__ = [
     "DhcpClass",
     "DhcpClient",
     "ExclusionRange",
+    "ExclusionRangeV6",
     "FailoverRelationship",
     "FilterListState",
     "Lease",
+    "LeaseV6",
     "MacFilter",
     "NotFound",
     "OptionDefinition",
@@ -286,6 +288,25 @@ class ReservationV6(_Model):
     client_duid: str = ""  # 00-01-00-01-...
     iaid: int = 0
     name: str = ""
+    description: str = ""
+
+
+@dataclass
+class ExclusionRangeV6(_Model):
+    prefix: str = ""
+    start_range: str = ""
+    end_range: str = ""
+
+
+@dataclass
+class LeaseV6(_Model):
+    ip_address: str = ""
+    prefix: str = ""
+    client_duid: str = ""
+    iaid: int = 0
+    host_name: str = ""
+    address_state: str = ""
+    lease_expiry_time: str = ""  # RFC 3339 UTC
     description: str = ""
 
 
@@ -1240,6 +1261,7 @@ S_V6OPTION_LIST = Script(
     _HELPERS
     + _V6OPTION_FUNC
     + r"""
+if ($p.all) { $sel['All'] = $true }
 $out = @(Get-DhcpServerv6OptionValue @cn @sel | ForEach-Object { ConvertTo-WdOptionV6 $_ })
 """,
 )
@@ -1258,6 +1280,97 @@ S_V6OPTION_REMOVE = Script(
     + _V6OPTION_FUNC
     + r"""
 Remove-DhcpServerv6OptionValue @cn @sel -OptionId $p.option_id -Confirm:$false
+""",
+)
+
+# ---- DHCPv6 exclusions (read only: a push leaves them alone) ----------------------------------
+
+# unverified: Get-DhcpServerv6ExclusionRange output property names (Prefix, StartRange, EndRange).
+S_V6EXCLUSION_LIST = Script(
+    "v6exclusion.list",
+    r"""
+$out = @(Get-DhcpServerv6ExclusionRange @cn -Prefix $p.prefix | ForEach-Object {
+    [ordered]@{ prefix = "$($_.Prefix)"; start_range = "$($_.StartRange)"; end_range = "$($_.EndRange)" }
+})
+""",
+)
+
+# ---- DHCPv6 leases, read only -----------------------------------------------------------------
+
+# unverified: Get-DhcpServerv6Lease output property names (ClientDuid, Iaid, LeaseExpiryTime, AddressState).
+S_V6LEASE_LIST = Script(
+    "v6lease.list",
+    r"""
+$out = @(Get-DhcpServerv6Lease @cn -Prefix $p.prefix | ForEach-Object {
+    $exp = ''
+    # Invariant culture: the server's own calendar and time separator would otherwise end up in the date.
+    if ($_.LeaseExpiryTime) {
+        $utc = $_.LeaseExpiryTime.ToUniversalTime()
+        $exp = $utc.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [cultureinfo]::InvariantCulture)
+    }
+    [ordered]@{
+        ip_address        = "$($_.IPAddress)"
+        prefix            = "$($_.Prefix)"
+        client_duid       = "$($_.ClientDuid)"
+        iaid              = [int64]$_.Iaid
+        host_name         = "$($_.HostName)"
+        address_state     = "$($_.AddressState)"
+        lease_expiry_time = $exp
+        description       = "$($_.Description)"
+    }
+})
+""",
+)
+
+# ---- DHCPv6 user and vendor classes -----------------------------------------------------------
+
+# Windows keeps DHCPv6 classes apart from the IPv4 ones. A vendor class also needs its enterprise number (-VendorId),
+# which the plugin does not keep, so only user classes are ever written.
+# unverified: whether the ASCII class data is in .AsciiData (and .Data holds hex) or in .Data, as for IPv4.
+_V6CLASS_FUNC = r"""
+function ConvertTo-WdClassV6($c) {
+    $data = "$($c.AsciiData)"
+    if (-not $data) { $data = "$($c.Data)" }
+    [ordered]@{ name = "$($c.Name)"; type = "$($c.Type)"; data = $data; description = "$($c.Description)" }
+}
+function Get-WdClassV6 {
+    $c = Get-DhcpServerv6Class @cn |
+        Where-Object { "$($_.Name)" -eq $p.name -and "$($_.Type)" -eq $p.type } |
+        Select-Object -First 1
+    if ($c) { ConvertTo-WdClassV6 $c }
+}
+"""
+
+S_V6CLASS_LIST = Script(
+    "v6class.list",
+    _V6CLASS_FUNC
+    + r"""
+$out = @(Get-DhcpServerv6Class @cn | ForEach-Object { ConvertTo-WdClassV6 $_ })
+""",
+)
+S_V6CLASS_ADD = Script(
+    "v6class.add",
+    _V6CLASS_FUNC
+    + r"""
+$a = @{ Name = $p.name; Type = $p.type; Data = $p.data }
+if ($p.description) { $a['Description'] = $p.description }
+Add-DhcpServerv6Class @cn @a
+$out = Get-WdClassV6
+""",
+)
+# unverified: Set-DhcpServerv6Class taking -Name, -Type, -Data and -Description like the IPv4 cmdlet.
+S_V6CLASS_SET = Script(
+    "v6class.set",
+    _V6CLASS_FUNC
+    + r"""
+Set-DhcpServerv6Class @cn -Name $p.name -Type $p.type -Data $p.data -Description "$($p.description)"
+$out = Get-WdClassV6
+""",
+)
+S_V6CLASS_REMOVE = Script(
+    "v6class.remove",
+    r"""
+Remove-DhcpServerv6Class @cn -Name $p.name -Type $p.type -Confirm:$false
 """,
 )
 
@@ -1792,9 +1905,15 @@ class DhcpClient:
         return self._get(S_V6OPTION_GET, _v6option_params(key), OptionValueV6)
 
     def list_v6_option_values(
-        self, prefix: str = "", reserved_ip: str = "", vendor_class: str = "", user_class: str = ""
+        self,
+        prefix: str = "",
+        reserved_ip: str = "",
+        vendor_class: str = "",
+        user_class: str = "",
+        all: bool = False,  # noqa: A002 - mirrors the -All switch
     ) -> list[OptionValueV6]:
         p = _v6option_params(OptionKeyV6(0, prefix, reserved_ip, vendor_class, user_class))
+        p["all"] = bool(all)
         return self._list(S_V6OPTION_LIST, p, OptionValueV6)
 
     def set_v6_option_value(self, key: OptionKeyV6, value: Sequence[str]) -> OptionValueV6:
@@ -1804,3 +1923,31 @@ class DhcpClient:
 
     def remove_v6_option_value(self, key: OptionKeyV6) -> None:
         self._do(S_V6OPTION_REMOVE, _v6option_params(key))
+
+    # -- DHCPv6 exclusions and leases (read only) ----------------------------------------
+
+    def list_v6_exclusion_ranges(self, prefix: str) -> list[ExclusionRangeV6]:
+        return self._list(S_V6EXCLUSION_LIST, {"prefix": _ipv6(prefix)}, ExclusionRangeV6)
+
+    def list_v6_leases(self, prefix: str) -> list[LeaseV6]:
+        return self._list(S_V6LEASE_LIST, {"prefix": _ipv6(prefix)}, LeaseV6)
+
+    # -- DHCPv6 user classes ---------------------------------------------------------------
+
+    def list_v6_classes(self) -> list[DhcpClass]:
+        return self._list(S_V6CLASS_LIST, None, DhcpClass)
+
+    def _v6class_params(self, c: DhcpClass) -> dict[str, Any]:
+        params = self._class_params(c)
+        if params["type"] != "User":
+            raise ValueError(f"class {c.name!r}: only DHCPv6 user classes can be written")
+        return params
+
+    def add_v6_class(self, c: DhcpClass) -> DhcpClass:
+        return self._get(S_V6CLASS_ADD, self._v6class_params(c), DhcpClass)
+
+    def set_v6_class(self, c: DhcpClass) -> DhcpClass:
+        return self._get(S_V6CLASS_SET, self._v6class_params(c), DhcpClass)
+
+    def remove_v6_class(self, name: str, type: str) -> None:  # noqa: A002
+        self._do(S_V6CLASS_REMOVE, {"name": name, "type": self._class_type(type)})

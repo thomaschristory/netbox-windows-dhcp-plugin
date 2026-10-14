@@ -123,7 +123,7 @@ class WindowsReservationFilterSet(NetBoxModelFilterSet):
 
     class Meta:
         model = WindowsReservation
-        fields = ("id",)
+        fields = ("id", "iaid")
 
     def search(self, queryset, name, value):
         if not value.strip():

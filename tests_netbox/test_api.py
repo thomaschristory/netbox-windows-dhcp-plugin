@@ -1,3 +1,4 @@
+from netbox_dhcp.models import HostReservation
 from utilities.testing import APITestCase, APIViewTestCases
 
 from netbox_windows_dhcp_plugin.choices import ClassTypeChoices, MacFilterListChoices
@@ -7,6 +8,7 @@ from netbox_windows_dhcp_plugin.models import (
     MacFilter,
     MacFilterLists,
     WindowsClass,
+    WindowsReservation,
     WindowsScope,
     WindowsServer,
     WindowsVendorOption,
@@ -65,6 +67,23 @@ class WindowsScopeAPITest(*STANDARD):
         for subnet in nets[:3]:
             WindowsScope.objects.create(subnet=subnet)
         cls.create_data = [{"subnet": subnet.pk, "delay_ms": 100} for subnet in nets[3:]]
+
+
+class WindowsReservationAPITest(*STANDARD):
+    user_permissions = (*DHCP_VIEW, "netbox_dhcp.view_hostreservation")
+    model = WindowsReservation
+    brief_fields = ["display", "id", "reservation_type", "url"]
+    graphql_base_name = "windows_dhcp_reservation"
+    bulk_update_data = {"iaid": 42}
+
+    @classmethod
+    def setUpTestData(cls):
+        (server,) = dhcp_servers(1)
+        (subnet,) = subnets(server, 1)
+        reservations = [HostReservation.objects.create(name=f"r{i}", subnet=subnet) for i in range(6)]
+        for r in reservations[:3]:
+            WindowsReservation.objects.create(host_reservation=r)
+        cls.create_data = [{"host_reservation": r.pk, "reservation_type": "dhcp", "iaid": 7} for r in reservations[3:]]
 
 
 class ExclusionRangeAPITest(*STANDARD):

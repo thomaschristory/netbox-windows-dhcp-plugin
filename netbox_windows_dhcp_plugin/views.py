@@ -1,6 +1,7 @@
 from django.contrib import messages
 from django.db.models import Count
-from django.shortcuts import get_object_or_404, redirect
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 from extras.ui.panels import CustomFieldsPanel, TagsPanel
 from netbox.object_actions import BulkDelete, BulkExport, CloneObject, DeleteObject, EditObject
@@ -8,11 +9,20 @@ from netbox.ui import layout
 from netbox.ui.panels import CommentsPanel, JSONPanel, ObjectsTablePanel, RelatedObjectsPanel
 from netbox.views import generic
 from netbox.views.generic.base import BaseObjectView
-from utilities.views import GetRelatedModelsMixin, GetReturnURLMixin, register_model_view
+from netbox_dhcp.models import Subnet
+from utilities.htmx import htmx_partial
+from utilities.views import GetRelatedModelsMixin, GetReturnURLMixin, ViewTab, register_model_view
 
-from . import filtersets, forms, review, tables
+from . import filtersets, forms, leases, review, tables
 from .integrations import branching
-from .jobs import TestConnectionJob, enqueue_import, enqueue_push
+from .jobs import (
+    TestConnectionJob,
+    enqueue_import,
+    enqueue_leases,
+    enqueue_push,
+    lease_jobs,
+    lease_read_in_progress,
+)
 from .models import (
     ExclusionRange,
     FailoverRelationship,
@@ -516,3 +526,77 @@ for _dismiss, _verb in ((False, "apply"), (True, "dismiss")):
     register_model_view(ImportProposalItem, f"bulk_{_verb}", path=_verb, detail=False)(
         type(f"ImportProposalItemBulk{_name}View", (_BulkReviewView,), _attrs)
     )
+
+
+#
+# Live leases, as a tab on netbox-plugin-dhcp's subnet page
+#
+
+
+def _lease_tab_visible(subnet):
+    return leases.windows_server_for(subnet) is not None
+
+
+@register_model_view(Subnet, "windows_leases", path="windows-leases")
+class SubnetLeasesView(generic.ObjectView):
+    """
+    The last lease read of a Windows scope, and a button to read again. The read runs in a job (LeaseJob); while it
+    runs, the panel asks the server for itself again every few seconds (HTMX) until the job is done.
+    """
+
+    queryset = Subnet.objects.select_related("prefix", "dhcp_server", "shared_network__dhcp_server")
+    template_name = "netbox_windows_dhcp_plugin/subnet_leases.html"
+    # Viewing the subnet is not enough: the leases come from its Windows server, which the user must be able to see.
+    additional_permissions = ["netbox_windows_dhcp_plugin.view_windowsserver"]
+    tab = ViewTab(
+        label=_("Leases"),
+        visible=_lease_tab_visible,
+        permission="netbox_windows_dhcp_plugin.view_windowsserver",
+        weight=3000,
+    )
+
+    @staticmethod
+    def _server(request, subnet, action="view"):
+        """The subnet's Windows server, if this user may see it (or, with ``action="change"``, change it)."""
+        server = leases.windows_server_for(subnet)
+        if server is None or not WindowsServer.objects.restrict(request.user, action).filter(pk=server.pk).exists():
+            return None
+        return server
+
+    def get_extra_context(self, request, instance):
+        from core.choices import JobStatusChoices
+
+        server = self._server(request, instance)
+        job = lease_jobs(instance, server).first() if server else None
+        running = lease_read_in_progress(job)
+        return {
+            # Waiting or running long past any reasonable read: the worker lost it.
+            "lost": job is not None and not running and job.status in JobStatusChoices.ENQUEUED_STATE_CHOICES,
+            "windows_server": server,
+            # Reading leases connects to Windows, like the connection test: it needs the change permission.
+            "can_load": server is not None and self._server(request, instance, "change") is not None,
+            "in_branch": branching.in_branch(),
+            "job": job,
+            "running": running,
+            "result": (job.data or {}) if job is not None and not running else {},
+        }
+
+    def get(self, request, *args, **kwargs):
+        if htmx_partial(request):
+            instance = self.get_object(**kwargs)
+            context = {"object": instance, **self.get_extra_context(request, instance)}
+            return render(request, "netbox_windows_dhcp_plugin/inc/lease_panel.html", context)
+        return super().get(request, *args, **kwargs)
+
+    def post(self, request, *args, **kwargs):
+        subnet = self.get_object(**kwargs)
+        # The server must be visible to the user as well as changeable, as on the page the button is on.
+        server = self._server(request, subnet) and self._server(request, subnet, "change")
+        if server is None:
+            messages.error(request, _("Loading leases needs permission to change this subnet's Windows server"))
+        elif branching.in_branch():
+            # The job runs against main, where this subnet may differ or not exist.
+            messages.error(request, _("Leases are read for subnets as they are in main: switch to main to load them"))
+        elif enqueue_leases(subnet, request.user) is None:
+            messages.warning(request, _("Leases of {subnet} are already being read").format(subnet=subnet))
+        return redirect(reverse("plugins:netbox_dhcp:subnet_windows_leases", kwargs={"pk": subnet.pk}))

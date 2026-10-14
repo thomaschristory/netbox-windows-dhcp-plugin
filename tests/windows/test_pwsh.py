@@ -531,3 +531,37 @@ def test_v6(pw: PwshRunner) -> None:
         c.get_v6_option_value(OptionKeyV6(23, prefix="2001:db8:1::"))
     c.remove_v6_option_value(OptionKeyV6(23))
     assert "Prefix" not in find_call(pw.last_calls(), "Remove-DhcpServerv6OptionValue")
+
+
+def test_v6_classes(pw: PwshRunner) -> None:
+    c = DhcpClient(pw)
+    got = c.add_v6_class(DhcpClass(name="lab", type="user", data="LabComputers"))
+    assert got == DhcpClass("lab", "User", "LabComputers", "")
+    add = find_call(pw.last_calls(), "Add-DhcpServerv6Class")
+    assert add["Type"] == "User" and "VendorId" not in add and "Description" not in add
+    pw.seed = "Add-DhcpServerv6Class -Name lab -Type User -Data LabComputers\n"
+    assert c.set_v6_class(DhcpClass("lab", "User", "Lab2", "d")).data == "Lab2"
+    assert find_call(pw.last_calls(), "Set-DhcpServerv6Class")["Description"] == "d"
+    assert [x.name for x in c.list_v6_classes()] == ["lab"]
+    c.remove_v6_class("lab", "User")
+    assert find_call(pw.last_calls(), "Remove-DhcpServerv6Class")["Confirm"] is False
+
+
+def test_v6_exclusions_leases_and_all_options(pw: PwshRunner) -> None:
+    pw.seed = """
+Add-DhcpServerv6Scope -Prefix 2001:db8:1:: -Name v6
+[void]$global:V6Exclusions.Add([pscustomobject]@{ Prefix = [ipaddress]'2001:db8:1::'
+    StartRange = [ipaddress]'2001:db8:1::1'; EndRange = [ipaddress]'2001:db8:1::ff' })
+[void]$global:V6Leases.Add([pscustomobject]@{ IPAddress = [ipaddress]'2001:db8:1::1:10'
+    Prefix = [ipaddress]'2001:db8:1::'; ClientDuid = '00-01-00-01-aa-bb'; Iaid = [uint32]7; HostName = 'pc01'
+    AddressState = 'Active'; LeaseExpiryTime = [datetime]::new(2026, 10, 20, 8, 0, 0, [DateTimeKind]::Utc)
+    Description = $null })
+"""
+    c = DhcpClient(pw)
+    (e,) = c.list_v6_exclusion_ranges("2001:db8:1::")
+    assert (e.prefix, e.start_range, e.end_range) == ("2001:db8:1::", "2001:db8:1::1", "2001:db8:1::ff")
+    (lease,) = c.list_v6_leases("2001:db8:1::")
+    assert lease.iaid == 7 and lease.host_name == "pc01" and lease.lease_expiry_time == "2026-10-20T08:00:00Z"
+    assert lease.description == ""
+    c.list_v6_option_values(prefix="2001:db8:1::", all=True)
+    assert find_call(pw.last_calls(), "Get-DhcpServerv6OptionValue")["All"] is True

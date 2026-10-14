@@ -6,6 +6,7 @@
   "macfilterlists:api_list_objects": 12,
   "macfilterlists:list_objects_with_permission": 17,
   "windowsclass:api_list_objects": 12,
+  "windowsreservation:api_list_objects": 12,
   "windowsscope:api_list_objects": 12,
   "windowsserver:api_list_objects": 12,
   "windowsserver:list_objects_with_permission": 17,

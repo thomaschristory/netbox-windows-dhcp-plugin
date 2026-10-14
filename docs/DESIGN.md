@@ -33,10 +33,11 @@ sys4 is modelled on Kea, so several Windows concepts have no model. We add our o
 | Windows | sys4 model | Notes |
 |---|---|---|
 | DHCP server | `DHCPServer` | Plus our `WindowsServer` (connection settings) |
-| Scope (v4/v6) | `Subnet` + one `Pool` | Pool's `IPRange` is the scope start/end. `valid_lifetime` is the lease duration |
+| Scope (v4) | `Subnet` + one `Pool` | Pool's `IPRange` is the scope start/end. `valid_lifetime` is the lease duration |
+| Scope (v6) | `Subnet` (a /64 prefix, no pool) | `preferred_lifetime`, `valid_lifetime`, `renew_timer` (T1) and `rebind_timer` (T2); state and preference in our `WindowsScope` |
 | Scope state, type, delay, NAP, etc. | none | Our `WindowsScope` (OneToOne to Subnet) |
 | Superscope | `SharedNetwork` | Needs a covering Prefix; import creates it when missing |
-| Reservation | `HostReservation` | MAC to `hw_address`, IP to `ipv4_address`. Reservation type in our `WindowsReservation` |
+| Reservation | `HostReservation` | v4: MAC to `hw_address`, IP to `ipv4_address`, reservation type in our `WindowsReservation`. v6: DUID to `duid`, IP in `ipv6_addresses`, IAID in our `WindowsReservation` (sys4 has no field for it) |
 | Exclusion range | none | Our `ExclusionRange` (FK Subnet, start, end) |
 | Option definition | `OptionDefinition` | Server-scoped definitions, with the Windows type and default on our `WindowsOptionDefinition`. Vendor class definitions are our `WindowsVendorOptionDefinition`: sys4 allows one definition per code and server, and Windows ships several vendor classes defining the same codes |
 | Option value | `Option` | GFK to server, subnet or reservation. User class and policy qualifiers in our `WindowsOptionQualifier`. Vendor class values are our `WindowsVendorOption` (same GFK, value kept as a list) |
@@ -44,7 +45,7 @@ sys4 is modelled on Kea, so several Windows concepts have no model. We add our o
 | Policy | none | Our `WindowsPolicy` (server or scope level, conditions stored as structured JSON, ranges, processing order) |
 | Failover relationship | none (`DHCPCluster` is only a group) | Our `FailoverRelationship` (partner servers, mode, MCLT, ratio or standby, shared secret reference, scopes) |
 | MAC filter (allow/deny) | none | Our `MacFilter`, and `MacFilterLists` for the allow and deny list switches |
-| Lease | none | Read only. Shown live on the scope page, optionally cached in `LeaseSnapshot` |
+| Lease | none | Read only. Read live by a job and shown on a Leases tab of the subnet page; not stored |
 
 **Naming.** sys4 names are unique per model across all servers, so two servers with a scope called "LAN" would collide. Imported objects are named `<server>/<scope id>` for subnets and `<server>/<scope id>/<ip>` for reservations, with the Windows name kept in `description` (configurable template).
 
@@ -62,7 +63,8 @@ Not branchable (bookkeeping; listed in branching's `exempt_models` so change con
 - `SyncState`: per managed Windows object, the last pushed fingerprint. This is what lets the push delete only objects NetBox manages, and spot drift. A push records every object it creates or updates, and adopts every object it finds identical on both sides (which is how objects merged from an import branch become managed). Applying an import proposal item records it too, since NetBox and Windows then agree.
 - `SyncRun`: one row per push or import job with its result, linked to the NetBox `Job`.
 - `ImportProposal` and `ImportProposalItem`: the review queue used when branching is off.
-- `LeaseSnapshot`: optional lease cache.
+
+Leases have no model: a lease read is kept in its job's data (see section 8).
 
 **Credentials** never go in the database, the change log or job logs. `WindowsServer` names a credential profile defined in `PLUGINS_CONFIG` (username, password or key, read from environment variables or files), the same way the terraform provider reads them from config and environment. Each profile can list `allowed_hosts` (wildcards allowed); the server form refuses a `host` or `computer_name` outside it, and the connection code checks again before every connection, so editing a server cannot redirect credentials to another machine. Profiles without the list allow any host and are logged as a warning at startup.
 
@@ -175,6 +177,30 @@ relationships, MAC filters, list switches.
   as the `#<pk>` key suffix, so a Windows name ending in `#<digits>` is not mistaken for one, and import deletes
   exactly the marked copy.
 
+**DHCPv6 (milestone 5).** Core objects only: scopes, reservations, option values at server, scope and reservation
+level, and the user classes their qualifiers name. Windows keeps DHCPv6 classes and options apart from IPv4 ones, so
+these are kinds of their own, keyed under `v6/` so they never meet an IPv4 key: `class6` (`v6/user/lab`), `scope6`
+(`v6/2001:db8:1::`), `reservation6` (`v6/2001:db8:1::/2001:db8:1::10`) and `option6` (`v6/server/23`,
+`v6/2001:db8:1::/24;user=lab`). Addresses are compared and keyed in one spelling (lowercase, compressed), and option
+values holding IPv6 addresses compare the same way.
+
+- **Not synced, logged and kept.** DHCPv6 vendor classes (writing one needs an enterprise number the plugin does not
+  keep) and vendor class values, values of codes netbox-plugin-dhcp has no standard dhcp6 definition for (DHCPv6
+  option definitions are not synced), values with surrounding spaces, and exclusion ranges. Each import notes how
+  many it left out. A push never touches them, and they count as children of their scope or reservation, so a scope
+  holding any of them is never deleted. NetBox values of other DHCPv6 definitions and DHCPv6 vendor classes held in
+  NetBox are left out the same way, so neither side proposes or pushes them.
+- **Scopes.** Windows DHCPv6 scopes are /64: a NetBox subnet with another prefix length is not pushed, and keeps its
+  Windows counterpart. Lifetimes left empty in NetBox keep the Windows values (a new scope gets Windows' defaults);
+  a scope without a name is named after its prefix. Deletes are never forced, so a scope with leases fails with
+  DHCP 20007; as for IPv4, its managed reservations and values NetBox deleted with it are removed first, and the
+  scope itself on a later push once its leases are gone. Windows has no DHCPv6 failover, so DHCPv6 changes neither replicate nor wait for a primary.
+- **Reservations.** Need a DUID and an IAID (set on the Windows reservation in NetBox); the first IPv6 address of the
+  reservation (by primary key) is the reserved one. An address change is a new reservation (it is in the key).
+- **Option values** use sys4's standard dhcp6 definitions, with the user class in `WindowsOptionQualifier` as for
+  IPv4 (the qualifier checks the class is a DHCPv6 one). No policies: Windows has none for DHCPv6, so the model
+  refuses a policy on a DHCPv6 value and the push refuses one set anyway.
+
 ## 7. Import: Windows to NetBox
 
 A scheduled job per server (and a manual button) reads the full Windows state and compares it with NetBox.
@@ -232,6 +258,18 @@ A scheduled job per server (and a manual button) reads the full Windows state an
 ## 8. UI and API
 
 - Tabs on sys4 server and subnet pages: connection status, last sync, drift, live leases.
+- **Live leases (milestone 5).** A Leases tab on netbox-plugin-dhcp's subnet page, for subnets of a Windows server,
+  shown to users who can view both the subnet and the Windows server (object permissions included). "Load leases"
+  connects to Windows, so like the connection test it needs permission to view and change that Windows server. It
+  queues a job (`LeaseJob`, one waiting or running per subnet under an advisory lock, no notification) that reads
+  the scope's IPv4 or DHCPv6 leases and keeps at most 5000 of them, in address order, in the job's data with the
+  total, the scope read and the time of the read. The panel asks for itself again every few seconds (HTMX) while the
+  job runs; a job still waiting or running after 15 minutes counts as lost, so the page stops waiting and a new read
+  can be queued. Only the latest read of a subnet is kept: each read deletes the earlier finished ones. A failed read
+  shows its reason. The job belongs to the Windows server (sys4 subnets cannot hold jobs) and records the subnet in
+  its data, so users who may view jobs see the latest lease read too. Reads are refused inside a branch, since the
+  job reads the subnet as it is in main. The tab view is registered when the plugin starts, because
+  netbox-plugin-dhcp builds its URLs before ours are loaded.
 - Pages for our models, the review queue and sync runs, under a "Windows DHCP" menu.
 - REST and GraphQL for every model, plus actions to trigger push, dry-run and import.
 - Built per the netboxlabs plugin skill: `@register_model_view`, `get_model_urls`, Strawberry GraphQL, `@register_filterset`, `PluginMenu`.

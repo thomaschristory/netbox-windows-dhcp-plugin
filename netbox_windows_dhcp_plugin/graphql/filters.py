@@ -46,6 +46,7 @@ class WindowsScopeFilter(NetBoxModelFilter):
 @strawberry_django.filter_type(models.WindowsReservation, lookups=True)
 class WindowsReservationFilter(NetBoxModelFilter):
     reservation_type: StrFilterLookup[str] | None = strawberry_django.filter_field()
+    iaid: strawberry_django.ComparisonFilterLookup[int] | None = strawberry_django.filter_field()
     host_reservation_id: strawberry_django.ComparisonFilterLookup[int] | None = strawberry_django.filter_field()
 
 

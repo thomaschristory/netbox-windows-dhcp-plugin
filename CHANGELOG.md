@@ -67,6 +67,17 @@ All notable changes to this project are documented here. The format follows
   added to a relationship by hand on Windows, or not managed by NetBox, are never taken out of it.
 - Policy option values are only pushed when NetBox holds their policy at the same level, and the models check that
   a qualifier's policy and user class belong to the option's server and level.
+- DHCPv6 import and push: scopes (netbox-plugin-dhcp subnets on a /64 prefix, with preferred and valid lifetimes,
+  T1 and T2, state and preference), reservations (DUID, IPv6 address and the new `WindowsReservation.iaid`), user
+  classes, and option values at server, scope and reservation level against netbox-plugin-dhcp's standard DHCPv6
+  definitions. DHCPv6 vendor classes and values, values of other codes and exclusion ranges are not synced: imports
+  note them, and a push keeps any scope holding them.
+- Live leases: a Leases tab on the subnet page of Windows scopes (IPv4 and DHCPv6) reads the leases in a background
+  job and shows the last read, refreshing itself while the job runs. Viewing needs the subnet and its Windows server;
+  loading needs permission to change the Windows server, and is refused inside a branch. Only the latest read of
+  each subnet is kept, in its job; leases are not stored in a model.
+- `WindowsOptionQualifier` checks that a user class has the option's address family, and refuses a policy on a
+  DHCPv6 value.
 
 ### Changed
 

@@ -1,0 +1,9 @@
+{% extends 'netbox_dhcp/subnet/base.html' %}
+
+{% block content %}
+  <div class="row mb-3">
+    <div class="col col-12">
+      {% include 'netbox_windows_dhcp_plugin/inc/lease_panel.html' %}
+    </div>
+  </div>
+{% endblock content %}

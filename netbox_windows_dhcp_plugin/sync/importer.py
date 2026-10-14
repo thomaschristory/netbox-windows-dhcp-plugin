@@ -60,6 +60,10 @@ KIND_MODELS = {
     "failover": FailoverRelationship,
     "macfilter": MacFilter,
     "filterlists": MacFilterLists,
+    "class6": WindowsClass,
+    "scope6": Subnet,
+    "reservation6": HostReservation,
+    "option6": Option,
 }
 
 VENDOR_KIND_MODELS = {"optiondef": WindowsVendorOptionDefinition, "option": WindowsVendorOption}
@@ -107,6 +111,7 @@ def compute(windows_server, state):
         state,
         standard_codes=netbox_state.standard_codes(),
         partner_failovers=netbox_state.partner_failovers(windows_server),
+        standard_codes6=netbox_state.standard_codes6(),
     )
     changes = diff(records, netbox_state.read(windows_server, for_import=True), equal=windows_state.equal)
     return changes, notes
@@ -139,6 +144,14 @@ def _target(writer, change):
             return MacFilter.objects.filter(dhcp_server=writer.dhcp, mac_address__iexact=fields["mac_address"]).first()
         if change.kind == "filterlists":
             return MacFilterLists.objects.filter(dhcp_server=writer.dhcp).first()
+        if change.kind == "class6":
+            return writer.windows_class6(fields["name"], required=False)
+        if change.kind == "scope6":
+            return writer.subnet6(change.key.removeprefix("v6/"), required=False)
+        if change.kind == "reservation6":
+            return writer.reservation6(*change.key.removeprefix("v6/").split("/", 1), required=False)
+        if change.kind == "option6":
+            return writer.option6(change.key, fields)
     except ApplyError:
         return None
     return None

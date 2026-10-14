@@ -1,0 +1,78 @@
+{% load i18n %}
+{# While the job runs, the panel replaces itself every few seconds with a fresh copy from the same view. #}
+<div class="card" id="windows-leases"{% if running %} hx-get="{{ request.path }}" hx-trigger="every 3s" hx-target="this" hx-swap="outerHTML"{% endif %}>
+  <h2 class="card-header">
+    {% trans "Leases" %}
+    {% if can_load and not in_branch %}
+      <div class="card-actions">
+        <form action="{{ request.path }}" method="post">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-sm btn-primary"{% if running %} disabled{% endif %}>
+            <i class="mdi mdi-refresh" aria-hidden="true"></i> {% trans "Load leases" %}
+          </button>
+        </form>
+      </div>
+    {% endif %}
+  </h2>
+  <div class="card-body">
+    {% if can_load and in_branch %}
+      <p class="text-muted">{% trans "Leases are loaded for subnets as they are in main: switch to main to load them." %}</p>
+    {% endif %}
+    {% if not windows_server %}
+      <span class="text-muted">{% trans "This subnet does not belong to a Windows server you can view." %}</span>
+    {% elif running %}
+      <div class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></div>
+      {% blocktrans with server=windows_server %}Reading leases from {{ server }}...{% endblocktrans %}
+    {% elif lost %}
+      <div class="alert alert-warning mb-0" role="alert">
+        {% trans "The last read never finished (the background worker may have stopped). Load the leases again." %}
+      </div>
+    {% elif result.error %}
+      <div class="alert alert-danger mb-0" role="alert">
+        {% blocktrans with when=job.completed|date:"SHORT_DATETIME_FORMAT" %}The last read ({{ when }}) failed:{% endblocktrans %}
+        {{ result.error }}
+      </div>
+    {% elif job and result.leases is not None %}
+      <p class="text-muted mb-0">
+        {% blocktrans count total=result.total with server=result.server scope=result.scope when=job.completed|date:"SHORT_DATETIME_FORMAT" %}{{ total }} lease in scope {{ scope }} on {{ server }} (read {{ when }}){% plural %}{{ total }} leases in scope {{ scope }} on {{ server }} (read {{ when }}){% endblocktrans %}
+        {% if result.truncated %}
+          {% blocktrans with shown=result.leases|length %}Only the first {{ shown }} are shown.{% endblocktrans %}
+        {% endif %}
+      </p>
+    {% else %}
+      <span class="text-muted">
+        {% trans "Not read yet. Leases are read live from the Windows server in a background job; only the latest read is kept, with that job." %}
+      </span>
+    {% endif %}
+  </div>
+  {% if not running and result.leases %}
+    <div class="table-responsive">
+      <table class="table table-hover table-sm mb-0">
+        <thead>
+          <tr>
+            <th>{% trans "IP address" %}</th>
+            <th>{% if result.family == 6 %}{% trans "DUID" %}{% else %}{% trans "Client ID" %}{% endif %}</th>
+            {% if result.family == 6 %}<th>{% trans "IAID" %}</th>{% endif %}
+            <th>{% trans "Host name" %}</th>
+            <th>{% trans "State" %}</th>
+            <th>{% trans "Expires (UTC)" %}</th>
+            <th>{% trans "Description" %}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for lease in result.leases %}
+            <tr>
+              <td>{{ lease.ip_address }}</td>
+              <td><code>{{ lease.client }}</code></td>
+              {% if result.family == 6 %}<td>{{ lease.iaid }}</td>{% endif %}
+              <td>{{ lease.host_name|default:"" }}</td>
+              <td>{{ lease.address_state }}</td>
+              <td>{{ lease.lease_expiry_time|default:"" }}</td>
+              <td>{{ lease.description|default:"" }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% endif %}
+</div>

@@ -4,10 +4,12 @@ Read what NetBox holds for one Windows server as sync records, in the same shape
 Under ``activate_branch`` the queries read the branch, so a repeated import compares Windows with its own branch.
 """
 
+import contextlib
 import ipaddress
 
 from django.contrib.contenttypes.models import ContentType
 from django.db.models import Prefetch, Q
+from ipam.models import IPAddress
 from netbox_dhcp.models import HostReservation, Option, OptionDefinition, Pool, SharedNetwork, Subnet
 
 from ..models import (
@@ -25,7 +27,17 @@ from ..windows import normalize
 from . import windows_state
 from .diff import Record
 from .push import DUPLICATE
-from .windows_state import class_key, mac_key, option_key, optiondef_key, policy_key, split_values
+from .windows_state import (
+    class6_key,
+    class_key,
+    mac_key,
+    option_key,
+    optiondef_key,
+    policy_key,
+    reservation6_key,
+    scope6_key,
+    split_values,
+)
 
 __all__ = (
     "SYS4_TYPE",
@@ -34,8 +46,10 @@ __all__ = (
     "read",
     "scope_id_of",
     "server_subnets",
+    "server_subnets6",
     "split_values",
     "standard_codes",
+    "standard_codes6",
 )
 
 # Windows option data types to netbox-plugin-dhcp types. Types sys4 has no equivalent for are kept as binary, and
@@ -69,6 +83,25 @@ WINDOWS_TYPE = {
 def standard_codes():
     """DHCPv4 option codes netbox-plugin-dhcp defines itself (Kea's standard set)."""
     return set(OptionDefinition.objects.filter(standard=True, space="dhcp4").values_list("code", flat=True))
+
+
+def standard_codes6():
+    """DHCPv6 option codes netbox-plugin-dhcp defines itself: the only DHCPv6 values synced."""
+    return set(OptionDefinition.objects.filter(standard=True, space="dhcp6").values_list("code", flat=True))
+
+
+def server_subnets6(dhcp_server):
+    """IPv6 subnets of a server (Windows has no DHCPv6 superscopes, but a subnet may still sit in a shared network)."""
+    return (
+        Subnet.objects.filter(Q(dhcp_server=dhcp_server) | Q(shared_network__dhcp_server=dhcp_server))
+        .filter(prefix__prefix__family=6)
+        .select_related("prefix", "netbox_windows_dhcp_plugin_windows_scope")
+    )
+
+
+def prefix_of(subnet):
+    """The Windows DHCPv6 scope prefix of a subnet: its network address, in the one spelling both sides use."""
+    return windows_state.ipv6(str(subnet.prefix.prefix.network))
 
 
 def server_subnets(dhcp_server):
@@ -222,7 +255,115 @@ def read(windows_server, for_import=False):
     records.extend(_options(dhcp, scope_ids, reservation_parents))
     records.extend(_failovers(windows_server, scope_ids))
     records.extend(_mac_filters(dhcp, for_import))
+    records.extend(_v6(dhcp))
     return records
+
+
+def _scope6(subnet):
+    ws = getattr(subnet, "netbox_windows_dhcp_plugin_windows_scope", None)
+    prefix = prefix_of(subnet)
+    return Record(
+        "scope6",
+        scope6_key(prefix),
+        {
+            "prefix": prefix,
+            "prefix_length": subnet.prefix.prefix.prefixlen,
+            "name": subnet.description,
+            "description": subnet.comments,
+            "state": ws.state if ws else "active",
+            "preference": (ws.preference or 0) if ws else 0,
+            "preferred_lifetime": subnet.preferred_lifetime,
+            "valid_lifetime": subnet.valid_lifetime,
+            "t1": subnet.renew_timer or None,
+            "t2": subnet.rebind_timer or None,
+        },
+    )
+
+
+def _reservation6(reservation, prefix):
+    wr = getattr(reservation, "netbox_windows_dhcp_plugin_windows_reservation", None)
+    # The first address by primary key: the one the import writer sets too.
+    address = next(iter(reservation.ipv6_addresses.all()), None)
+    ip = windows_state.ipv6(str(address.address.ip)) if address else ""
+    duid = reservation.duid or ""
+    # In the aa-bb-cc form Windows reports; a DUID NetBox holds in another form is compared as it is.
+    with contextlib.suppress(ValueError):
+        duid = normalize.canonical_duid(duid) if duid else ""
+    return Record(
+        "reservation6",
+        reservation6_key(prefix, ip) if ip else f"v6/{prefix}/",
+        {
+            "prefix": prefix,
+            "ip_address": ip,
+            "client_duid": duid,
+            "iaid": wr.iaid if wr else None,
+            "name": reservation.description,
+            "description": reservation.comments,
+        },
+    )
+
+
+def _v6(dhcp):
+    records = []
+    # Only user classes are synced: Windows DHCPv6 vendor classes are left out on both sides.
+    for c in WindowsClass.objects.filter(dhcp_server=dhcp, family=6, class_type="user").order_by("pk"):
+        records.append(
+            Record(
+                "class6",
+                class6_key(c.name),
+                {"name": c.name, "class_type": c.class_type, "data": c.data, "description": c.description},
+            )
+        )
+    subnets = list(server_subnets6(dhcp))
+    scopes = _unique((_scope6(s), s.pk) for s in subnets)
+    # Children of an extra copy point at its "#<pk>" key, as for IPv4, so a push never writes them into the original.
+    prefixes = {pk: record.key.removeprefix("v6/") for record, pk in scopes}
+    records.extend(record for record, _ in scopes)
+
+    reservations = (
+        HostReservation.objects.filter(subnet__in=subnets)
+        .select_related("netbox_windows_dhcp_plugin_windows_reservation")
+        .prefetch_related(Prefetch("ipv6_addresses", queryset=IPAddress.objects.order_by("pk")))
+        .order_by("pk")
+    )
+    unique = _unique((_reservation6(r, prefixes[r.subnet_id]), r.pk) for r in reservations)
+    reservation_parents = {pk: record.key.removeprefix("v6/") for record, pk in unique}
+    records.extend(record for record, _ in unique)
+    records.extend(_options6(dhcp, prefixes, reservation_parents))
+    return records
+
+
+def _options6(dhcp, prefixes, reservation_parents):
+    parents = option_parents(dhcp, prefixes, reservation_parents)
+    q = Q()
+    for type_id, object_id in parents:
+        q |= Q(assigned_object_type_id=type_id, assigned_object_id=object_id)
+    # Only values of netbox-plugin-dhcp's standard DHCPv6 definitions, the ones windows_state keeps: DHCPv6 option
+    # definitions are not synced, so a value of another code is left alone on both sides.
+    options = (
+        Option.objects.filter(q, definition__family=6, definition__standard=True, definition__space="dhcp6")
+        .select_related(
+            "definition",
+            "netbox_windows_dhcp_plugin_windows_qualifier__user_class",
+            "netbox_windows_dhcp_plugin_windows_qualifier__policy",
+        )
+        .order_by("pk")
+    )
+    seen = set()
+    for o in options:
+        qualifier = getattr(o, "netbox_windows_dhcp_plugin_windows_qualifier", None)
+        user = qualifier.user_class.name if qualifier and qualifier.user_class_id else ""
+        parent = parents[o.assigned_object_type_id, o.assigned_object_id]
+        key = windows_state.option6_key(parent, o.definition.code, user)
+        fields = {"parent": parent, "option_id": o.definition.code, "value": split_values(o.data), "user_class": user}
+        if qualifier and qualifier.policy_id:
+            # Windows has no DHCPv6 policies: the push refuses this value rather than writing it unqualified.
+            fields["policy"] = qualifier.policy.name
+        if key in seen:
+            key = f"{key}#{o.pk}"
+            fields[DUPLICATE] = o.pk
+        seen.add(key)
+        yield Record("option6", key, fields)
 
 
 def _superscopes(dhcp):

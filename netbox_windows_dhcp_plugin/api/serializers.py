@@ -121,7 +121,7 @@ class WindowsReservationSerializer(NetBoxModelSerializer):
 
     class Meta:
         model = WindowsReservation
-        fields = (*COMMON, "host_reservation", "reservation_type", *TAIL)
+        fields = (*COMMON, "host_reservation", "reservation_type", "iaid", *TAIL)
         brief_fields = ("id", "url", "display", "reservation_type")
 
 

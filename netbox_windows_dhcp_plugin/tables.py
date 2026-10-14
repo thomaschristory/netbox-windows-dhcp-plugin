@@ -105,11 +105,12 @@ class WindowsScopeTable(NetBoxTable):
 class WindowsReservationTable(NetBoxTable):
     host_reservation = tables.Column(verbose_name=_("Host reservation"), linkify=True)
     reservation_type = columns.ChoiceFieldColumn(verbose_name=_("Type"))
+    iaid = tables.Column(verbose_name=_("IAID"))
     tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowsreservation_list")
 
     class Meta(NetBoxTable.Meta):
         model = WindowsReservation
-        fields = ("pk", "id", "host_reservation", "reservation_type", "tags", "created", "last_updated")
+        fields = ("pk", "id", "host_reservation", "reservation_type", "iaid", "tags", "created", "last_updated")
         default_columns = ("host_reservation", "reservation_type")
 
 

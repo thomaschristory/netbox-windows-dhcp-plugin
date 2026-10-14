@@ -639,3 +639,162 @@ class Writer:
         if obj is None:
             return self._save(MacFilterLists(dhcp_server=self.dhcp, **values))
         return self._update(obj, **values)
+
+    # -- DHCPv6 ------------------------------------------------------------------------------------------------------
+
+    def subnet6(self, prefix, required=True):
+        """This server's IPv6 subnet for a scope prefix, or for a ``<prefix>#<pk>`` key naming one of several."""
+        if (pk := _duplicate_pk(prefix)) is not None:
+            return netbox_state.server_subnets6(self.dhcp).filter(pk=pk).first()
+        prefix = windows_state.ipv6(prefix)
+        for s in netbox_state.server_subnets6(self.dhcp).filter(prefix__prefix__net_contains_or_equals=prefix):
+            if netbox_state.prefix_of(s) == prefix:
+                return s
+        if required:
+            raise ApplyError(f"DHCPv6 scope {prefix} is not in NetBox yet: apply it first")
+        return None
+
+    def reservation6(self, prefix, ip_address, required=True):
+        """A reservation in this server's IPv6 scope, or the one a ``<ip>#<pk>`` key names among several."""
+        subnet = self.subnet6(prefix, required=required)
+        found = None
+        if subnet is not None and (pk := _duplicate_pk(ip_address)) is not None:
+            found = HostReservation.objects.filter(subnet=subnet, pk=pk).first()
+        elif subnet is not None and ip_address:
+            found = (
+                HostReservation.objects.filter(subnet=subnet, ipv6_addresses__address__net_host=ip_address)
+                .order_by("pk")
+                .first()
+            )
+        if found is None and required:
+            raise ApplyError(f"DHCPv6 reservation {ip_address} is not in NetBox yet: apply it first")
+        return found
+
+    def windows_class6(self, name, required=True):
+        found = WindowsClass.objects.filter(
+            dhcp_server=self.dhcp, family=6, class_type="user", name__iexact=name
+        ).first()
+        if found is None and required:
+            raise ApplyError(f"DHCPv6 user class {name!r} is not in NetBox yet: apply it first")
+        return found
+
+    def _parent6(self, parent, required=True):
+        if parent == "server":
+            return self.dhcp
+        prefix, ip = windows_state.option6_target(parent)
+        if ip:
+            return self.reservation6(prefix, ip, required=required)
+        return self.subnet6(prefix, required=required)
+
+    def option6(self, key, fields):
+        """The DHCPv6 Option for a record, or the extra copy a duplicate's ``<key>#<pk>`` key names."""
+        user = fields["user_class"]
+        base = windows_state.option6_key(fields["parent"], fields["option_id"], user)
+        duplicate = re.fullmatch(rf"{re.escape(base)}#(\d+)", key)
+        parent = self._parent6(fields["parent"], required=False)
+        if parent is None:
+            return None
+        candidates = Option.objects.filter(
+            assigned_object_type=ContentType.objects.get_for_model(parent),
+            assigned_object_id=parent.pk,
+            definition__code=fields["option_id"],
+            definition__family=6,
+        ).select_related("netbox_windows_dhcp_plugin_windows_qualifier__user_class")
+        if duplicate:
+            return candidates.filter(pk=int(duplicate.group(1))).first()
+        for o in candidates.order_by("pk"):
+            q = getattr(o, "netbox_windows_dhcp_plugin_windows_qualifier", None)
+            found_user = q.user_class.name if q and q.user_class_id else ""
+            if found_user.lower() == user.lower():
+                return o
+        return None
+
+    def _apply_class6(self, change):
+        fields = change.after or change.before
+        obj = self.windows_class6(fields["name"], required=False)
+        if change.action == DELETE:
+            return self._delete(obj)
+        values = {"data": fields["data"], "description": fields["description"][:DESCRIPTION_LENGTH]}
+        if obj is None:
+            return self._save(
+                WindowsClass(dhcp_server=self.dhcp, family=6, class_type="user", name=fields["name"], **values)
+            )
+        return self._update(obj, **values)
+
+    def _apply_scope6(self, change):
+        fields = change.after or change.before
+        key = change.key.removeprefix("v6/")
+        subnet = self.subnet6(key, required=False)
+        if change.action == DELETE:
+            return self._delete(subnet)
+        network = ipaddress.IPv6Network(f"{fields['prefix']}/{fields['prefix_length']}")
+        keep = subnet is not None and str(subnet.prefix.prefix) == str(network)
+        prefix = subnet.prefix if keep else self._prefix(network)
+        name, _ = self._names(fields["prefix"])
+        values = {
+            "prefix": prefix,
+            "description": fields["name"][:DESCRIPTION_LENGTH],
+            "comments": fields["description"],
+            "preferred_lifetime": fields["preferred_lifetime"],
+            "valid_lifetime": fields["valid_lifetime"],
+            "renew_timer": fields["t1"],
+            "rebind_timer": fields["t2"],
+        }
+        if subnet is None:
+            if self.subnet_ids is not None:
+                values["subnet_id"] = next(self.subnet_ids)
+            subnet = self._save(Subnet(name=name, dhcp_server=self.dhcp, **values))
+        else:
+            subnet = self._update(subnet, **values)
+        scope_values = {"state": fields["state"], "preference": fields["preference"]}
+        ws = WindowsScope.objects.filter(subnet=subnet).first()
+        if ws is None:
+            self._save(WindowsScope(subnet=subnet, **scope_values))
+        else:
+            self._update(ws, **scope_values)
+        return subnet
+
+    def _apply_reservation6(self, change):
+        fields = change.after or change.before
+        # The key, not the fields, so a "#<pk>" key reaches exactly the duplicate it names.
+        prefix, _, ip = change.key.removeprefix("v6/").partition("/")
+        obj = self.reservation6(prefix, ip, required=False)
+        if change.action == DELETE:
+            return self._delete(obj)
+        subnet = self.subnet6(fields["prefix"])
+        values = {
+            "description": fields["name"][:DESCRIPTION_LENGTH],
+            "comments": fields["description"],
+            "duid": fields["client_duid"],
+        }
+        if obj is None:
+            _, name = self._names(fields["prefix"], fields["ip_address"])
+            obj = self._save(HostReservation(name=name, subnet=subnet, **values))
+            address = self._ip_address(fields["ip_address"], subnet.prefix.prefix.prefixlen)
+            obj.ipv6_addresses.add(address)
+        else:
+            obj = self._update(obj, **values)
+        side = WindowsReservation.objects.filter(host_reservation=obj).first()
+        if side is None:
+            self._save(WindowsReservation(host_reservation=obj, iaid=fields["iaid"]))
+        else:
+            self._update(side, iaid=fields["iaid"])
+        return obj
+
+    def _apply_option6(self, change):
+        fields = change.after or change.before
+        obj = self.option6(change.key, fields)
+        if change.action == DELETE:
+            return self._delete(obj)
+        data = windows_state.join_values(fields["value"])
+        if obj is not None:
+            return self._update(obj, data=data)
+        parent = self._parent6(fields["parent"])
+        user = self.windows_class6(fields["user_class"]) if fields["user_class"] else None
+        definition = OptionDefinition.objects.filter(code=fields["option_id"], family=6, standard=True).first()
+        if definition is None:
+            raise ApplyError(f"netbox-plugin-dhcp has no standard DHCPv6 definition for option {fields['option_id']}")
+        obj = self._save(Option(definition=definition, assigned_object=parent, data=data))
+        if user:
+            self._save(WindowsOptionQualifier(option=obj, user_class=user))
+        return obj
