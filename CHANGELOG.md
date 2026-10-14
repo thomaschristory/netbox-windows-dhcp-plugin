@@ -73,7 +73,8 @@ All notable changes to this project are documented here. The format follows
   definitions. DHCPv6 vendor classes and values, values of other codes and exclusion ranges are not synced: imports
   note them, and a push keeps any scope holding them.
 - Live leases: a Leases tab on the subnet page of Windows scopes (IPv4 and DHCPv6) reads the leases in a background
-  job and shows the last read, refreshing itself while the job runs. Leases are not stored in a model.
+  job and shows the last read, refreshing itself while the job runs. Viewing needs the subnet and its Windows server;
+  loading needs permission to change the Windows server. Leases are not stored in a model.
 
 ### Changed
 

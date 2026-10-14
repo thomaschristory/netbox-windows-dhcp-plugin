@@ -120,7 +120,11 @@ class LeaseJobTest(LeaseMixin, TestCase):
 class LeaseTabTest(LeaseMixin, TestCase):
     def setUp(self):
         super().setUp()
-        self.add_permissions("netbox_dhcp.view_subnet", "netbox_windows_dhcp_plugin.view_windowsserver")
+        self.add_permissions(
+            "netbox_dhcp.view_subnet",
+            "netbox_windows_dhcp_plugin.view_windowsserver",
+            "netbox_windows_dhcp_plugin.change_windowsserver",
+        )
         self.url = reverse("plugins:netbox_dhcp:subnet_windows_leases", kwargs={"pk": self.subnet.pk})
 
     def test_tab_shows_on_windows_subnets_only(self):
@@ -160,6 +164,18 @@ class LeaseTabTest(LeaseMixin, TestCase):
         Job.objects.update(status=JobStatusChoices.STATUS_FAILED)
         self.assertContains(self.client.get(self.url), "is not on dhcp1.example.com")
 
+    def test_loading_needs_the_change_permission_on_the_server(self):
+        ObjectPermission.objects.all().delete()
+        self.add_permissions("netbox_dhcp.view_subnet", "netbox_windows_dhcp_plugin.view_windowsserver")
+        self.run_job(self.subnet)
+        page = self.client.get(self.url)
+        # The last read is still shown, without the button.
+        self.assertContains(page, "pc20")
+        self.assertNotContains(page, "Load leases")
+        before = lease_jobs(self.subnet, self.server).count()
+        self.assertEqual(self.client.post(self.url).status_code, 302)
+        self.assertEqual(lease_jobs(self.subnet, self.server).count(), before)
+
     def test_needs_the_windows_server_view_permission(self):
         self.user.object_permissions.all().delete()
         ObjectPermission.objects.all().delete()
@@ -181,3 +197,15 @@ class LeaseTabTest(LeaseMixin, TestCase):
         self.assertEqual(response.status_code, 302)
         self.assertFalse(lease_jobs(self.subnet, self.server).exists())
         self.assertContains(self.client.get(self.url), "does not belong to a Windows server you can view")
+
+    def test_change_permission_limited_to_other_servers_does_not_load(self):
+        ObjectPermission.objects.all().delete()
+        self.add_permissions("netbox_dhcp.view_subnet", "netbox_windows_dhcp_plugin.view_windowsserver")
+        perm = ObjectPermission.objects.create(
+            name="change other servers", actions=["change"], constraints={"pk": self.server.pk + 1000}
+        )
+        perm.object_types.add(ObjectType.objects.get_for_model(WindowsServer))
+        perm.users.add(self.user)
+        self.assertNotContains(self.client.get(self.url), "Load leases")
+        self.client.post(self.url)
+        self.assertFalse(lease_jobs(self.subnet, self.server).exists())

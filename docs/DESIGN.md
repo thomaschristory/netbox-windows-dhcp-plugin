@@ -257,7 +257,7 @@ A scheduled job per server (and a manual button) reads the full Windows state an
 - Tabs on sys4 server and subnet pages: connection status, last sync, drift, live leases.
 - **Live leases (milestone 5).** A Leases tab on netbox-plugin-dhcp's subnet page, for subnets of a Windows server,
   shown to users who can view both the subnet and the Windows server (object permissions included). "Load leases"
-  queues a job (`LeaseJob`, one waiting or running per subnet, no notification) that reads the scope's IPv4 or
+  connects to Windows, so like the connection test it needs permission to change that Windows server; it queues a job (`LeaseJob`, one waiting or running per subnet, no notification) that reads the scope's IPv4 or
   DHCPv6 leases and keeps at most 5000 of them, in address order, in the job's data with the total and the time of
   the read. The panel asks for itself again every few seconds (HTMX) while the job runs. Nothing is stored in a
   model; a failed read shows its reason. The job belongs to the Windows server (sys4 subnets cannot hold jobs) and

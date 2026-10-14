@@ -549,10 +549,10 @@ class SubnetLeasesView(generic.ObjectView):
     )
 
     @staticmethod
-    def _server(request, subnet):
-        """The subnet's Windows server, if this user may see it."""
+    def _server(request, subnet, action="view"):
+        """The subnet's Windows server, if this user may see it (or, with ``action="change"``, change it)."""
         server = leases.windows_server_for(subnet)
-        if server is None or not WindowsServer.objects.restrict(request.user, "view").filter(pk=server.pk).exists():
+        if server is None or not WindowsServer.objects.restrict(request.user, action).filter(pk=server.pk).exists():
             return None
         return server
 
@@ -564,6 +564,8 @@ class SubnetLeasesView(generic.ObjectView):
         running = job is not None and job.status in JobStatusChoices.ENQUEUED_STATE_CHOICES
         return {
             "windows_server": server,
+            # Reading leases connects to Windows, like the connection test: it needs the change permission.
+            "can_load": server is not None and self._server(request, instance, "change") is not None,
             "job": job,
             "running": running,
             "result": (job.data or {}) if job is not None and not running else {},
@@ -578,9 +580,9 @@ class SubnetLeasesView(generic.ObjectView):
 
     def post(self, request, *args, **kwargs):
         subnet = self.get_object(**kwargs)
-        server = self._server(request, subnet)
+        server = self._server(request, subnet, "change")
         if server is None:
-            messages.error(request, _("This subnet does not belong to a Windows server you can view"))
+            messages.error(request, _("Loading leases needs permission to change this subnet's Windows server"))
         elif enqueue_leases(subnet, request.user) is None:
             messages.warning(request, _("Leases of {subnet} are already being read").format(subnet=subnet))
         return redirect(reverse("plugins:netbox_dhcp:subnet_windows_leases", kwargs={"pk": subnet.pk}))

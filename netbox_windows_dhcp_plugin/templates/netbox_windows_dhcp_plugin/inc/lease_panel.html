@@ -3,7 +3,7 @@
 <div class="card" id="windows-leases"{% if running %} hx-get="{{ request.path }}" hx-trigger="every 3s" hx-target="this" hx-swap="outerHTML"{% endif %}>
   <h2 class="card-header">
     {% trans "Leases" %}
-    {% if windows_server %}
+    {% if can_load %}
       <div class="card-actions">
         <form action="{{ request.path }}" method="post">
           {% csrf_token %}
