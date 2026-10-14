@@ -2,6 +2,7 @@ from django.utils.translation import gettext_lazy as _
 from utilities.choices import ChoiceSet
 
 __all__ = (
+    "POLICY_CRITERIA_KEYS",
     "ClassTypeChoices",
     "FailoverModeChoices",
     "FailoverServerRoleChoices",
@@ -106,6 +107,21 @@ class MacFilterListChoices(ChoiceSet):
         (ALLOW, _("Allow"), "green"),
         (DENY, _("Deny"), "red"),
     ]
+
+
+# The conditions a Windows policy can match on, as keys of WindowsPolicy.criteria. Same keys as the client's
+# POLICY_CRITERIA (models do not import the Windows layer; a test keeps the two in step).
+POLICY_CRITERIA_KEYS = (
+    "vendor_class",
+    "user_class",
+    "mac_address",
+    "client_id",
+    "relay_agent",
+    "circuit_id",
+    "remote_id",
+    "subscriber_id",
+    "fqdn",
+)
 
 
 class PolicyConditionChoices(ChoiceSet):

@@ -95,6 +95,16 @@ FailoverRelationshipViewSet = _viewset(
     models.FailoverRelationship, models.FailoverRelationship.objects.prefetch_related("subnets")
 )
 MacFilterViewSet = _viewset(models.MacFilter, models.MacFilter.objects.select_related("dhcp_server"))
+MacFilterListsViewSet = _viewset(models.MacFilterLists, models.MacFilterLists.objects.select_related("dhcp_server"))
+WindowsVendorOptionDefinitionViewSet = _viewset(
+    models.WindowsVendorOptionDefinition, models.WindowsVendorOptionDefinition.objects.select_related("vendor_class")
+)
+WindowsVendorOptionViewSet = _viewset(
+    models.WindowsVendorOption,
+    models.WindowsVendorOption.objects.select_related(
+        "definition__vendor_class", "assigned_object_type", "user_class", "policy"
+    ).prefetch_related("assigned_object"),
+)
 SyncRunViewSet = _viewset(models.SyncRun, models.SyncRun.objects.all(), base=NetBoxReadOnlyModelViewSet)
 
 

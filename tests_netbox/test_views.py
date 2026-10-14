@@ -1,8 +1,16 @@
 from utilities.testing import TestCase, ViewTestCases
 
-from netbox_windows_dhcp_plugin.models import ExclusionRange, ImportProposal, MacFilter, WindowsServer
+from netbox_windows_dhcp_plugin.models import (
+    ExclusionRange,
+    ImportProposal,
+    MacFilter,
+    MacFilterLists,
+    WindowsServer,
+    WindowsVendorOption,
+    WindowsVendorOptionDefinition,
+)
 
-from .fixtures import PluginViewMixin, dhcp_servers, subnets, windows_server
+from .fixtures import PluginViewMixin, dhcp_servers, subnets, vendor_classes, windows_server
 
 
 class WindowsServerViewTest(PluginViewMixin, ViewTestCases.PrimaryObjectViewTestCase):
@@ -77,6 +85,92 @@ class MacFilterViewTest(PluginViewMixin, ViewTestCases.PrimaryObjectViewTestCase
         ids = list(MacFilter.objects.values_list("pk", flat=True))
         cls.csv_update_data = ("id,description", *(f"{pk},updated" for pk in ids))
         cls.bulk_edit_data = {"list": "deny"}
+
+
+class MacFilterListsViewTest(
+    PluginViewMixin,
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.GetObjectChangelogViewTestCase,
+    ViewTestCases.CreateObjectViewTestCase,
+    ViewTestCases.EditObjectViewTestCase,
+    ViewTestCases.DeleteObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+    ViewTestCases.BulkEditObjectsViewTestCase,
+    ViewTestCases.BulkDeleteObjectsViewTestCase,
+):
+    model = MacFilterLists
+
+    @classmethod
+    def setUpTestData(cls):
+        servers = dhcp_servers(4)
+        for server in servers[:3]:
+            MacFilterLists.objects.create(dhcp_server=server)
+        cls.form_data = {
+            "dhcp_server": servers[3].pk,
+            "allow_list_enabled": True,
+            "deny_list_enabled": False,
+            "tags": [],
+        }
+        cls.bulk_edit_data = {"deny_list_enabled": True}
+
+
+class WindowsVendorOptionDefinitionViewTest(PluginViewMixin, ViewTestCases.PrimaryObjectViewTestCase):
+    model = WindowsVendorOptionDefinition
+    # The form takes JSON text, the model stores the decoded list.
+    validation_excluded_fields = ("default_value",)
+
+    @classmethod
+    def setUpTestData(cls):
+        (server,) = dhcp_servers(1)
+        (vendor_class,) = vendor_classes(server)
+        for code in range(1, 4):
+            WindowsVendorOptionDefinition.objects.create(vendor_class=vendor_class, code=code, name=f"option{code}")
+        cls.form_data = {
+            "vendor_class": vendor_class.pk,
+            "code": 10,
+            "name": "new",
+            "windows_type": "Byte",
+            "multi_valued": True,
+            "default_value": '["0x1"]',
+            "tags": [],
+        }
+        cls.csv_data = (
+            "dhcp_server,vendor_class,code,name",
+            f"{server.name},{vendor_class.name},20,a",
+            f"{server.name},{vendor_class.name},21,b",
+            f"{server.name},{vendor_class.name},22,c",
+        )
+        ids = list(WindowsVendorOptionDefinition.objects.values_list("pk", flat=True))
+        cls.csv_update_data = ("id,description", *(f"{pk},updated" for pk in ids))
+        cls.bulk_edit_data = {"windows_type": "Word"}
+
+
+class WindowsVendorOptionViewTest(
+    PluginViewMixin,
+    ViewTestCases.GetObjectViewTestCase,
+    ViewTestCases.GetObjectChangelogViewTestCase,
+    ViewTestCases.CreateObjectViewTestCase,
+    ViewTestCases.EditObjectViewTestCase,
+    ViewTestCases.DeleteObjectViewTestCase,
+    ViewTestCases.ListObjectsViewTestCase,
+    ViewTestCases.BulkDeleteObjectsViewTestCase,
+):
+    model = WindowsVendorOption
+    # The form takes JSON text, the model stores the decoded list.
+    validation_excluded_fields = ("value",)
+
+    @classmethod
+    def setUpTestData(cls):
+        (server,) = dhcp_servers(1)
+        (vendor_class,) = vendor_classes(server)
+        first, second = (
+            WindowsVendorOptionDefinition.objects.create(vendor_class=vendor_class, code=code, name=f"option{code}")
+            for code in (1, 2)
+        )
+        nets = subnets(server, 3)
+        for subnet in nets:
+            WindowsVendorOption.objects.create(definition=first, assigned_object=subnet, value=["0x1"])
+        cls.form_data = {"definition": second.pk, "subnet": nets[0].pk, "value": '["0x2"]', "tags": []}
 
 
 class ImportProposalListViewTest(TestCase):

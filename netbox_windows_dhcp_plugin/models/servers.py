@@ -170,6 +170,11 @@ class WindowsServer(JobsMixin, PrimaryModel):
             # Basic sends the password itself; without verification anyone in the path can read it.
             raise ValidationError({"verify_tls": _("Basic authentication requires certificate verification.")})
 
+    @property
+    def dhcp_host(self):
+        """The DHCP server itself: computer_name when the connection goes through a management host."""
+        return self.computer_name or self.host
+
     def _clean_allowed_hosts(self):
         # Stop a profile's credentials from being pointed at a host it does not cover. The connection code checks
         # again before connecting. An unknown profile is reported when a job runs, as before.

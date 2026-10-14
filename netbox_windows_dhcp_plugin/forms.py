@@ -46,6 +46,7 @@ from .models import (
     ImportProposal,
     ImportProposalItem,
     MacFilter,
+    MacFilterLists,
     SyncRun,
     WindowsClass,
     WindowsOptionDefinition,
@@ -54,6 +55,8 @@ from .models import (
     WindowsReservation,
     WindowsScope,
     WindowsServer,
+    WindowsVendorOption,
+    WindowsVendorOptionDefinition,
 )
 
 BOOLEAN_CHOICES = (("", "---------"), ("True", _("Yes")), ("False", _("No")))
@@ -411,16 +414,15 @@ class WindowsClassFilterForm(PrimaryModelFilterSetForm):
 
 class WindowsOptionDefinitionForm(NetBoxModelForm):
     option_definition = DynamicModelChoiceField(queryset=OptionDefinition.objects.all(), label=_("Option definition"))
-    vendor_class = _class_field(ClassTypeChoices.VENDOR, _("Vendor class"))
 
     fieldsets = (
-        FieldSet("option_definition", "vendor_class", name=_("Windows option definition")),
+        FieldSet("option_definition", "windows_type", "default_value", name=_("Windows option definition")),
         FieldSet("tags", name=_("Tags")),
     )
 
     class Meta:
         model = WindowsOptionDefinition
-        fields = ("option_definition", "vendor_class", "tags")
+        fields = ("option_definition", "windows_type", "default_value", "tags")
 
 
 class WindowsOptionDefinitionFilterForm(NetBoxModelFilterSetForm):
@@ -491,17 +493,16 @@ class WindowsPolicyFilterForm(PrimaryModelFilterSetForm):
 class WindowsOptionQualifierForm(NetBoxModelForm):
     option = DynamicModelChoiceField(queryset=Option.objects.all(), label=_("Option"))
     user_class = _class_field(ClassTypeChoices.USER, _("User class"))
-    vendor_class = _class_field(ClassTypeChoices.VENDOR, _("Vendor class"))
     policy = DynamicModelChoiceField(queryset=WindowsPolicy.objects.all(), required=False, label=_("Policy"))
 
     fieldsets = (
-        FieldSet("option", "user_class", "vendor_class", "policy", name=_("Option qualifier")),
+        FieldSet("option", "user_class", "policy", name=_("Option qualifier")),
         FieldSet("tags", name=_("Tags")),
     )
 
     class Meta:
         model = WindowsOptionQualifier
-        fields = ("option", "user_class", "vendor_class", "policy", "tags")
+        fields = ("option", "user_class", "policy", "tags")
 
 
 class WindowsOptionQualifierFilterForm(NetBoxModelFilterSetForm):
@@ -509,6 +510,177 @@ class WindowsOptionQualifierFilterForm(NetBoxModelFilterSetForm):
     tag = TagFilterField(model)
 
     fieldsets = (FieldSet("q", "filter_id", "tag"),)
+
+
+#
+# Vendor class options
+#
+
+
+class WindowsVendorOptionDefinitionForm(PrimaryModelForm):
+    vendor_class = _class_field(ClassTypeChoices.VENDOR, _("Vendor class"), required=True)
+    default_value = JSONField(required=False, label=_("Default value"))
+
+    fieldsets = (
+        FieldSet("vendor_class", "code", "name", "description", name=_("Vendor option definition")),
+        FieldSet("windows_type", "multi_valued", "default_value", name=_("Value")),
+        FieldSet("tags", name=_("Tags")),
+    )
+
+    class Meta:
+        model = WindowsVendorOptionDefinition
+        fields = (
+            "vendor_class",
+            "code",
+            "name",
+            "windows_type",
+            "multi_valued",
+            "default_value",
+            "description",
+            "comments",
+            "tags",
+        )
+
+
+class WindowsVendorOptionDefinitionImportForm(PrimaryModelImportForm):
+    # Vendor class names repeat from server to server (Windows ships the same ones everywhere), so the server
+    # narrows the lookup when given.
+    dhcp_server = CSVModelChoiceField(
+        queryset=DHCPServer.objects.all(), to_field_name="name", required=False, label=_("DHCP server")
+    )
+    vendor_class = CSVModelChoiceField(
+        queryset=WindowsClass.objects.filter(class_type=ClassTypeChoices.VENDOR),
+        to_field_name="name",
+        label=_("Vendor class"),
+    )
+    # Left out, the model default (String) applies.
+    windows_type = forms.CharField(max_length=50, required=False, label=_("Windows type"))
+
+    class Meta:
+        model = WindowsVendorOptionDefinition
+        fields = (
+            "dhcp_server",
+            "vendor_class",
+            "code",
+            "name",
+            "windows_type",
+            "multi_valued",
+            "default_value",
+            "description",
+            "comments",
+            "tags",
+        )
+
+    def __init__(self, data=None, *args, **kwargs):
+        super().__init__(data, *args, **kwargs)
+        if data and data.get("dhcp_server"):
+            self.fields["vendor_class"].queryset = self.fields["vendor_class"].queryset.filter(
+                dhcp_server__name=data["dhcp_server"]
+            )
+
+
+class WindowsVendorOptionDefinitionBulkEditForm(PrimaryModelBulkEditForm):
+    model = WindowsVendorOptionDefinition
+    windows_type = forms.CharField(max_length=50, required=False, label=_("Windows type"))
+    multi_valued = forms.NullBooleanField(required=False, widget=forms.Select(choices=BOOLEAN_CHOICES))
+
+    fieldsets = (FieldSet("windows_type", "multi_valued", "description"),)
+    nullable_fields = ("description", "comments")
+
+
+class WindowsVendorOptionDefinitionFilterForm(PrimaryModelFilterSetForm):
+    model = WindowsVendorOptionDefinition
+    dhcp_server_id = _filter_server_field()
+    vendor_class_id = DynamicModelMultipleChoiceField(
+        queryset=WindowsClass.objects.filter(class_type=ClassTypeChoices.VENDOR),
+        required=False,
+        label=_("Vendor class"),
+        query_params={"class_type": ClassTypeChoices.VENDOR, "dhcp_server_id": "$dhcp_server_id"},
+    )
+    code = forms.IntegerField(min_value=1, max_value=255, required=False, label=_("Code"))
+    multi_valued = forms.NullBooleanField(required=False, widget=forms.Select(choices=BOOLEAN_CHOICES))
+    tag = TagFilterField(model)
+
+    fieldsets = (
+        FieldSet("q", "filter_id", "tag"),
+        FieldSet("dhcp_server_id", "vendor_class_id", "code", "multi_valued", name=_("Vendor option definition")),
+    )
+
+
+# Where a vendor option value can sit, as on Windows: form field name to the netbox-plugin-dhcp model.
+VENDOR_OPTION_PARENT_FIELDS = (
+    ("dhcp_server", DHCPServer),
+    ("subnet", Subnet),
+    ("host_reservation", HostReservation),
+)
+
+
+class WindowsVendorOptionForm(NetBoxModelForm):
+    definition = DynamicModelChoiceField(
+        queryset=WindowsVendorOptionDefinition.objects.all(), label=_("Vendor option definition")
+    )
+    dhcp_server = _server_field(required=False, selector=True)
+    subnet = _subnet_field(required=False, selector=True)
+    host_reservation = DynamicModelChoiceField(
+        queryset=HostReservation.objects.all(), required=False, selector=True, label=_("Host reservation")
+    )
+    user_class = _class_field(ClassTypeChoices.USER, _("User class"))
+    policy = DynamicModelChoiceField(queryset=WindowsPolicy.objects.all(), required=False, label=_("Policy"))
+    value = JSONField(label=_("Value"), help_text=_('A list of strings, for example ["0x1"]'))
+
+    fieldsets = (
+        FieldSet("definition", "value", name=_("Vendor option value")),
+        FieldSet("dhcp_server", "subnet", "host_reservation", name=_("Set on (pick one)")),
+        FieldSet("user_class", "policy", name=_("Qualifier")),
+        FieldSet("tags", name=_("Tags")),
+    )
+
+    class Meta:
+        model = WindowsVendorOption
+        fields = ("definition", "user_class", "policy", "value", "tags")
+
+    def __init__(self, *args, **kwargs):
+        # Show the current parent in the matching field when editing.
+        instance = kwargs.get("instance")
+        initial = kwargs.get("initial", {}).copy()
+        if instance is not None and instance.pk and instance.assigned_object is not None:
+            for name, model in VENDOR_OPTION_PARENT_FIELDS:
+                if isinstance(instance.assigned_object, model):
+                    initial[name] = instance.assigned_object
+        kwargs["initial"] = initial
+        super().__init__(*args, **kwargs)
+
+    def clean(self):
+        super().clean()
+        parents = [
+            self.cleaned_data[name] for name, _model in VENDOR_OPTION_PARENT_FIELDS if self.cleaned_data.get(name)
+        ]
+        if len(parents) != 1:
+            raise forms.ValidationError(_("Set the value on exactly one DHCP server, subnet or host reservation."))
+        # Set before the model validation that runs next, so it can check the parent against the definition.
+        self.instance.assigned_object = parents[0]
+        return self.cleaned_data
+
+
+class WindowsVendorOptionFilterForm(NetBoxModelFilterSetForm):
+    model = WindowsVendorOption
+    dhcp_server_id = _filter_server_field()
+    definition_id = DynamicModelMultipleChoiceField(
+        queryset=WindowsVendorOptionDefinition.objects.all(), required=False, label=_("Vendor option definition")
+    )
+    user_class_id = DynamicModelMultipleChoiceField(
+        queryset=WindowsClass.objects.filter(class_type=ClassTypeChoices.USER),
+        required=False,
+        label=_("User class"),
+        query_params={"class_type": ClassTypeChoices.USER},
+    )
+    policy_id = DynamicModelMultipleChoiceField(queryset=WindowsPolicy.objects.all(), required=False, label=_("Policy"))
+    tag = TagFilterField(model)
+
+    fieldsets = (
+        FieldSet("q", "filter_id", "tag"),
+        FieldSet("dhcp_server_id", "definition_id", "user_class_id", "policy_id", name=_("Vendor option value")),
+    )
 
 
 #
@@ -620,6 +792,49 @@ class MacFilterFilterForm(PrimaryModelFilterSetForm):
     tag = TagFilterField(model)
 
     fieldsets = (FieldSet("q", "filter_id", "tag"), FieldSet("dhcp_server_id", "list", name=_("MAC filter")))
+
+
+class MacFilterListsForm(NetBoxModelForm):
+    dhcp_server = _server_field()
+
+    fieldsets = (
+        FieldSet("dhcp_server", "allow_list_enabled", "deny_list_enabled", name=_("MAC filter lists")),
+        FieldSet("tags", name=_("Tags")),
+    )
+
+    class Meta:
+        model = MacFilterLists
+        fields = ("dhcp_server", "allow_list_enabled", "deny_list_enabled", "tags")
+
+
+class MacFilterListsBulkEditForm(NetBoxModelBulkEditForm):
+    model = MacFilterLists
+    allow_list_enabled = forms.NullBooleanField(
+        required=False, widget=forms.Select(choices=BOOLEAN_CHOICES), label=_("Allow list enabled")
+    )
+    deny_list_enabled = forms.NullBooleanField(
+        required=False, widget=forms.Select(choices=BOOLEAN_CHOICES), label=_("Deny list enabled")
+    )
+
+    fieldsets = (FieldSet("allow_list_enabled", "deny_list_enabled"),)
+    nullable_fields = ()
+
+
+class MacFilterListsFilterForm(NetBoxModelFilterSetForm):
+    model = MacFilterLists
+    dhcp_server_id = _filter_server_field()
+    allow_list_enabled = forms.NullBooleanField(
+        required=False, widget=forms.Select(choices=BOOLEAN_CHOICES), label=_("Allow list enabled")
+    )
+    deny_list_enabled = forms.NullBooleanField(
+        required=False, widget=forms.Select(choices=BOOLEAN_CHOICES), label=_("Deny list enabled")
+    )
+    tag = TagFilterField(model)
+
+    fieldsets = (
+        FieldSet("q", "filter_id", "tag"),
+        FieldSet("dhcp_server_id", "allow_list_enabled", "deny_list_enabled", name=_("MAC filter lists")),
+    )
 
 
 #

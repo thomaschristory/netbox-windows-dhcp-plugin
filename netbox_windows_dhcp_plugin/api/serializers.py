@@ -1,4 +1,6 @@
 from core.api.serializers_.jobs import JobSerializer
+from django.contrib.contenttypes.models import ContentType
+from drf_spectacular.utils import extend_schema_field
 from ipam.api.serializers import VRFSerializer
 from netbox.api.fields import ChoiceField, ContentTypeField
 from netbox.api.serializers import NetBoxModelSerializer, PrimaryModelSerializer
@@ -10,6 +12,7 @@ from netbox_dhcp.api.serializers import (
     SubnetSerializer,
 )
 from rest_framework import serializers
+from utilities.api import get_serializer_for_model
 
 from ..choices import (
     ClassTypeChoices,
@@ -34,6 +37,7 @@ from ..models import (
     ImportProposal,
     ImportProposalItem,
     MacFilter,
+    MacFilterLists,
     SyncRun,
     WindowsClass,
     WindowsOptionDefinition,
@@ -42,7 +46,10 @@ from ..models import (
     WindowsReservation,
     WindowsScope,
     WindowsServer,
+    WindowsVendorOption,
+    WindowsVendorOptionDefinition,
 )
+from ..models.dhcp import VENDOR_OPTION_PARENTS
 
 API = "plugins-api:netbox_windows_dhcp_plugin-api"
 COMMON = ("id", "url", "display_url", "display")
@@ -142,11 +149,10 @@ class WindowsClassSerializer(PrimaryModelSerializer):
 class WindowsOptionDefinitionSerializer(NetBoxModelSerializer):
     url = _url("windowsoptiondefinition")
     option_definition = OptionDefinitionSerializer(nested=True)
-    vendor_class = WindowsClassSerializer(nested=True, required=False, allow_null=True)
 
     class Meta:
         model = WindowsOptionDefinition
-        fields = (*COMMON, "option_definition", "vendor_class", *TAIL)
+        fields = (*COMMON, "option_definition", "windows_type", "default_value", *TAIL)
         brief_fields = ("id", "url", "display")
 
 
@@ -178,12 +184,11 @@ class WindowsOptionQualifierSerializer(NetBoxModelSerializer):
     url = _url("windowsoptionqualifier")
     option = OptionSerializer(nested=True)
     user_class = WindowsClassSerializer(nested=True, required=False, allow_null=True)
-    vendor_class = WindowsClassSerializer(nested=True, required=False, allow_null=True)
     policy = WindowsPolicySerializer(nested=True, required=False, allow_null=True)
 
     class Meta:
         model = WindowsOptionQualifier
-        fields = (*COMMON, "option", "user_class", "vendor_class", "policy", *TAIL)
+        fields = (*COMMON, "option", "user_class", "policy", *TAIL)
         brief_fields = ("id", "url", "display")
 
 
@@ -224,6 +229,68 @@ class MacFilterSerializer(PrimaryModelSerializer):
         model = MacFilter
         fields = (*COMMON, "dhcp_server", "mac_address", "list", *PRIMARY_TAIL)
         brief_fields = ("id", "url", "display", "mac_address", "list", "description")
+
+
+class MacFilterListsSerializer(NetBoxModelSerializer):
+    url = _url("macfilterlists")
+    dhcp_server = DHCPServerSerializer(nested=True)
+
+    class Meta:
+        model = MacFilterLists
+        fields = (*COMMON, "dhcp_server", "allow_list_enabled", "deny_list_enabled", *TAIL)
+        brief_fields = ("id", "url", "display", "allow_list_enabled", "deny_list_enabled")
+
+
+class WindowsVendorOptionDefinitionSerializer(PrimaryModelSerializer):
+    url = _url("windowsvendoroptiondefinition")
+    vendor_class = WindowsClassSerializer(nested=True)
+
+    class Meta:
+        model = WindowsVendorOptionDefinition
+        fields = (
+            *COMMON,
+            "vendor_class",
+            "code",
+            "name",
+            "windows_type",
+            "multi_valued",
+            "default_value",
+            *PRIMARY_TAIL,
+        )
+        brief_fields = ("id", "url", "display", "code", "name", "description")
+
+
+class WindowsVendorOptionSerializer(NetBoxModelSerializer):
+    url = _url("windowsvendoroption")
+    definition = WindowsVendorOptionDefinitionSerializer(nested=True)
+    # Written as "app_label.model" plus assigned_object_id, read back with the parent nested, like netbox-plugin-dhcp
+    # options.
+    assigned_object_type = ContentTypeField(queryset=ContentType.objects.filter(VENDOR_OPTION_PARENTS))
+    assigned_object = serializers.SerializerMethodField(read_only=True)
+    user_class = WindowsClassSerializer(nested=True, required=False, allow_null=True)
+    policy = WindowsPolicySerializer(nested=True, required=False, allow_null=True)
+
+    class Meta:
+        model = WindowsVendorOption
+        fields = (
+            *COMMON,
+            "definition",
+            "assigned_object_type",
+            "assigned_object_id",
+            "assigned_object",
+            "user_class",
+            "policy",
+            "value",
+            *TAIL,
+        )
+        brief_fields = ("id", "url", "display", "value")
+
+    @extend_schema_field(serializers.JSONField(allow_null=True))
+    def get_assigned_object(self, instance):
+        if instance.assigned_object is None:
+            return None
+        serializer = get_serializer_for_model(instance.assigned_object)
+        return serializer(instance.assigned_object, nested=True, context={"request": self.context["request"]}).data
 
 
 class SyncRunSerializer(NetBoxModelSerializer):

@@ -5,12 +5,15 @@ from netbox_windows_dhcp_plugin.models import (
     ExclusionRange,
     ImportProposal,
     MacFilter,
+    MacFilterLists,
     WindowsClass,
     WindowsScope,
     WindowsServer,
+    WindowsVendorOption,
+    WindowsVendorOptionDefinition,
 )
 
-from .fixtures import PluginAPIMixin, dhcp_servers, subnets, windows_server
+from .fixtures import PluginAPIMixin, dhcp_servers, subnets, vendor_classes, windows_server
 
 STANDARD = (
     PluginAPIMixin,
@@ -128,6 +131,102 @@ class MacFilterAPITest(*STANDARD):
         cls.create_data = [
             {"dhcp_server": server.pk, "mac_address": f"00:15:5D:00:01:0{i}", "list": "deny"} for i in range(1, 4)
         ]
+
+
+class MacFilterListsAPITest(*STANDARD):
+    user_permissions = DHCP_VIEW
+    model = MacFilterLists
+    brief_fields = ["allow_list_enabled", "deny_list_enabled", "display", "id", "url"]
+    graphql_base_name = "windows_dhcp_mac_filter_lists"
+    bulk_update_data = {"deny_list_enabled": True}
+
+    @classmethod
+    def setUpTestData(cls):
+        servers = dhcp_servers(6)
+        for server in servers[:3]:
+            MacFilterLists.objects.create(dhcp_server=server, allow_list_enabled=True)
+        cls.create_data = [{"dhcp_server": server.pk, "deny_list_enabled": True} for server in servers[3:]]
+
+
+# Vendor option definitions also need their vendor class to be visible, and values their definition.
+VENDOR_CLASS_VIEW = (*DHCP_VIEW, "netbox_windows_dhcp_plugin.view_windowsclass")
+
+
+class WindowsVendorOptionDefinitionAPITest(*STANDARD):
+    user_permissions = VENDOR_CLASS_VIEW
+    model = WindowsVendorOptionDefinition
+    brief_fields = ["code", "description", "display", "id", "name", "url"]
+    graphql_base_name = "windows_dhcp_vendor_option_definition"
+    bulk_update_data = {"description": "updated"}
+
+    @classmethod
+    def setUpTestData(cls):
+        vendor_class = vendor_classes(dhcp_servers(1)[0])[0]
+        for code in range(1, 4):
+            WindowsVendorOptionDefinition.objects.create(vendor_class=vendor_class, code=code, name=f"option{code}")
+        cls.create_data = [
+            {"vendor_class": vendor_class.pk, "code": code, "name": f"new{code}", "default_value": ["0x0"]}
+            for code in range(4, 7)
+        ]
+
+    def test_user_class_is_rejected(self):
+        self.add_permissions("netbox_windows_dhcp_plugin.add_windowsvendoroptiondefinition")
+        user_class = WindowsClass.objects.create(
+            dhcp_server=WindowsClass.objects.first().dhcp_server,
+            name="users",
+            class_type=ClassTypeChoices.USER,
+            data="u",
+        )
+        response = self.client.post(
+            self._get_list_url(),
+            {"vendor_class": user_class.pk, "code": 9, "name": "bad"},
+            format="json",
+            **self.header,
+        )
+        self.assertEqual(response.status_code, 400)
+
+
+class WindowsVendorOptionAPITest(*STANDARD):
+    user_permissions = (*VENDOR_CLASS_VIEW, "netbox_windows_dhcp_plugin.view_windowsvendoroptiondefinition")
+    model = WindowsVendorOption
+    brief_fields = ["display", "id", "url", "value"]
+    graphql_base_name = "windows_dhcp_vendor_option"
+    bulk_update_data = {"value": ["0x2"]}
+
+    @classmethod
+    def setUpTestData(cls):
+        (server,) = dhcp_servers(1)
+        definition = WindowsVendorOptionDefinition.objects.create(
+            vendor_class=vendor_classes(server)[0], code=1, name="option1"
+        )
+        nets = subnets(server, 6)
+        for subnet in nets[:3]:
+            WindowsVendorOption.objects.create(definition=definition, assigned_object=subnet, value=["0x1"])
+        cls.create_data = [
+            {
+                "definition": definition.pk,
+                "assigned_object_type": "netbox_dhcp.subnet",
+                "assigned_object_id": subnet.pk,
+                "value": ["0x1", "0x2"],
+            }
+            for subnet in nets[3:]
+        ]
+
+    def test_value_on_another_server_is_rejected(self):
+        self.add_permissions("netbox_windows_dhcp_plugin.add_windowsvendoroption")
+        (other,) = dhcp_servers(1, start=9)
+        response = self.client.post(
+            self._get_list_url(),
+            {
+                "definition": WindowsVendorOptionDefinition.objects.first().pk,
+                "assigned_object_type": "netbox_dhcp.dhcpserver",
+                "assigned_object_id": other.pk,
+                "value": ["0x1"],
+            },
+            format="json",
+            **self.header,
+        )
+        self.assertEqual(response.status_code, 400)
 
 
 class ReadOnlyAPITest(PluginAPIMixin, APITestCase):

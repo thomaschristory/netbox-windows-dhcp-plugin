@@ -31,6 +31,7 @@ menu = PluginMenu(
                 _item("windowsserver", _("Windows servers")),
                 _item("failoverrelationship", _("Failover relationships")),
                 _item("macfilter", _("MAC filters")),
+                _item("macfilterlists", _("MAC filter lists")),
             ),
         ),
         (
@@ -48,6 +49,8 @@ menu = PluginMenu(
                 _item("windowspolicy", _("Policies")),
                 _item("windowsoptiondefinition", _("Option definition settings")),
                 _item("windowsoptionqualifier", _("Option qualifiers")),
+                _item("windowsvendoroptiondefinition", _("Vendor option definitions")),
+                _item("windowsvendoroption", _("Vendor option values")),
             ),
         ),
         (

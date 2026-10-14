@@ -54,7 +54,8 @@ class PushTestMixin(ImportTestMixin):
         records, _ = windows_state.to_records(
             windows_state.read(DhcpClient(self.target)), standard_codes=netbox_state.standard_codes()
         )
-        return diff.diff(netbox_state.read(self.server), records, equal=windows_state.equal)
+        # As an import sees it: no MAC filter lists object in NetBox means Windows' defaults.
+        return diff.diff(netbox_state.read(self.server, for_import=True), records, equal=windows_state.equal)
 
 
 @override_settings(PLUGINS_CONFIG=CREDENTIALS)
@@ -102,7 +103,8 @@ class PushJobTest(PushTestMixin, TestCase):
             Reservation(scope_id="10.1.0.0", ip_address="10.1.0.99", client_id="aa-bb-cc-00-00-99")
         )
         run = self._run()
-        self.assertEqual(run.summary["unmanaged"], 1)
+        # The reservation, and the MAC filter list switches NetBox holds no object for.
+        self.assertEqual(run.summary["unmanaged"], 2)
         self.assertIn("10.1.0.99", self.fake.reservations)
 
     def test_dry_run_writes_nothing(self):

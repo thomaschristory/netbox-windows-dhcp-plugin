@@ -3,8 +3,14 @@
   "exclusionrange:list_objects_with_permission": 19,
   "macfilter:api_list_objects": 12,
   "macfilter:list_objects_with_permission": 19,
+  "macfilterlists:api_list_objects": 12,
+  "macfilterlists:list_objects_with_permission": 19,
   "windowsclass:api_list_objects": 12,
   "windowsscope:api_list_objects": 12,
   "windowsserver:api_list_objects": 12,
-  "windowsserver:list_objects_with_permission": 19
+  "windowsserver:list_objects_with_permission": 19,
+  "windowsvendoroption:api_list_objects": 13,
+  "windowsvendoroption:list_objects_with_permission": 20,
+  "windowsvendoroptiondefinition:api_list_objects": 12,
+  "windowsvendoroptiondefinition:list_objects_with_permission": 19
 }

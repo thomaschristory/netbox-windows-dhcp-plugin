@@ -111,8 +111,8 @@ class ProposalImportTest(ImportTestMixin, TestCase):
         kinds = sorted(result.proposal.items.values_list("kind", flat=True))
         self.assertEqual(
             kinds,
-            ["class", "class", "exclusion", "option", "option", "option", "option", "option"]
-            + ["optiondef", "reservation", "scope"],
+            ["class", "class", "exclusion", "option", "option", "option", "option", "option", "option"]
+            + ["optiondef", "optiondef", "reservation", "scope"],
         )
         self.assertTrue(all(i.action == "create" for i in result.proposal.items.all()))
         # Proposing writes nothing but the queue.
@@ -344,8 +344,8 @@ class ImportJobTest(ImportTestMixin, TestCase):
         run = self._run()
         self.assertEqual(run.kind, SyncKindChoices.IMPORT)
         self.assertEqual(run.status, SyncStatusChoices.COMPLETED)
-        self.assertEqual(run.summary["create"], 11)
-        self.assertEqual(len(run.summary["notes"]), 2)  # vendor class definitions and values skipped
+        self.assertEqual(run.summary["create"], 13)
+        self.assertNotIn("notes", run.summary)  # nothing skipped
         self.assertEqual(ImportProposal.objects.get().sync_run, run)
 
     def test_one_import_per_server_at_a_time(self):

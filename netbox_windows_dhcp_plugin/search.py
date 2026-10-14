@@ -39,6 +39,12 @@ class ExclusionRangeIndex(SearchIndex):
     display_attrs = ("subnet", "description")
 
 
+class WindowsVendorOptionDefinitionIndex(SearchIndex):
+    model = models.WindowsVendorOptionDefinition
+    fields = (("name", 100), ("description", 500), ("comments", 5000))
+    display_attrs = ("vendor_class", "code", "description")
+
+
 indexes = (
     WindowsServerIndex,
     WindowsClassIndex,
@@ -46,4 +52,5 @@ indexes = (
     FailoverRelationshipIndex,
     MacFilterIndex,
     ExclusionRangeIndex,
+    WindowsVendorOptionDefinitionIndex,
 )
