@@ -2,10 +2,19 @@ COMPOSE = docker compose -f dev/docker-compose.yml
 EXEC = $(COMPOSE) exec -T
 PY = /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py
 
-.PHONY: test test-netbox lint format dev down restart logs dist
+.PHONY: test test-lab lab-e2e test-netbox lint format dev down restart logs dist
 
 test:
 	uv run pytest -v
+
+# Opt-in: the real client against the lab Windows DHCP server named in dev/env/netbox.env (see tests/lab/conftest.py).
+# Creates and removes nbwd-test-* objects in 198.18.0.0/15 and 2001:db8:4e42::/64 only.
+test-lab:
+	WINDOWS_DHCP_LAB=1 uv run pytest -v -p no:cacheprovider tests/lab
+
+# Opt-in: Windows -> NetBox -> Windows on the dev stack against the lab server (see dev/scripts/lab_e2e.py).
+lab-e2e:
+	$(EXEC) netbox $(PY) shell < dev/scripts/lab_e2e.py
 
 BASELINE = netbox_windows_dhcp_plugin/tests/query_counts.json
 BRANCHING_BASELINE = tests_netbox/query_counts.branching.json

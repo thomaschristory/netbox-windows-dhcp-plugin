@@ -3,27 +3,36 @@
 A NetBox plugin that keeps Microsoft Windows DHCP servers in step with the data modelled by
 [netbox-plugin-dhcp](https://github.com/sys4/netbox-plugin-dhcp), over WinRM or SSH.
 
-> **Status: early development.** The models, REST and GraphQL API, connection test, the PowerShell layer and import
-> from Windows are in place. Push to Windows is being built next (see [docs/ROADMAP.md](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/blob/main/docs/ROADMAP.md)).
-> The design is in [docs/DESIGN.md](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/blob/main/docs/DESIGN.md).
+> **Status: pre-release.** Every v1 feature is built and tested against an in-memory fake server and PowerShell
+> stubs. Some cmdlets the plugin uses have not been checked against a real Windows server yet; they are marked
+> `# unverified:` in the code, and the lab tests that settle them are waiting for a lab server (see
+> [docs/ROADMAP.md](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/blob/main/docs/ROADMAP.md)). The
+> design is in [docs/DESIGN.md](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/blob/main/docs/DESIGN.md).
 
 ## Features
 
 - Connection settings per DHCP server: WinRM (NTLM, Basic, Kerberos; HTTPS by default) or SSH, as in
-  [terraform-provider-windowsddi](https://github.com/thomaschristory/terraform-provider-windowsddi).
+  [terraform-provider-windowsddi](https://github.com/thomaschristory/terraform-provider-windowsddi). Credentials
+  live in named profiles in the plugin configuration, never in the database.
 - Windows concepts that netbox-plugin-dhcp does not model: scope settings, reservation type, exclusion ranges,
-  user and vendor classes, option definitions and qualifiers, policies, failover relationships and MAC filters.
-- A "Test connection" button and API action that runs a background job against the server.
-- Import from Windows (IPv4 scopes, exclusions, reservations, user and vendor classes, option definitions and option
-  values; vendor class options and policies later), on demand ("Import now" button and API action) or every `import_interval` minutes. With netbox-branching
-  each import lands in a branch named `dhcp-import/<server>/<timestamp>` (plus a change request when change control
-  is installed); without it, in an import proposal where each difference is applied or dismissed.
+  user and vendor classes, option definitions and qualifiers, vendor class options, policies, superscopes,
+  failover relationships and MAC filters.
+- IPv4 and DHCPv6: scopes, reservations (with IAID for DHCPv6), user classes and option values. DHCPv6 custom
+  option definitions, vendor classes and exclusions are read but left alone.
+- **Import** from Windows, on demand ("Import now" button and API action) or every `import_interval` minutes. With
+  netbox-branching each import lands in a branch named `dhcp-import/<server>/<timestamp>` (plus a change request
+  when change control is installed); without it, in an import proposal where each difference is applied or
+  dismissed.
+- **Push** to Windows: a reconcile per server when a branch is merged or reverted, or a few seconds after a save
+  without branching. "Sync now" and "Dry run" buttons and API actions. A push only deletes Windows objects it
+  created or imported itself; objects made by hand on Windows are left alone until imported.
+- Failover: after pushing to a primary server, the changed scopes are replicated to the partner.
+- **Leases**: a Leases tab on the netbox-plugin-dhcp subnet page reads the live leases of the scope in a background
+  job. Leases are not stored.
+- "Test connection" button and API action.
 - Full REST API and GraphQL for every model.
 - Works with [netbox-branching](https://github.com/netboxlabs/netbox-branching) and
   [netbox-change-control](https://github.com/antoinekh/netbox-change-control) when they are installed.
-
-Planned for v1: push to Windows on branch merge (or on save without branching), dry-run, policies, failover, MAC
-filters, live leases, DHCPv6.
 
 ## Compatibility
 
@@ -107,6 +116,26 @@ control and capture the credentials; NetBox logs a warning at startup for each s
 | `max_concurrency` | `4` | PowerShell commands one job runs at once against a server |
 | `command_timeout` | `120` | Seconds before a PowerShell command is abandoned |
 
+Each Windows server also has `sync_enabled` (push NetBox changes to it, on by default) and `import_interval`
+(minutes between scheduled imports, none when empty).
+
+### Failover shared secret
+
+A failover relationship with message authentication names a credential profile in `shared_secret_profile`. The
+secret is read from that profile's `secret` key when a push needs it and goes straight to both servers, so the
+profile's `allowed_hosts` must cover both partners:
+
+```python
+"failover-secret": {"secret_env": "DHCP_FAILOVER_SECRET", "allowed_hosts": ["dhcp1.corp.example", "dhcp2.corp.example"]},
+```
+
+### Workers
+
+Every Windows command runs in a NetBox background job, never in a web request. The credential profiles, their
+environment variables and files must therefore be available to `netbox-worker` (`rqworker`) as well as to the web
+process. With branching, pushes start from the merge job in the worker. Only one import or push runs per server at a
+time, across all workers.
+
 ### Windows side
 
 The account needs membership of the `DHCP Administrators` group and WinRM (or OpenSSH server) enabled.
@@ -114,8 +143,14 @@ Basic authentication is only allowed over HTTPS with certificate verification on
 
 ## Permissions
 
-Each model has the usual NetBox `view`, `add`, `change` and `delete` permissions. Running a connection test needs
-`change` on the Windows server.
+Each model has the usual NetBox `view`, `add`, `change` and `delete` permissions. In addition:
+
+- Test connection, Import now, Sync now, Dry run and loading leases need `change` on the Windows server (object
+  permissions can limit which servers). Seeing the Leases tab needs `view` on it.
+- With branching, starting an import also needs `netbox_branching.add_branch`, and
+  `netbox_change_control.add_changerequest` when change control opens a change request.
+- Applying an import proposal item needs `change` on the item, plus the permission for the NetBox object it writes
+  (for example `netbox_dhcp.add_subnet`). Items the user may not apply are reported, not applied.
 
 ## Development
 
@@ -127,7 +162,14 @@ make test        # Windows layer unit tests, no NetBox needed
 make dev         # NetBox, netbox-plugin-dhcp, branching and change control in docker
 make test-netbox # NetBox integration tests inside the dev stack
 make dist        # build and check the wheel and sdist
+make test-lab    # opt-in: the client against a real Windows DHCP server
+make lab-e2e     # opt-in: import, push and leases on the dev stack against that server
 ```
+
+The lab targets read `WINDOWS_DHCP_LAB_HOST`, `WINDOWS_DHCP_USERNAME` and `WINDOWS_DHCP_PASSWORD` (plus the optional
+variables listed in `tests/lab/conftest.py`) from the environment or the uncommitted `dev/env/netbox.env`. They only
+create objects named `nbwd-test-...` in `198.18.0.0/15` and `2001:db8:4e42::/64` and remove them afterwards, but use a
+lab server, never a production one. CI does not run them.
 
 The PowerShell tests in `tests/windows` run the real scripts in `pwsh` against stub cmdlets when `pwsh` is on the
 path, and are skipped otherwise.
