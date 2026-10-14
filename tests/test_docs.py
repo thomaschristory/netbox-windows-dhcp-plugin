@@ -23,7 +23,7 @@ def doc_pages() -> list[Path]:
 
 
 def all_pages() -> list[Path]:
-    return [*doc_pages(), ROOT / "README.md", ROOT / "CHANGELOG.md"]
+    return [*doc_pages(), ROOT / "README.md", ROOT / "CHANGELOG.md", ROOT / "SECURITY.md"]
 
 
 def _id(page: Path) -> str:
