@@ -1,0 +1,69 @@
+site_name: netbox-windows-dhcp-plugin
+site_description: Keep Microsoft Windows DHCP servers and netbox-plugin-dhcp in step, in both directions.
+site_url: https://thomaschristory.github.io/netbox-windows-dhcp-plugin/
+repo_url: https://github.com/thomaschristory/netbox-windows-dhcp-plugin
+repo_name: netbox-windows-dhcp-plugin
+edit_uri: ""
+# Built with Zensical (make docs), which reads this file. Zensical publishes everything under docs_dir, so make docs
+# builds from a staging copy of the files git can see.
+docs_dir: docs
+
+theme:
+  name: material
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - Installation: installation.md
+      - Preparing Windows: windows-setup.md
+      - Configuration: configuration.md
+      - First sync: quickstart.md
+  - Using the plugin:
+      - Windows servers: servers.md
+      - How objects map: mapping.md
+      - Import from Windows: import.md
+      - Push to Windows: push.md
+      - DHCPv6: dhcpv6.md
+      - Failover: failover.md
+      - Leases: leases.md
+      - Permissions: permissions.md
+      - REST API and GraphQL: api.md
+  - Operations:
+      - Security: security.md
+      - Workers and jobs: workers.md
+      - Troubleshooting: troubleshooting.md
+      - Limitations: limitations.md
+  - Project:
+      - Development: development.md
+      - Design: DESIGN.md
+      - Roadmap: ROADMAP.md
+      - Changelog: changelog.md

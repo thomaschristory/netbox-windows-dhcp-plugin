@@ -30,5 +30,8 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
    - **Deferred (no lab server available yet):** running them, fixing what they find (with fake, fixture and stub
      regression tests), recording scrubbed fixtures and removing the settled markers. With a single server the two
      failover markers (scope removal while in a relationship, what replication copies) stay unverified.
-   - **Release prep:** README, DESIGN section 12 and CHANGELOG made ready for 0.1.0. Version bump, tag and PyPI
-     publishing (trusted publisher not set up yet) wait for the owner's go.
+   - **Release prep:** README, DESIGN section 12 and CHANGELOG made ready for 0.1.0. A documentation site (Zensical,
+     `make docs`, published to GitHub Pages from release tags) with installation, Windows preparation, configuration,
+     a first-sync walkthrough, import, push, DHCPv6, failover, leases, permissions, API, security, workers,
+     troubleshooting and limitations. Version bump, tag and PyPI publishing (trusted publisher and `pypi` environment
+     ready) wait for the owner's go.
