@@ -14,7 +14,7 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
    records as managed. One import or push per server at a time across all workers (a PostgreSQL advisory lock, not
    Redis: import already used one). Failover: replication after pushing to a primary.
 5. **In progress.** Remaining objects end to end, in two PRs.
-   - **PR A:** superscopes, policies (and policy-qualified option values), vendor class option definitions and values
+   - **PR A (#4, merged):** superscopes, policies (and policy-qualified option values), vendor class option definitions and values
      (`WindowsVendorOptionDefinition`, `WindowsVendorOption`), failover relationships (secret from a credential
      profile), MAC filters and list switches (`MacFilterLists`), option values containing commas (Kea's `\,`).
    - **PR B:** DHCPv6 scopes, reservations, user classes and option values against sys4's standard dhcp6
