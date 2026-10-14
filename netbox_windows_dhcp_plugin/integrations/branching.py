@@ -39,6 +39,17 @@ def save_belongs_to_branching():
     return Branch.objects.filter(status__in=busy).exists()
 
 
+def in_branch():
+    """True while the request works inside a netbox-branching branch (not main)."""
+    if not branching_installed():
+        return False
+    try:
+        from netbox_branching.contextvars import active_branch
+    except ImportError:
+        return False
+    return active_branch.get() is not None
+
+
 def change_control_installed():
     return apps.is_installed("netbox_change_control")
 

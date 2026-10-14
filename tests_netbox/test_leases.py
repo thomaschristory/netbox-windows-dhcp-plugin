@@ -1,19 +1,22 @@
 """Live leases: the job that reads them, and the Leases tab on netbox-plugin-dhcp's subnet page."""
 
 import uuid
+from datetime import timedelta
+from unittest import mock
 
 from core.choices import JobStatusChoices
 from core.exceptions import JobFailed
 from core.models import Job, ObjectType
 from django.test import override_settings
 from django.urls import reverse
+from django.utils import timezone
 from ipam.models import Prefix
 from netbox_dhcp.models import Subnet
 from users.models import ObjectPermission
 from utilities.testing import TestCase
 
 from netbox_windows_dhcp_plugin import leases
-from netbox_windows_dhcp_plugin.jobs import LeaseJob, enqueue_leases, lease_jobs
+from netbox_windows_dhcp_plugin.jobs import ORPHANED_JOB, LeaseJob, enqueue_leases, lease_jobs
 from netbox_windows_dhcp_plugin.models import WindowsServer
 from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows.client import Scope, ScopeV6
@@ -152,7 +155,7 @@ class LeaseTabTest(LeaseMixin, TestCase):
         self.run_job(self.subnet)
         response = self.client.get(self.url)
         self.assertNotContains(response, 'hx-trigger="every 3s"')
-        self.assertContains(response, "2 leases on")
+        self.assertContains(response, "2 leases in scope 10.1.0.0 on")
         self.assertContains(response, "pc20")
         self.assertContains(response, "&lt;script&gt;alert(1)&lt;/script&gt;")
         self.assertNotContains(response, "<script>alert(1)</script>")
@@ -208,4 +211,25 @@ class LeaseTabTest(LeaseMixin, TestCase):
         perm.users.add(self.user)
         self.assertNotContains(self.client.get(self.url), "Load leases")
         self.client.post(self.url)
+        self.assertFalse(lease_jobs(self.subnet, self.server).exists())
+
+    def test_a_lost_job_stops_blocking_the_page(self):
+        job = enqueue_leases(self.subnet, None)
+        Job.objects.filter(pk=job.pk).update(created=timezone.now() - ORPHANED_JOB - timedelta(minutes=1))
+        page = self.client.get(self.url)
+        self.assertNotContains(page, 'hx-trigger="every 3s"')
+        self.assertContains(page, "never finished")
+        self.assertIsNotNone(enqueue_leases(self.subnet, None))
+
+    def test_only_the_latest_read_is_kept(self):
+        self.run_job(self.subnet)
+        self.run_job(self.subnet6)
+        latest = self.run_job(self.subnet)
+        self.assertEqual(list(lease_jobs(self.subnet, self.server)), [latest])
+        self.assertEqual(lease_jobs(self.subnet6, self.server).count(), 1)
+
+    def test_no_reads_from_inside_a_branch(self):
+        with mock.patch("netbox_windows_dhcp_plugin.integrations.branching.in_branch", return_value=True):
+            self.assertNotContains(self.client.get(self.url), "Load leases")
+            self.client.post(self.url)
         self.assertFalse(lease_jobs(self.subnet, self.server).exists())

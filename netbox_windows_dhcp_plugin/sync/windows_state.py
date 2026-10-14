@@ -719,9 +719,10 @@ def _is_ipv6(value: str) -> bool:
 
 def hidden_records(
     state: WindowsState,
-    standard_codes6: Iterable[int] | None = None,
     skipped_option_ids: Iterable[int] = SKIPPED_OPTION_IDS,
     partner_failovers: Iterable[str] = (),
+    *,
+    standard_codes6: Iterable[int] | None = None,
 ) -> list[Record]:
     """
     Windows objects ``to_records`` leaves out (values with surrounding spaces, relationships synced from the partner),

@@ -188,15 +188,18 @@ values holding IPv6 addresses compare the same way.
   keep) and vendor class values, values of codes netbox-plugin-dhcp has no standard dhcp6 definition for (DHCPv6
   option definitions are not synced), values with surrounding spaces, and exclusion ranges. Each import notes how
   many it left out. A push never touches them, and they count as children of their scope or reservation, so a scope
-  holding any of them is never deleted.
+  holding any of them is never deleted. NetBox values of other DHCPv6 definitions and DHCPv6 vendor classes held in
+  NetBox are left out the same way, so neither side proposes or pushes them.
 - **Scopes.** Windows DHCPv6 scopes are /64: a NetBox subnet with another prefix length is not pushed, and keeps its
   Windows counterpart. Lifetimes left empty in NetBox keep the Windows values (a new scope gets Windows' defaults);
   a scope without a name is named after its prefix. Deletes are never forced, so a scope with leases fails with
-  DHCP 20007. Windows has no DHCPv6 failover, so DHCPv6 changes neither replicate nor wait for a primary.
+  DHCP 20007; as for IPv4, its managed reservations and values NetBox deleted with it are removed first, and the
+  scope itself on a later push once its leases are gone. Windows has no DHCPv6 failover, so DHCPv6 changes neither replicate nor wait for a primary.
 - **Reservations.** Need a DUID and an IAID (set on the Windows reservation in NetBox); the first IPv6 address of the
   reservation (by primary key) is the reserved one. An address change is a new reservation (it is in the key).
 - **Option values** use sys4's standard dhcp6 definitions, with the user class in `WindowsOptionQualifier` as for
-  IPv4. No policies: Windows has none for DHCPv6.
+  IPv4 (the qualifier checks the class is a DHCPv6 one). No policies: Windows has none for DHCPv6, so the model
+  refuses a policy on a DHCPv6 value and the push refuses one set anyway.
 
 ## 7. Import: Windows to NetBox
 
@@ -257,12 +260,16 @@ A scheduled job per server (and a manual button) reads the full Windows state an
 - Tabs on sys4 server and subnet pages: connection status, last sync, drift, live leases.
 - **Live leases (milestone 5).** A Leases tab on netbox-plugin-dhcp's subnet page, for subnets of a Windows server,
   shown to users who can view both the subnet and the Windows server (object permissions included). "Load leases"
-  connects to Windows, so like the connection test it needs permission to change that Windows server; it queues a job (`LeaseJob`, one waiting or running per subnet, no notification) that reads the scope's IPv4 or
-  DHCPv6 leases and keeps at most 5000 of them, in address order, in the job's data with the total and the time of
-  the read. The panel asks for itself again every few seconds (HTMX) while the job runs. Nothing is stored in a
-  model; a failed read shows its reason. The job belongs to the Windows server (sys4 subnets cannot hold jobs) and
-  records the subnet in its data, so users who may view jobs see lease data too. The tab view is registered when
-  the plugin starts, because netbox-plugin-dhcp builds its URLs before ours are loaded.
+  connects to Windows, so like the connection test it needs permission to view and change that Windows server. It
+  queues a job (`LeaseJob`, one waiting or running per subnet under an advisory lock, no notification) that reads
+  the scope's IPv4 or DHCPv6 leases and keeps at most 5000 of them, in address order, in the job's data with the
+  total, the scope read and the time of the read. The panel asks for itself again every few seconds (HTMX) while the
+  job runs; a job still waiting or running after 15 minutes counts as lost, so the page stops waiting and a new read
+  can be queued. Only the latest read of a subnet is kept: each read deletes the earlier finished ones. A failed read
+  shows its reason. The job belongs to the Windows server (sys4 subnets cannot hold jobs) and records the subnet in
+  its data, so users who may view jobs see the latest lease read too. Reads are refused inside a branch, since the
+  job reads the subnet as it is in main. The tab view is registered when the plugin starts, because
+  netbox-plugin-dhcp builds its URLs before ours are loaded.
 - Pages for our models, the review queue and sync runs, under a "Windows DHCP" menu.
 - REST and GraphQL for every model, plus actions to trigger push, dry-run and import.
 - Built per the netboxlabs plugin skill: `@register_model_view`, `get_model_urls`, Strawberry GraphQL, `@register_filterset`, `PluginMenu`.

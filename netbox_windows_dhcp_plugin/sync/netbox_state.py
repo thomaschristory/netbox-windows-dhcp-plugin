@@ -305,8 +305,8 @@ def _reservation6(reservation, prefix):
 
 def _v6(dhcp):
     records = []
-    for c in WindowsClass.objects.filter(dhcp_server=dhcp, family=6).order_by("pk"):
-        # Only user classes are synced; a DHCPv6 vendor class in NetBox shows up as one the push refuses.
+    # Only user classes are synced: Windows DHCPv6 vendor classes are left out on both sides.
+    for c in WindowsClass.objects.filter(dhcp_server=dhcp, family=6, class_type="user").order_by("pk"):
         records.append(
             Record(
                 "class6",
@@ -338,9 +338,15 @@ def _options6(dhcp, prefixes, reservation_parents):
     q = Q()
     for type_id, object_id in parents:
         q |= Q(assigned_object_type_id=type_id, assigned_object_id=object_id)
+    # Only values of netbox-plugin-dhcp's standard DHCPv6 definitions, the ones windows_state keeps: DHCPv6 option
+    # definitions are not synced, so a value of another code is left alone on both sides.
     options = (
-        Option.objects.filter(q, definition__family=6)
-        .select_related("definition", "netbox_windows_dhcp_plugin_windows_qualifier__user_class")
+        Option.objects.filter(q, definition__family=6, definition__standard=True, definition__space="dhcp6")
+        .select_related(
+            "definition",
+            "netbox_windows_dhcp_plugin_windows_qualifier__user_class",
+            "netbox_windows_dhcp_plugin_windows_qualifier__policy",
+        )
         .order_by("pk")
     )
     seen = set()
@@ -350,6 +356,9 @@ def _options6(dhcp, prefixes, reservation_parents):
         parent = parents[o.assigned_object_type_id, o.assigned_object_id]
         key = windows_state.option6_key(parent, o.definition.code, user)
         fields = {"parent": parent, "option_id": o.definition.code, "value": split_values(o.data), "user_class": user}
+        if qualifier and qualifier.policy_id:
+            # Windows has no DHCPv6 policies: the push refuses this value rather than writing it unqualified.
+            fields["policy"] = qualifier.policy.name
         if key in seen:
             key = f"{key}#{o.pk}"
             fields[DUPLICATE] = o.pk

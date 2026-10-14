@@ -74,7 +74,10 @@ All notable changes to this project are documented here. The format follows
   note them, and a push keeps any scope holding them.
 - Live leases: a Leases tab on the subnet page of Windows scopes (IPv4 and DHCPv6) reads the leases in a background
   job and shows the last read, refreshing itself while the job runs. Viewing needs the subnet and its Windows server;
-  loading needs permission to change the Windows server. Leases are not stored in a model.
+  loading needs permission to change the Windows server, and is refused inside a branch. Only the latest read of
+  each subnet is kept, in its job; leases are not stored in a model.
+- `WindowsOptionQualifier` checks that a user class has the option's address family, and refuses a policy on a
+  DHCPv6 value.
 
 ### Changed
 

@@ -85,7 +85,9 @@ def records(client, codes=STANDARD6):
 
 
 def apply(client, source, managed=None):
-    p = push.plan(source, records(client), managed or {}, hidden=ws.hidden_records(ws.read(client), STANDARD6))
+    p = push.plan(
+        source, records(client), managed or {}, hidden=ws.hidden_records(ws.read(client), standard_codes6=STANDARD6)
+    )
     return p, push.execute(p, WindowsWriter(client))
 
 
@@ -167,7 +169,7 @@ def test_unsupported_v6_objects_are_skipped_and_hidden(client, fake):
             f"skipped 1 {ws.V6_EXCLUSIONS}",
         ]
     )
-    hidden = {(r.kind, r.key) for r in ws.hidden_records(state, STANDARD6)}
+    hidden = {(r.kind, r.key) for r in ws.hidden_records(state, standard_codes6=STANDARD6)}
     assert ("exclusion6", "v6/2001:db8:1::/2001:db8:1::1-2001:db8:1::ff") in hidden
     assert ("option6", "v6/2001:db8:1::/17;vendor=microsoft windows options") in hidden
     assert ("option6", "v6/2001:db8:1::/99") in hidden
@@ -282,3 +284,25 @@ def test_v6_parents():
 def test_only_user_classes_are_pushed():
     p = push.plan([class6(name="V", class_type="vendor")], [], {})
     assert p.changes == [] and "user classes" in p.skipped[0].reason
+
+
+def test_policy_values_are_not_pushed():
+    record = option6(PREFIX, 23, ["2001:db8::53"])
+    record = Record(record.kind, record.key, {**record.fields, "policy": "printers"})
+    p = push.plan([scope6(), record], [], {})
+    assert [s.change.key for s in p.skipped] == [record.key]
+    assert "policies" in p.skipped[0].reason
+
+
+def test_user_class_names_are_not_case_sensitive_on_windows(client):
+    client.add_v6_scope(ScopeV6(prefix=PREFIX, name="v6"))
+    client.add_v6_class(DhcpClass(name="Lab", type="User", data="Lab"))
+    client.set_v6_option_value(OptionKeyV6(23, prefix=PREFIX, user_class="Lab"), ["2001:db8::1"])
+    client.set_v6_option_value(OptionKeyV6(23, prefix=PREFIX, user_class="lab"), ["2001:db8::2"])
+    (value,) = client.list_v6_option_values(prefix=PREFIX, all=True)
+    assert value.value == ["2001:db8::2"]
+
+
+def test_hidden_records_keeps_its_positional_parameters(client):
+    # standard_codes6 is keyword only, so existing positional callers keep their meaning.
+    assert ws.hidden_records(ws.read(client), ws.SKIPPED_OPTION_IDS) == []

@@ -7,7 +7,7 @@ from netbox_dhcp.models import HostReservation, Option, Pool, Subnet
 from netbox_windows_dhcp_plugin import signals
 from netbox_windows_dhcp_plugin.choices import SyncStatusChoices
 from netbox_windows_dhcp_plugin.models import SyncState, WindowsClass, WindowsReservation, WindowsScope
-from netbox_windows_dhcp_plugin.sync import importer
+from netbox_windows_dhcp_plugin.sync import importer, netbox_state
 from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows.client import DhcpClass, OptionKeyV6, ReservationV6, ScopeV6
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
@@ -177,3 +177,45 @@ class PushV6Test(V6Mixin, PushTestMixin, TestCase):
     def test_v6_address_changes_queue_a_push(self):
         address = IPAddress.objects.get(address__net_host=RESERVED)
         self.assertEqual(signals.servers_for("ipam.ipaddress", address.pk, {"address": "x"}), {self.dhcp.pk})
+
+
+class V6ReviewTest(V6Mixin, ImportTestMixin, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.apply_all()
+        self.subnet = Subnet.objects.get(prefix__prefix__family=6)
+
+    def test_values_of_custom_definitions_are_left_alone_on_both_sides(self):
+        from netbox_dhcp.models import OptionDefinition
+
+        custom = OptionDefinition.objects.create(
+            name="custom-v6", code=100, family=6, space="dhcp6", type="string", dhcp_server=self.dhcp
+        )
+        Option.objects.create(definition=custom, assigned_object=self.subnet, data="x")
+        self.v6.set_v6_option_value(OptionKeyV6(100, prefix=PREFIX), ["x"])
+        keys = {r.key for r in netbox_state.read(self.server) if r.kind == "option6"}
+        self.assertNotIn("v6/2001:db8:1::/100", keys)
+        # Import proposes nothing for it: Windows' value is skipped, and so is NetBox's.
+        self.assertEqual(self.changes(), [])
+
+    def test_vendor_classes_in_netbox_are_not_read_as_user_classes(self):
+        WindowsClass.objects.create(dhcp_server=self.dhcp, family=6, class_type="vendor", name="Lab", data="x")
+        classes = [r for r in netbox_state.read(self.server) if r.kind == "class6"]
+        self.assertEqual([(r.key, r.fields["class_type"]) for r in classes], [("v6/user/lab", "user")])
+
+    def test_qualifiers_on_dhcpv6_values_are_validated(self):
+        from django.core.exceptions import ValidationError
+
+        from netbox_windows_dhcp_plugin.models import WindowsOptionQualifier, WindowsPolicy
+
+        option = Option.objects.get(definition__code=24)
+        policy = WindowsPolicy.objects.create(
+            dhcp_server=self.dhcp, name="p", criteria={"mac_address": ["EQ", "00-15-5d*"]}
+        )
+        with self.assertRaisesMessage(ValidationError, "DHCPv6"):
+            WindowsOptionQualifier(
+                option=Option.objects.get(definition__code=23, assigned_object_id=self.dhcp.pk), policy=policy
+            ).full_clean()
+        v4_class = WindowsClass.objects.get(family=4, name="Labs")
+        with self.assertRaisesMessage(ValidationError, "use an IPv6 user class"):
+            WindowsOptionQualifier(option=option, user_class=v4_class).full_clean()

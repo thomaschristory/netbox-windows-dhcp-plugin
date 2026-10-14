@@ -75,6 +75,8 @@ class LeaseJob(JobRunner):
     # Tests substitute a fake runner here.
     runner_factory = None
 
+    subnet_id = None
+
     def run(self, *args, subnet_id=None, **kwargs):
         from netbox_dhcp.models import Subnet
 
@@ -102,6 +104,7 @@ class LeaseJob(JobRunner):
             if client is not None:
                 client.close()
         kept, total = leases.rows(found, family)
+        self._forget_earlier_reads(server)
         self.job.data = {
             "subnet": subnet_id,
             "server": str(server),
@@ -113,8 +116,17 @@ class LeaseJob(JobRunner):
         }
         self.logger.info(f"Read {total} lease(s) of scope {scope} from {server.host}")
 
+    def _forget_earlier_reads(self, server):
+        # Only the newest read is shown, so earlier ones (up to 5000 leases each) are not kept in the job table.
+        from core.choices import JobStatusChoices
+
+        earlier = LeaseJob.get_jobs(server).filter(data__subnet=self.subnet_id).exclude(pk=self.job.pk)
+        earlier.filter(status__in=JobStatusChoices.TERMINAL_STATE_CHOICES).delete()
+
     def _fail(self, message):
         # Job.terminate saves the job, data included: the page shows the reason without reading the job log.
+        if self.job.object is not None and self.subnet_id is not None:
+            self._forget_earlier_reads(self.job.object)
         self.job.data = {"subnet": self.subnet_id, "error": message}
         self.logger.error(message)
         raise JobFailed(message)
@@ -125,9 +137,24 @@ def lease_jobs(subnet, server):
     return LeaseJob.get_jobs(server).filter(data__subnet=subnet.pk).order_by("-created")
 
 
+def lease_read_in_progress(job, now=None):
+    """
+    Whether a lease job is still waiting or running. One overdue by ORPHANED_JOB never reached a worker, or lost it:
+    it no longer counts, so the page stops waiting for it and a new read can be queued.
+    """
+    from core.choices import JobStatusChoices
+
+    if job is None or job.status not in JobStatusChoices.ENQUEUED_STATE_CHOICES:
+        return False
+    return job.created >= (now or timezone.now()) - ORPHANED_JOB
+
+
+# Advisory lock (with the subnet's key) taken while deciding whether to queue a lease read.
+_LEASE_LOCK_CLASS = 0x57444C53  # "WDLS"
+
+
 def enqueue_leases(subnet, user):
     """Queue a lease read for the subnet unless one is already waiting or running. Returns the job, or None."""
-    from core.choices import JobStatusChoices
     from django.db import transaction
 
     from . import leases
@@ -135,13 +162,13 @@ def enqueue_leases(subnet, user):
     server = leases.windows_server_for(subnet)
     if server is None:
         return None
-    busy = lease_jobs(subnet, server).filter(
-        status__in=JobStatusChoices.ENQUEUED_STATE_CHOICES, created__gte=timezone.now() - ORPHANED_JOB
-    )
-    if busy.exists():
-        return None
-    # RQ only gets the job once this transaction commits, so the subnet is recorded before the job can start.
+    # RQ only gets the job once this transaction commits, so the subnet is recorded before the job can start; the
+    # lock makes two clicks at the same moment queue one read.
     with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_LEASE_LOCK_CLASS, subnet.pk])
+        if lease_read_in_progress(lease_jobs(subnet, server).first()):
+            return None
         job = LeaseJob.enqueue(
             instance=server,
             user=user,

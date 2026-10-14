@@ -1072,7 +1072,14 @@ class FakeDhcpServer:
 
     @staticmethod
     def _v6option_key(p: Mapping[str, Any]) -> tuple:
-        return (_n(p, "option_id"), _s(p, "prefix"), _s(p, "reserved_ip"), _s(p, "vendor_class"), _s(p, "user_class"))
+        # Class names are not case sensitive on Windows: "Lab" and "lab" name one value.
+        return (
+            _n(p, "option_id"),
+            _s(p, "prefix"),
+            _s(p, "reserved_ip"),
+            _s(p, "vendor_class").lower(),
+            _s(p, "user_class").lower(),
+        )
 
     def _check_v6option_level(self, p: dict) -> None:
         if _s(p, "prefix"):

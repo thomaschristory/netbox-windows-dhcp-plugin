@@ -423,6 +423,14 @@ class WindowsOptionQualifier(NetBoxModel):
         server = _parent_server(option.assigned_object)
         if self.user_class_id is not None and server is not None and self.user_class.dhcp_server_id != server.pk:
             raise ValidationError({"user_class": _("The user class belongs to another DHCP server.")})
+        family = option.definition.family
+        if self.user_class_id is not None and self.user_class.family != family:
+            # Windows keeps IPv4 and DHCPv6 classes apart.
+            raise ValidationError(
+                {"user_class": _("This is an IPv{family} option: use an IPv{family} user class.").format(family=family)}
+            )
+        if self.policy_id is not None and family == 6:
+            raise ValidationError({"policy": _("Windows has no DHCPv6 policies.")})
         if self.policy_id is not None:
             # A policy value names the policy only by name on Windows: it must be this server's policy, at the
             # option's own level (a scope policy on its scope, a server policy on the server).

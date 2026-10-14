@@ -265,6 +265,8 @@ def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] 
             return "the reservation has no IAID; set it on its Windows reservation in NetBox"
     if record.kind == "class6" and f.get("class_type") != "user":
         return "only DHCPv6 user classes are synced"
+    if record.kind == "option6" and f.get("policy"):
+        return "Windows has no DHCPv6 policies; remove the policy from the value in NetBox"
     if record.kind == "option6" and not f.get("value"):
         return "the option has no value; set one or remove the option in NetBox"
     if record.kind == "option":

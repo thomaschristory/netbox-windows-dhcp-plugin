@@ -15,7 +15,14 @@ from utilities.views import GetRelatedModelsMixin, GetReturnURLMixin, ViewTab, r
 
 from . import filtersets, forms, leases, review, tables
 from .integrations import branching
-from .jobs import TestConnectionJob, enqueue_import, enqueue_leases, enqueue_push, lease_jobs
+from .jobs import (
+    TestConnectionJob,
+    enqueue_import,
+    enqueue_leases,
+    enqueue_push,
+    lease_jobs,
+    lease_read_in_progress,
+)
 from .models import (
     ExclusionRange,
     FailoverRelationship,
@@ -561,11 +568,14 @@ class SubnetLeasesView(generic.ObjectView):
 
         server = self._server(request, instance)
         job = lease_jobs(instance, server).first() if server else None
-        running = job is not None and job.status in JobStatusChoices.ENQUEUED_STATE_CHOICES
+        running = lease_read_in_progress(job)
         return {
+            # Waiting or running long past any reasonable read: the worker lost it.
+            "lost": job is not None and not running and job.status in JobStatusChoices.ENQUEUED_STATE_CHOICES,
             "windows_server": server,
             # Reading leases connects to Windows, like the connection test: it needs the change permission.
             "can_load": server is not None and self._server(request, instance, "change") is not None,
+            "in_branch": branching.in_branch(),
             "job": job,
             "running": running,
             "result": (job.data or {}) if job is not None and not running else {},
@@ -580,9 +590,13 @@ class SubnetLeasesView(generic.ObjectView):
 
     def post(self, request, *args, **kwargs):
         subnet = self.get_object(**kwargs)
-        server = self._server(request, subnet, "change")
+        # The server must be visible to the user as well as changeable, as on the page the button is on.
+        server = self._server(request, subnet) and self._server(request, subnet, "change")
         if server is None:
             messages.error(request, _("Loading leases needs permission to change this subnet's Windows server"))
+        elif branching.in_branch():
+            # The job runs against main, where this subnet may differ or not exist.
+            messages.error(request, _("Leases are read for subnets as they are in main: switch to main to load them"))
         elif enqueue_leases(subnet, request.user) is None:
             messages.warning(request, _("Leases of {subnet} are already being read").format(subnet=subnet))
         return redirect(reverse("plugins:netbox_dhcp:subnet_windows_leases", kwargs={"pk": subnet.pk}))
