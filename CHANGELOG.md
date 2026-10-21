@@ -5,7 +5,8 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-First release. Every v1 feature is in place and tested against the fake server and PowerShell stubs; the lab tests
+Pre-release 0.1.0rc1 (2026-10-21) is on PyPI for testing ahead of the lab run; 0.1.0 follows once the lab tests
+pass. First release. Every v1 feature is in place and tested against the fake server and PowerShell stubs; the lab tests
 against a real Windows server are written (`make test-lab`, `make lab-e2e`) but not run yet.
 
 ### Added
