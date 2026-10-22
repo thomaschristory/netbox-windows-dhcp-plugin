@@ -397,7 +397,8 @@ def test_missing_module_is_not_not_found(pw: PwshRunner, tmp_path: Path) -> None
         env=env,
         timeout=120,
     )
-    if probe.stdout.decode(errors="replace").strip() != "False":
+    assert probe.returncode == 0, probe.stderr.decode(errors="replace")
+    if probe.stdout.decode(errors="replace").strip() == "True":
         pytest.skip("the DhcpServer module is still found with an empty PSModulePath")
     pw2 = PwshRunner(pw.pwsh, tmp_path / "c2.jsonl")
     pw2.run = lambda script, params=None: _run_without_stubs(pw.pwsh, script, params, env)  # type: ignore[method-assign]

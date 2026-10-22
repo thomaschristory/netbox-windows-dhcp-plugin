@@ -327,7 +327,7 @@ class FakeDhcpServer:
         p["subnet_mask"] = old["subnet_mask"]
         start, end = _s(p, "start_range"), _s(p, "end_range")
         self._check_range(cmd, sid, old["subnet_mask"], start, end)
-        # The script's widen-then-narrow steps for a range that moves one end out and the other in (issue #30) end
+        # The script's two-step range change for a range that moves one end out and the other in (issue #30) end
         # in the same state as one call, so the fake applies the result directly; the pwsh stubs model the refusal.
         sc = self._scope_from(sid, p, old)
         self.scopes[sid] = sc

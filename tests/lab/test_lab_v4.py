@@ -290,9 +290,11 @@ def test_mac_policy_ranges_and_options(lab: Lab, probe_out) -> None:
     ov = lab.client.set_option_value(k, ["policy.example"])
     assert ov.value == ["policy.example"] and ov.policy_name == p.name
     # Windows also lists the policy's lease time as option 51 (issue #29), which the sync skips.
-    listed = {x.option_id: x.value for x in lab.client.list_option_values(scope_id=s.scope_id, policy_name=p.name)}
+    values = lab.client.list_option_values(scope_id=s.scope_id, policy_name=p.name)
+    listed = {x.option_id: x.value for x in values}
+    assert len(listed) == len(values)  # one entry per option
     assert listed.pop(15) == ["policy.example"]
-    assert set(listed) <= windows_state.SKIPPED_OPTION_IDS
+    assert set(listed) <= {51}
     if 51 in listed:
         assert listed[51] == ["86400"]
     lab.client.remove_option_value(k)

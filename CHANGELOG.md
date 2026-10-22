@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 Pre-releases on PyPI for testing ahead of the full lab run: 0.1.0rc1 (2026-10-21), and 0.1.0rc2 (2026-10-22) with the
-fixes below from testing rc1 and a first partial lab run. 0.1.0 follows once the lab tests pass.
+fixes below from testing rc1 and a first partial lab run (the ones before "Found by testing 0.1.0rc2"). 0.1.0 follows once the lab tests pass.
 
 First release. Every v1 feature is in place and tested against the fake server and PowerShell stubs. The lab tests
 against a real Windows server (`make test-lab`, `make lab-e2e`) have had a first partial run on Windows Server 2025,
@@ -145,16 +145,15 @@ Found by a first, partial lab run against Windows Server 2025:
   push compares to notice hand edits.
 
 Found by testing 0.1.0rc2:
-
 - The Windows server page has an **Import** panel saying whether the latest import is queued, running or finished
   and where it went. With branching it names and links the import branch and its change request and says main has
   not changed; without branching it links the import proposal and does not mention branches. It refreshes itself
   while the job runs, and the sync run page shows the same for its own run. The message after **Import now** also
   says where the import will go (#32).
-
 - Changing a scope's pool so that one end grows and the other shrinks (for example `.10-.200` to `.11-.210`) no
-  longer fails with DHCP 20023, which Windows returns for that change in one call. The push widens the range first,
-  then sets the final one (#30).
+  longer fails with DHCP 20023, which Windows returns for that change in one call. The push changes the range in
+  two steps: it first narrows to the addresses both pools share (or, when they do not overlap, widens over both),
+  then sets the final range. If the second step fails, it tries to put the old range back (#30).
 - The policy lab test allows the lease time option (51) Windows lists next to a policy's own option values (#29).
 - The missing-module unit test no longer fails on a host with the Windows DHCP management tools (RSAT) installed: it
   runs PowerShell with an empty module path (#31).

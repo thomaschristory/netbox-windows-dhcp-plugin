@@ -1616,8 +1616,8 @@ class DhcpClient:
 
         A range that moves one bound out and the other in is set in two steps, because Windows refuses that change in
         one call (DHCP 20023): narrow to the overlap of the old and new pools, then widen (or, when they do not
-        overlap, widen over both, then narrow). If the second step fails, the old range is put back before the error
-        is raised.
+        overlap, widen over both, then narrow). If the second step fails, it tries to put the old range back before the
+        error is raised.
         """
         return self._get(S_SCOPE_SET, _scope_params(scope), Scope)
 

@@ -114,6 +114,11 @@ ordinary planned updates or deletes. The push refuses the change, goes on with t
   value, and IP ranges (DHCP 20135) or ordinary option values (DHCP 20136) on a policy with an FQDN condition.
 - Turning failover message authentication on without a shared secret profile, or with a profile whose
   `allowed_hosts` does not cover both partners.
+
+A scope range that moves one end out and the other in is set in two calls, since Windows refuses it in one (DHCP
+20023): first the addresses both pools share, then the new range. When the old and new pools do not overlap at all,
+the pool covers both for a moment, so exclude any static addresses between them first. If the second call fails,
+the push tries to put the old range back.
 - Deleting a scope with active leases: Windows refuses it (error DHCP 20007), and the plugin never forces it. Its
   managed reservations and values are removed first; the scope itself goes on a later push, once its leases have
   expired.
