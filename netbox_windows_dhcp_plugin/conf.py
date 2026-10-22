@@ -23,6 +23,10 @@ DEFAULTS = {
     "import_branch_prefix": "dhcp-import",
     # Open a change request for each import branch when netbox-change-control is installed.
     "import_change_request": True,
+    # With netbox-branching, also offer "Import directly": an import written straight into main, without a branch.
+    # The user still needs permission to change every object it writes, and change control's protect_main still
+    # applies. Set to False to allow imports into a branch only.
+    "import_direct": True,
     # Username that scheduled imports run as. It owns import branches and requests their change requests (manual
     # imports use the user who clicked). With branching, scheduled imports fail without it.
     "import_user": None,

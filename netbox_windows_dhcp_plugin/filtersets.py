@@ -9,6 +9,7 @@ from utilities.filtersets import register_filterset
 from .choices import (
     ClassTypeChoices,
     FailoverModeChoices,
+    ImportDestinationChoices,
     MacFilterListChoices,
     ProposalItemActionChoices,
     ProposalItemStatusChoices,
@@ -301,6 +302,7 @@ class SyncRunFilterSet(NetBoxModelFilterSet):
     windows_server_id = _model_filter("windows_server", WindowsServer.objects.all(), _("Windows server (ID)"))
     kind = django_filters.MultipleChoiceFilter(choices=SyncKindChoices)
     status = django_filters.MultipleChoiceFilter(choices=SyncStatusChoices)
+    destination = django_filters.MultipleChoiceFilter(choices=ImportDestinationChoices)
 
     class Meta:
         model = SyncRun

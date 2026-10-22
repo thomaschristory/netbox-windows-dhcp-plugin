@@ -8,7 +8,7 @@ requests only queue jobs, so a slow or unreachable Windows server never holds up
 | Job name | Started by | Does |
 |---|---|---|
 | Windows DHCP connection test | Test connection | Connects, checks the `DhcpServer` module, counts IPv4 scopes |
-| Windows DHCP import | Import now, the scheduler | Reads the server, writes an import branch or proposal |
+| Windows DHCP import | Import now (or the Import menu), the scheduler | Reads the server, writes an import branch, a branch you chose, main, or a proposal |
 | Windows DHCP push | Sync now, saves, merges, reverts | Makes the server match NetBox |
 | Windows DHCP dry run | Dry run | Plans a push without writing |
 | Windows DHCP leases | Load leases | Reads the leases of one scope |

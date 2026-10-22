@@ -1,9 +1,10 @@
 """
-Where an import went, for the Import panel on the Windows server and sync run pages (issue #32).
+Where an import went, for the Import panel on the Windows server and sync run pages (issues #32 and #36).
 
-With netbox-branching an import writes into an import branch, never into main, so a finished import must say which
-branch (and change request) holds the result, and one still queued or running must not look finished. Without
-branching the panel points at the import proposal instead and says nothing about branches.
+With netbox-branching an import writes into an import branch unless the user chose main, so a finished import must
+say which branch (and change request) holds the result, or that it wrote into main, and one still queued or running
+must not look finished. Without branching the panel points at the import proposal instead and says nothing about
+branches.
 
 Everything is read as the viewing user: a run, job, branch or change request they may not view is left out.
 """
@@ -13,7 +14,7 @@ from dataclasses import dataclass
 from core.choices import JobStatusChoices
 from django.utils import timezone
 
-from .choices import SyncKindChoices, SyncStatusChoices
+from .choices import ImportDestinationChoices, SyncKindChoices, SyncStatusChoices
 from .integrations import branching
 from .models import ImportProposal, SyncRun
 
@@ -48,13 +49,37 @@ class ImportStatus:
     job: object = None
     branch: BranchInfo | None = None
     proposal: object = None
-    uses_branching: bool = False
+    # Where the run wrote (ImportDestinationChoices), or None when there is no run yet.
+    destination: str | None = None
     # A newer import job that has not started its run yet: QUEUED or RUNNING (the run is created a moment after the
     # worker picks the job up), or FAILED when the job ended without recording one (a timeout while queued, say).
     next_state: str | None = None
     next_job: object = None
+    # Where that newer job will write, recorded when it was queued.
+    next_destination: str | None = None
     # When the latest run wrote no branch (it failed, or found nothing new), the open branch of an earlier run.
     earlier_branch: BranchInfo | None = None
+
+    # The branch that newer job will write into, when the user chose one.
+    next_branch: str | None = None
+
+    @property
+    def uses_branching(self):
+        return self.destination in (ImportDestinationChoices.BRANCH, ImportDestinationChoices.CURRENT)
+
+    @property
+    def chosen_branch(self):
+        """The run wrote into a branch the user chose, not an import branch of its own."""
+        return self.destination == ImportDestinationChoices.CURRENT
+
+    @property
+    def direct(self):
+        return self.destination == ImportDestinationChoices.MAIN
+
+    @property
+    def applied(self):
+        """How many changes the run wrote, or None when it did not record it (it stopped before finishing)."""
+        return (self.run.summary or {}).get("applied") if self.run is not None else None
 
     @property
     def pending(self):
@@ -91,6 +116,23 @@ def _job_state(job, now):
     return None
 
 
+def _job_destination(job):
+    """Where a queued job will write; jobs queued before #36 recorded nothing and use the default."""
+    destination = (job.data or {}).get("destination") if isinstance(job.data, dict) else None
+    return destination or branching.import_destinations()[0]
+
+
+def _run_destination(run, proposal):
+    """Where a run wrote. Runs from before #36 recorded nothing: a branch name or a proposal says which it was."""
+    if run.destination:
+        return run.destination
+    if run.branch_name:
+        return ImportDestinationChoices.BRANCH
+    if proposal is not None or not branching.branching_installed():
+        return ImportDestinationChoices.PROPOSAL
+    return ImportDestinationChoices.BRANCH
+
+
 def _branch(name, user):
     if not name:
         return None
@@ -112,7 +154,7 @@ def for_run(run, user, job=None, now=None):
         # Failed, or a run whose job ended without finishing it (the worker stopped, for example).
         state = FAILED
     proposal = None
-    if not run.branch_name:
+    if not run.branch_name and run.destination != ImportDestinationChoices.MAIN:
         proposal = (
             ImportProposal.objects.restrict(user, "view")
             .filter(sync_run=run)
@@ -126,8 +168,7 @@ def for_run(run, user, job=None, now=None):
         job=job,
         branch=_branch(run.branch_name, user),
         proposal=proposal,
-        # A run recorded with a branch went into one, and one with a proposal did not, whatever is installed now.
-        uses_branching=bool(run.branch_name) or (proposal is None and branching.branching_installed()),
+        destination=_run_destination(run, proposal),
     )
 
 
@@ -159,14 +200,16 @@ def for_server(server, user, now=None):
         next_job = None
     if run is None and next_job is None:
         return None
-    if run is not None:
-        status = for_run(run, user, now=now)
-    else:
-        status = ImportStatus(uses_branching=branching.branching_installed())
+    status = for_run(run, user, now=now) if run is not None else ImportStatus()
     status.next_job, status.next_state = next_job, next_state
-    if status.uses_branching and (status.branch is None or not status.branch.main_unchanged):
+    if next_job is not None:
+        status.next_destination = _job_destination(next_job)
+        if isinstance(next_job.data, dict):
+            status.next_branch = next_job.data.get("branch")
+    if branching.branching_installed() and (status.branch is None or not status.branch.main_unchanged):
         # Keep an unmerged branch from an earlier run in sight after a run that failed or found nothing new.
-        earlier = runs.exclude(branch_name="")
+        # Only import branches: a branch the user chose to import into is their own work, not an import to merge.
+        earlier = runs.exclude(branch_name="").exclude(destination=ImportDestinationChoices.CURRENT)
         if status.branch is not None:
             earlier = earlier.exclude(branch_name=status.branch.name)
         earlier = earlier.values_list("branch_name", flat=True).first()

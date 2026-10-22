@@ -5,7 +5,8 @@ and brings the differences into NetBox **for review**. It never writes to Window
 
 ## Starting an import
 
-- **Import now** on the Windows server page, or `POST /api/plugins/windows-dhcp/windows-servers/<id>/import/` (see
+- **Import now** on the Windows server page (with netbox-branching, the **Import** menu, see
+  [below](#choosing-where-an-import-writes)), or `POST /api/plugins/windows-dhcp/windows-servers/<id>/import/` (see
   [REST API](api.md)). Runs as the user who asked.
 - **On a schedule**, see [below](#scheduled-imports).
 
@@ -30,6 +31,42 @@ exclusion ranges, DHCPv6 values of codes sys4 has no standard definition for, an
 trailing spaces (sys4's comma-separated storage would lose the spaces). A failover relationship is imported from
 one partner only: the first one imported becomes its primary (the server the plugin writes to), and the other
 partner's imports leave it alone. Import the server you want to write to first.
+
+## Choosing where an import writes
+
+Without netbox-branching an import always writes an [import proposal](#without-branching-import-proposals). With it,
+the **Import** button on the Windows server page is a menu:
+
+| Choice | Writes into | Review |
+|---|---|---|
+| **Import into branch** (the default) | the server's open import branch, or a new one | the branch (and its change request) is reviewed and merged; main is not changed by the import |
+| **Import into this branch** (only while you work in a branch) | the branch you work in; no new branch, no change request | the branch, like your other edits in it |
+| **Import directly** | main | none: the changes are in main once the job has run |
+
+**Import directly** first opens a page that names main as the destination and, when you work in a branch, says the
+import ignores that branch. If an import branch for the server is still open, it says so too: importing into main
+as well writes the same objects twice, so merging that branch afterwards conflicts. Merge or delete it first, or
+import into it instead. Nothing is queued until you confirm. It is shown disabled, with the reason, when
+`import_direct` is off or when change control's `protect_main` covers DHCP and IPAM objects and you do not have
+`netbox_change_control.bypass_policy`.
+
+**Import into this branch** names your branch in the request; if you have switched to another branch (or to main)
+in the meantime, the import is refused rather than sent somewhere else.
+
+The destination goes with the job, so it does not depend on the branch the worker or your browser has active later,
+and it is checked again when the job starts. A destination that is no longer allowed fails the import with the
+reason; it never falls back to another one. Scheduled imports always use an import branch.
+
+Imports into main or into your own branch write as you: every object is checked against your permissions as it is
+saved, and a change you may not make (or that change control refuses) is rolled back and listed in the sync run,
+while the others stay. Event rules and webhooks only hear about the changes that stayed. New subnets get subnet IDs
+above those in main, in open import branches and in branches an import wrote into by choice, so merging any of
+them later does not collide. Your branch is checked again just before the import writes into it: if it has started
+merging (or is otherwise no longer ready) by then, nothing is written. An import into main queues no push (NetBox then matches Windows) and records the objects it
+wrote as managed, as applying a proposal does.
+
+The **Import** panel and the sync run say where each import went: the branch and its change request, the branch
+you chose, or main. The **Destination** column of the sync run list shows it for every import, and can be filtered.
 
 ## With netbox-branching: import branches
 

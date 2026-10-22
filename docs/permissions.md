@@ -9,7 +9,9 @@ Actions that connect to Windows need more than viewing:
 | Action | Needs |
 |---|---|
 | Test connection, Sync now, Dry run | `change` on the Windows server |
-| Import now | `change` on the Windows server; with branching also `netbox_branching.add_branch`, and `netbox_change_control.add_changerequest` when change control opens a change request |
+| Import now, Import into branch | `change` on the Windows server; with branching also `netbox_branching.add_branch`, and `netbox_change_control.add_changerequest` when change control opens a change request |
+| Import into this branch | `change` on the Windows server, `view` on the branch, and the permission for each NetBox object the import writes into it |
+| Import directly (into main) | `change` on the Windows server and the permission for each NetBox object the import writes. Offered only when `import_direct` is on and, if change control's `protect_main` covers DHCP and IPAM objects, with `netbox_change_control.bypass_policy` |
 | See the Leases tab | `view` on the subnet and on its Windows server |
 | Load leases | `view` and `change` on the Windows server |
 | Apply or dismiss import proposal items | `change` on the items; for **Apply all** and **Dismiss all**, `change` on the proposal as well. To apply, also the permission for each NetBox object the item writes |

@@ -18,6 +18,7 @@ from ..choices import (
     ClassTypeChoices,
     FailoverModeChoices,
     FailoverServerRoleChoices,
+    ImportDestinationChoices,
     MacFilterListChoices,
     PolicyConditionChoices,
     ProposalItemActionChoices,
@@ -298,6 +299,7 @@ class SyncRunSerializer(NetBoxModelSerializer):
     windows_server = WindowsServerSerializer(nested=True, read_only=True)
     kind = ChoiceField(choices=SyncKindChoices, read_only=True)
     status = ChoiceField(choices=SyncStatusChoices, read_only=True)
+    destination = ChoiceField(choices=ImportDestinationChoices, read_only=True)
     job = JobSerializer(nested=True, read_only=True)
 
     class Meta:
@@ -310,6 +312,7 @@ class SyncRunSerializer(NetBoxModelSerializer):
             "job",
             "started",
             "completed",
+            "destination",
             "branch_name",
             "summary",
             "error",

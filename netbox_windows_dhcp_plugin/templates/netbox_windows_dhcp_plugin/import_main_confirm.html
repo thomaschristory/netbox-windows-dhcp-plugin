@@ -1,0 +1,26 @@
+{% extends 'generic/confirmation_form.html' %}
+{% load i18n %}
+
+{% block title %}{% trans "Import directly into main" %}{% endblock %}
+
+{% block confirmation_title %}{% trans "Import directly into main" %}{% endblock %}
+
+{% block message %}
+  <p>
+    {% blocktrans with server=object %}This reads the Windows DHCP server <strong>{{ server }}</strong> and writes every difference it finds <strong>straight into main</strong>, as you. There is no import branch and no change request to review first.{% endblocktrans %}
+  </p>
+  {% if active_branch %}
+    <div class="alert alert-warning" role="alert">
+      {% blocktrans with branch=active_branch %}You are working in branch <strong>{{ branch }}</strong>. This import ignores it: it writes into main, not into {{ branch }}.{% endblocktrans %}
+    </div>
+  {% endif %}
+  {% if open_import_branch %}
+    <div class="alert alert-danger" role="alert">
+      {% blocktrans with branch=open_import_branch %}Import branch <strong>{{ branch }}</strong> is still open for this server. Importing into main as well writes the same objects twice: merging that branch afterwards will conflict. Merge or delete it first, or import into it instead.{% endblocktrans %}
+    </div>
+  {% endif %}
+  <p>
+    {% trans "Changes your permissions do not allow, or that change control refuses, are skipped and listed in the sync run. Nothing is written to Windows." %}
+  </p>
+  <p class="mb-0">{% trans "To review the changes first, cancel and choose Import into branch." %}</p>
+{% endblock %}

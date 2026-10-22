@@ -1,18 +1,20 @@
 """
 Import: bring what a Windows server holds into NetBox, as an import branch (netbox-branching) or as an
-ImportProposal review queue (without it).
+ImportProposal review queue (without it). With netbox-branching, a user may also choose to import straight into main
+(issue #36).
 
 No Windows I/O here: the job reads the server and passes the ``WindowsState`` in.
 """
 
 import json
 import logging
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from netbox_dhcp.models import HostReservation, Option, OptionDefinition, SharedNetwork, Subnet
+from utilities.exceptions import AbortRequest
 
 from ..choices import ProposalItemStatusChoices, ProposalStatusChoices
 from ..conf import get_setting
@@ -41,6 +43,7 @@ __all__ = (
     "compute",
     "dismiss_items",
     "import_to_branch",
+    "import_to_main",
     "import_to_proposal",
 )
 
@@ -76,8 +79,9 @@ def kind_model(kind, fields):
     return KIND_MODELS.get(kind)
 
 
-# Errors one change can raise without the rest of the import being wrong.
-APPLY_ERRORS = (ApplyError, ValidationError, IntegrityError, ValueError)
+# Errors one change can raise without the rest of the import being wrong. AbortRequest is how a plugin's pre_save
+# receiver refuses a save, such as change control's protect_main.
+APPLY_ERRORS = (ApplyError, ValidationError, IntegrityError, ValueError, AbortRequest)
 
 
 @dataclass
@@ -90,20 +94,42 @@ class ImportResult:
     # Whether this run created its branch, rather than adding to the server's open import branch.
     branch_created: bool = False
     proposal: ImportProposal | None = None
+    # Written straight into main (import_to_main).
+    direct: bool = False
 
     def summary(self):
         counts = {a: sum(1 for c in self.changes if c.action == a) for a in (CREATE, UPDATE, DELETE)}
         out = {"changes": len(self.changes), **counts}
-        if self.branch is not None:
+        if self.direct:
+            out.update(applied=self.applied, failed=len(self.failed))
+        elif self.branch is not None:
             out.update(applied=self.applied, failed=len(self.failed), branch_created=self.branch_created)
         if self.notes:
             out["notes"] = self.notes
         return out
 
 
+@contextmanager
+def _one_change():
+    """
+    One change in its own transaction. If it fails, the change log events it queued are dropped too: the block that
+    tracks events sends them when it ends, and event rules and webhooks must not hear of objects rolled back.
+    """
+    from netbox.context import events_queue
+
+    queued = {key: dict(event) for key, event in events_queue.get().items()}
+    try:
+        yield
+    except APPLY_ERRORS:
+        events_queue.set(queued)
+        raise
+
+
 def _message(exc):
     if isinstance(exc, ValidationError):
         return "; ".join(exc.messages)
+    if isinstance(exc, AbortRequest):
+        return exc.message
     return str(exc)
 
 
@@ -354,26 +380,30 @@ def dismiss_items(items):
 # -- with branching: an import branch ------------------------------------------------------------------------------
 
 
-def import_to_branch(windows_server, state, user, logger=log, on_branch=None):
+def import_to_branch(windows_server, state, user, logger=log, on_branch=None, target=None):
     """
-    Write the differences into the server's open import branch, or into a new one.
+    Write the differences into the server's open import branch, or into a new one; or into ``target``, a branch the
+    user chose (the one they work in, issue #36), which is never replaced by a new one.
 
     The diff is taken against the branch itself, so a repeated run only adds what changed since. A new branch is
     created only when there is something to write. ``on_branch(branch)`` is called as soon as the branch is known, so
     the caller can record it even if a later step fails.
+
+    Writing into a chosen branch is the user's own edit of it: every object written is checked against their
+    permissions, and no change request is opened (the branch has its own review, if any).
     """
     if user is None:
         # NetBox's change log, which is what puts changes into a branch, needs a user to record.
         raise branching.BranchError("imports into a branch need a user: set import_user for scheduled imports")
-    branch = branching.open_import_branch(windows_server, logger=logger)
+    branch = target if target is not None else branching.open_import_branch(windows_server, logger=logger)
     try:
-        return _write_branch(windows_server, state, user, branch, logger, on_branch)
+        return _write_branch(windows_server, state, user, branch, logger, on_branch, chosen=target is not None)
     finally:
         if branch is not None:
             branching.close_connection(branch)
 
 
-def _write_branch(windows_server, state, user, branch, logger, on_branch):
+def _write_branch(windows_server, state, user, branch, logger, on_branch, chosen=False):
     with branching.reading(branch) if branch else nullcontext():
         changes, notes = compute(windows_server, state)
     result = ImportResult(changes=changes, notes=notes, branch=branch)
@@ -390,21 +420,27 @@ def _write_branch(windows_server, state, user, branch, logger, on_branch):
         logger.info(f"Updating branch {branch.name}")
     result.branch = branch
     try:
-        return _fill_branch(windows_server, user, branch, result, logger, on_branch)
+        return _fill_branch(windows_server, user, branch, result, logger, on_branch, chosen)
     finally:
         branching.close_connection(branch)
 
 
-def _fill_branch(windows_server, user, branch, result, logger, on_branch):
+def _fill_branch(windows_server, user, branch, result, logger, on_branch, chosen=False):
     changes = result.changes
     if on_branch is not None:
         on_branch(branch)
+    if chosen:
+        # Reading Windows takes a while: the user's branch may have started merging, or been archived, since the job
+        # checked it.
+        branch.refresh_from_db()
+        if not branching.branch_ready(branch):
+            raise branching.BranchError(f"branch {branch.name} is no longer ready: nothing was written")
 
-    with branching.subnet_id_allocation() as subnet_ids, branching.writing(branch, user):
-        writer = Writer(windows_server, subnet_ids=subnet_ids)
+    with branching.subnet_id_allocation(also=branch) as subnet_ids, branching.writing(branch, user):
+        writer = Writer(windows_server, user=user if chosen else None, subnet_ids=subnet_ids)
         for change in changes:
             try:
-                with branching.atomic(branch):
+                with _one_change(), branching.atomic(branch):
                     writer.apply(change)
             except APPLY_ERRORS as exc:
                 message = f"{change.action} {change.kind} {change.key}: {_message(exc)}"
@@ -413,7 +449,7 @@ def _fill_branch(windows_server, user, branch, result, logger, on_branch):
             else:
                 result.applied += 1
 
-    if get_setting("import_change_request") and branching.change_control_installed():
+    if not chosen and get_setting("import_change_request") and branching.change_control_installed():
         try:
             branching.open_change_request(
                 branch,
@@ -426,4 +462,44 @@ def _fill_branch(windows_server, user, branch, result, logger, on_branch):
             message = f"Could not open a change request for {branch.name}: {_message(exc)}"
             result.notes.append(message)
             logger.warning(message)
+    return result
+
+
+# -- with branching, chosen on purpose: straight into main ---------------------------------------------------------
+
+
+def import_to_main(windows_server, state, user, logger=log):
+    """
+    Write the differences straight into main, as ``user``, without a branch or a proposal (issue #36).
+
+    Main is used whatever branch is active. Every object written is checked against the user's permissions, and
+    change control's protect_main judges each save as it would the user's own edit; a refused change is rolled back
+    and reported, the others stay. The saves queue no push (NetBox then matches Windows) and the written objects are
+    recorded as managed, as when applying a proposal.
+    """
+    from ..signals import push_suppressed
+
+    if user is None:
+        raise branching.BranchError("imports into main need a user: the change log records who imported")
+    with branching.on_main():
+        changes, notes = compute(windows_server, state)
+    result = ImportResult(changes=changes, notes=notes, direct=True)
+    if not changes:
+        return result
+
+    logger.info(f"Writing {len(changes)} difference(s) into main as {user}")
+    # Subnet IDs above those in open import branches too, so merging one of them later cannot collide with these.
+    with push_suppressed(), branching.subnet_id_allocation() as subnet_ids, branching.writing_main(user):
+        writer = Writer(windows_server, user=user, subnet_ids=subnet_ids)
+        for change in changes:
+            try:
+                with _one_change(), transaction.atomic():
+                    writer.apply(change)
+                    _record_managed(windows_server, change)
+            except APPLY_ERRORS as exc:
+                message = f"{change.action} {change.kind} {change.key}: {_message(exc)}"
+                result.failed.append(message)
+                logger.warning(message)
+            else:
+                result.applied += 1
     return result

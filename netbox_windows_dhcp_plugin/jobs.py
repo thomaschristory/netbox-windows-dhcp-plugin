@@ -8,7 +8,7 @@ from django.db import connection
 from django.utils import timezone
 from netbox.jobs import JobRunner, system_job
 
-from .choices import SyncKindChoices, SyncStatusChoices
+from .choices import ImportDestinationChoices, SyncKindChoices, SyncStatusChoices
 from .conf import CredentialError, get_setting
 from .connection import build_client
 from .integrations.branching import job_kwargs as branching_job_kwargs
@@ -182,7 +182,10 @@ def enqueue_leases(subnet, user):
 
 
 class ImportJob(JobRunner):
-    """Read a Windows server and bring its differences into NetBox: an import branch, or an import proposal."""
+    """
+    Read a Windows server and bring its differences into NetBox: an import branch, main (chosen on purpose, issue
+    #36), or an import proposal.
+    """
 
     class Meta:
         name = "Windows DHCP import"
@@ -190,17 +193,22 @@ class ImportJob(JobRunner):
     # Tests substitute a fake runner here.
     runner_factory = None
 
-    def run(self, *args, **kwargs):
+    def run(self, *args, destination=None, branch="", **kwargs):
         from .integrations import branching
         from .sync import importer, windows_state
 
         server = self.job.object
+        # The destination travels with the job from the moment it is queued; the worker's own branch context (or
+        # what is installed by now) never picks it. A job queued before #36 carries none: use the default.
+        destination = destination or branching.import_destinations()[0]
         sync_run = SyncRun.objects.create(
             windows_server=server,
             kind=SyncKindChoices.IMPORT,
             status=SyncStatusChoices.RUNNING,
             job=self.job,
             started=timezone.now(),
+            destination=destination,
+            branch_name=branch[:255] if destination == ImportDestinationChoices.CURRENT else "",
         )
         runner = self.runner_factory(server) if self.runner_factory else None
         client = None
@@ -211,24 +219,44 @@ class ImportJob(JobRunner):
             sync_run.save()
 
         try:
+            user = self.job.user or _import_user()
+            # Checked again here: the setting, protect_main or the user's permissions may have changed since queuing.
+            refusal = import_refusal(destination, user, branch)
+            if refusal:
+                raise ImportRefused(refusal)
+            target = None
+            if destination == ImportDestinationChoices.CURRENT:
+                target, _ = branching.chosen_branch(branch, user)
             with server_lock(server, ImportBusy):
                 client = build_client(server, runner=runner)
                 state = windows_state.read(client)
                 client.close()
                 client = None
-                if branching.branching_installed():
-                    user = self.job.user or _import_user()
-                    result = importer.import_to_branch(server, state, user, logger=self.logger, on_branch=record_branch)
+                if destination in (ImportDestinationChoices.BRANCH, ImportDestinationChoices.CURRENT):
+                    result = importer.import_to_branch(
+                        server, state, user, logger=self.logger, on_branch=record_branch, target=target
+                    )
+                elif destination == ImportDestinationChoices.MAIN:
+                    result = importer.import_to_main(server, state, user, logger=self.logger)
                 else:
                     result = importer.import_to_proposal(server, state, sync_run)
-        except (CredentialError, WindowsLayerError, ValueError, ImportBusy, branching.BranchError) as exc:
+        except (
+            CredentialError,
+            WindowsLayerError,
+            ValueError,
+            ImportBusy,
+            ImportRefused,
+            branching.BranchError,
+        ) as exc:
             sync_run.status = SyncStatusChoices.FAILED
             sync_run.error = str(exc)
+            self._nothing_written(sync_run, destination)
             self.logger.error(f"Import from {server.host} failed: {exc}")
         except ValidationError as exc:
             # For example netbox-branching refusing a new branch once max_working_branches is reached.
             sync_run.status = SyncStatusChoices.FAILED
             sync_run.error = "; ".join(exc.messages)
+            self._nothing_written(sync_run, destination)
             self.logger.error(f"Import from {server.host} failed: {sync_run.error}")
         else:
             sync_run.summary = result.summary()
@@ -252,6 +280,13 @@ class ImportJob(JobRunner):
             sync_run.save()
         if sync_run.status == SyncStatusChoices.FAILED:
             raise JobFailed(sync_run.error)
+
+    @staticmethod
+    def _nothing_written(sync_run, destination):
+        # These errors all come before an import into main writes anything (each change's own errors are caught
+        # and counted), so the Import panel can say main was not touched. Anything else leaves it unsaid.
+        if destination == ImportDestinationChoices.MAIN:
+            sync_run.summary = {"applied": 0}
 
 
 class PushJob(JobRunner):
@@ -429,11 +464,59 @@ def server_lock(server, busy=ServerBusy):
             cursor.execute("SELECT pg_advisory_unlock(%s, %s)", [_LOCK_CLASS, server.pk])
 
 
-def enqueue_import(server, user):
-    """Queue an import unless one is already queued or running for the server. Returns the job, or None."""
+class ImportRefused(Exception):
+    """An import may not go where it was asked to. The message says why, for the user and the job log."""
+
+
+def import_refusal(destination, user, branch=""):
+    """
+    Why an import into ``destination`` (``branch`` names the branch for CURRENT) may not run for ``user``, or None.
+    Checked when it is queued and again when it runs. Never falls back to another destination: a refused import
+    fails and says so.
+    """
+    from .integrations import branching
+
+    allowed = branching.import_destinations()
+    if destination not in allowed:
+        return f"cannot import into {destination!r} here; choose one of: {', '.join(allowed)}"
+    if destination == ImportDestinationChoices.MAIN and user is None:
+        return "an import into main needs a user"
+    if destination == ImportDestinationChoices.CURRENT and user is None:
+        return "an import into a chosen branch needs a user"
+    if destination == ImportDestinationChoices.MAIN:
+        return branching.direct_import_refusal(user)
+    if destination == ImportDestinationChoices.CURRENT:
+        return branching.chosen_branch(branch, user)[1]
+    return None
+
+
+def enqueue_import(server, user, destination=None, branch=""):
+    """
+    Queue an import into ``destination`` (the default one when None; ``branch`` names the branch for CURRENT) unless
+    one is already queued or running for the server. Returns the job, or None. Raises ImportRefused for a destination
+    that may not be used.
+    """
+    from django.db import transaction
+
+    from .integrations import branching
+
+    destination = destination or branching.import_destinations()[0]
+    if destination != ImportDestinationChoices.CURRENT:
+        branch = ""
+    refusal = import_refusal(destination, user, branch)
+    if refusal:
+        raise ImportRefused(refusal)
     if _busy_jobs().filter(object_id=server.pk).exists():
         return None
-    return ImportJob.enqueue(instance=server, user=user, **branching_job_kwargs())
+    # RQ gets the job when this transaction commits, with its data: the Import panel can say where a queued import
+    # will write before the worker has picked it up.
+    with transaction.atomic():
+        job = ImportJob.enqueue(
+            instance=server, user=user, destination=destination, branch=branch, **branching_job_kwargs()
+        )
+        job.data = {"destination": destination, **({"branch": branch} if branch else {})}
+        job.save(update_fields=["data"])
+    return job
 
 
 def _import_user():

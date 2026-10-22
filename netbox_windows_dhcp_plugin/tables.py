@@ -335,6 +335,7 @@ class SyncRunTable(NetBoxTable):
     windows_server = tables.Column(verbose_name=_("Windows server"), linkify=True)
     kind = columns.ChoiceFieldColumn(verbose_name=_("Kind"))
     status = columns.ChoiceFieldColumn(verbose_name=_("Status"))
+    destination = columns.ChoiceFieldColumn(verbose_name=_("Destination"))
     job = tables.Column(verbose_name=_("Job"), linkify=True)
     started = columns.DateTimeColumn(verbose_name=_("Started"))
     completed = columns.DateTimeColumn(verbose_name=_("Completed"))
@@ -348,6 +349,7 @@ class SyncRunTable(NetBoxTable):
             "windows_server",
             "kind",
             "status",
+            "destination",
             "branch_name",
             "job",
             "started",
@@ -355,7 +357,16 @@ class SyncRunTable(NetBoxTable):
             "error",
             "created",
         )
-        default_columns = ("id", "windows_server", "kind", "status", "branch_name", "started", "completed")
+        default_columns = (
+            "id",
+            "windows_server",
+            "kind",
+            "status",
+            "destination",
+            "branch_name",
+            "started",
+            "completed",
+        )
 
 
 class ImportProposalTable(NetBoxTable):

@@ -27,6 +27,7 @@ from .choices import (
     ClassTypeChoices,
     FailoverModeChoices,
     FailoverServerRoleChoices,
+    ImportDestinationChoices,
     MacFilterListChoices,
     PolicyConditionChoices,
     ProposalItemActionChoices,
@@ -851,8 +852,18 @@ class SyncRunFilterForm(NetBoxModelFilterSetForm):
     )
     kind = _filter_choice_field(SyncKindChoices, _("Kind"))
     status = _filter_choice_field(SyncStatusChoices, _("Status"))
+    destination = _filter_choice_field(ImportDestinationChoices, _("Destination"))
 
-    fieldsets = (FieldSet("q", "filter_id"), FieldSet("windows_server_id", "kind", "status", name=_("Sync run")))
+    fieldsets = (
+        FieldSet("q", "filter_id"),
+        FieldSet("windows_server_id", "kind", "status", "destination", name=_("Sync run")),
+    )
+
+
+class ImportConfirmForm(forms.Form):
+    """The hidden field of the page that confirms an import straight into main."""
+
+    destination = forms.CharField(widget=forms.HiddenInput)
 
 
 class ImportProposalFilterForm(NetBoxModelFilterSetForm):

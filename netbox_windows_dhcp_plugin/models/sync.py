@@ -11,6 +11,7 @@ from netbox.models import NetBoxModel
 from utilities.querysets import RestrictedQuerySet
 
 from ..choices import (
+    ImportDestinationChoices,
     ProposalItemActionChoices,
     ProposalItemStatusChoices,
     ProposalStatusChoices,
@@ -100,6 +101,13 @@ class SyncRun(NetBoxModel):
         blank=True,
         help_text=_("Branch that triggered the push, or that the import created"),
     )
+    destination = models.CharField(
+        verbose_name=_("destination"),
+        max_length=10,
+        choices=ImportDestinationChoices,
+        blank=True,
+        help_text=_("Where an import wrote: an import branch, main, or an import proposal"),
+    )
     summary = models.JSONField(verbose_name=_("summary"), default=dict, blank=True)
     error = models.TextField(verbose_name=_("error"), blank=True)
 
@@ -119,6 +127,9 @@ class SyncRun(NetBoxModel):
 
     def get_status_color(self):
         return SyncStatusChoices.colors.get(self.status)
+
+    def get_destination_color(self):
+        return ImportDestinationChoices.colors.get(self.destination)
 
 
 class ImportProposal(NetBoxModel):

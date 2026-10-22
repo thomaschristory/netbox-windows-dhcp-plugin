@@ -62,7 +62,7 @@ PLUGINS_CONFIG = {
 ```
 
 Run `python manage.py migrate`, restart NetBox and its worker, then add a Windows server under **Windows DHCP >
-Windows servers**, click **Test connection** and **Import now**. The
+Windows servers**, click **Test connection** and **Import now** (**Import** with netbox-branching). The
 [first sync](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/quickstart/) walkthrough covers the rest.
 
 ## Documentation

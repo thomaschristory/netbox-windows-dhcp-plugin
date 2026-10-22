@@ -24,12 +24,15 @@ from utilities.htmx import htmx_partial
 from utilities.views import GetRelatedModelsMixin, GetReturnURLMixin, ViewTab, register_model_view
 
 from . import filtersets, forms, leases, review, tables
+from .choices import ImportDestinationChoices
 from .integrations import branching
 from .jobs import (
+    ImportRefused,
     TestConnectionJob,
     enqueue_import,
     enqueue_leases,
     enqueue_push,
+    import_refusal,
     lease_jobs,
     lease_read_in_progress,
 )
@@ -213,19 +216,92 @@ class WindowsServerTestConnectionView(GetReturnURLMixin, BaseObjectView):
 
 @register_model_view(WindowsServer, "import")
 class WindowsServerImportView(WindowsServerTestConnectionView):
+    """
+    Queue an import into the destination the user chose (issue #36): an import branch, the branch they work in, or
+    main with netbox-branching; an import proposal without it. Main is never chosen silently: it needs this page's
+    confirmation, which names main as the destination even while the user works in a branch. "This branch" names
+    the branch in the form, and must still be the one the user works in.
+    """
+
+    def _destination(self, data):
+        return data.get("destination") or branching.import_destinations()[0]
+
+    def get(self, request, pk):
+        server = self._server(request, pk)
+        if self._destination(request.GET) != ImportDestinationChoices.MAIN:
+            return redirect(server.get_absolute_url())
+        refusal = import_refusal(ImportDestinationChoices.MAIN, request.user)
+        if refusal:
+            messages.error(request, _("Cannot import directly into main: {reason}").format(reason=refusal))
+            return redirect(self.get_return_url(request, server))
+        return render(
+            request,
+            "netbox_windows_dhcp_plugin/import_main_confirm.html",
+            {
+                "object": server,
+                "form": forms.ImportConfirmForm(initial={"destination": ImportDestinationChoices.MAIN}),
+                "active_branch": branching.active_branch_name(),
+                # Writing main while an import branch holds the same objects makes that branch conflict on merge.
+                "open_import_branch": branching.open_import_branch_name(server),
+                "return_url": self.get_return_url(request, server),
+                "button_class": "warning",
+            },
+        )
+
     def post(self, request, pk):
         server = self._server(request, pk)
-        missing = branching.missing_import_permissions(request.user)
+        destination = self._destination(request.POST)
+        if destination == ImportDestinationChoices.MAIN and "_confirm" not in request.POST:
+            # Only the confirmation page may queue a direct import.
+            return redirect(f"{request.path}?destination={ImportDestinationChoices.MAIN}")
+        branch = request.POST.get("branch", "")
+        if destination == ImportDestinationChoices.CURRENT and branch != branching.active_branch_name():
+            # The page was shown in another branch (or on main) than the one active now: do not guess which one.
+            messages.error(
+                request,
+                _("Import not queued: you are no longer working in branch {branch}. Choose again.").format(
+                    branch=branch or "?"
+                ),
+            )
+            return redirect(self.get_return_url(request, server))
+        missing = branching.missing_import_permissions(request.user, destination)
         if missing:
             messages.error(request, _("Importing needs the permission: {perms}").format(perms=", ".join(missing)))
-        elif (job := enqueue_import(server, request.user)) is None:
+            return redirect(self.get_return_url(request, server))
+        refusal = import_refusal(destination, request.user, branch)
+        if refusal:
+            messages.error(request, _("Import not queued: {reason}").format(reason=refusal))
+            return redirect(self.get_return_url(request, server))
+        try:
+            job = enqueue_import(server, request.user, destination, branch)
+        except ImportRefused:
+            # Allowed a moment ago (a setting or permission changed in between): the next try says why.
+            messages.error(request, _("Import not queued: it was refused, try again"))
+            return redirect(self.get_return_url(request, server))
+        if job is None:
             messages.warning(request, _("An import from {server} is already queued or running").format(server=server))
-        elif branching.branching_installed():
+        elif destination == ImportDestinationChoices.BRANCH:
             messages.success(
                 request,
                 _(
                     "Queued import (job #{id}) from {server}. It writes into an import branch, not into main: the "
                     "Import panel shows the branch once the job has finished."
+                ).format(id=job.pk, server=server),
+            )
+        elif destination == ImportDestinationChoices.CURRENT:
+            messages.success(
+                request,
+                _(
+                    "Queued import (job #{id}) from {server} into branch {branch}, not into main. No new branch is "
+                    "created: the Import panel shows the result once the job has finished."
+                ).format(id=job.pk, server=server, branch=branch),
+            )
+        elif destination == ImportDestinationChoices.MAIN:
+            messages.success(
+                request,
+                _(
+                    "Queued import (job #{id}) from {server} directly into main. Nothing has been imported yet: the "
+                    "Import panel shows the result once the job has finished."
                 ).format(id=job.pk, server=server),
             )
         else:
