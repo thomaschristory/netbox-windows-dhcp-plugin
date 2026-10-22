@@ -489,6 +489,11 @@ def test_policies(pw: PwshRunner) -> None:
     add = find_call(pw.last_calls(), "Add-DhcpServerv4Policy")
     assert add["MacAddress"] == ["EQ", "3c-d9-2b*"] and add["ScopeId"] == "10.1.20.0" and add["LeaseDuration"] == 86400
     assert "UserClass" not in add and "ProcessingOrder" not in add
+    # A processing order past the end of the level's list is refused with DHCP 20110 (#24).
+    with pytest.raises(PSError) as err:
+        c.add_policy(Policy(name="srv", criteria={"user_class": ["EQ", "phones"]}, processing_order=2))
+    assert err.value.id.startswith("DHCP 20110") and err.value.command == "Add-DhcpServerv4Policy"
+    pw.seed = SEED_SCOPE + "Add-DhcpServerv4Policy -Name first -Condition OR -UserClass EQ,x\n"
     srv = c.add_policy(Policy(name="srv", criteria={"user_class": ["EQ", "phones"]}, enabled=False, processing_order=2))
     assert srv.scope_id == "" and not srv.enabled and srv.processing_order == 2
     assert "ScopeId" not in find_call(pw.last_calls(), "Add-DhcpServerv4Policy")
@@ -511,7 +516,10 @@ def test_policies(pw: PwshRunner) -> None:
 def test_v6(pw: PwshRunner) -> None:
     c = DhcpClient(pw)
     s = c.add_v6_scope(ScopeV6(prefix="2001:DB8:1::", name="v6", state="inactive", t1="0.00:00:00"))
-    assert s == ScopeV6("2001:db8:1::", "v6", "", "Inactive", 0, "8.00:00:00", "12.00:00:00", "", "")
+    # T1 and T2 not sent: Windows' own defaults, 4 and 6.4 days (#16).
+    assert s == ScopeV6(
+        "2001:db8:1::", "v6", "", "Inactive", 0, "8.00:00:00", "12.00:00:00", "4.00:00:00", "6.09:36:00"
+    )
     add = find_call(pw.last_calls(), "Add-DhcpServerv6Scope")
     assert add["State"] == "InActive" and add["PreferredLifeTime"] == 8 * 86400 and "T1" not in add
     seed = "Add-DhcpServerv6Scope -Prefix 2001:db8:1:: -Name v6\n"

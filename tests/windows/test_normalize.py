@@ -131,3 +131,33 @@ def test_parse_option_number() -> None:
     for bad in ["", "-1", "+1", "0x", "1e3", "²"]:
         with pytest.raises(ValueError):
             n.parse_option_number(bad)
+
+
+@pytest.mark.parametrize(
+    ("value", "want"),
+    [
+        # What Windows Server 2025 reads back for a MAC prefix condition (#21).
+        ("02-4e-42-ab*", "02-4e-42-ab-*"),
+        ("02-4e-42-ab-*", "02-4e-42-ab-*"),
+        ("02-4E-42-AB*", "02-4e-42-ab-*"),
+        ("024e42ab*", "02-4e-42-ab-*"),
+        ("02:4e:42:ab*", "02-4e-42-ab-*"),
+        ("02-4e-42-ab-cd-ef", "02-4e-42-ab-cd-ef"),
+        (" 02-4E-42-AB-CD-EF ", "02-4e-42-ab-cd-ef"),
+        # Not a whole number of bytes, or not a trailing wildcard: left exactly as written.
+        ("02-4e-4*", "02-4e-4*"),
+        ("02-*-42", "02-*-42"),
+        ("*", "*"),
+    ],
+)
+def test_canonical_mac_pattern(value: str, want: str) -> None:
+    assert n.canonical_mac_pattern(value) == want
+
+
+def test_canonical_policy_criterion() -> None:
+    assert n.canonical_policy_criterion("mac_address", "02-4e-42-ab*") == "02-4e-42-ab-*"
+    # Host names are not case sensitive (#21).
+    assert n.canonical_policy_criterion("fqdn", "*.Example.Test") == "*.example.test"
+    # Other conditions are compared exactly until a real server shows otherwise.
+    for name in ("vendor_class", "user_class", "client_id", "relay_agent", "circuit_id", "remote_id", "subscriber_id"):
+        assert n.canonical_policy_criterion(name, "AbC*") == "AbC*"

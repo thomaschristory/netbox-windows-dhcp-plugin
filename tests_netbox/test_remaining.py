@@ -110,7 +110,8 @@ class ImportRemainingTest(RemainingObjectsMixin, TestCase):
         self.assertEqual(printers.subnet.description, "LAN")
         self.assertEqual(printers.lease_duration, 4 * 3600)
         self.assertEqual(printers.ip_ranges, [["10.1.0.100", "10.1.0.120"]])
-        self.assertEqual(printers.criteria, {"mac_address": ["EQ", "00-15-5d*"]})
+        # As Windows stores the "00-15-5d*" it was given (#21).
+        self.assertEqual(printers.criteria, {"mac_address": ["EQ", "00-15-5d-*"]})
         self.assertEqual(printers.options.get().option.data, "10.1.0.2")
         self.assertIsNone(WindowsPolicy.objects.get(name="Windows").subnet)
 
@@ -235,6 +236,42 @@ class PushRemainingTest(RemainingObjectsMixin, TestCase):
         self.assertEqual(self.fake.filters["00-15-5d-*"]["list"], "Allow")
         self.assertEqual(self.fake.failovers["ha"]["load_balance_percent"], 70)
         self.assertEqual(self._run().summary["changes"], 0)
+
+    def test_policy_conditions_in_netbox_spelling_push_once(self):
+        """#21: Windows stores a MAC prefix and a host name in its own spelling; the next push changes nothing."""
+        self._run()
+        policy = WindowsPolicy.objects.get(name="Printers")
+        policy.snapshot()
+        policy.criteria = {"mac_address": ["EQ", "02-4e-42-ab*"], "fqdn": ["EQ", "*.Example.Test"]}
+        policy.save()
+        run = self._run()
+        self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)
+        self.assertEqual(
+            self.fake.policies[("10.1.0.0", "printers")]["criteria"],
+            {"mac_address": ["EQ", "02-4e-42-ab-*"], "fqdn": ["EQ", "*.example.test"]},
+        )
+        second = self._run()
+        self.assertEqual(second.summary["changes"], 0, second.summary.get("planned"))
+        self.assertEqual(self.changes(), [])
+
+    def test_policies_are_created_in_processing_order(self):
+        """#24: names sorting opposite to processing orders; Windows refuses order 2 before order 1 exists."""
+        printers = WindowsPolicy.objects.get(name="Printers")
+        WindowsPolicy.objects.create(
+            dhcp_server=self.dhcp,
+            subnet=printers.subnet,
+            name="Accounting",
+            processing_order=2,
+            criteria={"mac_address": ["EQ", "02-4e-42-cd*"]},
+        )
+        self.target = FakeDhcpServer()
+        run = self._run()
+        self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)
+        self.assertEqual(run.summary["failed"], 0, run.summary.get("errors"))
+        level = {name: p["processing_order"] for (sid, name), p in self.target.policies.items() if sid == "10.1.0.0"}
+        self.assertEqual(level, {"printers": 1, "accounting": 2})
+        second = self._run()
+        self.assertEqual(second.summary["changes"], 0, second.summary.get("planned"))
 
     def test_deleting_a_policy_deletes_it_and_its_values(self):
         self._run()

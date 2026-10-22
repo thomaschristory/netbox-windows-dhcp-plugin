@@ -131,9 +131,17 @@ Windows takes a wildcard only at the start or the end of a condition value: `*.e
 `host*.example.com` is refused. A policy with an FQDN condition cannot hold IP ranges or ordinary option values on
 Windows (errors DHCP 20135 and 20136); use a MAC address or class condition for those.
 
+Windows stores some criteria in its own spelling: a MAC prefix gets a separator before the wildcard (`02-4e-42-ab*`
+reads back `02-4e-42-ab-*`, hex digits compared without case) and a host name (`fqdn`) is lowercased. The sync
+compares criteria the way Windows stores them, so either spelling in NetBox is no change. Other criteria (classes,
+client ID, relay agent fields) compare exactly.
+
 A policy without criteria is not pushed (Windows requires at least one), nor are two policies with the same
-processing order at the same level. Windows cannot clear a condition with an update, so a push refuses a removed
-condition; remove it on Windows and import.
+processing order at the same level. Windows numbers the policies of a level 1, 2, 3... without gaps, so give them
+consecutive processing orders: a push creates them in that order, and refuses a number past the end of the list.
+After deleting a policy, renumber the ones after it: until then the push leaves that level alone (see
+[Push](push.md#order)). Windows cannot clear a condition with an update, so a push refuses a removed condition;
+remove it on Windows and import.
 
 ## Failover relationships
 

@@ -1,1 +1,1 @@
-{"ok":true,"data":{"prefix":"2001:db8:1::","name":"v6 users","description":"","state":"Active","preference":0,"preferred_lifetime":"8.00:00:00","valid_lifetime":"12.00:00:00","t1":"4.00:00:00","t2":"6.10:00:00"}}
+{"ok":true,"data":{"prefix":"2001:db8:1::","name":"v6 users","description":"","state":"Active","preference":0,"preferred_lifetime":"8.00:00:00","valid_lifetime":"12.00:00:00","t1":"4.00:00:00","t2":"6.09:36:00"}}

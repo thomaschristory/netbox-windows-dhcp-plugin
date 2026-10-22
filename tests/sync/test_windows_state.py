@@ -222,7 +222,8 @@ def test_policy_superscope_failover_and_filter_records(client):
         "enabled": True,
         "processing_order": 1,
         "condition": "or",
-        "criteria": {"mac_address": ["EQ", "00-15-5d*"]},
+        # As Windows stores the "00-15-5d*" it was given (#21).
+        "criteria": {"mac_address": ["EQ", "00-15-5d-*"]},
         "lease_seconds": None,
         "ip_ranges": [["10.1.0.100", "10.1.0.120"], ["10.1.0.150", "10.1.0.160"]],
     }
@@ -244,6 +245,29 @@ def test_policy_superscope_failover_and_filter_records(client):
     records, notes = ws.to_records(ws.read(client), partner_failovers={"HA"})
     assert "failover" not in by_kind(records)
     assert notes == [f"skipped 1 {ws.PARTNER_FAILOVERS}"]
+
+
+def test_policy_criteria_compare_as_windows_stores_them():
+    """#21: Windows rewrites a MAC prefix and lowercases a host name; both must read back as no change."""
+    sent = Policy(
+        name="Lab",
+        scope_id="10.1.0.0",
+        processing_order=1,
+        criteria={"mac_address": ["EQ", "02-4e-42-ab*"], "fqdn": ["EQ", "*.Example.Test"]},
+    )
+    read = Policy(
+        name="Lab",
+        scope_id="10.1.0.0",
+        processing_order=1,
+        criteria={"mac_address": ["EQ", "02-4e-42-ab-*"], "fqdn": ["EQ", "*.example.test"]},
+    )
+    assert diff([ws.policy_record(sent, [])], [ws.policy_record(read, [])], equal=ws.equal) == []
+    assert ws.equal("policy", "criteria", {"mac_address": ["eq", "AA-BB*"]}, {"mac_address": ["EQ", "aa-bb-*"]})
+    # A different prefix, a different operator, or a case change in a class name is still a change.
+    assert not ws.equal("policy", "criteria", {"mac_address": ["EQ", "aa-bb*"]}, {"mac_address": ["EQ", "aa-bc-*"]})
+    assert not ws.equal("policy", "criteria", {"fqdn": ["EQ", "*.a.test"]}, {"fqdn": ["NE", "*.a.test"]})
+    assert not ws.equal("policy", "criteria", {"user_class": ["EQ", "Phones"]}, {"user_class": ["EQ", "phones"]})
+    assert not ws.equal("policy", "criteria", {"fqdn": ["EQ", "a"]}, {"fqdn": ["EQ", "a"], "user_class": ["EQ", "x"]})
 
 
 def test_names_compare_without_case():

@@ -22,6 +22,8 @@ __all__ = [
     "canonical_duration",
     "canonical_ipv6",
     "canonical_mac",
+    "canonical_mac_pattern",
+    "canonical_policy_criterion",
     "enum_of",
     "format_duration",
     "is_mac",
@@ -121,6 +123,42 @@ def is_mac(value: str) -> bool:
 
 # DHCPv6 DUIDs are written the same way as client identifiers.
 canonical_duid = canonical_mac
+
+
+def canonical_mac_pattern(value: str) -> str:
+    """Return a MAC address condition of a policy the way Windows stores it.
+
+    Windows Server 2025 reads ``02-4e-42-ab*`` back as ``02-4e-42-ab-*``: whole bytes in
+    ``aa-bb`` form, then a separator before the trailing wildcard. Hex digits are compared
+    without case. Anything else (half a byte, a wildcard elsewhere) is returned as written,
+    since how Windows treats it is not known.
+    """
+    s = str(value).strip()
+    wildcard = s.endswith("*")
+    body = s[:-1].rstrip(":-. ") if wildcard else s
+    if not body:
+        return s
+    try:
+        mac = canonical_mac(body)
+    except ValueError:
+        return s
+    return f"{mac}-*" if wildcard else mac
+
+
+def canonical_policy_criterion(criterion: str, value: str) -> str:
+    """Return one value of a policy condition in the form Windows stores it, for comparison.
+
+    ``criterion`` is a key of ``client.POLICY_CRITERIA``. A MAC address goes through
+    ``canonical_mac_pattern``; a host name (``fqdn``) is lowercased, as Windows does
+    (``*.Example.Test`` reads back ``*.example.test``) and as DNS names compare. The other
+    conditions (classes, client ID, relay agent and its sub-options) are compared exactly:
+    no real server has shown Windows rewriting them.
+    """
+    if criterion == "mac_address":
+        return canonical_mac_pattern(value)
+    if criterion == "fqdn":
+        return str(value).lower()
+    return value
 
 
 def parse_ipv4(value: str) -> ipaddress.IPv4Address:

@@ -14,12 +14,20 @@ open questions include:
 - where Windows returns the class data (IPv4 and DHCPv6), and how it reports an unlimited lease time;
 - the property names returned for scope settings (offer delay, BOOTP limit, activate policies, superscope), policies,
   failover relationships, DHCPv6 scopes, IPv4 leases and exclusion ranges;
-- DHCPv6 T1 and T2 defaults, DHCPv6 reservation removal and class updates;
+- DHCPv6 reservation removal and class updates;
 - renaming a superscope, removing a whole superscope (its scopes should stay), and vendor option definitions;
+- how Windows renumbers policies: that removing one closes the gap, and that changing a processing order moves the
+  others down and refuses a number past the end the way creating one does (seen only for creates);
+- whether a MAC prefix condition written in uppercase reads back in lowercase;
+- what renewal (T1) and rebinding (T2) times Windows gives a DHCPv6 scope created with a short preferred lifetime and
+  no timers, and whether it refuses timers past the preferred lifetime (a push never sends those: see
+  [DHCPv6](dhcpv6.md#rules));
 - failover replication after a push, and removing a scope that is in a relationship, which need two servers.
 
-The lab tests that settle them are written (see [Development](development.md#lab-tests)). Until they have run, try the
-plugin on a lab server before a production one, and use **Dry run** before turning **Sync enabled** on.
+The lab tests that settle them are written (see [Development](development.md#lab-tests)). A first partial run against
+Windows Server 2025 found and fixed a few defects (the DHCPv6 rebinding time default, how policy conditions and policy
+order compare), but the questions above stay open until a full run. Until then, try the plugin on a lab server before
+a production one, and use **Dry run** before turning **Sync enabled** on.
 
 ## Scope of v1
 

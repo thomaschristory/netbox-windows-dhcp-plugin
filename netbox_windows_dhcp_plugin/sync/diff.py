@@ -128,6 +128,7 @@ def diff(
             upserts.append(Change(UPDATE, kind, key, before=dict(dst[kind, key].fields), after=dict(new)))
 
     deletes.sort(key=lambda c: (-_rank(c.kind), c.key))
-    # Within a kind, updates before creates, so a rename frees a name before a new object takes it.
+    # Within a kind, updates before creates, so a rename frees a name before a new object takes it. A push then puts
+    # policies in processing order (push._order_policies), which Windows requires.
     upserts.sort(key=lambda c: (_rank(c.kind), c.action != UPDATE, c.key))
     return deletes + upserts

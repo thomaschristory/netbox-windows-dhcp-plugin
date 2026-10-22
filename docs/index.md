@@ -4,9 +4,10 @@ A NetBox plugin that keeps Microsoft Windows DHCP servers and the data of
 [netbox-plugin-dhcp](https://github.com/sys4/netbox-plugin-dhcp) in step, in both directions, over WinRM or SSH.
 
 !!! warning "Pre-release"
-    Every v1 feature is built and tested against an in-memory fake server and PowerShell stubs. Some of the cmdlets
-    the plugin calls have not been checked against a real Windows server yet; the lab tests that settle them are
-    written and waiting for a lab run (see the [roadmap](ROADMAP.md)). Try it on a lab server before a production one.
+    Every v1 feature is built and tested against an in-memory fake server and PowerShell stubs. A first partial lab
+    run against Windows Server 2025 found and fixed a few defects, but some of the cmdlets the plugin calls have still
+    not been checked against a real Windows server; the full lab run that settles them is still to come (see the
+    [roadmap](ROADMAP.md)). Try it on a lab server before a production one.
 
 ## What it does
 

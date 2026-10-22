@@ -294,7 +294,8 @@ def test_policies(c: DhcpClient) -> None:
     srv = c.add_policy(Policy(name="srv", criteria={"user_class": ["EQ", "phones"]}, enabled=False))
     assert srv.scope_id == "" and srv.enabled is False
     pol = c.set_policy(Policy(name="printers", scope_id="10.1.20.0", description="HP", condition="and"))
-    assert pol.description == "HP" and pol.condition == "AND" and pol.criteria == {"mac_address": ["EQ", "3c-d9-2b*"]}
+    # Windows stores a MAC prefix with a separator before the wildcard (#21).
+    assert pol.description == "HP" and pol.condition == "AND" and pol.criteria == {"mac_address": ["EQ", "3c-d9-2b-*"]}
     assert [p.name for p in c.list_policies("10.1.20.0")] == ["printers"]
     assert [p.name for p in c.list_policies()] == ["srv"]
     r = c.add_policy_ip_range(PolicyIPRange("10.1.20.0", "printers", "10.1.20.100", "10.1.20.120"))
@@ -309,6 +310,67 @@ def test_policies(c: DhcpClient) -> None:
         c.get_policy("printers", "10.1.20.0")
     with pytest.raises(NotFound):
         c.remove_policy("printers", "10.1.20.0")
+
+
+def test_policy_conditions_are_stored_as_windows_stores_them(c: DhcpClient) -> None:
+    """#21: Windows Server 2025 reads back "02-4e-42-ab*" as "02-4e-42-ab-*" and "*.Example.Test" in lowercase."""
+    c.add_scope(scope())
+    pol = c.add_policy(
+        Policy(
+            name="lab",
+            scope_id="10.1.20.0",
+            criteria={
+                "mac_address": ["EQ", "02-4e-42-ab*"],
+                "fqdn": ["EQ", "*.Example.Test"],
+                "user_class": ["EQ", "Phones"],
+            },
+        )
+    )
+    assert pol.criteria == {
+        "mac_address": ["EQ", "02-4e-42-ab-*"],
+        "fqdn": ["EQ", "*.example.test"],
+        "user_class": ["EQ", "Phones"],
+    }
+    pol = c.set_policy(
+        Policy(name="lab", scope_id="10.1.20.0", criteria={"mac_address": ["NE", "AA-BB*", "cc-dd-ee*"]})
+    )
+    assert pol.criteria["mac_address"] == ["NE", "aa-bb-*", "cc-dd-ee-*"]
+
+
+def test_policy_processing_order(c: DhcpClient) -> None:
+    """#24: Windows numbers the policies of a level 1, 2, 3... without gaps (DHCP 20110 for one past the end)."""
+    c.add_scope(scope())
+    crit = {"mac_address": ["EQ", "aa-bb-*"]}
+
+    def orders(scope_id: str = "10.1.20.0") -> list[tuple[str, int | None]]:
+        return [(p.name, p.processing_order) for p in c.list_policies(scope_id)]
+
+    with pytest.raises(PSError) as err:
+        c.add_policy(Policy(name="b", scope_id="10.1.20.0", criteria=crit, processing_order=2))
+    assert err.value.id.startswith("DHCP 20110") and err.value.category == "InvalidData"
+    assert orders() == []
+    c.add_policy(Policy(name="b", scope_id="10.1.20.0", criteria=crit, processing_order=1))
+    c.add_policy(Policy(name="c", scope_id="10.1.20.0", criteria=crit, processing_order=2))
+    # Inserting at a used number moves the others down the list.
+    c.add_policy(Policy(name="a", scope_id="10.1.20.0", criteria=crit, processing_order=1))
+    assert orders() == [("a", 1), ("b", 2), ("c", 3)]
+    # No number: the end of the list.
+    c.add_policy(Policy(name="d", scope_id="10.1.20.0", criteria=crit))
+    assert orders()[-1] == ("d", 4)
+    # Each level has its own list.
+    c.add_policy(Policy(name="srv", criteria=crit, processing_order=1))
+    assert orders("") == [("srv", 1)]
+    # Moving one renumbers those in between.
+    c.set_policy(Policy(name="d", scope_id="10.1.20.0", processing_order=2))
+    assert orders() == [("a", 1), ("d", 2), ("b", 3), ("c", 4)]
+    c.set_policy(Policy(name="d", scope_id="10.1.20.0", processing_order=4))
+    assert orders() == [("a", 1), ("b", 2), ("c", 3), ("d", 4)]
+    with pytest.raises(PSError) as err:
+        c.set_policy(Policy(name="d", scope_id="10.1.20.0", processing_order=5))
+    assert err.value.id.startswith("DHCP 20110")
+    # Removing one closes the gap.
+    c.remove_policy("b", "10.1.20.0")
+    assert orders() == [("a", 1), ("c", 2), ("d", 3)]
 
 
 def test_v6(c: DhcpClient) -> None:
