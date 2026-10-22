@@ -4,7 +4,16 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 from extras.ui.panels import CustomFieldsPanel, TagsPanel
-from netbox.object_actions import BulkDelete, BulkExport, CloneObject, DeleteObject, EditObject
+from netbox.object_actions import (
+    AddObject,
+    BulkDelete,
+    BulkEdit,
+    BulkExport,
+    BulkImport,
+    CloneObject,
+    DeleteObject,
+    EditObject,
+)
 from netbox.ui import layout
 from netbox.ui.panels import CommentsPanel, JSONPanel, ObjectsTablePanel, RelatedObjectsPanel
 from netbox.views import generic
@@ -72,19 +81,39 @@ def _register(
     list_actions=None,
     detail_actions=None,
 ):
-    """Register the standard list, detail, edit, import, bulk edit and delete views for a model."""
+    """
+    Register the standard list, detail, edit, import, bulk edit and delete views for a model.
+
+    The buttons default to the views registered here only. NetBox's defaults assume every view exists (Add, Import,
+    Edit, Clone, Edit Selected, Rename Selected), and a button whose view is missing links to "None".
+    """
     name = model.__name__
 
     def make(base, **attrs):
         return type(f"{name}{base.__name__}", (base,), {"queryset": queryset, **attrs})
 
-    list_attrs = {"actions": list_actions} if list_actions is not None else {}
+    if list_actions is None:
+        list_actions = (
+            *(() if read_only else (AddObject,)),
+            *((BulkImport,) if import_form is not None and not read_only else ()),
+            BulkExport,
+            *((BulkEdit,) if bulk_edit_form is not None and not read_only else ()),
+            BulkDelete,
+        )
+    if detail_actions is None:
+        detail_actions = (DeleteObject,) if read_only else (CloneObject, EditObject, DeleteObject)
     register_model_view(model, "list", path="", detail=False)(
-        make(generic.ObjectListView, table=table, filterset=filterset, filterset_form=filterset_form, **list_attrs)
+        make(
+            generic.ObjectListView,
+            table=table,
+            filterset=filterset,
+            filterset_form=filterset_form,
+            actions=list_actions,
+        )
     )
-    detail_attrs = {"actions": detail_actions} if detail_actions is not None else {}
     register_model_view(model)(
-        detail_view or make(generic.ObjectView, layout=layout, template_name="generic/object.html", **detail_attrs)
+        detail_view
+        or make(generic.ObjectView, layout=layout, template_name="generic/object.html", actions=detail_actions)
     )
     register_model_view(model, "delete")(make(generic.ObjectDeleteView))
     register_model_view(model, "bulk_delete", path="delete", detail=False)(
