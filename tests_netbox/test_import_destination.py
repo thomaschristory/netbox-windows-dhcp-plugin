@@ -40,6 +40,11 @@ BRANCH = ImportDestinationChoices.BRANCH
 PROPOSAL = ImportDestinationChoices.PROPOSAL
 
 
+# Tests that stub "branching installed" but reach netbox-branching's own code or settings run only where it is.
+needs_branching = skipUnless(apps.is_installed("netbox_branching"), "netbox-branching is not installed")
+needs_change_control = skipUnless(apps.is_installed("netbox_change_control"), "netbox-change-control is not installed")
+
+
 def import_jobs():
     # Only import jobs: a fresh test database also holds NetBox's system jobs.
     return Job.objects.filter(name=ImportJob.name)
@@ -88,6 +93,7 @@ class DestinationRulesTest(TestCase):
         self.assertEqual(import_refusal(MAIN, None), "an import into main needs a user")
         self.assertEqual(import_refusal(CURRENT, None, "x"), "an import into a chosen branch needs a user")
 
+    @needs_branching
     def test_chosen_branch_must_be_named_and_visible(self):
         self.assertEqual(import_refusal(CURRENT, self.user), "name the branch to import into")
         with mock.patch(
@@ -101,6 +107,7 @@ class DestinationRulesTest(TestCase):
         self.assertIn("import_direct", import_refusal(MAIN, self.user))
         self.assertIsNone(import_refusal(BRANCH, self.user))
 
+    @needs_change_control
     @override_settings(PLUGINS_CONFIG=plugins_config(protect_main=(True, [])))
     def test_protect_main_refuses_without_bypass(self):
         with mock.patch(CHANGE_CONTROL, return_value=True):
@@ -140,6 +147,7 @@ class DestinationRulesTest(TestCase):
         self.assertIn("netbox_branching.add_branch", branching.missing_import_permissions(self.user))
 
 
+@needs_branching
 class EnqueueTest(TestCase):
     def setUp(self):
         super().setUp()
@@ -322,6 +330,7 @@ class ImportViewTest(TestCase):
         self.assertFalse(import_jobs().exists())
 
 
+@needs_branching
 class ImportActionAPITest(PluginAPIMixin, APITestCase):
     def setUp(self):
         super().setUp()
@@ -372,14 +381,23 @@ class ImportActionAPITest(PluginAPIMixin, APITestCase):
         self.assertIn("import_direct", response.content.decode())
         self.assertFalse(import_jobs().exists())
 
+
+class StandaloneImportActionAPITest(PluginAPIMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
+        patch(self, BRANCHING, False)
+        self.server = windows_server(dhcp_servers(1)[0])
+        self.url = f"/api/plugins/windows-dhcp/windows-servers/{self.server.pk}/import/"
+        self.add_permissions(f"{PLUGIN}.view_windowsserver", f"{PLUGIN}.change_windowsserver")
+
     def test_without_branching_branch_and_main_are_400s(self):
-        with mock.patch(BRANCHING, return_value=False):
-            for destination in (BRANCH, MAIN):
-                response = self.client.post(self.url, {"destination": destination}, format="json", **self.header)
-                self.assertEqual(response.status_code, 400, destination)
+        for destination in (BRANCH, MAIN):
+            response = self.client.post(self.url, {"destination": destination}, format="json", **self.header)
+            self.assertEqual(response.status_code, 400, destination)
         self.assertFalse(import_jobs().exists())
 
 
+@needs_branching
 class DirectImportStatusTest(TestCase):
     def setUp(self):
         super().setUp()
