@@ -100,7 +100,7 @@ class ImportV6Test(V6Mixin, ImportTestMixin, TestCase):
         self.apply_all()
         self.fake.v6_scopes.pop(PREFIX)
         self.fake.v6_reservations.clear()
-        self.fake.v6_options = {k: v for k, v in self.fake.v6_options.items() if not k[1]}
+        self.fake.v6_options = {k: v for k, v in self.fake.v6_options.items() if not k[1] and not k[2]}
         self.apply_all()
         self.assertFalse(Subnet.objects.filter(prefix__prefix__family=6).exists())
         self.assertFalse(HostReservation.objects.filter(duid__isnull=False).exists())

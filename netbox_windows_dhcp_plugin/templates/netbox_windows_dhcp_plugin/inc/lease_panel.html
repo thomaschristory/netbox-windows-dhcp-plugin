@@ -66,7 +66,12 @@
               <td><code>{{ lease.client }}</code></td>
               {% if result.family == 6 %}<td>{{ lease.iaid }}</td>{% endif %}
               <td>{{ lease.host_name|default:"" }}</td>
-              <td>{{ lease.address_state }}</td>
+              {% if result.family == 6 %}
+                {# Windows keeps no state for a DHCPv6 lease, so there is none to show. #}
+                <td class="text-muted" title="{% trans "Windows does not report a state for DHCPv6 leases" %}">{% trans "n/a" %}</td>
+              {% else %}
+                <td>{{ lease.address_state }}</td>
+              {% endif %}
               <td>{{ lease.lease_expiry_time|default:"" }}</td>
               <td>{{ lease.description|default:"" }}</td>
             </tr>

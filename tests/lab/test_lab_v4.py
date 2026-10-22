@@ -113,6 +113,20 @@ def test_reservation_and_exclusion(lab: Lab) -> None:
     assert (e.start_range, e.end_range) == (f"{base}.100", f"{base}.110")
     assert lab.client.list_exclusion_ranges(s.scope_id) == [e]
 
+    # An option on the reservation: Windows takes -ReservedIP alone on Set and Remove (issue #20); the scope stays in
+    # what the client returns. A missing value is NotFound, not an empty one (issue #15).
+    k = wc.OptionKey(15, s.scope_id, reserved_ip=r.ip_address)
+    with pytest.raises(wc.NotFound):
+        lab.client.get_option_value(k)
+    ov = lab.client.set_option_value(k, ["host.example"])
+    assert (ov.value, ov.scope_id, ov.reserved_ip) == (["host.example"], s.scope_id, r.ip_address)
+    assert lab.client.get_option_value(k).value == ["host.example"]
+    listed = lab.client.list_option_values(scope_id=s.scope_id, reserved_ip=r.ip_address, all=True)
+    assert [(x.option_id, x.value) for x in listed] == [(15, ["host.example"])]
+    lab.client.remove_option_value(k)
+    with pytest.raises(wc.NotFound):
+        lab.client.get_option_value(k)
+
 
 def test_classes_and_class_data(lab: Lab, probe_out) -> None:
     """client.py: whether the ASCII class data is in .AsciiData or .Data."""
@@ -178,23 +192,75 @@ def test_option_values_all_returns_class_values(lab: Lab, probe_out) -> None:
     assert seen.get((oid, "", v.name)) == ["vendor"]
 
 
-def test_policy_round_trip(lab: Lab, probe_out) -> None:
-    """client.py: policy output property names; does Windows change the case of criteria?"""
+def test_fqdn_policy_round_trip(lab: Lab, probe_out) -> None:
+    """client.py: policy output property names with an FQDN condition, created, updated and read back.
+
+    Windows takes a wildcard only at the start or the end of a condition ("Host*.Example.Test" is refused, issue #18)
+    and lowercases an FQDN condition on read (issue #21).
+    """
+    s = lab.scope("nbwd-test-fqdnpol")
+    base = s.scope_id.rsplit(".", 1)[0]
+    p = lab.policy(
+        wc.Policy(
+            name="nbwd-test-fqdn-policy",
+            scope_id=s.scope_id,
+            description="lab",
+            enabled=True,
+            condition="OR",
+            criteria={"fqdn": ["EQ", "*.Example.Test"]},
+            lease_duration="1.00:00:00",
+        )
+    )
+    save_probe(
+        probe_out,
+        "v4-policy-fqdn",
+        lab.dump("probe.pol", "Get-DhcpServerv4Policy -ScopeId $p.s -Name $p.n", {"s": s.scope_id, "n": p.name}),
+    )
+    save_probe(probe_out, "v4-policy-fqdn-client", p.to_dict())
+    assert p.description == "lab"
+    assert p.condition == "OR"
+    assert p.processing_order == 1
+    assert normalize.parse_duration(p.lease_duration) == 86400
+    assert p.criteria["fqdn"][0] == "EQ"
+    assert p.criteria["fqdn"][1].lower() == "*.example.test"
+    assert lab.client.get_policy(p.name, s.scope_id).criteria == p.criteria
+
+    p.enabled = False
+    p.description = "changed"
+    after = lab.client.set_policy(p)
+    assert after.enabled is False and after.description == "changed"
+
+    # Windows refuses IP ranges (DHCP 20135) and ordinary option values (DHCP 20136) on an FQDN policy: that is a
+    # Windows rule, not a transport failure. Ranges and values are covered by the MAC policy test below.
+    with pytest.raises(wc.PSError) as ei:
+        lab.client.add_policy_ip_range(wc.PolicyIPRange(s.scope_id, p.name, f"{base}.50", f"{base}.60"))
+    assert ei.value.id.startswith("DHCP 20135"), ei.value.to_dict()
+    with pytest.raises(wc.PSError) as ei:
+        lab.client.set_option_value(wc.OptionKey(15, s.scope_id, policy_name=p.name), ["policy.example"])
+    assert ei.value.id.startswith("DHCP 20136"), ei.value.to_dict()
+
+
+def test_policy_embedded_wildcard_is_refused(lab: Lab) -> None:
+    """The fake refuses "Host*.Example.Test" because Windows does (issue #18): keep the two in step."""
+    s = lab.scope("nbwd-test-badpol")
+    name = "nbwd-test-bad-policy"
+    with pytest.raises(wc.PSError, match="Wildcard is valid either at the beginning or at the end"):
+        lab.policy(wc.Policy(name=name, scope_id=s.scope_id, criteria={"fqdn": ["EQ", "Host*.Example.Test"]}))
+    with pytest.raises(wc.NotFound):
+        lab.client.get_policy(name, s.scope_id)
+
+
+def test_mac_policy_ranges_and_options(lab: Lab, probe_out) -> None:
+    """client.py: policy IP ranges and -PolicyName on option values, on a MAC-only policy (issue #18)."""
     s = lab.scope("nbwd-test-pol")
     base = s.scope_id.rsplit(".", 1)[0]
-    u = lab.user_class("nbwd-test-pol-user", "nbwd-pol")
     p = lab.policy(
         wc.Policy(
             name="nbwd-test-policy",
             scope_id=s.scope_id,
             description="lab",
-            enabled=True,
-            condition="AND",
-            criteria={
-                "mac_address": ["EQ", "02-4e-42-ab*"],
-                "user_class": ["EQ", u.name],
-                "fqdn": ["EQ", "Host*.Example.Test"],
-            },
+            condition="OR",
+            criteria={"mac_address": ["EQ", "02-4e-42-ab*"]},
             lease_duration="1.00:00:00",
         )
     )
@@ -205,29 +271,50 @@ def test_policy_round_trip(lab: Lab, probe_out) -> None:
     )
     save_probe(probe_out, "v4-policy-client", p.to_dict())
     assert p.description == "lab"
-    assert p.condition == "AND"
     assert p.processing_order == 1
     assert normalize.parse_duration(p.lease_duration) == 86400
-    assert p.criteria["user_class"] == ["EQ", u.name]
     assert p.criteria["mac_address"][0] == "EQ"
-    assert p.criteria["mac_address"][1].lower() == "02-4e-42-ab*"
-    assert p.criteria["fqdn"][1].lower() == "host*.example.test"
+    # Windows may write the prefix back as 02-4e-42-ab-* (issue #21); compare what is common to both spellings.
+    assert p.criteria["mac_address"][1].lower().replace("-", "").rstrip("*") == "024e42ab"
 
     r = lab.client.add_policy_ip_range(wc.PolicyIPRange(s.scope_id, p.name, f"{base}.50", f"{base}.60"))
     assert (r.start_range, r.end_range) == (f"{base}.50", f"{base}.60")
+    assert lab.client.list_policy_ip_ranges(s.scope_id, p.name) == [r]
 
     # -PolicyName on option values.
-    ov = lab.client.set_option_value(wc.OptionKey(15, s.scope_id, policy_name=p.name), ["policy.example"])
+    k = wc.OptionKey(15, s.scope_id, policy_name=p.name)
+    ov = lab.client.set_option_value(k, ["policy.example"])
     assert ov.value == ["policy.example"] and ov.policy_name == p.name
     assert [x.value for x in lab.client.list_option_values(scope_id=s.scope_id, policy_name=p.name)] == [
         ["policy.example"]
     ]
-    lab.client.remove_option_value(wc.OptionKey(15, s.scope_id, policy_name=p.name))
+    lab.client.remove_option_value(k)
+    with pytest.raises(wc.NotFound):
+        lab.client.get_option_value(k)
+
+    lab.client.remove_policy_ip_range(r)
+    assert lab.client.list_policy_ip_ranges(s.scope_id, p.name) == []
 
     p.enabled = False
     p.description = "changed"
     after = lab.client.set_policy(p)
     assert after.enabled is False and after.description == "changed"
+
+
+def test_user_class_policy_criteria(lab: Lab) -> None:
+    """client.py: the user class condition's property name."""
+    s = lab.scope("nbwd-test-ucpol")
+    u = lab.user_class("nbwd-test-pol-user", "nbwd-pol")
+    p = lab.policy(
+        wc.Policy(
+            name="nbwd-test-uc-policy",
+            scope_id=s.scope_id,
+            condition="AND",
+            criteria={"mac_address": ["EQ", "02-4e-42-ac*"], "user_class": ["EQ", u.name]},
+        )
+    )
+    assert p.condition == "AND"
+    assert p.criteria["user_class"] == ["EQ", u.name]
 
 
 def test_server_level_policy_is_listed(lab: Lab) -> None:

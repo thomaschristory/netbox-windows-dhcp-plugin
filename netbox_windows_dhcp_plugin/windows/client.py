@@ -300,12 +300,13 @@ class ExclusionRangeV6(_Model):
 
 @dataclass
 class LeaseV6(_Model):
+    """A DHCPv6 lease. Windows reports no state for it, unlike an IPv4 lease (issue #22)."""
+
     ip_address: str = ""
     prefix: str = ""
     client_duid: str = ""
     iaid: int = 0
     host_name: str = ""
-    address_state: str = ""
     lease_expiry_time: str = ""  # RFC 3339 UTC
     description: str = ""
 
@@ -541,11 +542,16 @@ Remove-DhcpServerv4ExclusionRange @cn @a -Confirm:$false
 
 # ---- IPv4 option values (option.go) ------------------------------------------------
 
-# unverified: -PolicyName on Get/Set/Remove-DhcpServerv4OptionValue and -All on Get (list).
+# A reservation's values are named by -ReservedIP alone: Set and Remove refuse -ScopeId next to it with "ScopeId and
+# ReservedIP cannot be specified together" (Windows Server 2025, issue #20). Get accepts both but needs only the IP.
+# The client already leaves scope_id out in that case; the elseif keeps the rule here too.
+# -PolicyName on Get/Set/Remove was checked on Windows Server 2025 with a MAC policy (issue #18). A policy with an FQDN
+# condition refuses ordinary option values (DHCP 20136), a Windows rule.
+# unverified: -All on Get (list).
 _OPTION_FUNC = r"""
 $sel = @{}
-if ($p.scope_id) { $sel['ScopeId'] = $p.scope_id }
 if ($p.reserved_ip) { $sel['ReservedIP'] = $p.reserved_ip }
+elseif ($p.scope_id) { $sel['ScopeId'] = $p.scope_id }
 if ($p.vendor_class) { $sel['VendorClass'] = $p.vendor_class }
 if ($p.user_class) { $sel['UserClass'] = $p.user_class }
 if ($p.policy_name) { $sel['PolicyName'] = $p.policy_name }
@@ -857,9 +863,10 @@ $null = Invoke-DhcpServerv4FailoverReplication @cn @a -Force
 # ---- IPv4 superscopes -----------------------------------------------------------------
 
 # Get-DhcpServerv4Superscope output is grouped by name here, so it works whether the cmdlet
-# returns one object per superscope (with a ScopeId array) or one per member scope.
-# unverified: the exact output shape, and that Remove-DhcpServerv4Superscope leaves the
-# member scopes in place (documented behaviour). Removing members rebuilds the superscope.
+# returns one object per superscope (with a ScopeId array) or one per member scope. Creating a
+# superscope and dropping some of its members (Remove -ScopeId) were checked on Windows Server 2025
+# (issue #14).
+# unverified: that removing a whole superscope leaves the member scopes in place (documented behaviour).
 _SUPERSCOPE_FUNC = r"""
 function Get-WdSuperscopes {
     $m = [ordered]@{}
@@ -884,7 +891,7 @@ Add-DhcpServerv4Superscope @cn -SuperscopeName $p.name -ScopeId ([string[]]@($p.
 $out = Get-WdSuperscope
 """,
 )
-# unverified: Remove-DhcpServerv4Superscope -ScopeId removing only some members (documented by Microsoft).
+# Add before removing (see below); Remove -ScopeId drops only the members it names.
 S_SUPERSCOPE_SET = Script(
     "superscope.set",
     _SUPERSCOPE_FUNC
@@ -901,11 +908,13 @@ if ($gone.Count -gt 0) { Remove-DhcpServerv4Superscope @cn -SuperscopeName $p.na
 $out = Get-WdSuperscope
 """,
 )
+# Rename takes -Name and -NewName, unlike Add and Remove (-SuperscopeName): checked with Get-Command on Windows Server
+# 2025 (issue #14).
 S_SUPERSCOPE_RENAME = Script(
     "superscope.rename",
     _SUPERSCOPE_FUNC
     + r"""
-Rename-DhcpServerv4Superscope @cn -SuperscopeName $p.name -NewName $p.new_name
+Rename-DhcpServerv4Superscope @cn -Name $p.name -NewName $p.new_name
 $out = Get-WdSuperscopes | Where-Object { $_.name -eq $p.new_name } | Select-Object -First 1
 """,
 )
@@ -918,8 +927,8 @@ Remove-DhcpServerv4Superscope @cn -SuperscopeName $p.name -Confirm:$false
 
 # ---- IPv4 MAC filters -----------------------------------------------------------------
 
-# There is no Set-DhcpServerv4Filter: set removes and re-adds in one script.
-# unverified: Remove-DhcpServerv4Filter accepting -MacAddress without -List.
+# There is no Set-DhcpServerv4Filter: set removes and re-adds in one script. Remove-DhcpServerv4Filter takes
+# -MacAddress without -List (checked on Windows Server 2025, issue #15).
 _FILTER_FUNC = r"""
 function ConvertTo-WdFilter($f) {
     [ordered]@{ mac_address = "$($f.MacAddress)"; list = "$($f.List)"; description = "$($f.Description)" }
@@ -1173,7 +1182,8 @@ Remove-DhcpServerv6Scope @cn -Prefix $p.prefix -Force:([bool]$p.force) -Confirm:
 
 # ---- DHCPv6 reservations ----------------------------------------------------------------
 
-# unverified: Set/Remove-DhcpServerv6Reservation keyed by -IPAddress alone, like v4.
+# Set-DhcpServerv6Reservation keyed by -IPAddress alone, like v4, was checked on Windows Server 2025 (issue #17).
+# unverified: Remove-DhcpServerv6Reservation keyed by -IPAddress alone.
 _V6RES_FUNC = r"""
 function ConvertTo-WdReservationV6($r) {
     [ordered]@{
@@ -1231,10 +1241,12 @@ Remove-DhcpServerv6Reservation @cn -IPAddress $p.ip_address -Confirm:$false
 
 # ---- DHCPv6 option values -----------------------------------------------------------------
 
+# As for IPv4: Set and Remove refuse -Prefix next to -ReservedIP ("Prefix and ReservedIP cannot be specified together",
+# Windows Server 2025, issue #17), so a reservation's values are named by its IP alone.
 _V6OPTION_FUNC = r"""
 $sel = @{}
-if ($p.prefix) { $sel['Prefix'] = $p.prefix }
 if ($p.reserved_ip) { $sel['ReservedIP'] = $p.reserved_ip }
+elseif ($p.prefix) { $sel['Prefix'] = $p.prefix }
 if ($p.vendor_class) { $sel['VendorClass'] = $p.vendor_class }
 if ($p.user_class) { $sel['UserClass'] = $p.user_class }
 function ConvertTo-WdOptionV6($o) {
@@ -1297,7 +1309,9 @@ $out = @(Get-DhcpServerv6ExclusionRange @cn -Prefix $p.prefix | ForEach-Object {
 
 # ---- DHCPv6 leases, read only -----------------------------------------------------------------
 
-# unverified: Get-DhcpServerv6Lease output property names (ClientDuid, Iaid, LeaseExpiryTime, AddressState).
+# Get-DhcpServerv6Lease returns IPAddress, Prefix, AddressType, ClientDuid, Description, HostName, Iaid and
+# LeaseExpiryTime (Windows Server 2025, issue #22). Unlike an IPv4 lease it has no AddressState, so a DHCPv6 lease has
+# no state here. AddressType (the kind of address, such as IANA) is not a state and does not stand in for one.
 S_V6LEASE_LIST = Script(
     "v6lease.list",
     r"""
@@ -1314,7 +1328,6 @@ $out = @(Get-DhcpServerv6Lease @cn -Prefix $p.prefix | ForEach-Object {
         client_duid       = "$($_.ClientDuid)"
         iaid              = [int64]$_.Iaid
         host_name         = "$($_.HostName)"
-        address_state     = "$($_.AddressState)"
         lease_expiry_time = $exp
         description       = "$($_.Description)"
     }
@@ -1447,10 +1460,13 @@ def _exclusion_params(e: ExclusionRange) -> dict[str, Any]:
 
 
 def _option_params(k: OptionKey) -> dict[str, Any]:
+    # A reservation is named by its IP alone: Windows refuses -ScopeId next to -ReservedIP (issue #20). The scope stays
+    # in the key, and the client puts it back on what it returns.
+    reserved_ip = _ipv4(k.reserved_ip)
     return {
         "option_id": int(k.option_id),
-        "scope_id": _ipv4(k.scope_id),
-        "reserved_ip": _ipv4(k.reserved_ip),
+        "scope_id": "" if reserved_ip else _ipv4(k.scope_id),
+        "reserved_ip": reserved_ip,
         "vendor_class": k.vendor_class,
         "user_class": k.user_class,
         "policy_name": k.policy_name,
@@ -1458,10 +1474,12 @@ def _option_params(k: OptionKey) -> dict[str, Any]:
 
 
 def _v6option_params(k: OptionKeyV6) -> dict[str, Any]:
+    # As for IPv4: Windows refuses -Prefix next to -ReservedIP (issue #17).
+    reserved_ip = _ipv6(k.reserved_ip)
     return {
         "option_id": int(k.option_id),
-        "prefix": _ipv6(k.prefix),
-        "reserved_ip": _ipv6(k.reserved_ip),
+        "prefix": "" if reserved_ip else _ipv6(k.prefix),
+        "reserved_ip": reserved_ip,
         "vendor_class": k.vendor_class,
         "user_class": k.user_class,
     }
@@ -1515,7 +1533,10 @@ class DhcpClient:
 
     def _get[M: _Model](self, script: Script, params: Mapping[str, Any] | None, cls: type[M]) -> M:
         present, data = self._run(script, params)
-        if not present:
+        # Every object the scripts build has fields, so {} is never a real one: it is how Windows PowerShell 5.1
+        # printed "nothing found" before the envelope turned it into null (issue #15). Treating it as missing keeps a
+        # server that still prints it from handing back an object with every field empty.
+        if not present or data == {}:
             raise NotFound(f"{script.op}: object not found")
         if not isinstance(data, dict):
             raise OutputError(f"{script.op}: expected an object, got {type(data).__name__}")
@@ -1527,7 +1548,7 @@ class DhcpClient:
             return []
         if isinstance(data, dict):  # a single object that lost its array wrapper
             data = [data]
-        return [cls.from_dict(d) for d in data]
+        return [cls.from_dict(d) for d in data if d != {}]
 
     def _do(self, script: Script, params: Mapping[str, Any] | None = None) -> None:
         self._run(script, params)
@@ -1590,8 +1611,19 @@ class DhcpClient:
 
     # -- IPv4 option values ------------------------------------------------------
 
+    @staticmethod
+    def _option_context[V: OptionValue | OptionValueV6](v: V, where: str, reserved_ip: str) -> V:
+        """Put back the scope (or prefix) a reservation value was asked for: Windows is only sent the reserved IP."""
+        if reserved_ip:
+            if isinstance(v, OptionValueV6):
+                v.prefix, v.reserved_ip = _ipv6(where), _ipv6(reserved_ip)
+            else:
+                v.scope_id, v.reserved_ip = _ipv4(where), _ipv4(reserved_ip)
+        return v
+
     def get_option_value(self, key: OptionKey) -> OptionValue:
-        return self._get(S_OPTION_GET, _option_params(key), OptionValue)
+        v = self._get(S_OPTION_GET, _option_params(key), OptionValue)
+        return self._option_context(v, key.scope_id, key.reserved_ip)
 
     def list_option_values(
         self,
@@ -1604,13 +1636,13 @@ class DhcpClient:
     ) -> list[OptionValue]:
         p = _option_params(OptionKey(0, scope_id, reserved_ip, vendor_class, user_class, policy_name))
         p["all"] = bool(all)
-        return self._list(S_OPTION_LIST, p, OptionValue)
+        return [self._option_context(v, scope_id, reserved_ip) for v in self._list(S_OPTION_LIST, p, OptionValue)]
 
     def set_option_value(self, key: OptionKey, value: Sequence[str]) -> OptionValue:
         """Create or overwrite an option value (Set-DhcpServerv4OptionValue is an upsert)."""
         p = _option_params(key)
         p["value"] = _strs(value)
-        return self._get(S_OPTION_SET, p, OptionValue)
+        return self._option_context(self._get(S_OPTION_SET, p, OptionValue), key.scope_id, key.reserved_ip)
 
     def remove_option_value(self, key: OptionKey) -> None:
         self._do(S_OPTION_REMOVE, _option_params(key))
@@ -1902,7 +1934,8 @@ class DhcpClient:
     # -- DHCPv6 option values ----------------------------------------------------------
 
     def get_v6_option_value(self, key: OptionKeyV6) -> OptionValueV6:
-        return self._get(S_V6OPTION_GET, _v6option_params(key), OptionValueV6)
+        v = self._get(S_V6OPTION_GET, _v6option_params(key), OptionValueV6)
+        return self._option_context(v, key.prefix, key.reserved_ip)
 
     def list_v6_option_values(
         self,
@@ -1914,12 +1947,12 @@ class DhcpClient:
     ) -> list[OptionValueV6]:
         p = _v6option_params(OptionKeyV6(0, prefix, reserved_ip, vendor_class, user_class))
         p["all"] = bool(all)
-        return self._list(S_V6OPTION_LIST, p, OptionValueV6)
+        return [self._option_context(v, prefix, reserved_ip) for v in self._list(S_V6OPTION_LIST, p, OptionValueV6)]
 
     def set_v6_option_value(self, key: OptionKeyV6, value: Sequence[str]) -> OptionValueV6:
         p = _v6option_params(key)
         p["value"] = _strs(value)
-        return self._get(S_V6OPTION_SET, p, OptionValueV6)
+        return self._option_context(self._get(S_V6OPTION_SET, p, OptionValueV6), key.prefix, key.reserved_ip)
 
     def remove_v6_option_value(self, key: OptionKeyV6) -> None:
         self._do(S_V6OPTION_REMOVE, _v6option_params(key))

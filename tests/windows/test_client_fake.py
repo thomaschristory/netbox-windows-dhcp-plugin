@@ -444,3 +444,120 @@ def test_v6_exclusions_and_leases(c: DhcpClient, fake: FakeDhcpServer) -> None:
         c.remove_v6_scope("2001:db8:1::")
     with pytest.raises(NotFound):
         c.list_v6_leases("2001:db8:2::")
+
+
+# ---- issue #15: the shape a Windows PowerShell 5.1 server printed for a missing object ----
+
+MISSING = {
+    "scope": lambda c: c.get_scope("10.1.99.0"),
+    "reservation": lambda c: c.get_reservation("10.1.20.0", "10.1.20.77"),
+    "exclusion": lambda c: c.get_exclusion_range(ExclusionRange("10.1.20.0", "10.1.20.1", "10.1.20.2")),
+    "option": lambda c: c.get_option_value(OptionKey(15, scope_id="10.1.20.0")),
+    "reservation option": lambda c: c.get_option_value(OptionKey(15, "10.1.20.0", reserved_ip="10.1.20.5")),
+    "option definition": lambda c: c.get_option_definition(252),
+    "class": lambda c: c.get_class("nope", "User"),
+    "failover": lambda c: c.get_failover("nope"),
+    "superscope": lambda c: c.get_superscope("nope"),
+    "filter": lambda c: c.get_filter("aa-bb-cc-dd-ee-01"),
+    "policy": lambda c: c.get_policy("nope", "10.1.20.0"),
+    "v6 scope": lambda c: c.get_v6_scope("2001:db8:9::"),
+    "v6 reservation": lambda c: c.get_v6_reservation("2001:db8:1::", "2001:db8:1::99"),
+    "v6 option": lambda c: c.get_v6_option_value(OptionKeyV6(23, prefix="2001:db8:1::")),
+}
+
+
+@pytest.mark.parametrize("empty_as_object", [False, True], ids=["null", "empty-object"])
+@pytest.mark.parametrize("getter", MISSING.values(), ids=MISSING.keys())
+def test_missing_objects_raise_not_found(fake: FakeDhcpServer, getter, empty_as_object: bool) -> None:
+    c = DhcpClient(fake)
+    c.add_scope(scope())
+    c.add_reservation(Reservation(scope_id="10.1.20.0", ip_address="10.1.20.5", client_id="aa-bb-cc-dd-ee-ff"))
+    c.add_v6_scope(ScopeV6(prefix="2001:db8:1::", name="v6"))
+    fake.empty_result_as_object = empty_as_object
+    with pytest.raises(NotFound):
+        getter(c)
+
+
+def test_empty_result_as_object_shape(fake: FakeDhcpServer) -> None:
+    fake.empty_result_as_object = True
+    raw = fake.run("# netbox-windows-dhcp-plugin:filter.get\n", {"mac_address": "aa-bb-cc-dd-ee-01"})
+    assert raw == b'{"ok": true, "data": {}}'
+
+
+# ---- issues #20 and #17: options on a reservation ----
+
+
+def test_reservation_options_round_trip(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    c.add_scope(scope())
+    c.add_reservation(Reservation(scope_id="10.1.20.0", ip_address="10.1.20.5", client_id="aa-bb-cc-dd-ee-ff"))
+    k = OptionKey(15, scope_id="10.1.20.0", reserved_ip="10.1.20.5")
+    v = c.set_option_value(k, ["host.example"])
+    assert (v.value, v.scope_id, v.reserved_ip) == (["host.example"], "10.1.20.0", "10.1.20.5")
+    assert c.get_option_value(k).value == ["host.example"]
+    (listed,) = c.list_option_values(scope_id="10.1.20.0", reserved_ip="10.1.20.5", all=True)
+    assert (listed.scope_id, listed.reserved_ip) == ("10.1.20.0", "10.1.20.5")
+    # Not a scope value.
+    assert c.list_option_values(scope_id="10.1.20.0", all=True) == []
+    c.remove_option_value(k)
+    with pytest.raises(NotFound):
+        c.get_option_value(k)
+    # Windows refuses -ScopeId with -ReservedIP on Set and Remove; so does the fake.
+    for op in ("option.set", "option.remove"):
+        raw = fake.run(
+            f"# netbox-windows-dhcp-plugin:{op}\n",
+            {"option_id": 15, "scope_id": "10.1.20.0", "reserved_ip": "10.1.20.5", "value": ["x"]},
+        )
+        assert b"ScopeId and ReservedIP cannot be specified together" in raw and b"InvalidArgument" in raw
+
+
+def test_v6_reservation_options_round_trip(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    c.add_v6_scope(ScopeV6(prefix="2001:db8:1::", name="v6"))
+    c.add_v6_reservation(ReservationV6("2001:db8:1::", "2001:db8:1::10", "00-01", 1))
+    k = OptionKeyV6(24, prefix="2001:db8:1::", reserved_ip="2001:db8:1::10")
+    v = c.set_v6_option_value(k, ["host.example"])
+    assert (v.value, v.prefix, v.reserved_ip) == (["host.example"], "2001:db8:1::", "2001:db8:1::10")
+    assert c.get_v6_option_value(k).value == ["host.example"]
+    (listed,) = c.list_v6_option_values(prefix="2001:db8:1::", reserved_ip="2001:db8:1::10", all=True)
+    assert (listed.prefix, listed.reserved_ip) == ("2001:db8:1::", "2001:db8:1::10")
+    assert c.list_v6_option_values(prefix="2001:db8:1::", all=True) == []
+    for op in ("v6option.set", "v6option.remove"):
+        raw = fake.run(
+            f"# netbox-windows-dhcp-plugin:{op}\n",
+            {"option_id": 24, "prefix": "2001:db8:1::", "reserved_ip": "2001:db8:1::10", "value": ["x"]},
+        )
+        assert b"Prefix and ReservedIP cannot be specified together" in raw
+    # Removing the scope takes the reservation and its options with it.
+    c.remove_v6_scope("2001:db8:1::")
+    assert fake.v6_options == {}
+
+
+# ---- issue #18: Windows only accepts a wildcard at the start or the end of a policy condition ----
+
+
+@pytest.mark.parametrize("value", ["*.example.test", "host*", "02-4e-42-ab*"])
+def test_policy_wildcard_at_either_end_is_accepted(c: DhcpClient, value: str) -> None:
+    c.add_scope(scope())
+    c.add_policy(Policy(name="p", scope_id="10.1.20.0", criteria={"fqdn": ["EQ", value]}))
+
+
+def test_policy_embedded_wildcard_is_refused(c: DhcpClient) -> None:
+    c.add_scope(scope())
+    bad = {"fqdn": ["EQ", "Host*.Example.Test"]}
+    with pytest.raises(PSError, match="Wildcard is valid either at the beginning or at the end") as ei:
+        c.add_policy(Policy(name="p", scope_id="10.1.20.0", criteria=bad))
+    assert ei.value.category == "InvalidArgument"
+    c.add_policy(Policy(name="p", scope_id="10.1.20.0", criteria={"fqdn": ["EQ", "*.example.test"]}))
+    with pytest.raises(PSError, match="Wildcard"):
+        c.set_policy(Policy(name="p", scope_id="10.1.20.0", criteria=bad))
+    assert c.get_policy("p", "10.1.20.0").criteria == {"fqdn": ["EQ", "*.example.test"]}
+
+
+# ---- issue #22: DHCPv6 leases have no state ----
+
+
+def test_v6_leases_have_no_state(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    c.add_v6_scope(ScopeV6(prefix="2001:db8:1::", name="v6"))
+    fake.add_v6_lease("2001:db8:1::", "2001:db8:1::1:10")
+    (lease,) = c.list_v6_leases("2001:db8:1::")
+    assert "address_state" not in lease.to_dict()
+    assert "address_state" not in fake.v6_leases["2001:db8:1::"][0]

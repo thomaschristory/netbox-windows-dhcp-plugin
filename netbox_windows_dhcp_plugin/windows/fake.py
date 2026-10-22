@@ -16,6 +16,11 @@ Modelled server behaviour:
   superscope membership; removing a reservation drops its options;
 * not-found errors use the same codes as the server (ObjectNotFound / DHCP 20005,
   20010, 20018) so the client's not-found mapping is exercised;
+* an option value on a reservation is named by the reserved IP alone: Set and Remove
+  refuse a scope ID (DHCPv6: a prefix) next to it, as Windows does (issues #20, #17);
+* a policy condition with a wildcard anywhere but its start or end is refused (#18);
+* ``empty_result_as_object`` prints ``{}`` instead of ``null`` for "nothing found", the
+  shape Windows PowerShell 5.1 gave before the envelope fixed it (issue #15);
 * ``fail`` injects an error for any op; ``calls`` records every call.
 
 The fake trusts the client to send canonical values (it does not re-validate every
@@ -150,6 +155,9 @@ class FakeDhcpServer:
         self.v6_leases: dict[str, list[dict[str, Any]]] = {}  # keyed by prefix
         self.calls: list[Call] = []
         self.fail: Callable[[str, dict[str, Any]], PSError | None] | None = None
+        # True: answer "nothing found" with {} rather than null, as a server did before issue #15 was fixed, so tests
+        # can check the client still reads it as missing.
+        self.empty_result_as_object = False
 
     # -- Runner ----------------------------------------------------------------
 
@@ -173,6 +181,8 @@ class FakeDhcpServer:
                 data = handler(p)
             except _Fail as f:
                 return self._envelope(None, f.err)
+            if data is None and self.empty_result_as_object:
+                data = {}
             return self._envelope(copy.deepcopy(data), None)
 
     @staticmethod
@@ -210,7 +220,7 @@ class FakeDhcpServer:
                 "client_duid": client_duid,
                 "iaid": 1,
                 "host_name": "",
-                "address_state": "Active",
+                # No address_state: Windows reports none for a DHCPv6 lease (issue #22).
                 "lease_expiry_time": "2030-01-01T00:00:00Z",
                 "description": "",
             }
@@ -462,9 +472,12 @@ class FakeDhcpServer:
 
     @staticmethod
     def _option_level(p: Mapping[str, Any]) -> tuple:
+        # A reservation's values belong to its IP, not to its scope: a scope ID next to the IP is ignored (Get
+        # tolerates it on Windows; Set and Remove refuse it, see _refuse_scope_and_ip).
+        ip = _s(p, "reserved_ip")
         return (
-            _s(p, "scope_id"),
-            _s(p, "reserved_ip"),
+            "" if ip else _s(p, "scope_id"),
+            ip,
             _s(p, "vendor_class"),
             _s(p, "user_class"),
             _s(p, "policy_name"),
@@ -474,8 +487,13 @@ class FakeDhcpServer:
     def _option_key(cls, p: Mapping[str, Any]) -> tuple:
         return (_n(p, "option_id"), *cls._option_level(p))
 
+    @staticmethod
+    def _refuse_scope_and_ip(cmd: str, p: Mapping[str, Any], where: str, label: str) -> None:
+        if _s(p, where) and _s(p, "reserved_ip"):
+            raise _invalid(cmd, f"{label} and ReservedIP cannot be specified together.")
+
     def _check_option_level(self, p: dict) -> None:
-        if _s(p, "scope_id"):
+        if _s(p, "scope_id") and not _s(p, "reserved_ip"):
             self._scope("Get-DhcpServerv4OptionValue", _s(p, "scope_id"))
         ip = _s(p, "reserved_ip")
         if ip and ip not in self.reservations:
@@ -502,6 +520,7 @@ class FakeDhcpServer:
         return out
 
     def _op_option_set(self, p: dict) -> Any:
+        self._refuse_scope_and_ip("Set-DhcpServerv4OptionValue", p, "scope_id", "ScopeId")
         self._check_option_level(p)
         oid = _n(p, "option_id")
         v = {
@@ -511,13 +530,14 @@ class FakeDhcpServer:
             "vendor_class": _s(p, "vendor_class"),
             "user_class": _s(p, "user_class"),
             "policy_name": _s(p, "policy_name"),
-            "scope_id": _s(p, "scope_id"),
+            "scope_id": self._option_level(p)[0],
             "reserved_ip": _s(p, "reserved_ip"),
         }
         self.options[self._option_key(p)] = v
         return v
 
     def _op_option_remove(self, p: dict) -> Any:
+        self._refuse_scope_and_ip("Remove-DhcpServerv4OptionValue", p, "scope_id", "ScopeId")
         self._check_option_level(p)
         k = self._option_key(p)
         if k not in self.options:
@@ -526,8 +546,10 @@ class FakeDhcpServer:
         return None
 
     def set_option(self, option_id: int, value: list[str], **level: str) -> None:
-        """Seed an option value directly (level keys as in OptionKey)."""
+        """Seed an option value directly (level keys as in OptionKey; a reservation's scope is dropped)."""
         p: dict[str, Any] = {"option_id": option_id, "value": value, **level}
+        if p.get("reserved_ip"):
+            p.pop("scope_id", None)
         with self._lock:
             self._op_option_set(p)
 
@@ -855,6 +877,15 @@ class FakeDhcpServer:
         out = [v for k, v in self.policies.items() if k[0] == sid]
         return sorted(out, key=lambda x: (x["processing_order"] or 0, x["name"]))
 
+    @staticmethod
+    def _check_wildcards(cmd: str, p: dict) -> None:
+        # Windows takes "*" only as the first or last character of a condition value: "*.example.test" and "host*"
+        # are fine, "host*.example.test" is refused (issue #18).
+        for v in (p.get("criteria") or {}).values():
+            for value in [str(x) for x in (v or [])[1:]]:
+                if "*" in value[1:-1]:
+                    raise _invalid(cmd, "Wildcard is valid either at the beginning or at the end of the condition.")
+
     def _apply_policy(self, pol: dict[str, Any], p: dict) -> None:
         if p.get("enabled") is not None:
             pol["enabled"] = bool(p["enabled"])
@@ -874,6 +905,7 @@ class FakeDhcpServer:
             raise _invalid("Add-DhcpServerv4Policy", f"The policy {_s(p, 'name')} already exists.", 20151)
         if not (p.get("criteria") or {}):
             raise _invalid("Add-DhcpServerv4Policy", "At least one condition is required.")
+        self._check_wildcards("Add-DhcpServerv4Policy", p)
         order = 1 + max((v["processing_order"] or 0 for kk, v in self.policies.items() if kk[0] == k[0]), default=0)
         pol: dict[str, Any] = {
             "name": _s(p, "name"),
@@ -894,6 +926,7 @@ class FakeDhcpServer:
         pol = self.policies.get(k)
         if pol is None:
             raise _err("Set-DhcpServerv4Policy", 20152, "ObjectNotFound", f"The policy {_s(p, 'name')} does not exist.")
+        self._check_wildcards("Set-DhcpServerv4Policy", p)
         pol["description"] = _s(p, "description")
         self._apply_policy(pol, p)
         return pol
@@ -1013,9 +1046,11 @@ class FakeDhcpServer:
         del self.v6_scopes[prefix]
         self.v6_leases.pop(prefix, None)
         self.v6_exclusions = [e for e in self.v6_exclusions if e["prefix"] != prefix]
-        for ip in [ip for ip, r in self.v6_reservations.items() if r["prefix"] == prefix]:
+        gone = [ip for ip, r in self.v6_reservations.items() if r["prefix"] == prefix]
+        for ip in gone:
             del self.v6_reservations[ip]
-        for k in [k for k in self.v6_options if k[1] == prefix]:
+        # Reservation values are keyed by their IP alone, so they go with their reservation.
+        for k in [k for k in self.v6_options if k[1] == prefix or k[2] in gone]:
             del self.v6_options[k]
         return None
 
@@ -1073,16 +1108,18 @@ class FakeDhcpServer:
     @staticmethod
     def _v6option_key(p: Mapping[str, Any]) -> tuple:
         # Class names are not case sensitive on Windows: "Lab" and "lab" name one value.
+        # As for IPv4, a reservation's values belong to its IP: a prefix next to it is ignored.
+        ip = _s(p, "reserved_ip")
         return (
             _n(p, "option_id"),
-            _s(p, "prefix"),
-            _s(p, "reserved_ip"),
+            "" if ip else _s(p, "prefix"),
+            ip,
             _s(p, "vendor_class").lower(),
             _s(p, "user_class").lower(),
         )
 
     def _check_v6option_level(self, p: dict) -> None:
-        if _s(p, "prefix"):
+        if _s(p, "prefix") and not _s(p, "reserved_ip"):
             self._v6scope("Get-DhcpServerv6OptionValue", _s(p, "prefix"))
         ip = _s(p, "reserved_ip")
         if ip and ip not in self.v6_reservations:
@@ -1100,6 +1137,7 @@ class FakeDhcpServer:
         return [v for k, v in sorted(self.v6_options.items()) if k[1:width] == key[1:width]]
 
     def _op_v6option_set(self, p: dict) -> Any:
+        self._refuse_scope_and_ip("Set-DhcpServerv6OptionValue", p, "prefix", "Prefix")
         self._check_v6option_level(p)
         user = _s(p, "user_class")
         if user and ("user", user.lower()) not in self.v6_classes:
@@ -1111,13 +1149,14 @@ class FakeDhcpServer:
             "value": [_opt_num(x) for x in p.get("value") or []],
             "vendor_class": _s(p, "vendor_class"),
             "user_class": _s(p, "user_class"),
-            "prefix": _s(p, "prefix"),
+            "prefix": self._v6option_key(p)[1],
             "reserved_ip": _s(p, "reserved_ip"),
         }
         self.v6_options[self._v6option_key(p)] = v
         return v
 
     def _op_v6option_remove(self, p: dict) -> Any:
+        self._refuse_scope_and_ip("Remove-DhcpServerv6OptionValue", p, "prefix", "Prefix")
         self._check_v6option_level(p)
         k = self._v6option_key(p)
         if k not in self.v6_options:

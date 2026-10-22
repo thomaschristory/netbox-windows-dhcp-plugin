@@ -6,7 +6,8 @@
 # Ported from terraform-provider-windowsddi internal/dhcp/testdata/stubs.ps1 and
 # extended with the cmdlets the plugin adds (classes, failover, superscopes, filters,
 # option definitions, policies, DHCPv6). Parameter lists for the added cmdlets follow
-# the documented signatures as far as known; they are not verified against Windows.
+# the documented signatures as far as known; they are not verified against Windows unless
+# a comment cites a lab finding (issue number).
 #
 # Used by tests/windows/test_pwsh.py, which loads this file as an in-memory
 # module (New-Module ... | Import-Module) before each script. Every stub:
@@ -44,6 +45,33 @@ function Record($name, $bound) {
         $h[$k] = $v
     }
     Add-Content -LiteralPath $env:WD_CALLS -Value (ConvertTo-Json -InputObject $h -Compress -Depth 4) -Encoding utf8
+}
+
+# The DHCP server runs the scripts in Windows PowerShell 5.1, which writes a value holding AutomationNull (what a
+# variable keeps after "$out = <a command with no output>") as {} in JSON, where pwsh 7 writes null. A getter for a
+# missing object then looked like an empty object (issue #15). This wrapper reproduces the 5.1 behaviour for the
+# envelope's top-level values, so the stub tests see what a real server prints. AutomationNull is told apart from a
+# real $null by @(...).Count: 0 for AutomationNull, 1 for $null (and an empty array is not -eq $null).
+function ConvertTo-Json {
+    [CmdletBinding()]
+    param([Parameter(Mandatory, Position = 0, ValueFromPipeline)][AllowNull()][object]$InputObject,
+        [int]$Depth = 2, [switch]$Compress)
+    process {
+        if ($InputObject -is [System.Collections.IDictionary]) {
+            foreach ($k in @($InputObject.Keys)) {
+                if ($null -eq $InputObject[$k] -and @($InputObject[$k]).Count -eq 0) { $InputObject[$k] = [pscustomobject]@{} }
+            }
+        }
+        Microsoft.PowerShell.Utility\ConvertTo-Json -InputObject $InputObject -Depth $Depth -Compress:$Compress
+    }
+}
+
+# Write-InvalidArgument emits the non-terminating InvalidArgument error the real cmdlets give for a parameter
+# combination they refuse.
+function Write-InvalidArgument($cmdlet, $message) {
+    $er = [System.Management.Automation.ErrorRecord]::new(
+        [ArgumentException]::new($message), 'InvalidArgument', 'InvalidArgument', $null)
+    $cmdlet.WriteError($er)
 }
 
 # Write-DhcpError emits a non-terminating error shaped like the real cmdlets'
@@ -216,37 +244,44 @@ function Remove-DhcpServerv4ExclusionRange {
 
 # ---- Option values ----
 # Each stored option has a Level string: "" for server, the scope ID, or the
-# reserved IP. Get returns every option at the requested level.
+# reserved IP. Get returns every option at the requested level. A reservation
+# is named by its IP alone: Get tolerates a ScopeId next to ReservedIP (seen on
+# Windows Server 2025) and ignores it, while Set and Remove refuse the pair with
+# InvalidArgument, as the real cmdlets do (issue #20).
 function Get-DhcpServerv4OptionValue {
     [CmdletBinding()]
     param([string]$VendorClass, [string]$ComputerName, [Parameter(Position = 0)][ipaddress]$ScopeId,
         [ipaddress]$ReservedIP, [Parameter(Position = 1)][uint32[]]$OptionId, [string]$UserClass, [switch]$All,
         [string]$PolicyName)
     Record 'Get-DhcpServerv4OptionValue' $PSBoundParameters
-    $global:Options | Where-Object { "$($_.Level)" -eq "$ScopeId$ReservedIP" }
+    $level = if ($ReservedIP) { "$ReservedIP" } else { "$ScopeId" }
+    $global:Options | Where-Object { "$($_.Level)" -eq $level }
 }
 
 # Appends an option (does not replace an existing one; tests never set the
-# same option twice). Name is always 'Router'. Like the real cmdlet, it
-# rejects ScopeId and ReservedIP together.
+# same option twice). Name is always 'Router'.
 function Set-DhcpServerv4OptionValue {
     [CmdletBinding(SupportsShouldProcess)]
     param([Parameter(Position = 0)][ipaddress]$ScopeId, [Parameter(Mandatory, Position = 2)][string[]]$Value,
         [Parameter(Mandatory, Position = 1)][uint32]$OptionId, [switch]$PassThru, [switch]$Force,
         [ipaddress]$ReservedIP, [string]$UserClass, [string]$ComputerName, [string]$VendorClass, [string]$PolicyName)
     Record 'Set-DhcpServerv4OptionValue' $PSBoundParameters
-    if ($ScopeId -and $ReservedIP) { throw 'ScopeId and ReservedIP cannot both be specified' }
+    if ($ScopeId -and $ReservedIP) {
+        Write-InvalidArgument $PSCmdlet 'ScopeId and ReservedIP cannot be specified together.'
+        return
+    }
     [void]$global:Options.Add([pscustomobject]@{ Level = "$ScopeId$ReservedIP"; OptionId = $OptionId; Name = 'Router'
         Value = $Value; VendorClass = $VendorClass; UserClass = $UserClass })
 }
 
-# Only records the call; tests check the parameters it received.
+# Records the call and refuses ScopeId with ReservedIP; tests check the parameters it received.
 function Remove-DhcpServerv4OptionValue {
     [CmdletBinding(SupportsShouldProcess)]
     param([string]$VendorClass, [string]$ComputerName, [Parameter(Mandatory, Position = 0)][uint32[]]$OptionId,
         [string]$UserClass, [Parameter(Position = 1)][ipaddress]$ScopeId, [ipaddress]$ReservedIP, [switch]$PassThru,
         [string]$PolicyName)
     Record 'Remove-DhcpServerv4OptionValue' $PSBoundParameters
+    if ($ScopeId -and $ReservedIP) { Write-InvalidArgument $PSCmdlet 'ScopeId and ReservedIP cannot be specified together.' }
 }
 
 # ---- Leases ----
@@ -402,7 +437,7 @@ function Invoke-DhcpServerv4FailoverReplication {
 
 function Get-DhcpServerv4Superscope {
     [CmdletBinding()]
-    param([string]$ComputerName, [string]$Name)
+    param([string]$ComputerName, [string]$SuperscopeName)
     Record 'Get-DhcpServerv4Superscope' $PSBoundParameters
     foreach ($k in $global:SuperscopeMembers.Keys) {
         foreach ($id in $global:SuperscopeMembers[$k]) { [pscustomobject]@{ SuperscopeName = $k; ScopeId = [ipaddress]$id } }
@@ -433,13 +468,15 @@ function Remove-DhcpServerv4Superscope {
     $global:SuperscopeMembers.Remove($SuperscopeName)
 }
 
+# Unlike Add and Remove (-SuperscopeName), Rename takes -Name and -NewName (Get-Command on Windows Server 2025,
+# issue #14). Declaring only those makes a script passing -SuperscopeName fail here as it does on Windows.
 function Rename-DhcpServerv4Superscope {
     [CmdletBinding(SupportsShouldProcess)]
-    param([string]$ComputerName, [Parameter(Mandatory)][string]$SuperscopeName, [Parameter(Mandatory)][string]$NewName,
-        [switch]$PassThru)
+    param([string]$ComputerName, [Parameter(Mandatory, Position = 0)][string]$Name,
+        [Parameter(Mandatory, Position = 1)][string]$NewName, [switch]$PassThru)
     Record 'Rename-DhcpServerv4Superscope' $PSBoundParameters
-    $global:SuperscopeMembers[$NewName] = $global:SuperscopeMembers[$SuperscopeName]
-    $global:SuperscopeMembers.Remove($SuperscopeName)
+    $global:SuperscopeMembers[$NewName] = $global:SuperscopeMembers[$Name]
+    $global:SuperscopeMembers.Remove($Name)
 }
 
 # ---- MAC filters ----
@@ -664,7 +701,9 @@ function Get-DhcpServerv6OptionValue {
     param([string]$ComputerName, [ipaddress]$Prefix, [ipaddress]$ReservedIP, [uint32[]]$OptionId,
         [string]$VendorClass, [string]$UserClass, [switch]$All)
     Record 'Get-DhcpServerv6OptionValue' $PSBoundParameters
-    $global:V6Options | Where-Object { "$($_.Level)" -eq "$Prefix$ReservedIP" }
+    # Like IPv4: Get tolerates -Prefix next to -ReservedIP; Set and Remove refuse the pair (issue #17).
+    $level = if ($ReservedIP) { "$ReservedIP" } else { "$Prefix" }
+    $global:V6Options | Where-Object { "$($_.Level)" -eq $level }
 }
 
 function Set-DhcpServerv6OptionValue {
@@ -673,6 +712,10 @@ function Set-DhcpServerv6OptionValue {
         [Parameter(Mandatory)][string[]]$Value, [string]$VendorClass, [string]$UserClass, [switch]$Force,
         [switch]$PassThru)
     Record 'Set-DhcpServerv6OptionValue' $PSBoundParameters
+    if ($Prefix -and $ReservedIP) {
+        Write-InvalidArgument $PSCmdlet 'Prefix and ReservedIP cannot be specified together.'
+        return
+    }
     [void]$global:V6Options.Add([pscustomobject]@{ Level = "$Prefix$ReservedIP"; OptionId = $OptionId
         Name = 'DNS Recursive Name Server IPv6 Address List'; Value = $Value; VendorClass = $VendorClass
         UserClass = $UserClass })
@@ -683,6 +726,7 @@ function Remove-DhcpServerv6OptionValue {
     param([string]$ComputerName, [ipaddress]$Prefix, [ipaddress]$ReservedIP, [Parameter(Mandatory)][uint32[]]$OptionId,
         [string]$VendorClass, [string]$UserClass, [switch]$PassThru)
     Record 'Remove-DhcpServerv6OptionValue' $PSBoundParameters
+    if ($Prefix -and $ReservedIP) { Write-InvalidArgument $PSCmdlet 'Prefix and ReservedIP cannot be specified together.' }
 }
 
 $global:V6Classes = [System.Collections.ArrayList]::new()
@@ -731,6 +775,9 @@ function Get-DhcpServerv6ExclusionRange {
     $global:V6Exclusions | Where-Object { "$($_.Prefix)" -eq "$Prefix" }
 }
 
+# Seeded leases carry the properties a real Get-DhcpServerv6Lease returns on Windows Server 2025 (issue #22):
+# IPAddress, Prefix, AddressType, ClientDuid, Description, HostName, Iaid and LeaseExpiryTime. There is no
+# AddressState, unlike the IPv4 lease.
 function Get-DhcpServerv6Lease {
     [CmdletBinding()]
     param([string]$ComputerName, [Parameter(Position = 0)][ipaddress]$Prefix, [ipaddress[]]$IPAddress)
