@@ -40,6 +40,11 @@ BRANCH = ImportDestinationChoices.BRANCH
 PROPOSAL = ImportDestinationChoices.PROPOSAL
 
 
+def import_jobs():
+    # Only import jobs: a fresh test database also holds NetBox's system jobs.
+    return Job.objects.filter(name=ImportJob.name)
+
+
 def plugins_config(**settings):
     """PLUGINS_CONFIG with these settings for this plugin (credentials kept) and change control's protect_main."""
     protect = settings.pop("protect_main", None)
@@ -170,7 +175,7 @@ class EnqueueTest(TestCase):
             enqueue_import(self.server, self.user, "elsewhere")
         with self.assertRaises(ImportRefused):
             enqueue_import(self.server, None, MAIN)
-        self.assertFalse(Job.objects.exists())
+        self.assertFalse(import_jobs().exists())
 
 
 class ImportViewTest(TestCase):
@@ -213,7 +218,10 @@ class ImportViewTest(TestCase):
         self.assertIn("Import directly", html)
 
     def test_this_branch_is_queued_with_its_name(self):
-        with mock.patch(ACTIVE_BRANCH, return_value="feature-x"):
+        with (
+            mock.patch(ACTIVE_BRANCH, return_value="feature-x"),
+            mock.patch("netbox_windows_dhcp_plugin.views.import_refusal", return_value=None),
+        ):
             q, _, text = self.post({"destination": CURRENT, "branch": "feature-x"})
         q.assert_called_once_with(self.server, self.user, CURRENT, "feature-x")
         self.assertIn("into branch feature-x, not into main. No new branch is created", text)
@@ -269,6 +277,14 @@ class ImportViewTest(TestCase):
         self.assertIn("You are working in branch <strong>feature-x</strong>", html)
         self.assertIn("it writes into main, not into feature-x", html)
 
+    def test_confirmation_page_warns_about_an_open_import_branch(self):
+        with mock.patch(
+            "netbox_windows_dhcp_plugin.integrations.branching.open_import_branch_name",
+            return_value="dhcp-import/dhcp1/20261022-101010",
+        ):
+            html = self.client.get(f"{self.url}?destination=main").content.decode()
+        self.assertIn("Import branch <strong>dhcp-import/dhcp1/20261022-101010</strong> is still open", html)
+
     def test_confirmed_main_is_queued_into_main(self):
         q, _, text = self.post({"destination": MAIN, "_confirm": ""})
         q.assert_called_once_with(self.server, self.user, MAIN, "")
@@ -278,15 +294,24 @@ class ImportViewTest(TestCase):
     def test_refused_main_is_explained(self):
         response = self.client.get(f"{self.url}?destination=main", follow=True)
         self.assertIn("Cannot import directly into main", " ".join(str(m) for m in response.context["messages"]))
-        with mock.patch("netbox_windows_dhcp_plugin.views.enqueue_import", side_effect=ImportRefused("nope")):
+        response = self.client.post(self.url, {"destination": MAIN, "_confirm": ""}, follow=True)
+        text = " ".join(str(m) for m in response.context["messages"])
+        self.assertIn("Import not queued: direct imports are turned off", text)
+        # Refused between the check and the queue: a fixed message, never the exception's text.
+        with (
+            mock.patch("netbox_windows_dhcp_plugin.views.import_refusal", return_value=None),
+            mock.patch("netbox_windows_dhcp_plugin.views.enqueue_import", side_effect=ImportRefused("internal")),
+        ):
             response = self.client.post(self.url, {"destination": MAIN, "_confirm": ""}, follow=True)
-        self.assertIn("Import not queued: nope", " ".join(str(m) for m in response.context["messages"]))
+        text = " ".join(str(m) for m in response.context["messages"])
+        self.assertIn("Import not queued: it was refused, try again", text)
+        self.assertNotIn("internal", text)
 
     def test_unknown_destination_queues_nothing(self):
         response = self.client.post(self.url, {"destination": "elsewhere"}, follow=True)
         text = " ".join(str(m) for m in response.context["messages"])
         self.assertIn("Import not queued", text)
-        self.assertFalse(Job.objects.exists())
+        self.assertFalse(import_jobs().exists())
 
     def test_needs_change_on_the_server(self):
         self.user.is_superuser = False
@@ -294,7 +319,7 @@ class ImportViewTest(TestCase):
         self.add_permissions(f"{PLUGIN}.view_windowsserver")
         response = self.client.post(self.url, {"destination": MAIN, "_confirm": ""})
         self.assertIn(response.status_code, (403, 404))
-        self.assertFalse(Job.objects.exists())
+        self.assertFalse(import_jobs().exists())
 
 
 class ImportActionAPITest(PluginAPIMixin, APITestCase):
@@ -309,7 +334,7 @@ class ImportActionAPITest(PluginAPIMixin, APITestCase):
     def test_main_is_queued_with_its_destination(self):
         response = self.client.post(self.url, {"destination": MAIN}, format="json", **self.header)
         self.assertEqual(response.status_code, 202, response.content)
-        self.assertEqual(Job.objects.get().data, {"destination": MAIN})
+        self.assertEqual(import_jobs().get().data, {"destination": MAIN})
 
     def test_branch_still_needs_branch_permissions(self):
         response = self.client.post(self.url, {"destination": BRANCH}, format="json", **self.header)
@@ -328,7 +353,7 @@ class ImportActionAPITest(PluginAPIMixin, APITestCase):
                 self.url, {"destination": CURRENT, "branch": "feature-x"}, format="json", **self.header
             )
         self.assertEqual(response.status_code, 202, response.content)
-        self.assertEqual(Job.objects.get().data, {"destination": CURRENT, "branch": "feature-x"})
+        self.assertEqual(import_jobs().get().data, {"destination": CURRENT, "branch": "feature-x"})
 
     def test_current_with_an_unknown_branch_is_a_403(self):
         response = self.client.post(self.url, {"destination": CURRENT, "branch": "nope"}, format="json", **self.header)
@@ -338,21 +363,21 @@ class ImportActionAPITest(PluginAPIMixin, APITestCase):
     def test_unknown_destination_is_a_400(self):
         response = self.client.post(self.url, {"destination": "elsewhere"}, format="json", **self.header)
         self.assertEqual(response.status_code, 400)
-        self.assertFalse(Job.objects.exists())
+        self.assertFalse(import_jobs().exists())
 
     @override_settings(PLUGINS_CONFIG=plugins_config(import_direct=False))
     def test_refused_main_is_a_403(self):
         response = self.client.post(self.url, {"destination": MAIN}, format="json", **self.header)
         self.assertEqual(response.status_code, 403)
         self.assertIn("import_direct", response.content.decode())
-        self.assertFalse(Job.objects.exists())
+        self.assertFalse(import_jobs().exists())
 
     def test_without_branching_branch_and_main_are_400s(self):
         with mock.patch(BRANCHING, return_value=False):
             for destination in (BRANCH, MAIN):
                 response = self.client.post(self.url, {"destination": destination}, format="json", **self.header)
                 self.assertEqual(response.status_code, 400, destination)
-        self.assertFalse(Job.objects.exists())
+        self.assertFalse(import_jobs().exists())
 
 
 class DirectImportStatusTest(TestCase):
@@ -420,6 +445,26 @@ class DirectImportStatusTest(TestCase):
         self.assertIn("Main has not been changed.", html)
         self.assertIn('href="/plugins/branching/branches/9/">feature-x</a>', html)
         self.assertNotIn("new branch", html)
+
+    def test_running_import_into_a_chosen_branch_names_it(self):
+        run = self.run_(status=SyncStatusChoices.RUNNING)
+        run.destination, run.branch_name, run.job.status = CURRENT, "feature-x", JobStatusChoices.STATUS_RUNNING
+        run.job.save()
+        run.save()
+        html = self.page()
+        self.assertIn("It writes into branch feature-x, not into main.", html)
+        self.assertNotIn("import branch", html)
+
+    def test_a_chosen_branch_is_not_called_an_earlier_import_branch(self):
+        run = self.run_(changes=1)
+        run.destination, run.branch_name = CURRENT, "feature-x"
+        run.save()
+        self.run_(status=SyncStatusChoices.FAILED)
+        lookup = "netbox_windows_dhcp_plugin.integrations.branching.import_branch"
+        with mock.patch(lookup, return_value=(SimpleNamespace(status="ready"), None, True)) as found:
+            status = import_status.for_server(self.server, self.user)
+        self.assertIsNone(status.earlier_branch)
+        found.assert_not_called()
 
     def test_queued_job_without_a_destination_is_a_branch_import(self):
         self.job(JobStatusChoices.STATUS_PENDING)
@@ -610,6 +655,35 @@ class DirectImportTest(TransactionTestCase):
         self.assertIn("permission", run.error)
         self.assertFalse(Subnet.objects.exists())
         self.assertFalse(SyncState.objects.exists())
+
+    def test_refused_direct_import_says_nothing_was_written(self):
+        with override_settings(PLUGINS_CONFIG=plugins_config(import_direct=False)):
+            run = self._run(MAIN)
+        self.assertEqual((run.status, run.summary), (SyncStatusChoices.FAILED, {"applied": 0}))
+        status = import_status.for_run(run, self.user)
+        self.assertEqual(status.applied, 0)
+
+    def test_rolled_back_changes_send_no_events(self):
+        user = get_user_model().objects.create_user(username=f"limited-{uuid.uuid4().hex[:6]}")
+        with mock.patch("netbox.context_managers.flush_events") as flush:
+            run = self._run(MAIN, user=user)
+        self.assertEqual(run.summary["applied"], 0)
+        sent = [event for call in flush.call_args_list for event in call.args[0]]
+        self.assertEqual(sent, [])
+
+    def test_subnet_ids_count_branches_imported_into_by_choice(self):
+        from django.db import connections
+        from netbox_branching.utilities import activate_branch
+
+        branch = self._user_branch()
+        self.assertEqual(self._run(CURRENT, branch="feature-x").status, SyncStatusChoices.COMPLETED)
+        with activate_branch(branch):
+            in_branch = Subnet.objects.get().subnet_id
+        connections[branch.connection_name].close()
+        # Another server imported straight into main afterwards must not reuse that ID.
+        self.server = windows_server(dhcp_servers(1, start=2)[0])
+        self.assertEqual(self._run(MAIN).status, SyncStatusChoices.COMPLETED)
+        self.assertGreater(Subnet.objects.get().subnet_id, in_branch)
 
     def test_protect_main_refuses_at_run_time(self):
         config = plugins_config(protect_main=(True, []))

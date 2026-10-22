@@ -44,7 +44,9 @@ the **Import** button on the Windows server page is a menu:
 | **Import directly** | main | none: the changes are in main once the job has run |
 
 **Import directly** first opens a page that names main as the destination and, when you work in a branch, says the
-import ignores that branch. Nothing is queued until you confirm. It is shown disabled, with the reason, when
+import ignores that branch. If an import branch for the server is still open, it says so too: importing into main
+as well writes the same objects twice, so merging that branch afterwards conflicts. Merge or delete it first, or
+import into it instead. Nothing is queued until you confirm. It is shown disabled, with the reason, when
 `import_direct` is off or when change control's `protect_main` covers DHCP and IPAM objects and you do not have
 `netbox_change_control.bypass_policy`.
 
@@ -57,7 +59,10 @@ reason; it never falls back to another one. Scheduled imports always use an impo
 
 Imports into main or into your own branch write as you: every object is checked against your permissions as it is
 saved, and a change you may not make (or that change control refuses) is rolled back and listed in the sync run,
-while the others stay. An import into main queues no push (NetBox then matches Windows) and records the objects it
+while the others stay. Event rules and webhooks only hear about the changes that stayed. New subnets get subnet IDs
+above those in main, in open import branches and in branches an import wrote into by choice, so merging any of
+them later does not collide. Your branch is checked again just before the import writes into it: if it has started
+merging (or is otherwise no longer ready) by then, nothing is written. An import into main queues no push (NetBox then matches Windows) and records the objects it
 wrote as managed, as applying a proposal does.
 
 The **Import** panel and the sync run say where each import went: the branch and its change request, the branch

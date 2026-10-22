@@ -250,11 +250,13 @@ class ImportJob(JobRunner):
         ) as exc:
             sync_run.status = SyncStatusChoices.FAILED
             sync_run.error = str(exc)
+            self._nothing_written(sync_run, destination)
             self.logger.error(f"Import from {server.host} failed: {exc}")
         except ValidationError as exc:
             # For example netbox-branching refusing a new branch once max_working_branches is reached.
             sync_run.status = SyncStatusChoices.FAILED
             sync_run.error = "; ".join(exc.messages)
+            self._nothing_written(sync_run, destination)
             self.logger.error(f"Import from {server.host} failed: {sync_run.error}")
         else:
             sync_run.summary = result.summary()
@@ -278,6 +280,13 @@ class ImportJob(JobRunner):
             sync_run.save()
         if sync_run.status == SyncStatusChoices.FAILED:
             raise JobFailed(sync_run.error)
+
+    @staticmethod
+    def _nothing_written(sync_run, destination):
+        # These errors all come before an import into main writes anything (each change's own errors are caught
+        # and counted), so the Import panel can say main was not touched. Anything else leaves it unsaid.
+        if destination == ImportDestinationChoices.MAIN:
+            sync_run.summary = {"applied": 0}
 
 
 class PushJob(JobRunner):

@@ -116,6 +116,7 @@ class WindowsVendorOptionFilter(NetBoxModelFilter):
 class SyncRunFilter(NetBoxModelFilter):
     kind: StrFilterLookup[str] | None = strawberry_django.filter_field()
     status: StrFilterLookup[str] | None = strawberry_django.filter_field()
+    destination: StrFilterLookup[str] | None = strawberry_django.filter_field()
     windows_server_id: strawberry_django.ComparisonFilterLookup[int] | None = strawberry_django.filter_field()
 
 

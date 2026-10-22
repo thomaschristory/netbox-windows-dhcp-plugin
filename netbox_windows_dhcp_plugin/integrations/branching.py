@@ -189,6 +189,12 @@ def import_destinations():
     return [D.PROPOSAL]
 
 
+def branch_ready(branch):
+    from netbox_branching.choices import BranchStatusChoices
+
+    return branch.status == BranchStatusChoices.READY
+
+
 def chosen_branch(name, user):
     """The ready branch called ``name`` that ``user`` may view, and None with the reason when there is none."""
     from netbox_branching.choices import BranchStatusChoices
@@ -307,6 +313,18 @@ def open_import_branch(windows_server, logger=log):
             logger.warning(f"Branch {branch.name} is behind main; sync it before merging")
         return branch
     return None
+
+
+def open_import_branch_name(windows_server):
+    """The name of the server's open import branch, or None. For warnings only, so a failed lookup says nothing."""
+    if not branching_installed():
+        return None
+    try:
+        branch = open_import_branch(windows_server)
+    except Exception:
+        log.exception("could not look for an open import branch of %s", windows_server)
+        return None
+    return branch.name if branch is not None else None
 
 
 def import_branch(name, user):
@@ -434,8 +452,8 @@ def subnet_id_allocation(also=None):
 
     sys4 numbers a new Subnet max(subnet_id) + 1 within the schema it is saved in. Two import branches would each
     start from main's maximum and both merge the same ID, which the unique constraint refuses at merge time. So
-    count from the highest ID in main and in every open import branch instead, and in ``also``, the branch being
-    written when it is not an import branch.
+    count from the highest ID in main and in every open import branch instead, and in every open branch an import
+    wrote into by the user's choice (#36), including ``also``, the branch being written.
     """
     import itertools
 
@@ -452,9 +470,16 @@ def subnet_id_allocation(also=None):
         cursor.execute("SELECT pg_advisory_lock(%s, %s)", list(_SUBNET_ID_LOCK))
     try:
         highest = Subnet.objects.aggregate(m=Max("subnet_id"))["m"] or 0
+        from django.db.models import Q
+
+        from ..choices import ImportDestinationChoices
+        from ..models import SyncRun
+
+        chosen = SyncRun.objects.filter(destination=ImportDestinationChoices.CURRENT).values("branch_name")
         others = list(
             Branch.objects.filter(
-                name__startswith=f"{get_setting('import_branch_prefix')}/", status=BranchStatusChoices.READY
+                Q(name__startswith=f"{get_setting('import_branch_prefix')}/") | Q(name__in=chosen),
+                status=BranchStatusChoices.READY,
             )
         )
         if also is not None and all(other.pk != also.pk for other in others):

@@ -29,7 +29,7 @@
         <div class="alert alert-info mb-2" role="status">
           <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
           {% trans "Import running. Nothing is final until it has finished." %}
-          {% if status.uses_branching %}{% trans "It writes into an import branch, not into main." %}{% elif status.direct %}{% trans "It writes directly into main." %}{% endif %}
+          {% if status.chosen_branch %}{% blocktrans with branch=status.run.branch_name %}It writes into branch {{ branch }}, not into main.{% endblocktrans %}{% elif status.uses_branching %}{% trans "It writes into an import branch, not into main." %}{% elif status.direct %}{% trans "It writes directly into main." %}{% endif %}
         </div>
       {% elif status.state == "failed" %}
         <div class="alert alert-danger mb-2" role="alert">

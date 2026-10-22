@@ -241,6 +241,8 @@ class WindowsServerImportView(WindowsServerTestConnectionView):
                 "object": server,
                 "form": forms.ImportConfirmForm(initial={"destination": ImportDestinationChoices.MAIN}),
                 "active_branch": branching.active_branch_name(),
+                # Writing main while an import branch holds the same objects makes that branch conflict on merge.
+                "open_import_branch": branching.open_import_branch_name(server),
                 "return_url": self.get_return_url(request, server),
                 "button_class": "warning",
             },
@@ -266,10 +268,15 @@ class WindowsServerImportView(WindowsServerTestConnectionView):
         if missing:
             messages.error(request, _("Importing needs the permission: {perms}").format(perms=", ".join(missing)))
             return redirect(self.get_return_url(request, server))
+        refusal = import_refusal(destination, request.user, branch)
+        if refusal:
+            messages.error(request, _("Import not queued: {reason}").format(reason=refusal))
+            return redirect(self.get_return_url(request, server))
         try:
             job = enqueue_import(server, request.user, destination, branch)
-        except ImportRefused as exc:
-            messages.error(request, _("Import not queued: {reason}").format(reason=exc))
+        except ImportRefused:
+            # Allowed a moment ago (a setting or permission changed in between): the next try says why.
+            messages.error(request, _("Import not queued: it was refused, try again"))
             return redirect(self.get_return_url(request, server))
         if job is None:
             messages.warning(request, _("An import from {server} is already queued or running").format(server=server))

@@ -247,10 +247,11 @@ A scheduled job per server (and a manual button) reads the full Windows state an
 **Choosing the destination (issue #36).** With branching, the user picks where an import writes: an import branch
 (the default and the only choice for scheduled imports), the branch they work in (`current`, named explicitly and
 checked against the active branch when posted; written with the user's object permissions, no change request), or
-main (`main`, behind a confirmation page; written under `deactivate_branch` and `event_tracking` as the user, so
+main (`main`, behind a confirmation page that also warns about an open import branch of the server; written under `deactivate_branch` and `event_tracking` as the user, so
 NetBox records them and change control's `protect_main` judges every save; per-object permission checks;
 `push_suppressed` and `SyncState` recorded as for proposal applies; subnet IDs from the same allocator as branch
-imports). Main is offered when `import_direct` is on and `protect_main` does not cover the imported models for a
+imports, which also counts branches named by `destination=current` sync runs). Each change runs in its own
+transaction, and a failed one drops the change log events it queued, so webhooks only see what stayed. Main is offered when `import_direct` is on and `protect_main` does not cover the imported models for a
 user without `bypass_policy`. `jobs.import_refusal()` checks the destination when it is queued and again when the job
 starts; a refused destination fails, never falls back. The destination is a job kwarg (plus `job.data` for the panel
 while queued) and `SyncRun.destination` (migration 0005). Without branching the only destination is `proposal`.

@@ -8,7 +8,7 @@ No Windows I/O here: the job reads the server and passes the ``WindowsState`` in
 
 import json
 import logging
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 
 from django.core.exceptions import ValidationError
@@ -107,6 +107,22 @@ class ImportResult:
         if self.notes:
             out["notes"] = self.notes
         return out
+
+
+@contextmanager
+def _one_change():
+    """
+    One change in its own transaction. If it fails, the change log events it queued are dropped too: the block that
+    tracks events sends them when it ends, and event rules and webhooks must not hear of objects rolled back.
+    """
+    from netbox.context import events_queue
+
+    queued = {key: dict(event) for key, event in events_queue.get().items()}
+    try:
+        yield
+    except APPLY_ERRORS:
+        events_queue.set(queued)
+        raise
 
 
 def _message(exc):
@@ -413,12 +429,18 @@ def _fill_branch(windows_server, user, branch, result, logger, on_branch, chosen
     changes = result.changes
     if on_branch is not None:
         on_branch(branch)
+    if chosen:
+        # Reading Windows takes a while: the user's branch may have started merging, or been archived, since the job
+        # checked it.
+        branch.refresh_from_db()
+        if not branching.branch_ready(branch):
+            raise branching.BranchError(f"branch {branch.name} is no longer ready: nothing was written")
 
     with branching.subnet_id_allocation(also=branch) as subnet_ids, branching.writing(branch, user):
         writer = Writer(windows_server, user=user if chosen else None, subnet_ids=subnet_ids)
         for change in changes:
             try:
-                with branching.atomic(branch):
+                with _one_change(), branching.atomic(branch):
                     writer.apply(change)
             except APPLY_ERRORS as exc:
                 message = f"{change.action} {change.kind} {change.key}: {_message(exc)}"
@@ -471,7 +493,7 @@ def import_to_main(windows_server, state, user, logger=log):
         writer = Writer(windows_server, user=user, subnet_ids=subnet_ids)
         for change in changes:
             try:
-                with transaction.atomic():
+                with _one_change(), transaction.atomic():
                     writer.apply(change)
                     _record_managed(windows_server, change)
             except APPLY_ERRORS as exc:

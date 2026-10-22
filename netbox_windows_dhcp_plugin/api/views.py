@@ -54,7 +54,7 @@ class WindowsServerViewSet(_viewset(models.WindowsServer, models.WindowsServer.o
         it, "proposal" without it. A destination that is unknown here is a 400; one the user may not use is a 403.
         """
         from ..integrations import branching
-        from ..jobs import ImportRefused, enqueue_import
+        from ..jobs import ImportRefused, enqueue_import, import_refusal
 
         server = self._changeable_server(request)
         data = request.data if hasattr(request.data, "get") else {}
@@ -69,10 +69,14 @@ class WindowsServerViewSet(_viewset(models.WindowsServer, models.WindowsServer.o
         missing = branching.missing_import_permissions(request.user, destination)
         if missing:
             raise PermissionDenied(f"importing needs the permission: {', '.join(missing)}")
+        refusal = import_refusal(destination, request.user, branch)
+        if refusal:
+            raise PermissionDenied(refusal)
         try:
             job = enqueue_import(server, request.user, destination, branch)
-        except ImportRefused as exc:
-            raise PermissionDenied(str(exc)) from None
+        except ImportRefused:
+            # Allowed a moment ago (a setting or permission changed in between): the next try says why.
+            raise PermissionDenied("the import was refused; try again") from None
         if job is None:
             return Response({"detail": "an import from this server is already queued or running"}, status=409)
         return Response(JobSerializer(job, context={"request": request}).data, status=202)

@@ -208,7 +208,8 @@ def for_server(server, user, now=None):
             status.next_branch = next_job.data.get("branch")
     if branching.branching_installed() and (status.branch is None or not status.branch.main_unchanged):
         # Keep an unmerged branch from an earlier run in sight after a run that failed or found nothing new.
-        earlier = runs.exclude(branch_name="")
+        # Only import branches: a branch the user chose to import into is their own work, not an import to merge.
+        earlier = runs.exclude(branch_name="").exclude(destination=ImportDestinationChoices.CURRENT)
         if status.branch is not None:
             earlier = earlier.exclude(branch_name=status.branch.name)
         earlier = earlier.values_list("branch_name", flat=True).first()
