@@ -185,11 +185,12 @@ class ImportStatusPanel(panels.ObjectPanel):
 
         ctx = super().get_context(context)
         obj = ctx["object"]
+        user = ctx["request"].user
         if isinstance(obj, SyncRun):
-            ctx["status"] = import_status.for_run(obj) if obj.kind == SyncKindChoices.IMPORT else None
+            ctx["status"] = import_status.for_run(obj, user) if obj.kind == SyncKindChoices.IMPORT else None
             ctx["refresh_url"] = None
         else:
-            ctx["status"] = import_status.for_server(obj)
+            ctx["status"] = import_status.for_server(obj, user)
             ctx["refresh_url"] = reverse(
                 "plugins:netbox_windows_dhcp_plugin:windowsserver_import_status", args=[obj.pk]
             )

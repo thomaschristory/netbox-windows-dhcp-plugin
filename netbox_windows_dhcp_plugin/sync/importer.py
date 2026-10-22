@@ -87,13 +87,15 @@ class ImportResult:
     applied: int = 0
     failed: list[str] = field(default_factory=list)
     branch: object = None
+    # Whether this run created its branch, rather than adding to the server's open import branch.
+    branch_created: bool = False
     proposal: ImportProposal | None = None
 
     def summary(self):
         counts = {a: sum(1 for c in self.changes if c.action == a) for a in (CREATE, UPDATE, DELETE)}
         out = {"changes": len(self.changes), **counts}
         if self.branch is not None:
-            out.update(applied=self.applied, failed=len(self.failed))
+            out.update(applied=self.applied, failed=len(self.failed), branch_created=self.branch_created)
         if self.notes:
             out["notes"] = self.notes
         return out
@@ -383,6 +385,7 @@ def _write_branch(windows_server, state, user, branch, logger, on_branch):
             windows_server, user, description=f"Changes found on Windows DHCP server {windows_server}"
         )
         logger.info(f"Created branch {branch.name}")
+        result.branch_created = True
     else:
         logger.info(f"Updating branch {branch.name}")
     result.branch = branch

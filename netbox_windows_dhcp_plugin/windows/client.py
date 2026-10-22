@@ -419,17 +419,31 @@ function ConvertTo-WdIPv4Number([string]$ip) {
     [BitConverter]::ToUInt32($b, 0)
 }
 # Windows refuses, with DHCP 20023, a range change that widens one end and narrows the other in the same call
-# (issue #30): widen to cover both ranges first, so the call below only narrows.
+# (issue #30), so such a change takes a first step that only narrows or only widens, and the call below the other.
+# unverified: the refusal when the start widens and the end narrows (the lab saw the other direction), and this
+# two-step sequence run as one script.
 $cur = Get-DhcpServerv4Scope @cn -ScopeId $p.scope_id
-$cs = ConvertTo-WdIPv4Number "$($cur.StartRange)"
-$ce = ConvertTo-WdIPv4Number "$($cur.EndRange)"
+$os = "$($cur.StartRange)"
+$oe = "$($cur.EndRange)"
+$cs = ConvertTo-WdIPv4Number $os
+$ce = ConvertTo-WdIPv4Number $oe
 $ns = ConvertTo-WdIPv4Number $p.start_range
 $ne = ConvertTo-WdIPv4Number $p.end_range
-if (($ns -lt $cs -and $ne -lt $ce) -or ($ns -gt $cs -and $ne -gt $ce)) {
-    $w = @{ ScopeId = $p.scope_id; StartRange = "$($cur.StartRange)"; EndRange = "$($cur.EndRange)" }
-    if ($ns -lt $cs) { $w['StartRange'] = $p.start_range }
-    if ($ne -gt $ce) { $w['EndRange'] = $p.end_range }
-    Set-DhcpServerv4Scope @cn @w
+$step = $null
+if ($ns -le $ne -and (($ns -lt $cs -and $ne -lt $ce) -or ($ns -gt $cs -and $ne -gt $ce))) {
+    if ($ns -le $ce -and $cs -le $ne) {
+        # The pools overlap: narrow to the overlap first. The pool never holds an address outside both the old and the
+        # new one, and anything the overlap refuses (an exclusion left outside, say) the new range refuses too.
+        $step = @{ ScopeId = $p.scope_id; StartRange = $os; EndRange = $oe }
+        if ($ns -gt $cs) { $step['StartRange'] = $p.start_range }
+        if ($ne -lt $ce) { $step['EndRange'] = $p.end_range }
+    } else {
+        # No overlap: the only way across is to widen over both pools for a moment.
+        $step = @{ ScopeId = $p.scope_id; StartRange = $os; EndRange = $oe }
+        if ($ns -lt $cs) { $step['StartRange'] = $p.start_range }
+        if ($ne -gt $ce) { $step['EndRange'] = $p.end_range }
+    }
+    Set-DhcpServerv4Scope @cn @step
 }
 $a = @{
     ScopeId       = $p.scope_id
@@ -443,7 +457,17 @@ $a = @{
 # No lease time means "keep the one the scope has" (for example an unlimited lease that cannot be read back).
 if ($null -ne $p.lease_seconds) { $a['LeaseDuration'] = [TimeSpan]::FromSeconds($p.lease_seconds) }
 Add-WdScopeExtras $a
-Set-DhcpServerv4Scope @cn @a
+try {
+    Set-DhcpServerv4Scope @cn @a
+} catch {
+    $err = $_
+    if ($null -ne $step) {
+        # Put the old range back, so a failed update leaves the pool as it was (both directions from the first step
+        # are one-way changes, which Windows accepts). The original error is what gets reported.
+        try { Set-DhcpServerv4Scope @cn -ScopeId $p.scope_id -StartRange $os -EndRange $oe } catch { }
+    }
+    throw $err
+}
 $out = ConvertTo-WdScope (Get-DhcpServerv4Scope @cn -ScopeId $p.scope_id)
 """,
 )
@@ -1590,9 +1614,10 @@ class DhcpClient:
     def set_scope(self, scope: Scope) -> Scope:
         """Update a scope. The subnet mask cannot change (remove and re-add instead).
 
-        A range that moves one bound out and the other in is set in two steps, widen then narrow, because Windows
-        refuses that change in one call (DHCP 20023). If the second step fails the scope keeps the wider range, and
-        the next dry run shows the range update still to do.
+        A range that moves one bound out and the other in is set in two steps, because Windows refuses that change in
+        one call (DHCP 20023): narrow to the overlap of the old and new pools, then widen (or, when they do not
+        overlap, widen over both, then narrow). If the second step fails, the old range is put back before the error
+        is raised.
         """
         return self._get(S_SCOPE_SET, _scope_params(scope), Scope)
 

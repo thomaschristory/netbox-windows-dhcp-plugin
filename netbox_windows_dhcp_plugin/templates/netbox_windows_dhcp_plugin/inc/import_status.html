@@ -34,18 +34,22 @@
       {% elif status.state == "failed" %}
         <div class="alert alert-danger mb-2" role="alert">
           {% trans "The import failed." %}
-          {% if status.branch_name and status.main_unchanged %}{% trans "Anything it wrote is in the branch below. Main has not been changed." %}{% endif %}
+          {% if status.branch.main_unchanged %}{% trans "Anything it wrote is in the branch below. Main has not been changed." %}{% endif %}
           {% if status.run.error %}<pre class="mb-0 mt-2 text-wrap">{{ status.run.error }}</pre>{% endif %}
         </div>
-      {% elif status.branch_name %}
+      {% elif status.branch %}
         <div class="alert alert-success mb-2" role="status">
-          {% if status.changes %}
-            {% blocktrans count n=status.changes %}Imported {{ n }} difference into a branch.{% plural %}Imported {{ n }} differences into a branch.{% endblocktrans %}
-          {% else %}
+          {% if not status.changes %}
             {% trans "No new differences since the last import: the branch below already holds them." %}
+          {% elif status.branch_created %}
+            {% blocktrans count n=status.changes %}Imported {{ n }} difference into a new branch.{% plural %}Imported {{ n }} differences into a new branch.{% endblocktrans %}
+          {% else %}
+            {% blocktrans count n=status.changes %}Added {{ n }} difference to the open import branch.{% plural %}Added {{ n }} differences to the open import branch.{% endblocktrans %}
           {% endif %}
-          {% if status.main_unchanged %}<strong>{% trans "Main has not been changed." %}</strong>{% endif %}
-          {% trans "Review the branch, then merge it to bring the changes into main." %}
+          {% if status.branch.main_unchanged %}
+            <strong>{% trans "Main has not been changed." %}</strong>
+            {% trans "Review the branch, then merge it to bring the changes into main." %}
+          {% endif %}
         </div>
       {% elif status.uses_branching %}
         <div class="alert alert-success mb-2" role="status">
@@ -55,30 +59,13 @@
         <div class="alert alert-success mb-2" role="status">
           {% blocktrans count n=status.changes|default:0 %}{{ n }} difference waits for review in an import proposal.{% plural %}{{ n }} differences wait for review in an import proposal.{% endblocktrans %}
         </div>
-      {% else %}
+      {% elif status.state == "completed" %}
         <div class="alert alert-success mb-2" role="status">{% trans "No differences found." %}</div>
       {% endif %}
 
       <table class="table table-hover attr-table mb-0">
-        {% if status.branch_name %}
-          <tr>
-            <th scope="row">{% trans "Branch" %}</th>
-            <td>
-              {% if status.branch %}
-                <a href="{{ status.branch.get_absolute_url }}">{{ status.branch_name }}</a>
-                <span class="badge text-bg-{{ status.branch.get_status_color }}">{{ status.branch.get_status_display }}</span>
-              {% else %}
-                <span class="font-monospace">{{ status.branch_name }}</span>
-                <span class="text-muted">{% trans "(no longer exists)" %}</span>
-              {% endif %}
-            </td>
-          </tr>
-          {% if status.change_request %}
-            <tr>
-              <th scope="row">{% trans "Change request" %}</th>
-              <td><a href="{{ status.change_request.get_absolute_url }}">{{ status.change_request }}</a></td>
-            </tr>
-          {% endif %}
+        {% if status.branch %}
+          {% include "netbox_windows_dhcp_plugin/inc/import_branch_rows.html" with info=status.branch label=_("Branch") %}
         {% elif status.proposal %}
           <tr>
             <th scope="row">{% trans "Import proposal" %}</th>
@@ -95,6 +82,15 @@
           <th scope="row">{% trans "Finished" %}</th>
           <td>{% if status.run.completed %}{{ status.run.completed|isodatetime }}{% else %}{{ None|placeholder }}{% endif %}</td>
         </tr>
+      </table>
+    {% endif %}
+
+    {% if status.earlier_branch %}
+      <p class="mt-3 mb-1">
+        {% trans "An earlier import's branch is still open. Main has not been changed by it." %}
+      </p>
+      <table class="table table-hover attr-table mb-0">
+        {% include "netbox_windows_dhcp_plugin/inc/import_branch_rows.html" with info=status.earlier_branch label=_("Open branch") %}
       </table>
     {% endif %}
   </div>

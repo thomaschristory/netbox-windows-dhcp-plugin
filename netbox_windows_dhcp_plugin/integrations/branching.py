@@ -215,30 +215,36 @@ def open_import_branch(windows_server, logger=log):
     return None
 
 
-def import_branch(name):
+def import_branch(name, user):
     """
-    The branch an import wrote into, and its change request, to link to: ``(branch, change_request)``.
+    The branch an import wrote into, and its change request, to link to: ``(branch, change_request, exists)``.
 
-    Either is None when it is gone (a merged branch may have been deleted), or when the plugin behind it is not
-    installed.
+    ``branch`` and ``change_request`` are None when they are gone (a merged branch may have been deleted), when
+    ``user`` may not view them, or when the plugin behind them is not installed. ``exists`` says whether the branch is
+    still there, visible to the user or not.
     """
     if not name or not branching_installed():
-        return None, None
+        return None, None, False
+    from django.db import DEFAULT_DB_ALIAS
     from netbox_branching.models import Branch
 
-    branch = Branch.objects.filter(name=name).first()
+    branch = Branch.objects.restrict(user, "view").filter(name=name).first()
+    exists = branch is not None or Branch.objects.filter(name=name).exists()
     change_request = None
     if change_control_installed():
         try:
             from netbox_change_control.models import ChangeRequest
         except ImportError:
-            return branch, None
+            return branch, None, exists
+        # Read from main even while the user has a branch active: change requests are created after the branch was
+        # provisioned, so a branch's own copy of the table (when they are not in exempt_models) never has them.
+        requests = ChangeRequest.objects.using(DEFAULT_DB_ALIAS).restrict(user, "view")
         if branch is not None:
-            change_request = ChangeRequest.objects.filter(branch=branch).first()
-        elif any(f.name == "branch_name" for f in ChangeRequest._meta.get_fields()):
+            change_request = requests.filter(branch_id=branch.pk).first()
+        elif not exists and any(f.name == "branch_name" for f in ChangeRequest._meta.get_fields()):
             # Change control keeps the branch name once the branch is deleted, so the review stays reachable.
-            change_request = ChangeRequest.objects.filter(branch_name=name).order_by("-pk").first()
-    return branch, change_request
+            change_request = requests.filter(branch_name=name).order_by("-pk").first()
+    return branch, change_request, exists
 
 
 def create_import_branch(windows_server, user, description):

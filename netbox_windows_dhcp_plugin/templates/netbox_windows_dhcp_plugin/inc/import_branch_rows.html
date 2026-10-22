@@ -1,0 +1,20 @@
+{% load i18n %}
+{# The branch rows of the Import panel. info: an import_status.BranchInfo, label: the first row's heading. #}
+<tr>
+  <th scope="row">{{ label }}</th>
+  <td>
+    {% if info.branch %}
+      <a href="{{ info.branch.get_absolute_url }}">{{ info.name }}</a>
+      <span class="badge text-bg-{{ info.branch.get_status_color }}">{{ info.branch.get_status_display }}</span>
+    {% else %}
+      <span class="font-monospace">{{ info.name }}</span>
+      {% if not info.exists %}<span class="text-muted">{% trans "(no longer exists)" %}</span>{% endif %}
+    {% endif %}
+  </td>
+</tr>
+{% if info.change_request %}
+  <tr>
+    <th scope="row">{% trans "Change request" %}</th>
+    <td><a href="{{ info.change_request.get_absolute_url }}">{{ info.change_request }}</a></td>
+  </tr>
+{% endif %}

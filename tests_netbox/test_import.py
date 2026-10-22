@@ -471,11 +471,21 @@ class BranchImportTest(ImportTestMixin, TransactionTestCase):
             branch_name=result.branch.name,
             summary=result.summary(),
         )
-        status = import_status.for_server(self.server)
-        self.assertEqual(status.branch.pk, result.branch.pk)
-        self.assertTrue(status.main_unchanged)
+        self.user.is_superuser = True
+        self.user.save()
+        self.assertTrue(result.summary()["branch_created"])
+        status = import_status.for_server(self.server, self.user)
+        self.assertEqual(status.branch.branch.pk, result.branch.pk)
+        self.assertTrue(status.branch.main_unchanged)
         if branching.change_control_installed() and get_setting("import_change_request"):
-            self.assertEqual(status.change_request.branch_id, result.branch.pk)
+            self.assertEqual(status.branch.change_request.branch_id, result.branch.pk)
+        # Someone who may view the server but not branches sees the name, not a link, and no "no longer exists".
+        nobody = get_user_model().objects.create_user(username=f"viewer-{uuid.uuid4().hex[:6]}")
+        hidden = import_status.for_server(self.server, nobody)
+        self.assertIsNone(hidden)  # nor the run itself
+        self.assertEqual(branching.import_branch(result.branch.name, nobody), (None, None, True))
+        again = importer.import_to_branch(self.server, self.state(), self.user)
+        self.assertFalse(again.summary().get("branch_created"))  # nothing new: the open branch is only read
 
     def test_branch_import_needs_a_user(self):
         from netbox_windows_dhcp_plugin.integrations.branching import BranchError
