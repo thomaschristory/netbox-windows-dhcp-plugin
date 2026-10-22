@@ -16,7 +16,7 @@ NetBox models, and NetBox IP addresses are not updated from them.
 | Client ID or DUID | The MAC address (IPv4) or DUID (DHCPv6) of the client |
 | IAID | DHCPv6 only |
 | Host name | As the client reported it |
-| State | The Windows address state, for example `Active` or `ActiveReservation` |
+| State | The Windows address state of an IPv4 lease, for example `Active` or `ActiveReservation`. Windows reports no state for DHCPv6 leases, so it shows n/a there |
 | Expires (UTC) | When the lease ends, as Windows reports it |
 | Description | The Windows lease description |
 

@@ -79,6 +79,8 @@ class LeaseJobTest(LeaseMixin, TestCase):
         (row,) = job.data["leases"]
         self.assertEqual((row["ip_address"], row["iaid"], row["host_name"]), ("2001:db8:1::1:10", 9, "pc6"))
         self.assertEqual(job.data["family"], 6)
+        # Windows has no DHCPv6 lease state (issue #22): none is kept, rather than an empty or borrowed one.
+        self.assertNotIn("address_state", row)
 
     def test_scope_missing_on_windows_fails_with_a_reason(self):
         self.fake.scopes.clear()
@@ -159,6 +161,18 @@ class LeaseTabTest(LeaseMixin, TestCase):
         self.assertContains(response, "pc20")
         self.assertContains(response, "&lt;script&gt;alert(1)&lt;/script&gt;")
         self.assertNotContains(response, "<script>alert(1)</script>")
+
+    def test_ipv6_lease_state_is_shown_as_unavailable(self):
+        self.run_job(self.subnet)
+        response = self.client.get(self.url)
+        self.assertContains(response, "<td>Active</td>")
+        self.assertNotContains(response, "Windows does not report a state for DHCPv6 leases")
+        self.run_job(self.subnet6)
+        url6 = reverse("plugins:netbox_dhcp:subnet_windows_leases", kwargs={"pk": self.subnet6.pk})
+        response = self.client.get(url6)
+        self.assertContains(response, "pc6")
+        self.assertContains(response, "Windows does not report a state for DHCPv6 leases")
+        self.assertContains(response, "n/a")
 
     def test_failure_is_shown(self):
         self.fake.scopes.clear()

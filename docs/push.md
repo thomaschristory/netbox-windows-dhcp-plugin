@@ -92,6 +92,8 @@ ordinary planned updates or deletes. The push refuses the change, goes on with t
 - Changes Windows only allows by removing the object with everything in it: a scope's subnet mask (the prefix length
   in NetBox), an option definition's type or array flag, removing a policy condition, a failover relationship's
   partner, or turning its message authentication off. Make them on Windows by hand, then import.
+- Policy conditions and contents Windows refuses: a wildcard anywhere but at the start or the end of a condition
+  value, and IP ranges (DHCP 20135) or ordinary option values (DHCP 20136) on a policy with an FQDN condition.
 - Turning failover message authentication on without a shared secret profile, or with a profile whose
   `allowed_hosts` does not cover both partners.
 - Deleting a scope with active leases: Windows refuses it (error DHCP 20007), and the plugin never forces it. Its

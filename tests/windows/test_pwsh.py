@@ -6,7 +6,8 @@ in $env:WD_CALLS. Skipped when pwsh is not installed (set $PWSH to point at one)
 
 The stubs only check that the scripts run and bind parameters the way the stubs
 declare them; parameter lists for the cmdlets the Go provider did not use are not
-verified against Windows.
+verified against Windows unless the stub cites a lab finding. The stubs also replace
+ConvertTo-Json to print "nothing" as {} the way Windows PowerShell 5.1 does (#15).
 """
 
 from __future__ import annotations
@@ -38,7 +39,15 @@ from netbox_windows_dhcp_plugin.windows.client import (
     ScopeV6,
     Superscope,
 )
-from netbox_windows_dhcp_plugin.windows.psscript import NotFound, PSError, Script, command_argv, decode_output, render
+from netbox_windows_dhcp_plugin.windows.psscript import (
+    NotFound,
+    PSError,
+    Script,
+    command_argv,
+    decode_output,
+    parse,
+    render,
+)
 from netbox_windows_dhcp_plugin.windows.runner import RunnerError, clean_stderr
 
 from .conftest import TESTDATA
@@ -417,6 +426,9 @@ def test_superscopes(pw: PwshRunner) -> None:
     with pytest.raises(ValueError, match="remove_superscope"):
         c.set_superscope(Superscope("A", []))
     assert c.rename_superscope("A", "B") == Superscope("B", ["10.1.20.0", "10.1.30.0"])
+    # Rename takes -Name and -NewName, not -SuperscopeName like Add and Remove (issue #14).
+    rn = find_call(pw.last_calls(), "Rename-DhcpServerv4Superscope")
+    assert (rn["Name"], rn["NewName"]) == ("A", "B") and "SuperscopeName" not in rn
     with pytest.raises(NotFound):
         c.get_superscope("nope")
     c.remove_superscope("A")
@@ -554,7 +566,7 @@ Add-DhcpServerv6Scope -Prefix 2001:db8:1:: -Name v6
     StartRange = [ipaddress]'2001:db8:1::1'; EndRange = [ipaddress]'2001:db8:1::ff' })
 [void]$global:V6Leases.Add([pscustomobject]@{ IPAddress = [ipaddress]'2001:db8:1::1:10'
     Prefix = [ipaddress]'2001:db8:1::'; ClientDuid = '00-01-00-01-aa-bb'; Iaid = [uint32]7; HostName = 'pc01'
-    AddressState = 'Active'; LeaseExpiryTime = [datetime]::new(2026, 10, 20, 8, 0, 0, [DateTimeKind]::Utc)
+    AddressType = 'IANA'; LeaseExpiryTime = [datetime]::new(2026, 10, 20, 8, 0, 0, [DateTimeKind]::Utc)
     Description = $null })
 """
     c = DhcpClient(pw)
@@ -563,5 +575,138 @@ Add-DhcpServerv6Scope -Prefix 2001:db8:1:: -Name v6
     (lease,) = c.list_v6_leases("2001:db8:1::")
     assert lease.iaid == 7 and lease.host_name == "pc01" and lease.lease_expiry_time == "2026-10-20T08:00:00Z"
     assert lease.description == ""
+    # Windows has no DHCPv6 lease state (issue #22); AddressType is not one, so nothing stands in for it.
+    assert "address_state" not in lease.to_dict()
     c.list_v6_option_values(prefix="2001:db8:1::", all=True)
     assert find_call(pw.last_calls(), "Get-DhcpServerv6OptionValue")["All"] is True
+
+
+# ---- issue #15: a getter for a missing object ----
+
+EMPTY_PIPELINE = "1 | Where-Object { $false } | Select-Object -First 1"
+
+
+def test_stubs_reproduce_the_windows_powershell_empty_object(pw: PwshRunner) -> None:
+    # Without the envelope's own handling, Windows PowerShell 5.1 prints {} for "nothing" (AutomationNull).
+    raw = pw.run("$out = " + EMPTY_PIPELINE + "\nConvertTo-Json -InputObject @{ ok = $true; data = $out } -Compress")
+    assert parse(raw) == (True, {})
+
+
+def test_envelope_turns_an_empty_result_into_null(pw: PwshRunner) -> None:
+    assert parse(pw.run(Script("t.empty", "$out = " + EMPTY_PIPELINE).wrap())) == (False, None)
+    # An empty list stays an empty list, and a real value is untouched.
+    assert parse(pw.run(Script("t.list", "$out = @(" + EMPTY_PIPELINE + ")").wrap())) == (True, [])
+    assert parse(pw.run(Script("t.value", "$out = [ordered]@{ a = 1 }").wrap())) == (True, {"a": 1})
+
+
+SEED_V6 = "Add-DhcpServerv6Scope -Prefix 2001:db8:1:: -Name v6\n"
+
+MISSING = {
+    "filter": lambda c: c.get_filter("aa-bb-cc-dd-ee-01"),
+    "superscope": lambda c: c.get_superscope("nope"),
+    "policy": lambda c: c.get_policy("nope", "10.1.20.0"),
+    "server policy": lambda c: c.get_policy("nope"),
+    "v6 scope": lambda c: c.get_v6_scope("2001:db8:9::"),
+    "class": lambda c: c.get_class("nope", "User"),
+    "reservation": lambda c: c.get_reservation("10.1.20.0", "10.1.20.77"),
+    "exclusion": lambda c: c.get_exclusion_range(ExclusionRange("10.1.20.0", "10.1.20.1", "10.1.20.2")),
+    "option": lambda c: c.get_option_value(OptionKey(15, scope_id="10.1.20.0")),
+    "reservation option": lambda c: c.get_option_value(OptionKey(15, "10.1.20.0", reserved_ip="10.1.20.5")),
+    "server option": lambda c: c.get_option_value(OptionKey(15)),
+    "option definition": lambda c: c.get_option_definition(252),
+    "failover": lambda c: c.get_failover("nope"),
+    "v6 reservation": lambda c: c.get_v6_reservation("2001:db8:1::", "2001:db8:1::99"),
+    "v6 option": lambda c: c.get_v6_option_value(OptionKeyV6(23, prefix="2001:db8:1::")),
+    "v6 reservation option": lambda c: c.get_v6_option_value(
+        OptionKeyV6(23, prefix="2001:db8:1::", reserved_ip="2001:db8:1::10")
+    ),
+}
+
+
+@pytest.mark.parametrize("getter", MISSING.values(), ids=MISSING.keys())
+def test_missing_objects_raise_not_found(pw: PwshRunner, getter) -> None:
+    pw.seed = SEED_SCOPE + SEED_V6
+    with pytest.raises(NotFound):
+        getter(DhcpClient(pw))
+
+
+# ---- issues #20 and #17: options on a reservation ----
+
+
+def test_stub_option_cmdlets_refuse_scope_and_reservation_together(pw: PwshRunner) -> None:
+    for body, msg in (
+        (
+            "Set-DhcpServerv4OptionValue @cn -ScopeId 10.1.20.0 -ReservedIP 10.1.20.5 -OptionId 15 -Value x",
+            "ScopeId and ReservedIP cannot be specified together",
+        ),
+        (
+            "Remove-DhcpServerv4OptionValue @cn -ScopeId 10.1.20.0 -ReservedIP 10.1.20.5 -OptionId 15",
+            "ScopeId and ReservedIP cannot be specified together",
+        ),
+        (
+            "Set-DhcpServerv6OptionValue @cn -Prefix 2001:db8:1:: -ReservedIP 2001:db8:1::10 -OptionId 23 -Value x",
+            "Prefix and ReservedIP cannot be specified together",
+        ),
+        (
+            "Remove-DhcpServerv6OptionValue @cn -Prefix 2001:db8:1:: -ReservedIP 2001:db8:1::10 -OptionId 23",
+            "Prefix and ReservedIP cannot be specified together",
+        ),
+    ):
+        with pytest.raises(PSError, match=msg) as ei:
+            parse(pw.run(Script("t.both", body).wrap()))
+        assert ei.value.category == "InvalidArgument" and not ei.value.not_found
+
+
+def test_reservation_option_is_named_by_its_ip_alone(pw: PwshRunner) -> None:
+    pw.seed = SEED_SCOPE
+    c = DhcpClient(pw)
+    k = OptionKey(15, scope_id="10.1.20.0", reserved_ip="10.1.20.5")
+    v = c.set_option_value(k, ["lab.example"])
+    # The scope stays in the result as context, although Windows is never sent it.
+    assert (v.value, v.scope_id, v.reserved_ip) == (["lab.example"], "10.1.20.0", "10.1.20.5")
+    calls = pw.last_calls()
+    st = find_call(calls, "Set-DhcpServerv4OptionValue")
+    assert st["ReservedIP"] == "10.1.20.5" and "ScopeId" not in st
+    assert "ScopeId" not in find_call(calls, "Get-DhcpServerv4OptionValue")
+
+    pw.seed = SEED_SCOPE + "Set-DhcpServerv4OptionValue -ReservedIP 10.1.20.5 -OptionId 15 -Value lab.example\n"
+    got = c.get_option_value(k)
+    assert (got.value, got.scope_id, got.reserved_ip) == (["lab.example"], "10.1.20.0", "10.1.20.5")
+    assert "ScopeId" not in find_call(pw.last_calls(), "Get-DhcpServerv4OptionValue")
+    (listed,) = c.list_option_values(scope_id="10.1.20.0", reserved_ip="10.1.20.5", all=True)
+    assert (listed.option_id, listed.scope_id, listed.reserved_ip) == (15, "10.1.20.0", "10.1.20.5")
+    assert "ScopeId" not in find_call(pw.last_calls(), "Get-DhcpServerv4OptionValue")
+    c.remove_option_value(k)
+    rm = find_call(pw.last_calls(), "Remove-DhcpServerv4OptionValue")
+    assert rm["ReservedIP"] == "10.1.20.5" and "ScopeId" not in rm
+
+    # Scope values still name their scope.
+    c.set_option_value(OptionKey(15, scope_id="10.1.20.0"), ["scope.example"])
+    st = find_call(pw.last_calls(), "Set-DhcpServerv4OptionValue")
+    assert st["ScopeId"] == "10.1.20.0" and "ReservedIP" not in st
+
+
+def test_v6_reservation_option_is_named_by_its_ip_alone(pw: PwshRunner) -> None:
+    pw.seed = SEED_V6
+    c = DhcpClient(pw)
+    k = OptionKeyV6(24, prefix="2001:db8:1::", reserved_ip="2001:db8:1::10")
+    v = c.set_v6_option_value(k, ["lab.example"])
+    assert (v.value, v.prefix, v.reserved_ip) == (["lab.example"], "2001:db8:1::", "2001:db8:1::10")
+    calls = pw.last_calls()
+    st = find_call(calls, "Set-DhcpServerv6OptionValue")
+    assert st["ReservedIP"] == "2001:db8:1::10" and "Prefix" not in st
+    assert "Prefix" not in find_call(calls, "Get-DhcpServerv6OptionValue")
+
+    pw.seed = SEED_V6 + "Set-DhcpServerv6OptionValue -ReservedIP 2001:db8:1::10 -OptionId 24 -Value lab.example\n"
+    got = c.get_v6_option_value(k)
+    assert (got.value, got.prefix, got.reserved_ip) == (["lab.example"], "2001:db8:1::", "2001:db8:1::10")
+    (listed,) = c.list_v6_option_values(prefix="2001:db8:1::", reserved_ip="2001:db8:1::10", all=True)
+    assert (listed.prefix, listed.reserved_ip) == ("2001:db8:1::", "2001:db8:1::10")
+    assert "Prefix" not in find_call(pw.last_calls(), "Get-DhcpServerv6OptionValue")
+    c.remove_v6_option_value(k)
+    rm = find_call(pw.last_calls(), "Remove-DhcpServerv6OptionValue")
+    assert rm["ReservedIP"] == "2001:db8:1::10" and "Prefix" not in rm
+
+    c.set_v6_option_value(OptionKeyV6(24, prefix="2001:db8:1::"), ["scope.example"])
+    st = find_call(pw.last_calls(), "Set-DhcpServerv6OptionValue")
+    assert st["Prefix"] == "2001:db8:1::" and "ReservedIP" not in st

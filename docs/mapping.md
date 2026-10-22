@@ -127,6 +127,10 @@ A **Policy** is server level (no subnet) or scope level (a subnet). It holds:
 
 Option values set for a policy carry the policy in their option qualifier (or vendor option value).
 
+Windows takes a wildcard only at the start or the end of a condition value: `*.example.com` and `00-15-5d*` are fine,
+`host*.example.com` is refused. A policy with an FQDN condition cannot hold IP ranges or ordinary option values on
+Windows (errors DHCP 20135 and 20136); use a MAC address or class condition for those.
+
 A policy without criteria is not pushed (Windows requires at least one), nor are two policies with the same
 processing order at the same level. Windows cannot clear a condition with an update, so a push refuses a removed
 condition; remove it on Windows and import.

@@ -9,6 +9,8 @@ import pytest
 
 from netbox_windows_dhcp_plugin.windows.client import (
     ALL_SCRIPTS,
+    S_SUPERSCOPE_RENAME,
+    S_V6LEASE_LIST,
     DhcpClass,
     DhcpClient,
     ExclusionRange,
@@ -336,3 +338,97 @@ def test_v6_option_list_all() -> None:
     c, r = new_client("ok_null.json")
     c.list_v6_option_values(prefix="2001:db8:1::", all=True)
     assert r.op == "v6option.list" and r.params["all"] is True
+
+
+# ---- issue #15: Windows PowerShell 5.1 printed {} for a missing object ----
+
+GETTERS = {
+    "scope": lambda c: c.get_scope("10.1.20.0"),
+    "reservation": lambda c: c.get_reservation("10.1.20.0", "10.1.20.5"),
+    "exclusion": lambda c: c.get_exclusion_range(ExclusionRange("10.1.20.0", "10.1.20.1", "10.1.20.9")),
+    "option": lambda c: c.get_option_value(OptionKey(15, scope_id="10.1.20.0")),
+    "reservation option": lambda c: c.get_option_value(OptionKey(15, "10.1.20.0", reserved_ip="10.1.20.5")),
+    "option definition": lambda c: c.get_option_definition(252),
+    "class": lambda c: c.get_class("phones", "User"),
+    "failover": lambda c: c.get_failover("fo"),
+    "superscope": lambda c: c.get_superscope("A"),
+    "filter": lambda c: c.get_filter("aa-bb-cc-dd-ee-ff"),
+    "filter lists": lambda c: c.get_filter_lists(),
+    "policy": lambda c: c.get_policy("printers", "10.1.20.0"),
+    "v6 scope": lambda c: c.get_v6_scope("2001:db8:1::"),
+    "v6 reservation": lambda c: c.get_v6_reservation("2001:db8:1::", "2001:db8:1::10"),
+    "v6 option": lambda c: c.get_v6_option_value(OptionKeyV6(23, prefix="2001:db8:1::")),
+    "add read-back": lambda c: c.add_filter(MacFilter("aa-bb-cc-dd-ee-ff", "Deny")),
+    "set read-back": lambda c: c.set_class(DhcpClass("phones", "User", "voip")),
+    "rename read-back": lambda c: c.rename_superscope("A", "B"),
+}
+
+
+@pytest.mark.parametrize("getter", GETTERS.values(), ids=GETTERS.keys())
+def test_empty_object_is_not_found(getter) -> None:
+    # The live shape of a missing object from a server before the envelope fix (ok_empty_object.json).
+    c, _ = new_client("ok_empty_object.json")
+    with pytest.raises(NotFound):
+        getter(c)
+
+
+def test_empty_object_is_not_a_list_item() -> None:
+    c, _ = new_client("ok_empty_object.json")
+    assert c.list_filters() == [] and c.list_superscopes() == []
+
+
+# ---- issues #20 and #17: options on a reservation are named by the reserved IP alone ----
+
+
+def test_reservation_option_sends_the_reserved_ip_alone() -> None:
+    c, r = new_client("option_get.json")
+    k = OptionKey(option_id=6, scope_id="10.1.20.0", reserved_ip="10.1.20.5")
+    got = c.get_option_value(k)
+    assert r.params["reserved_ip"] == "10.1.20.5" and r.params["scope_id"] == ""
+    assert (got.scope_id, got.reserved_ip) == ("10.1.20.0", "10.1.20.5")  # kept as context
+    got = c.set_option_value(k, ["10.0.0.53"])
+    assert r.op == "option.set" and r.params["scope_id"] == "" and r.params["reserved_ip"] == "10.1.20.5"
+    assert (got.scope_id, got.reserved_ip) == ("10.1.20.0", "10.1.20.5")
+    c.remove_option_value(k)
+    assert r.op == "option.remove" and r.params["scope_id"] == "" and r.params["reserved_ip"] == "10.1.20.5"
+    c, r = new_client("option_get.json")
+    (listed,) = c.list_option_values(scope_id="10.1.20.0", reserved_ip="10.1.20.5", all=True)
+    assert r.op == "option.list" and r.params["scope_id"] == "" and r.params["all"] is True
+    assert (listed.scope_id, listed.reserved_ip) == ("10.1.20.0", "10.1.20.5")
+    # A scope value still names its scope.
+    c.set_option_value(OptionKey(option_id=6, scope_id="10.1.20.0"), ["10.0.0.53"])
+    assert r.params["scope_id"] == "10.1.20.0" and r.params["reserved_ip"] == ""
+    # Even if both were passed, the script itself picks ReservedIP over ScopeId.
+    assert "if ($p.reserved_ip) { $sel['ReservedIP'] = $p.reserved_ip }\nelseif ($p.scope_id)" in r.script
+
+
+def test_v6_reservation_option_sends_the_reserved_ip_alone() -> None:
+    c, r = new_client("ok_object.json")
+    k = OptionKeyV6(option_id=23, prefix="2001:DB8:1::", reserved_ip="2001:db8:1::10")
+    got = c.set_v6_option_value(k, ["2001:db8::53"])
+    assert r.params["prefix"] == "" and r.params["reserved_ip"] == "2001:db8:1::10"
+    assert (got.prefix, got.reserved_ip) == ("2001:db8:1::", "2001:db8:1::10")
+    got = c.get_v6_option_value(k)
+    assert r.op == "v6option.get" and r.params["prefix"] == ""
+    assert (got.prefix, got.reserved_ip) == ("2001:db8:1::", "2001:db8:1::10")
+    c.remove_v6_option_value(k)
+    assert r.op == "v6option.remove" and r.params["prefix"] == "" and r.params["reserved_ip"] == "2001:db8:1::10"
+    c.set_v6_option_value(OptionKeyV6(option_id=23, prefix="2001:db8:1::"), ["2001:db8::53"])
+    assert r.params["prefix"] == "2001:db8:1::"
+    assert "if ($p.reserved_ip) { $sel['ReservedIP'] = $p.reserved_ip }\nelseif ($p.prefix)" in r.script
+
+
+# ---- issue #14 and #22 ----
+
+
+def test_superscope_rename_uses_name_and_new_name() -> None:
+    assert "Rename-DhcpServerv4Superscope @cn -Name $p.name -NewName $p.new_name" in S_SUPERSCOPE_RENAME.body
+    assert "-SuperscopeName" not in S_SUPERSCOPE_RENAME.body.split("Rename-DhcpServerv4Superscope", 1)[1]
+
+
+def test_v6_leases_have_no_state() -> None:
+    # Get-DhcpServerv6Lease has no AddressState on Windows Server 2025; AddressType is not a state.
+    assert "AddressState" not in S_V6LEASE_LIST.body and "AddressType" not in S_V6LEASE_LIST.body
+    c, _ = new_client("v6lease_list.json")
+    (lease,) = c.list_v6_leases("2001:db8:1::")
+    assert "address_state" not in lease.to_dict()

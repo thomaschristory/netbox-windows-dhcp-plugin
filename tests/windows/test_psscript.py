@@ -43,6 +43,13 @@ def test_wrap_and_op() -> None:
     assert op_of("no marker") == ""
 
 
+def test_wrap_turns_nothing_into_null_before_serialising() -> None:
+    # Windows PowerShell 5.1 prints AutomationNull as {} (issue #15); the envelope turns it into $null first.
+    s = Script("x", "$out = 1").wrap()
+    fix = s.index("if ($null -eq $out) { $out = $null }")
+    assert s.index("$null = . {") < fix < s.index("ConvertTo-Json -InputObject @{ ok = $true")
+
+
 def test_wrap_module_check() -> None:
     req = Requirement(module="DhcpServer", probe="Get-DhcpServerv4Scope", hint="Install it, it's easy.")
     s = Script("x", "$out = 1", req).wrap()

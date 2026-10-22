@@ -6,8 +6,8 @@ A NetBox plugin that keeps Microsoft Windows DHCP servers in step with the data 
 **Documentation: https://thomaschristory.github.io/netbox-windows-dhcp-plugin/**
 
 > **Status: pre-release.** Every v1 feature is built and tested against an in-memory fake server and PowerShell
-> stubs. Some cmdlets the plugin uses have not been checked against a real Windows server yet; they are marked
-> `# unverified:` in the code, and the lab tests that settle them are waiting for a lab server (see the
+> stubs. A first, partial lab run against Windows Server 2025 checked part of the cmdlets and its findings are fixed.
+> The cmdlets it did not reach are still marked `# unverified:` in the code until the rest of the lab tests run (see the
 > [roadmap](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/blob/main/docs/ROADMAP.md) and
 > [limitations](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/limitations/)). Try it on a lab server
 > first.

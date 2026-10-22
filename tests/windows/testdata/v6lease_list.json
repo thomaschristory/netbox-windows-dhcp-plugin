@@ -1,1 +1,1 @@
-{"ok":true,"data":[{"ip_address":"2001:db8:1::1:10","prefix":"2001:db8:1::","client_duid":"00-01-00-01-2a-bc-de-f0-00-15-5d-01-02-03","iaid":33554432,"host_name":"pc01.example.local","address_state":"Active","lease_expiry_time":"2026-10-20T08:00:00Z"}]}
+{"ok":true,"data":[{"ip_address":"2001:db8:1::1:10","prefix":"2001:db8:1::","client_duid":"00-01-00-01-2a-bc-de-f0-00-15-5d-01-02-03","iaid":33554432,"host_name":"pc01.example.local","lease_expiry_time":"2026-10-20T08:00:00Z","description":""}]}

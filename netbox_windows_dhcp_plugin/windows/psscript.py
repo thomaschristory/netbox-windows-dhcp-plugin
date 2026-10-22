@@ -116,6 +116,12 @@ class Script:
         visible) and discards anything it writes to the pipeline, so only the one JSON
         document reaches stdout. The module check throws with a generic category, so a
         missing module is never mistaken for not-found.
+
+        ``$out = <a pipeline with no output>`` leaves ``$out`` holding AutomationNull
+        rather than ``$null``. Windows PowerShell 5.1, which runs the scripts on the DHCP
+        server, writes that as ``{}`` (pwsh 7 writes ``null``), so a missing object looked
+        like an empty one (issue #15). ``$null -eq $out`` is true for both kinds of
+        nothing but false for an empty array, so lists keep their ``[]``.
         """
         parts = [OP_PREFIX + self.op + "\n", "try {\n    $out = $null\n"]
         if self.requires is not None:
@@ -134,6 +140,7 @@ class Script:
         parts.append(
             "\n"
             "    }\n"
+            "    if ($null -eq $out) { $out = $null }\n"
             "    ConvertTo-Json -InputObject @{ ok = $true; data = $out } -Depth 8 -Compress\n"
             "} catch {\n"
             "    $e = $_\n"

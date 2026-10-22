@@ -46,12 +46,14 @@ def rows(leases, family):
             "ip_address": lease.ip_address,
             "client": lease.client_duid if family == 6 else lease.client_id,
             "host_name": lease.host_name,
-            "address_state": lease.address_state,
             "lease_expiry_time": lease.lease_expiry_time,
             "description": lease.description,
         }
         if family == 6:
+            # Windows reports no state for a DHCPv6 lease (issue #22): the panel shows "n/a" for it.
             row["iaid"] = lease.iaid
+        else:
+            row["address_state"] = lease.address_state
         out.append(row)
     out.sort(key=_sort_key)
     return out[:LEASE_LIMIT], len(out)

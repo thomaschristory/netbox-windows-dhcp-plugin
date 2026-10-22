@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from netbox_windows_dhcp_plugin.windows import client as wc
 from netbox_windows_dhcp_plugin.windows import normalize
 
@@ -60,10 +62,16 @@ def test_v6_reservation_exclusion_lease_and_options(lab: Lab, probe_out) -> None
     r.description = "changed"
     assert lab.client.set_v6_reservation(r).description == "changed"
 
-    # Option on the reservation: -Prefix and -ReservedIP together?
-    ov = lab.client.set_v6_option_value(wc.OptionKeyV6(24, prefix=V6_PREFIX, reserved_ip=ip), ["lab.example"])
-    assert ov.value == ["lab.example"]
+    # Option on the reservation: Windows takes -ReservedIP alone on Set and Remove (issue #17); the prefix stays in
+    # what the client returns.
+    k = wc.OptionKeyV6(24, prefix=V6_PREFIX, reserved_ip=ip)
+    ov = lab.client.set_v6_option_value(k, ["lab.example"])
+    assert (ov.value, ov.prefix, ov.reserved_ip) == (["lab.example"], V6_PREFIX, ip)
+    assert lab.client.get_v6_option_value(k).value == ["lab.example"]
     assert [x.value for x in lab.client.list_v6_option_values(prefix=V6_PREFIX, reserved_ip=ip)] == [["lab.example"]]
+    lab.client.remove_v6_option_value(k)
+    with pytest.raises(wc.NotFound):
+        lab.client.get_v6_option_value(k)
 
     lab.raw(
         "probe.v6excl",
@@ -93,7 +101,8 @@ def test_v6_reservation_exclusion_lease_and_options(lab: Lab, probe_out) -> None
     lease = leases[0]
     assert lease.iaid == 9 and lease.client_duid
     assert lease.host_name == "nbwd-test-v6lease"
-    assert lease.address_state
+    # Windows reports no state for a DHCPv6 lease (issue #22), so the client keeps none.
+    assert "address_state" not in lease.to_dict()
     assert lease.lease_expiry_time.endswith("Z")
 
 
