@@ -135,5 +135,5 @@ is tagged.
    version and date.
 2. `make dist`, merge to main.
 3. Tag `vX.Y.Z` on main and push the tag. The release workflow checks the tag is on main, builds, and publishes to
-   PyPI through trusted publishing after a maintainer approves the `pypi` environment; the docs workflow publishes the
-   site.
+   PyPI through trusted publishing (the `pypi` environment only accepts `v*` tags, with no manual approval); the docs
+   workflow publishes the site.
