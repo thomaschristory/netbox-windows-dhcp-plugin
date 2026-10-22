@@ -244,6 +244,17 @@ A scheduled job per server (and a manual button) reads the full Windows state an
 
 **Without branching (proposal).** The job writes an `ImportProposal` with one item per difference (create, update or delete, with before and after values). A review page shows the diff; reviewers apply or dismiss items one by one or in bulk. Applying writes to NetBox as the reviewing user, so the change log shows who accepted it. Applying does not trigger a push back, since the objects then match Windows.
 
+**Choosing the destination (issue #36).** With branching, the user picks where an import writes: an import branch
+(the default and the only choice for scheduled imports), the branch they work in (`current`, named explicitly and
+checked against the active branch when posted; written with the user's object permissions, no change request), or
+main (`main`, behind a confirmation page; written under `deactivate_branch` and `event_tracking` as the user, so
+NetBox records them and change control's `protect_main` judges every save; per-object permission checks;
+`push_suppressed` and `SyncState` recorded as for proposal applies; subnet IDs from the same allocator as branch
+imports). Main is offered when `import_direct` is on and `protect_main` does not cover the imported models for a
+user without `bypass_policy`. `jobs.import_refusal()` checks the destination when it is queued and again when the job
+starts; a refused destination fails, never falls back. The destination is a job kwarg (plus `job.data` for the panel
+while queued) and `SyncRun.destination` (migration 0005). Without branching the only destination is `proposal`.
+
 **Repeated runs.** If an open import branch or proposal already exists for a server, the job updates it instead of opening another.
 
 **Where the result is (issue #32).** The Windows server page has an Import panel (`import_status.py`) built from the latest import `SyncRun` and any newer import job that has not started its run yet. It tells queued and running apart from finished, and refreshes itself over HTMX until the job ends. With branching it names and links the branch (`SyncRun.branch_name`, looked up in `integrations/branching.import_branch()`) and its change request, and says main has not changed while the branch is unmerged, telling a new branch from one the run added to (`branch_created` in the run summary); after a run that wrote no branch it still shows an earlier run's open branch. Without branching it links the import proposal and never mentions a branch. Everything is read as the viewing user (runs, jobs, proposals, branches and change requests they may not view are left out; change requests are read from main even inside a branch), and a job or run still claiming to run after `ABANDONED_JOB` counts as failed, so the panel stops polling. The sync run page shows the same panel for its own run.

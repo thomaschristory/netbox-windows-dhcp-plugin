@@ -148,6 +148,26 @@ class SyncKindChoices(ChoiceSet):
     ]
 
 
+class ImportDestinationChoices(ChoiceSet):
+    """Where an import writes what it found (issue #36)."""
+
+    # An import branch (netbox-branching), reviewed and merged like any branch.
+    BRANCH = "branch"
+    # The branch the user was working in when they asked, instead of a new import branch.
+    CURRENT = "current"
+    # Straight into main, chosen on purpose by someone allowed to change main (netbox-branching installed).
+    MAIN = "main"
+    # An import proposal for review (without netbox-branching).
+    PROPOSAL = "proposal"
+
+    CHOICES = [
+        (BRANCH, _("Import branch"), "purple"),
+        (CURRENT, _("Chosen branch"), "cyan"),
+        (MAIN, _("Main"), "orange"),
+        (PROPOSAL, _("Import proposal"), "blue"),
+    ]
+
+
 class SyncStatusChoices(ChoiceSet):
     PENDING = "pending"
     RUNNING = "running"

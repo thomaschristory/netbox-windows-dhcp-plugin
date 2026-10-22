@@ -37,7 +37,7 @@ says why; see [Troubleshooting](troubleshooting.md#connection) for the usual cau
 
 ## 4. Import
 
-Click **Import now**.
+Click **Import now** (with netbox-branching: **Import > Import into branch**).
 
 - **With netbox-branching**, the job creates a branch named `dhcp-import/dhcp01/<timestamp>` and writes everything it
   found into it. With netbox-change-control it also opens a change request. Open the branch, review its diff, and

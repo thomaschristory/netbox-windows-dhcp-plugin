@@ -49,11 +49,17 @@ or find its sync run with `GET /api/plugins/windows-dhcp/sync-runs/?windows_serv
 | Action | Request | Answers |
 |---|---|---|
 | Test connection | `POST windows-servers/<id>/test-connection/` | 202 |
-| Import | `POST windows-servers/<id>/import/` | 202; 409 when an import is already queued or running; 403 when branching permissions are missing |
+| Import | `POST windows-servers/<id>/import/`, optionally with `{"destination": ...}` (below) | 202; 409 when an import is already queued or running; 400 for a destination not available here; 403 when permissions are missing or the destination is refused |
 | Push (Sync now) | `POST windows-servers/<id>/push/` | 202; 409 when sync is disabled or a push is already waiting |
 | Dry run | `POST windows-servers/<id>/dry-run/` | 202; 409 when a dry run is already waiting |
 
 All of them need a token that may write and `change` on the server; a server the user may not change answers 404.
+
+The import's `destination` is where it writes (see [Import](import.md#choosing-where-an-import-writes)). With
+netbox-branching: `branch` (the default: the server's open import branch, or a new one), `current` (the branch named
+in `branch`, or the branch the request works in, for example through the `X-NetBox-Branch` header) or `main`. Without
+it: `proposal` (the default). A refused destination is never swapped for another one. The sync run records the
+destination, and the job's `data` holds it from the moment the import is queued.
 
 ```bash
 curl -s -X POST https://netbox.example/api/plugins/windows-dhcp/windows-servers/1/dry-run/ \

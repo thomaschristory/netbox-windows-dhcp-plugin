@@ -47,6 +47,12 @@ Import (Windows to NetBox)
   against netbox-plugin-dhcp's standard DHCPv6 definitions. DHCPv6 vendor classes and values, other option codes and
   exclusion ranges are noted and left alone.
 - Option values containing a comma, stored as `\,` (Kea's escape).
+- With netbox-branching, the **Import** button is a menu: **Import into branch** (an import branch, the default),
+  **Import into this branch** (the branch you work in, no new branch) and **Import directly** (into main, after a
+  confirmation page, with your permissions checked object by object and change control's `protect_main` respected;
+  the new `import_direct` setting turns it off). The REST import action takes the same choice as `destination`. Sync
+  runs record where each import wrote (new **Destination** column and filter), and the Import panel says so while
+  the import is queued, running and done (#36).
 - With netbox-branching, each import writes into a branch `dhcp-import/<server>/<timestamp>` (reused while open) and,
   with netbox-change-control, opens a change request submitted for review.
 - Without branching, each import fills an import proposal whose items are applied or dismissed one by one, in bulk

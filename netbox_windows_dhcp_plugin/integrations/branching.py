@@ -50,6 +50,18 @@ def in_branch():
     return active_branch.get() is not None
 
 
+def active_branch_name():
+    """The name of the branch the request works in, or None on main."""
+    if not branching_installed():
+        return None
+    try:
+        from netbox_branching.contextvars import active_branch
+    except ImportError:
+        return None
+    branch = active_branch.get()
+    return branch.name if branch is not None else None
+
+
 def change_control_installed():
     return apps.is_installed("netbox_change_control")
 
@@ -165,9 +177,91 @@ def job_kwargs():
     return {"job_timeout": get_plugin_config("netbox_branching", "job_timeout")}
 
 
-def missing_import_permissions(user):
-    """Permissions a user needs to start an import that will open a branch (and change request), and lacks."""
+def import_destinations():
+    """
+    Where an import may write here, the default (and safe) one first: an import branch, a branch the user names (the
+    one they work in), or main when chosen on purpose, with netbox-branching; an import proposal without it.
+    """
+    from ..choices import ImportDestinationChoices as D
+
+    if branching_installed():
+        return [D.BRANCH, D.CURRENT, D.MAIN]
+    return [D.PROPOSAL]
+
+
+def chosen_branch(name, user):
+    """The ready branch called ``name`` that ``user`` may view, and None with the reason when there is none."""
+    from netbox_branching.choices import BranchStatusChoices
+    from netbox_branching.models import Branch
+
+    if not name:
+        return None, "name the branch to import into"
+    branch = Branch.objects.restrict(user, "view").filter(name=name).first()
+    if branch is None:
+        return None, f"branch {name!r} does not exist or you may not view it"
+    if branch.status != BranchStatusChoices.READY:
+        return None, f"branch {name!r} is not ready ({branch.get_status_display()})"
+    return branch, None
+
+
+# Models an import writes, as protect_main_scope entries would name them: netbox-plugin-dhcp, the core objects it
+# needs, and this plugin's own branchable models.
+_IMPORT_MODELS = (
+    "netbox_dhcp.",
+    "ipam.prefix",
+    "ipam.iprange",
+    "ipam.ipaddress",
+    "dcim.macaddress",
+    "netbox_windows_dhcp_plugin.",
+)
+
+
+def _protect_main_covers_imports():
+    from netbox.plugins.utils import get_plugin_config
+
+    if not get_plugin_config("netbox_change_control", "protect_main"):
+        return False
+    scope = [str(entry).lower() for entry in get_plugin_config("netbox_change_control", "protect_main_scope") or []]
+    if not scope:
+        return True
+    for entry in scope:
+        label = entry[:-1] if entry.endswith("*") else entry
+        if any(m.startswith(label) or label.startswith(m) for m in _IMPORT_MODELS):
+            return True
+    return False
+
+
+def direct_import_refusal(user):
+    """
+    Why ``user`` may not import straight into main, or None. Direct imports skip the branch review, so they are only
+    offered where a direct edit of main would be allowed too.
+    """
+    from ..conf import get_setting
+
     if not branching_installed():
+        return "importing directly into main is only offered with netbox-branching"
+    if not get_setting("import_direct"):
+        return "direct imports are turned off (the import_direct setting)"
+    if change_control_installed():
+        try:
+            covered = _protect_main_covers_imports()
+        except Exception:
+            # Change control's settings could not be read: assume main is protected rather than bypass it.
+            log.exception("could not read netbox-change-control's protect_main settings")
+            covered = True
+        if covered and not user.has_perm("netbox_change_control.bypass_policy"):
+            return "change control protects main (protect_main): import into a branch"
+    return None
+
+
+def missing_import_permissions(user, destination=None):
+    """
+    Permissions a user needs to start an import into ``destination`` (the default when None), and lacks. A branch
+    import needs to open a branch (and change request); writing into main is checked object by object as it saves.
+    """
+    from ..choices import ImportDestinationChoices
+
+    if not branching_installed() or destination in (ImportDestinationChoices.MAIN, ImportDestinationChoices.CURRENT):
         return []
     from ..conf import get_setting
 
@@ -308,18 +402,40 @@ def writing(branch, user):
         yield
 
 
+@contextmanager
+def on_main():
+    """Read and write main, whatever branch is active: a direct import must never land in a branch by accident."""
+    from netbox_branching.utilities import deactivate_branch
+
+    with deactivate_branch():
+        yield
+
+
+@contextmanager
+def writing_main(user):
+    """
+    Write into main with change tracking, as ``user``: the change log shows who imported, and change control's
+    protect_main judges the writes against that user, as it would their own edits.
+    """
+    from netbox.context_managers import event_tracking
+
+    with on_main(), event_tracking(_request(user)):
+        yield
+
+
 # Advisory lock (two numbers) serialising branch-mode imports while they allocate subnet IDs.
 _SUBNET_ID_LOCK = (0x57444843, 0)
 
 
 @contextmanager
-def subnet_id_allocation():
+def subnet_id_allocation(also=None):
     """
     Yield an iterator of free netbox-plugin-dhcp subnet IDs, while holding a lock other imports wait on.
 
     sys4 numbers a new Subnet max(subnet_id) + 1 within the schema it is saved in. Two import branches would each
     start from main's maximum and both merge the same ID, which the unique constraint refuses at merge time. So
-    count from the highest ID in main and in every open import branch instead.
+    count from the highest ID in main and in every open import branch instead, and in ``also``, the branch being
+    written when it is not an import branch.
     """
     import itertools
 
@@ -336,9 +452,13 @@ def subnet_id_allocation():
         cursor.execute("SELECT pg_advisory_lock(%s, %s)", list(_SUBNET_ID_LOCK))
     try:
         highest = Subnet.objects.aggregate(m=Max("subnet_id"))["m"] or 0
-        others = Branch.objects.filter(
-            name__startswith=f"{get_setting('import_branch_prefix')}/", status=BranchStatusChoices.READY
+        others = list(
+            Branch.objects.filter(
+                name__startswith=f"{get_setting('import_branch_prefix')}/", status=BranchStatusChoices.READY
+            )
         )
+        if also is not None and all(other.pk != also.pk for other in others):
+            others.append(also)
         for other in others:
             try:
                 with activate_branch(other):

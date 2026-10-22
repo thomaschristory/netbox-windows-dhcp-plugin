@@ -6,14 +6,14 @@
     {% if status.next_state == "queued" %}
       <div class="alert alert-info" role="status">
         {% blocktrans with id=status.next_job.pk %}Import queued (job #{{ id }}). Nothing has been imported yet.{% endblocktrans %}
-        {% if status.uses_branching %}{% trans "It will write into an import branch, not into main." %}{% endif %}
+        {% if status.next_destination == "branch" %}{% trans "It will write into an import branch, not into main." %}{% elif status.next_destination == "current" %}{% blocktrans with branch=status.next_branch %}It will write into branch {{ branch }}, not into main.{% endblocktrans %}{% elif status.next_destination == "main" %}{% trans "It will write directly into main." %}{% endif %}
         <a href="{{ status.next_job.get_absolute_url }}">{% trans "Job" %}</a>
       </div>
     {% elif status.next_state == "running" %}
       <div class="alert alert-info" role="status">
         <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
         {% blocktrans with id=status.next_job.pk %}Import running (job #{{ id }}).{% endblocktrans %}
-        {% if status.uses_branching %}{% trans "It writes into an import branch, not into main." %}{% endif %}
+        {% if status.next_destination == "branch" %}{% trans "It writes into an import branch, not into main." %}{% elif status.next_destination == "current" %}{% blocktrans with branch=status.next_branch %}It writes into branch {{ branch }}, not into main.{% endblocktrans %}{% elif status.next_destination == "main" %}{% trans "It writes directly into main." %}{% endif %}
         <a href="{{ status.next_job.get_absolute_url }}">{% trans "Job" %}</a>
       </div>
     {% elif status.next_state == "failed" %}
@@ -29,17 +29,41 @@
         <div class="alert alert-info mb-2" role="status">
           <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
           {% trans "Import running. Nothing is final until it has finished." %}
-          {% if status.uses_branching %}{% trans "It writes into an import branch, not into main." %}{% endif %}
+          {% if status.uses_branching %}{% trans "It writes into an import branch, not into main." %}{% elif status.direct %}{% trans "It writes directly into main." %}{% endif %}
         </div>
       {% elif status.state == "failed" %}
         <div class="alert alert-danger mb-2" role="alert">
           {% trans "The import failed." %}
           {% if status.branch.main_unchanged %}{% trans "Anything it wrote is in the branch below. Main has not been changed." %}{% endif %}
+          {% if status.direct %}
+            {% if status.applied is None %}
+              {% trans "Anything it wrote before failing stays in main: see the change log." %}
+            {% elif status.applied %}
+              {% blocktrans count n=status.applied %}It wrote {{ n }} change into main; the changes below failed.{% plural %}It wrote {{ n }} changes into main; the changes below failed.{% endblocktrans %}
+            {% else %}
+              {% trans "Nothing was written into main." %}
+            {% endif %}
+          {% endif %}
           {% if status.run.error %}<pre class="mb-0 mt-2 text-wrap">{{ status.run.error }}</pre>{% endif %}
+        </div>
+      {% elif status.direct %}
+        <div class="alert alert-success mb-2" role="status">
+          {% if not status.changes %}
+            {% trans "No differences found: main already matches Windows." %}
+          {% else %}
+            {% blocktrans count n=status.changes %}Imported {{ n }} difference directly into main.{% plural %}Imported {{ n }} differences directly into main.{% endblocktrans %}
+            {% trans "No branch or change request was used." %}
+          {% endif %}
         </div>
       {% elif status.branch %}
         <div class="alert alert-success mb-2" role="status">
-          {% if not status.changes %}
+          {% if status.chosen_branch %}
+            {% if not status.changes %}
+              {% trans "No differences found: the branch below already matches Windows." %}
+            {% else %}
+              {% blocktrans count n=status.changes %}Imported {{ n }} difference into the branch you chose.{% plural %}Imported {{ n }} differences into the branch you chose.{% endblocktrans %}
+            {% endif %}
+          {% elif not status.changes %}
             {% trans "No new differences since the last import: the branch below already holds them." %}
           {% elif status.branch_created %}
             {% blocktrans count n=status.changes %}Imported {{ n }} difference into a new branch.{% plural %}Imported {{ n }} differences into a new branch.{% endblocktrans %}
@@ -64,7 +88,12 @@
       {% endif %}
 
       <table class="table table-hover attr-table mb-0">
-        {% if status.branch %}
+        {% if status.direct %}
+          <tr>
+            <th scope="row">{% trans "Destination" %}</th>
+            <td><span class="badge text-bg-{{ status.run.get_destination_color }}">{% trans "Main" %}</span></td>
+          </tr>
+        {% elif status.branch %}
           {% include "netbox_windows_dhcp_plugin/inc/import_branch_rows.html" with info=status.branch label=_("Branch") %}
         {% elif status.proposal %}
           <tr>

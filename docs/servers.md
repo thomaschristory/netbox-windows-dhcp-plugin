@@ -42,10 +42,12 @@ permission on the Windows server (see [Permissions](permissions.md)).
 Connects, checks that the `DhcpServer` PowerShell module is there, and counts the IPv4 scopes. Use it after every
 change to the connection settings.
 
-### Import now
+### Import (Import now)
 
-Reads the whole server and brings the differences into NetBox, as a branch or an import proposal. See
-[Import](import.md). Refused while another import of the same server is queued or running. The **Import** panel on
+Reads the whole server and brings the differences into NetBox. Without netbox-branching the button is **Import now**
+and writes an import proposal. With it, **Import** opens a menu: **Import into branch** (an import branch, the
+default), **Import into this branch** (only while you work in a branch) and **Import directly** (into main, after a
+confirmation). See [Import](import.md#choosing-where-an-import-writes). Refused while another import of the same server is queued or running. The **Import** panel on
 the server page shows whether it is queued, running or done, and where the result went.
 
 ### Sync now

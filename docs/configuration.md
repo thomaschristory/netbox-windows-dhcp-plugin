@@ -15,6 +15,7 @@ environment variables and the files they name exist for both.
 | `reservation_name_template` | `'{server}/{scope_id}/{ip_address}'` | Name of reservations created by imports |
 | `import_branch_prefix` | `'dhcp-import'` | Branches created by imports are named `<prefix>/<server>/<timestamp>` |
 | `import_change_request` | `True` | Open a change request for each import branch when netbox-change-control is installed |
+| `import_direct` | `True` | With netbox-branching, offer **Import directly** (an import written straight into main). `False` allows branch imports only. Change control's `protect_main` applies either way |
 | `import_user` | `None` | User name [scheduled imports](import.md#scheduled-imports) run as. With branching, scheduled imports fail without it |
 | `push_debounce` | `10` | Seconds to wait after a save before pushing, so a burst of edits becomes one push (saves outside branching) |
 | `max_concurrency` | `4` | PowerShell commands one job runs at the same time against a server |

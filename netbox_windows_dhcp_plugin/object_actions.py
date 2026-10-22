@@ -44,7 +44,10 @@ class TestConnection(_PostAction):
 
 
 class ImportNow(_PostAction):
-    """Queue an import from a Windows server."""
+    """
+    Queue an import from a Windows server. With netbox-branching, a dropdown to choose where it writes: an import
+    branch (the safe default) or straight into main (issue #36), shown disabled with the reason when not allowed.
+    """
 
     name = "import"
     label = _("Import now")
@@ -52,6 +55,21 @@ class ImportNow(_PostAction):
     url_kwargs = ["pk"]
     icon = "mdi-database-import-outline"
     color = "purple"
+    template_name = "netbox_windows_dhcp_plugin/buttons/import.html"
+
+    @classmethod
+    def get_context(cls, context, obj):
+        from .choices import ImportDestinationChoices
+        from .integrations import branching
+
+        choices = ImportDestinationChoices.MAIN in branching.import_destinations()
+        return {
+            **super().get_context(context, obj),
+            "choices": choices,
+            "direct_refusal": branching.direct_import_refusal(context["request"].user) if choices else None,
+            # Offered only while the user works in a branch; the form names it so the job never guesses.
+            "active_branch": branching.active_branch_name() if choices else None,
+        }
 
 
 class PushNow(_PostAction):

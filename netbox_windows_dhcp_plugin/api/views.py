@@ -46,15 +46,33 @@ class WindowsServerViewSet(_viewset(models.WindowsServer, models.WindowsServer.o
 
     @action(detail=True, methods=["post"], url_path="import")
     def run_import(self, request, pk):
-        """Queue an import from the server and return the job (409 if one is already queued or running)."""
+        """
+        Queue an import from the server and return the job (409 if one is already queued or running).
+
+        ``destination`` chooses where it writes: "branch" (a new or open import branch, the default with
+        netbox-branching), "current" (the branch named in ``branch``, or the request's active branch) or "main" with
+        it, "proposal" without it. A destination that is unknown here is a 400; one the user may not use is a 403.
+        """
         from ..integrations import branching
-        from ..jobs import enqueue_import
+        from ..jobs import ImportRefused, enqueue_import
 
         server = self._changeable_server(request)
-        missing = branching.missing_import_permissions(request.user)
+        data = request.data if hasattr(request.data, "get") else {}
+        destination = data.get("destination") or branching.import_destinations()[0]
+        if destination not in branching.import_destinations():
+            raise ValidationError({"destination": f"choose one of: {', '.join(branching.import_destinations())}"})
+        branch = ""
+        if destination == "current":
+            branch = data.get("branch") or branching.active_branch_name() or ""
+            if not branch:
+                raise ValidationError({"branch": "name the branch to import into, or send the request in a branch"})
+        missing = branching.missing_import_permissions(request.user, destination)
         if missing:
             raise PermissionDenied(f"importing needs the permission: {', '.join(missing)}")
-        job = enqueue_import(server, request.user)
+        try:
+            job = enqueue_import(server, request.user, destination, branch)
+        except ImportRefused as exc:
+            raise PermissionDenied(str(exc)) from None
         if job is None:
             return Response({"detail": "an import from this server is already queued or running"}, status=409)
         return Response(JobSerializer(job, context={"request": request}).data, status=202)

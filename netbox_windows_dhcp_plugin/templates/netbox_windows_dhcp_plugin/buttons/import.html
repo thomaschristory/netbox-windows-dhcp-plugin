@@ -1,0 +1,56 @@
+{% load i18n %}
+{# The Import button (issue #36). With netbox-branching: an import branch, the branch the user works in, or main. Without: one button. #}
+{% if not choices %}
+  <form action="{{ url }}" method="post" class="d-inline">
+    {% csrf_token %}
+    <input type="hidden" name="destination" value="proposal">
+    <button type="submit" class="btn btn-{{ color }}">
+      <i class="mdi {{ icon }}" aria-hidden="true"></i> {{ label }}
+    </button>
+  </form>
+{% else %}
+  <div class="btn-group">
+    <button type="button" class="btn btn-{{ color }} dropdown-toggle" data-bs-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
+      <i class="mdi {{ icon }}" aria-hidden="true"></i> {% trans "Import" %}
+    </button>
+    <ul class="dropdown-menu">
+      <li>
+        <form action="{{ url }}" method="post">
+          {% csrf_token %}
+          <input type="hidden" name="destination" value="branch">
+          <button type="submit" class="dropdown-item">
+            <i class="mdi mdi-source-branch" aria-hidden="true"></i> {% trans "Import into branch" %}
+            <br><small class="text-muted">{% trans "Stage changes for review" %}</small>
+          </button>
+        </form>
+      </li>
+      {% if active_branch %}
+        <li>
+          <form action="{{ url }}" method="post">
+            {% csrf_token %}
+            <input type="hidden" name="destination" value="current">
+            <input type="hidden" name="branch" value="{{ active_branch }}">
+            <button type="submit" class="dropdown-item">
+              <i class="mdi mdi-source-branch-check" aria-hidden="true"></i> {% trans "Import into this branch" %}
+              <br><small class="text-muted">{% blocktrans %}Write into {{ active_branch }}, no new branch{% endblocktrans %}</small>
+            </button>
+          </form>
+        </li>
+      {% endif %}
+      <li>
+        {% if direct_refusal %}
+          <span class="dropdown-item disabled" aria-disabled="true">
+            <i class="mdi mdi-database-arrow-right-outline" aria-hidden="true"></i> {% trans "Import directly" %}
+            <br><small>{{ direct_refusal|capfirst }}</small>
+          </span>
+        {% else %}
+          {# A page that names main as the destination and asks to confirm; nothing is queued until then. #}
+          <a href="{{ url }}?destination=main" class="dropdown-item">
+            <i class="mdi mdi-database-arrow-right-outline" aria-hidden="true"></i> {% trans "Import directly" %}
+            <br><small class="text-muted">{% trans "Apply imported configuration to main" %}</small>
+          </a>
+        {% endif %}
+      </li>
+    </ul>
+  </div>
+{% endif %}
