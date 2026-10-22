@@ -4,16 +4,18 @@
 
 The plugin is pre-release. Every feature is tested against an in-memory fake Windows server and against the real
 PowerShell scripts run with stub cmdlets. A first, partial lab run against Windows Server 2025 checked superscope
-creation, partial removal and rename, MAC filter removal, option values on reservations (IPv4 and DHCPv6) and on
-policies, and the DHCPv6 lease properties; what it found is fixed. Some cmdlets and property names have still not
-been run against a real Windows DHCP server. They are marked `# unverified:` in the code. The open questions include:
+creation and partial removal, MAC filter removal, option values on reservations (IPv4 and DHCPv6) and on policies, and
+the DHCPv6 lease properties; what it found is fixed. Superscope rename failed in that run: its corrected parameters
+were read from `Get-Command` on the server, but the fixed rename has not run there yet. Some cmdlets and property
+names have still not been run against a real Windows DHCP server. They are marked `# unverified:` in the code. The
+open questions include:
 
 - whether option values of every user and vendor class are read at each level;
 - where Windows returns the class data (IPv4 and DHCPv6), and how it reports an unlimited lease time;
 - the property names returned for scope settings (offer delay, BOOTP limit, activate policies, superscope), policies,
   failover relationships, DHCPv6 scopes, IPv4 leases and exclusion ranges;
 - DHCPv6 T1 and T2 defaults, DHCPv6 reservation removal and class updates;
-- removing a whole superscope (its scopes should stay), and vendor option definitions;
+- renaming a superscope, removing a whole superscope (its scopes should stay), and vendor option definitions;
 - failover replication after a push, and removing a scope that is in a relationship, which need two servers.
 
 The lab tests that settle them are written (see [Development](development.md#lab-tests)). Until they have run, try the
