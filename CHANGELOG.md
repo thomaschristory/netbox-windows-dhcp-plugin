@@ -91,3 +91,12 @@ Development
 - Opt-in lab tests against a real Windows DHCP server: `make test-lab` (the client over WinRM, one round trip per
   unverified cmdlet) and `make lab-e2e` (import, push and leases on the dev stack). They only touch `nbwd-test-`
   objects in `198.18.0.0/15` and `2001:db8:4e42::/64`.
+
+### Fixed
+
+- The plugin's buttons (Test connection, Sync now, Dry run, Import now, and Apply all, Dismiss all, Apply and Dismiss
+  on the review queue) were rendered without a CSRF token, so clicking them failed with "CSRF verification failed"
+  (403). They now carry the token (#19).
+- Read-only pages (sync runs, import proposals and their items) showed Edit, Clone, Add, Import or Edit Selected
+  buttons that led to a "None" address and a 404. Pages now show only the buttons whose views exist; Delete and the
+  review actions stay. Lists without CSV import or bulk edit no longer offer those buttons either (#23).

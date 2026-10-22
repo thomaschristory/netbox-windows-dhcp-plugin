@@ -35,3 +35,5 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
      a first-sync walkthrough, import, push, DHCPv6, failover, leases, permissions, API, security, workers,
      troubleshooting and limitations. Version bump, tag and PyPI publishing (trusted publisher and `pypi` environment
      ready) wait for the owner's go.
+   - **Fixes from testing 0.1.0rc1:** CSRF tokens on the plugin's buttons (#19); no Edit, Clone or Add buttons
+     leading to "None" on read-only pages (#23).

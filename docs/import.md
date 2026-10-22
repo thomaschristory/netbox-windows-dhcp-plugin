@@ -65,6 +65,8 @@ On a proposal you can:
 - select items in the list and **Apply selected** or **Dismiss selected**;
 - open one item and **Apply** or **Dismiss** it.
 
+Proposals and items are written by the import, so they cannot be added or edited by hand; they can be deleted.
+
 Applying writes to NetBox as the reviewing user, so the change log shows who accepted each change. It checks that
 the NetBox object still has the item's "before" values; if someone changed it since the import, the item fails and
 says so. It also checks the user's permissions: an item whose main object the user may not write is left pending

@@ -271,6 +271,10 @@ A scheduled job per server (and a manual button) reads the full Windows state an
   job reads the subnet as it is in main. The tab view is registered when the plugin starts, because
   netbox-plugin-dhcp builds its URLs before ours are loaded.
 - Pages for our models, the review queue and sync runs, under a "Windows DHCP" menu.
+- Pages only show buttons whose views the plugin registers: sync runs, import proposals and their items are written
+  by jobs, so their pages offer Delete and the review actions but no Add, Edit, Clone, Import or bulk edit. The
+  plugin's own POST buttons pass the CSRF token to their template themselves, because NetBox renders action buttons
+  without the page's request context. Tests check the rendered links and tokens, not just the status code (#19, #23).
 - REST and GraphQL for every model, plus actions to trigger push, dry-run and import.
 - Built per the netboxlabs plugin skill: `@register_model_view`, `get_model_urls`, Strawberry GraphQL, `@register_filterset`, `PluginMenu`.
 

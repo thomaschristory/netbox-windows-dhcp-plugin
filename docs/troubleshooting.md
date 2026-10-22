@@ -92,6 +92,15 @@ branch.
 **"The last read never finished".** The worker did not run the job within 15 minutes. Check that the worker runs, then
 load again.
 
+## Pages and buttons
+
+**Clicking Test connection, Sync now, Dry run, Import now, Apply or Dismiss returns "CSRF verification failed"
+(403).** 0.1.0rc1 rendered these buttons without the CSRF token. Upgrade; until then the REST actions work (see
+[REST API](api.md)).
+
+**An Edit button leads to an address ending in `/None` (404).** Also fixed after 0.1.0rc1: sync runs, import
+proposals and their items cannot be edited, and their pages no longer offer it.
+
 ## Getting more detail
 
 The job log of each run lists every change it made or refused. To see what PowerShell returned for one cmdlet, run

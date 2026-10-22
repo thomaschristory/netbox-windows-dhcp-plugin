@@ -1,19 +1,10 @@
+from django.template.context_processors import csrf
 from django.utils.translation import gettext_lazy as _
 from netbox.object_actions import ObjectAction
 
 
-class TestConnection(ObjectAction):
-    """Queue a connection test against a Windows server."""
-
-    name = "test"
-    label = _("Test connection")
-    permissions_required = {"change"}
-    url_kwargs = ["pk"]
-    template_name = "netbox_windows_dhcp_plugin/buttons/test_connection.html"
-
-
 class _PostAction(ObjectAction):
-    """A button that POSTs to the action's view."""
+    """A button that POSTs to the action's view, in a small form of its own."""
 
     template_name = "netbox_windows_dhcp_plugin/buttons/post.html"
     icon = ""
@@ -23,12 +14,33 @@ class _PostAction(ObjectAction):
     def get_context(cls, context, obj):
         return {"icon": cls.icon, "color": cls.color}
 
+    @classmethod
+    def render(cls, context, obj, **kwargs):
+        # NetBox renders action buttons from a plain dictionary, not from the page's request context, so
+        # {% csrf_token %} in our template would find no token and print nothing. Django then refuses the POST with
+        # "CSRF verification failed" (403). Hand the token over the way Django's own context processor does.
+        return super().render(context, obj, **{**csrf(context["request"]), **kwargs})
+
 
 class _BulkPostAction(_PostAction):
-    """A button under an object list that POSTs the selected rows to the action's view."""
+    """
+    A button under an object list that POSTs the selected rows to the action's view. It submits the list's own form,
+    which already holds the CSRF token.
+    """
 
     multi = True
     template_name = "netbox_windows_dhcp_plugin/buttons/bulk_post.html"
+
+
+class TestConnection(_PostAction):
+    """Queue a connection test against a Windows server."""
+
+    name = "test"
+    label = _("Test connection")
+    permissions_required = {"change"}
+    url_kwargs = ["pk"]
+    icon = "mdi-lan-connect"
+    color = "primary"
 
 
 class ImportNow(_PostAction):
