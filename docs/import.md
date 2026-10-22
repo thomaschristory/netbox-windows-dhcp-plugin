@@ -45,6 +45,14 @@ tracking, so the branch's diff shows every change.
 - An import with no differences creates no branch.
 - netbox-branching's `max_working_branches` applies: when it is reached, the import fails and says so.
 
+The Windows server page has an **Import** panel. While the import is queued or running it says so, and refreshes
+itself until the job ends. Once it has finished it names the branch the import wrote into, with links to the branch
+and its change request, says whether it opened a new branch or added to the open one, and says that main has not
+changed (until the branch is merged). An import that found nothing new for an existing branch says the branch
+already holds the differences; one that found nothing at all says no branch was created. After an import that failed
+or found nothing, an earlier import's branch that is still open stays listed. The sync run page shows the same for
+its own run. The panel only shows what you may view: sync runs, jobs, branches and change requests.
+
 Review the branch like any other: look at its diff, sync it with main if it is behind, then merge it (once the change
 request is approved). Merging queues a push (when **Sync enabled** is on), which finds nothing to do: NetBox now
 matches Windows, and the push records the imported objects as managed. With sync off, the first push after you turn
@@ -56,7 +64,8 @@ opened (see [Permissions](permissions.md)).
 
 ## Without branching: import proposals
 
-The import writes an **import proposal** (**Windows DHCP > Import proposals**) with one **item** per difference:
+The import writes an **import proposal** (**Windows DHCP > Import proposals**) with one **item** per difference
+(the **Import** panel on the server page links to it once the job has finished):
 the action, the kind and Windows key of the object, its values before and after, and the NetBox object it touches.
 
 On a proposal you can:

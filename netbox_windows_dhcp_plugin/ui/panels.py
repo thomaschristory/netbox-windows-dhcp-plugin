@@ -168,3 +168,33 @@ class ImportProposalItemPanel(panels.ObjectAttributesPanel):
     key = attrs.TextAttr("key", label=_("Windows key"), style="font-monospace")
     object = attrs.GenericForeignKeyAttr("object", linkify=True)
     error = attrs.TextAttr("error", style="font-monospace")
+
+
+class ImportStatusPanel(panels.ObjectPanel):
+    """Where the latest import went (server page) or where this one went (sync run page), see import_status.py."""
+
+    title = _("Import")
+    template_name = "netbox_windows_dhcp_plugin/inc/import_status.html"
+
+    def get_context(self, context):
+        from django.urls import reverse
+
+        from .. import import_status
+        from ..choices import SyncKindChoices
+        from ..models import SyncRun
+
+        ctx = super().get_context(context)
+        obj = ctx["object"]
+        user = ctx["request"].user
+        if isinstance(obj, SyncRun):
+            ctx["status"] = import_status.for_run(obj, user) if obj.kind == SyncKindChoices.IMPORT else None
+            ctx["refresh_url"] = None
+        else:
+            ctx["status"] = import_status.for_server(obj, user)
+            ctx["refresh_url"] = reverse(
+                "plugins:netbox_windows_dhcp_plugin:windowsserver_import_status", args=[obj.pk]
+            )
+        return ctx
+
+    def should_render(self, context):
+        return context["status"] is not None
