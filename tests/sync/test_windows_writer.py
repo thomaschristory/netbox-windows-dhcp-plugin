@@ -394,10 +394,12 @@ def test_switch_to_hot_standby_reports_the_role_windows_chose(client, fake):
     WindowsWriter(client).apply(Change("update", "failover", "ha", before=before, after=hot_standby().fields))
     assert fake.failovers["ha"]["mode"] == "HotStandby"
     push(client, wanted())  # back to load balance
-    with pytest.raises(PushRefused, match="made this server active, not standby"):
-        WindowsWriter(client).apply(
-            Change("update", "failover", "ha", before=before, after=hot_standby(server_role="standby").fields)
-        )
+    fake.scopes["10.2.0.0"] = {**fake.scopes["10.1.0.0"], "scope_id": "10.2.0.0"}
+    after = hot_standby(server_role="standby", scope_ids=["10.1.0.0", "10.2.0.0"]).fields
+    with pytest.raises(PushRefused, match="made this server active, not standby; set that role in NetBox"):
+        WindowsWriter(client).apply(Change("update", "failover", "ha", before=before, after=after))
+    # The rest of the change was still made before the refusal.
+    assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0", "10.2.0.0"]
 
 
 def test_mac_filter_update_and_filter_list_delete(client, fake):

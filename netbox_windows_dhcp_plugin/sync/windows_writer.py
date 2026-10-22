@@ -334,7 +334,7 @@ class WindowsWriter:
             # Only Add-DhcpServerv4Failover takes -ServerRole (issue #33).
             raise PushRefused(
                 f"failover {change.key}: Windows cannot change a hot standby server's role (active or standby) in "
-                "place; delete the relationship and create it again, or switch the roles on Windows by hand"
+                "place; delete the relationship in NetBox and push, then create it again with the new role"
             )
         if before.get("auth") and not f["auth"]:
             raise PushRefused(
@@ -343,13 +343,6 @@ class WindowsWriter:
             )
         turned_on = f["auth"] and not before.get("auth")
         got = self.client.set_failover(rel, shared_secret=self._secret(change, f["name"]) if turned_on else "")
-        if hot and not was_hot and (got.server_role or "").lower() != f["server_role"]:
-            # A switch to hot standby cannot say which side is active: Windows picks, and it picked the other one.
-            raise PushRefused(
-                f"failover {change.key}: the relationship is now hot standby, but Windows made this server "
-                f"{(got.server_role or 'no role').lower()}, not {f['server_role']}; set that role in NetBox, or delete "
-                "the relationship and create it again with the role you want"
-            )
         # The membership on Windows right now: deleting a scope earlier in this push already took it out.
         current = set(self.client.get_failover(f["name"]).scope_ids)
         wanted = set(f["scope_ids"])
@@ -357,6 +350,15 @@ class WindowsWriter:
             self.client.add_failover_scopes(f["name"], added)
         if gone := sorted(current - wanted):
             self.client.remove_failover_scopes(f["name"], gone)
+        if hot and not was_hot and (got.server_role or "").lower() != f["server_role"]:
+            # A switch to hot standby cannot say which side is active: Windows picks, and it picked the other one.
+            # Everything else is written by now. NetBox still records the old relationship, so the next push sees
+            # this one as changed on Windows: bring NetBox in line rather than deleting it.
+            raise PushRefused(
+                f"failover {change.key}: the relationship is now hot standby, but Windows made this server "
+                f"{(got.server_role or 'no role').lower()}, not {f['server_role']}; set that role in NetBox, or "
+                "import the server"
+            )
 
     # -- MAC filters ---------------------------------------------------------------------------------------------
 
