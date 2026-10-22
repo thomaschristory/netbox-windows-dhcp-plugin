@@ -10,7 +10,7 @@ branched.
 
 | Field | Default | Meaning |
 |---|---|---|
-| DHCP server | | The netbox-plugin-dhcp server this Windows host serves |
+| DHCP server | | The netbox-plugin-dhcp server this Windows host serves (**Generic DHCP server** on the Windows server page and in the list, where the server's name itself opens the Windows server) |
 | Host | | Host name or IP address to connect to. A plain name or address: no port, user or path |
 | Transport | WinRM | WinRM or SSH |
 | Port | empty | Empty means 5986 (WinRM over HTTPS), 5985 (WinRM over HTTP) or 22 (SSH) |

@@ -1,5 +1,6 @@
 import re
 
+from netbox_dhcp.models import DHCPServer
 from utilities.testing import TestCase, ViewTestCases
 
 from netbox_windows_dhcp_plugin.models import (
@@ -198,10 +199,11 @@ class WindowsServerLinkTest(TestCase):
         )
         # Primary keys that differ between the Windows server and its DHCP server, so neither can stand in for the
         # other in a URL.
-        first, second, third = dhcp_servers(3)
-        windows_server(first).delete()
-        self.dhcp = third
-        self.server = windows_server(third)
+        servers = dhcp_servers(4)
+        windows_server(servers[0]).delete()
+        windows_server(servers[1]).delete()
+        self.dhcp = servers[3]
+        self.server = windows_server(self.dhcp)
         self.assertNotEqual(self.server.pk, self.dhcp.pk)
 
     def links(self, url):
@@ -227,5 +229,19 @@ class WindowsServerLinkTest(TestCase):
         self.assertIn(target, self.links(run.get_absolute_url()))
 
     def test_list_sorts_by_name(self):
-        response = self.client.get("/plugins/windows-dhcp/windowsservers/?sort=name")
-        self.assertEqual(response.status_code, 200)
+        other = windows_server(DHCPServer.objects.create(name="aaa-first"))
+        for sort, first in (("dhcp_server", other), ("-dhcp_server", self.server)):
+            html = self.client.get(f"/plugins/windows-dhcp/windowsservers/?sort={sort}").content.decode()
+            names = [
+                n for _, n in re.findall(r'<a href="(/plugins/windows-dhcp/windowsservers/\d+/)">([^<]+)</a>', html)
+            ]
+            self.assertEqual(names[0], first.dhcp_server.name, sort)
+
+    def test_saved_layouts_keep_the_windows_server_link(self):
+        # A layout saved before #38 lists "dhcp_server" only: that column now opens the Windows server.
+        from users.models import UserConfig
+
+        config, _ = UserConfig.objects.get_or_create(user=self.user)
+        config.set("tables.WindowsServerTable.columns", ["dhcp_server", "host"], commit=True)
+        links = self.links("/plugins/windows-dhcp/windowsservers/")
+        self.assertIn((self.server.get_absolute_url(), self.dhcp.name), links)
