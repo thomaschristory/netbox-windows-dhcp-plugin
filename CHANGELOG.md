@@ -5,11 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Pre-release 0.1.0rc1 (2026-10-21) is on PyPI for testing ahead of the lab run; 0.1.0 follows once the lab tests
-pass. First release. Every v1 feature is in place and tested against the fake server and PowerShell stubs. The lab
-tests against a real Windows server (`make test-lab`, `make lab-e2e`) have had a first partial run on Windows Server
-2025, which found the defects listed under Fixed; the full run is still to come, and the `# unverified:` markers it
-settles stay open until then.
+Pre-releases on PyPI for testing ahead of the full lab run: 0.1.0rc1 (2026-10-21), and 0.1.0rc2 (2026-10-22) with the
+fixes below from testing rc1 and a first partial lab run. 0.1.0 follows once the lab tests pass.
+
+First release. Every v1 feature is in place and tested against the fake server and PowerShell stubs. The lab tests
+against a real Windows server (`make test-lab`, `make lab-e2e`) have had a first partial run on Windows Server 2025,
+which found the defects listed under Fixed; the full run is still to come, and the `# unverified:` markers it settles
+stay open until then.
 
 ### Added
 

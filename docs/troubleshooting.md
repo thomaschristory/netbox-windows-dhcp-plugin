@@ -95,10 +95,10 @@ load again.
 ## Pages and buttons
 
 **Clicking Test connection, Sync now, Dry run, Import now, Apply or Dismiss returns "CSRF verification failed"
-(403).** 0.1.0rc1 rendered these buttons without the CSRF token. Upgrade; until then the REST actions work (see
+(403).** 0.1.0rc1 rendered these buttons without the CSRF token. Upgrade to 0.1.0rc2 or later; until then the REST actions work (see
 [REST API](api.md)).
 
-**An Edit button leads to an address ending in `/None` (404).** Also fixed after 0.1.0rc1: sync runs, import
+**An Edit button leads to an address ending in `/None` (404).** Also fixed in 0.1.0rc2: sync runs, import
 proposals and their items cannot be edited, and their pages no longer offer it.
 
 ## Getting more detail
