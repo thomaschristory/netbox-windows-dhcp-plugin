@@ -45,7 +45,8 @@ change to the connection settings.
 ### Import now
 
 Reads the whole server and brings the differences into NetBox, as a branch or an import proposal. See
-[Import](import.md). Refused while another import of the same server is queued or running.
+[Import](import.md). Refused while another import of the same server is queued or running. The **Import** panel on
+the server page shows whether it is queued, running or done, and where the result went.
 
 ### Sync now
 

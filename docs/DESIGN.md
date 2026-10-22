@@ -246,6 +246,8 @@ A scheduled job per server (and a manual button) reads the full Windows state an
 
 **Repeated runs.** If an open import branch or proposal already exists for a server, the job updates it instead of opening another.
 
+**Where the result is (issue #32).** The Windows server page has an Import panel (`import_status.py`) built from the latest import `SyncRun` and any newer import job that has not started its run yet. It tells queued and running apart from finished, and refreshes itself over HTMX until the job ends. With branching it names and links the branch (`SyncRun.branch_name`, looked up in `integrations/branching.import_branch()`) and its change request, and says main has not changed while the branch is unmerged; without branching it links the import proposal and never mentions a branch. The sync run page shows the same panel for its own run.
+
 **How it is built (milestone 3).**
 
 - **Diff engine.** `sync/diff.py` is pure Python. Both sides become records (kind, Windows key, flat fields) and the

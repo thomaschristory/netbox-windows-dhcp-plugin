@@ -1,0 +1,101 @@
+{% load i18n %}
+{# While an import is queued or running, the server page panel replaces itself every few seconds with a fresh copy. #}
+<div class="card" id="windows-import-status"{% if refresh_url and status.pending %} hx-get="{{ refresh_url }}" hx-trigger="every 5s" hx-target="this" hx-swap="outerHTML"{% endif %}>
+  <h2 class="card-header">{{ title }}</h2>
+  <div class="card-body">
+    {% if status.next_state == "queued" %}
+      <div class="alert alert-info" role="status">
+        {% blocktrans with id=status.next_job.pk %}Import queued (job #{{ id }}). Nothing has been imported yet.{% endblocktrans %}
+        {% if status.uses_branching %}{% trans "It will write into an import branch, not into main." %}{% endif %}
+        <a href="{{ status.next_job.get_absolute_url }}">{% trans "Job" %}</a>
+      </div>
+    {% elif status.next_state == "running" %}
+      <div class="alert alert-info" role="status">
+        <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+        {% blocktrans with id=status.next_job.pk %}Import running (job #{{ id }}).{% endblocktrans %}
+        {% if status.uses_branching %}{% trans "It writes into an import branch, not into main." %}{% endif %}
+        <a href="{{ status.next_job.get_absolute_url }}">{% trans "Job" %}</a>
+      </div>
+    {% elif status.next_state == "failed" %}
+      <div class="alert alert-danger" role="alert">
+        {% blocktrans with id=status.next_job.pk %}The latest import job (#{{ id }}) ended without a result.{% endblocktrans %}
+        <a href="{{ status.next_job.get_absolute_url }}">{% trans "See its log" %}</a>
+      </div>
+    {% endif %}
+
+    {% if status.run %}
+      {% if status.next_state %}<h3 class="h5">{% trans "Previous import" %}</h3>{% endif %}
+      {% if status.state == "running" %}
+        <div class="alert alert-info mb-2" role="status">
+          <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+          {% trans "Import running. Nothing is final until it has finished." %}
+          {% if status.uses_branching %}{% trans "It writes into an import branch, not into main." %}{% endif %}
+        </div>
+      {% elif status.state == "failed" %}
+        <div class="alert alert-danger mb-2" role="alert">
+          {% trans "The import failed." %}
+          {% if status.branch_name and status.main_unchanged %}{% trans "Anything it wrote is in the branch below. Main has not been changed." %}{% endif %}
+          {% if status.run.error %}<pre class="mb-0 mt-2 text-wrap">{{ status.run.error }}</pre>{% endif %}
+        </div>
+      {% elif status.branch_name %}
+        <div class="alert alert-success mb-2" role="status">
+          {% if status.changes %}
+            {% blocktrans count n=status.changes %}Imported {{ n }} difference into a branch.{% plural %}Imported {{ n }} differences into a branch.{% endblocktrans %}
+          {% else %}
+            {% trans "No new differences since the last import: the branch below already holds them." %}
+          {% endif %}
+          {% if status.main_unchanged %}<strong>{% trans "Main has not been changed." %}</strong>{% endif %}
+          {% trans "Review the branch, then merge it to bring the changes into main." %}
+        </div>
+      {% elif status.uses_branching %}
+        <div class="alert alert-success mb-2" role="status">
+          {% trans "No differences found: nothing was imported and no branch was created." %}
+        </div>
+      {% elif status.proposal %}
+        <div class="alert alert-success mb-2" role="status">
+          {% blocktrans count n=status.changes|default:0 %}{{ n }} difference waits for review in an import proposal.{% plural %}{{ n }} differences wait for review in an import proposal.{% endblocktrans %}
+        </div>
+      {% else %}
+        <div class="alert alert-success mb-2" role="status">{% trans "No differences found." %}</div>
+      {% endif %}
+
+      <table class="table table-hover attr-table mb-0">
+        {% if status.branch_name %}
+          <tr>
+            <th scope="row">{% trans "Branch" %}</th>
+            <td>
+              {% if status.branch %}
+                <a href="{{ status.branch.get_absolute_url }}">{{ status.branch_name }}</a>
+                <span class="badge text-bg-{{ status.branch.get_status_color }}">{{ status.branch.get_status_display }}</span>
+              {% else %}
+                <span class="font-monospace">{{ status.branch_name }}</span>
+                <span class="text-muted">{% trans "(no longer exists)" %}</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% if status.change_request %}
+            <tr>
+              <th scope="row">{% trans "Change request" %}</th>
+              <td><a href="{{ status.change_request.get_absolute_url }}">{{ status.change_request }}</a></td>
+            </tr>
+          {% endif %}
+        {% elif status.proposal %}
+          <tr>
+            <th scope="row">{% trans "Import proposal" %}</th>
+            <td><a href="{{ status.proposal.get_absolute_url }}">{{ status.proposal }}</a></td>
+          </tr>
+        {% endif %}
+        {% if refresh_url %}
+          <tr>
+            <th scope="row">{% trans "Sync run" %}</th>
+            <td><a href="{{ status.run.get_absolute_url }}">{{ status.run }}</a></td>
+          </tr>
+        {% endif %}
+        <tr>
+          <th scope="row">{% trans "Finished" %}</th>
+          <td>{% if status.run.completed %}{{ status.run.completed|isodatetime }}{% else %}{{ None|placeholder }}{% endif %}</td>
+        </tr>
+      </table>
+    {% endif %}
+  </div>
+</div>

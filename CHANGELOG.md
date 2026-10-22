@@ -146,6 +146,12 @@ Found by a first, partial lab run against Windows Server 2025:
 
 Found by testing 0.1.0rc2:
 
+- The Windows server page has an **Import** panel saying whether the latest import is queued, running or finished
+  and where it went. With branching it names and links the import branch and its change request and says main has
+  not changed; without branching it links the import proposal and does not mention branches. It refreshes itself
+  while the job runs, and the sync run page shows the same for its own run. The message after **Import now** also
+  says where the import will go (#32).
+
 - Changing a scope's pool so that one end grows and the other shrinks (for example `.10-.200` to `.11-.210`) no
   longer fails with DHCP 20023, which Windows returns for that change in one call. The push widens the range first,
   then sets the final one (#30).

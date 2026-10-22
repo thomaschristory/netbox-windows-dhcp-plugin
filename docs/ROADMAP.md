@@ -33,6 +33,11 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
      both the scope (or prefix) and the reserved IP (#20, #17), a DHCPv6 lease state Windows does not have (#22),
      the policy lab test (#18), the DHCPv6 T2 default of 6.4 days (#16), policy criteria compared as Windows
      stores them (#21) and policies pushed in processing order (#24). The markers that run settled are gone.
+   - **rc2 acceptance (after 0.1.0rc2):** issues #29 to #32. Fixed: a scope range that moves one end out and the
+     other in is set widen-then-narrow, since Windows refuses it in one call (DHCP 20023, #30); the policy lab test
+     allows option 51 (#29); the missing-module unit test no longer depends on RSAT being absent (#31); an Import
+     panel on the server and sync run pages says whether an import is queued, running or done and, with branching,
+     links its branch and change request and says main has not changed (#32).
    - **Still to do:** the rest of the lab run, fixing what it finds, recording scrubbed fixtures and removing the
      settled markers. With a single server the two failover markers (scope removal while in a relationship, what
      replication copies) stay unverified.

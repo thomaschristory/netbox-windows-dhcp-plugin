@@ -1,5 +1,6 @@
 from django.contrib import messages
 from django.db.models import Count
+from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
@@ -157,7 +158,12 @@ class WindowsServerView(GetRelatedModelsMixin, generic.ObjectView):
     actions = (PushNow, DryRun, ImportNow, TestConnection, CloneObject, EditObject, DeleteObject)
     layout = layout.SimpleLayout(
         left_panels=[panels.WindowsServerPanel(), panels.WindowsServerSyncPanel(), TagsPanel(), CommentsPanel()],
-        right_panels=[panels.WindowsServerSecurityPanel(), RelatedObjectsPanel(), CustomFieldsPanel()],
+        right_panels=[
+            panels.ImportStatusPanel(),
+            panels.WindowsServerSecurityPanel(),
+            RelatedObjectsPanel(),
+            CustomFieldsPanel(),
+        ],
         bottom_panels=[
             ObjectsTablePanel(
                 model="netbox_windows_dhcp_plugin.SyncRun",
@@ -214,9 +220,37 @@ class WindowsServerImportView(WindowsServerTestConnectionView):
             messages.error(request, _("Importing needs the permission: {perms}").format(perms=", ".join(missing)))
         elif (job := enqueue_import(server, request.user)) is None:
             messages.warning(request, _("An import from {server} is already queued or running").format(server=server))
+        elif branching.branching_installed():
+            messages.success(
+                request,
+                _(
+                    "Queued import (job #{id}) from {server}. It writes into an import branch, not into main: the "
+                    "Import panel shows the branch once the job has finished."
+                ).format(id=job.pk, server=server),
+            )
         else:
-            messages.success(request, _("Queued import (job #{id}) from {server}").format(id=job.pk, server=server))
+            messages.success(
+                request,
+                _(
+                    "Queued import (job #{id}) from {server}. Differences go to an import proposal for review: the "
+                    "Import panel links to it once the job has finished."
+                ).format(id=job.pk, server=server),
+            )
         return redirect(self.get_return_url(request, server))
+
+
+@register_model_view(WindowsServer, "import_status", path="import-status")
+class WindowsServerImportStatusView(BaseObjectView):
+    """The Import panel alone, which the server page fetches again while an import is queued or running."""
+
+    queryset = WindowsServer.objects.all()
+
+    def get_required_permission(self):
+        return "netbox_windows_dhcp_plugin.view_windowsserver"
+
+    def get(self, request, pk):
+        server = get_object_or_404(self.queryset.restrict(request.user, "view"), pk=pk)
+        return HttpResponse(panels.ImportStatusPanel().render({"request": request, "object": server}))
 
 
 @register_model_view(WindowsServer, "push")
@@ -441,7 +475,7 @@ _register(
     filterset_form=forms.SyncRunFilterForm,
     layout=layout.SimpleLayout(
         left_panels=[panels.SyncRunPanel()],
-        right_panels=[JSONPanel("summary", title="Summary")],
+        right_panels=[panels.ImportStatusPanel(title=_("Import result")), JSONPanel("summary", title="Summary")],
         bottom_panels=[
             ObjectsTablePanel(
                 model="netbox_windows_dhcp_plugin.ImportProposal",

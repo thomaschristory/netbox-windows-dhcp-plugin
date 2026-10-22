@@ -458,6 +458,25 @@ class BranchImportTest(ImportTestMixin, TransactionTestCase):
         third = importer.import_to_branch(self.server, self.state(), self.user)
         self.assertEqual(third.changes, [])
 
+    def test_import_panel_names_the_real_branch(self):
+        from netbox_windows_dhcp_plugin import import_status
+        from netbox_windows_dhcp_plugin.conf import get_setting
+        from netbox_windows_dhcp_plugin.integrations import branching
+
+        result = importer.import_to_branch(self.server, self.state(), self.user)
+        SyncRun.objects.create(
+            windows_server=self.server,
+            kind=SyncKindChoices.IMPORT,
+            status=SyncStatusChoices.COMPLETED,
+            branch_name=result.branch.name,
+            summary=result.summary(),
+        )
+        status = import_status.for_server(self.server)
+        self.assertEqual(status.branch.pk, result.branch.pk)
+        self.assertTrue(status.main_unchanged)
+        if branching.change_control_installed() and get_setting("import_change_request"):
+            self.assertEqual(status.change_request.branch_id, result.branch.pk)
+
     def test_branch_import_needs_a_user(self):
         from netbox_windows_dhcp_plugin.integrations.branching import BranchError
 
