@@ -77,7 +77,8 @@ sync engine  ->  client (one function per cmdlet operation)  ->  psscript (envel
 ```
 
 - **psscript.** Same contract: each script runs in try/catch and prints one JSON envelope `{ok, data}` or `{ok: false, error}`. User values only enter as a single-quoted JSON literal `$p` with quotes doubled; nothing from NetBox is ever interpolated into PowerShell. Same preamble, including `$PSDefaultParameterValues['*:ErrorAction']='Stop'`, and the same base64 stdin bootstrap.
-- **Not found** uses the same rules: `ObjectNotFound`, `DHCP 20005`, `20010`, `20018`, or a null result. `DHCP 20007` (scope has leases) is a real error.
+- **Not found** uses the same rules: `ObjectNotFound`, `DHCP 20005`, `20010`, `20018`, or a null result. `DHCP 20007` (scope has leases) is a real error. A getter that finds nothing leaves `$out` holding AutomationNull, which Windows PowerShell 5.1 serialises as `{}` (pwsh 7 as `null`); the envelope turns it into `$null` before serialising, and the client also reads an empty object as not found (issue #15).
+- **Cmdlet parameters checked on Windows Server 2025** (lab run, issues #14 to #22): an option value on a reservation is named by `-ReservedIP` alone, since Set and Remove refuse it next to `-ScopeId` (IPv4) or `-Prefix` (DHCPv6); the client keeps the scope or prefix as context in what it returns. `Rename-DhcpServerv4Superscope` takes `-Name` and `-NewName`, unlike Add and Remove (`-SuperscopeName`). `Get-DhcpServerv6Lease` has no `AddressState`, so a DHCPv6 lease has no state. A policy condition takes a wildcard only at its start or end, and a policy with an FQDN condition cannot hold IP ranges (DHCP 20135) or ordinary option values (DHCP 20136).
 - **Normalisation** is ported as is: scope ID from start and mask, MAC canonical form, lease durations, `InActive`/`Inactive` casing, option values compared hex-or-decimal.
 - **runner.** WinRM through pypsrp with a new connection per call, as the Go code learned the hard way with NTLM. SSH through paramiko with pinned host key or known_hosts. Concurrency is capped per job (`max_concurrency`), and a PostgreSQL advisory lock per server lets only one import or push talk to a server at a time, across all workers. The lock is held by the database session, so the workers' database connection must not go through a transaction-pooling proxy (pgbouncer in transaction mode).
 - **New cmdlets** beyond the provider: DHCPv6 scopes, reservations and options, superscopes, option definitions, classes, policies, failover, MAC filters, server settings. These follow the same patterns and get the same fixture tests.
@@ -262,7 +263,8 @@ A scheduled job per server (and a manual button) reads the full Windows state an
   shown to users who can view both the subnet and the Windows server (object permissions included). "Load leases"
   connects to Windows, so like the connection test it needs permission to view and change that Windows server. It
   queues a job (`LeaseJob`, one waiting or running per subnet under an advisory lock, no notification) that reads
-  the scope's IPv4 or DHCPv6 leases and keeps at most 5000 of them, in address order, in the job's data with the
+  the scope's IPv4 or DHCPv6 leases (Windows reports a state for IPv4 leases only; the panel shows "n/a" for DHCPv6)
+  and keeps at most 5000 of them, in address order, in the job's data with the
   total, the scope read and the time of the read. The panel asks for itself again every few seconds (HTMX) while the
   job runs; a job still waiting or running after 15 minutes counts as lost, so the page stops waiting and a new read
   can be queued. Only the latest read of a subnet is kept: each read deletes the earlier finished ones. A failed read

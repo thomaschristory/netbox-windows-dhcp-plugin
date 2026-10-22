@@ -100,3 +100,20 @@ Development
 - Read-only pages (sync runs, import proposals and their items) showed Edit, Clone, Add, Import or Edit Selected
   buttons that led to a "None" address and a 404. Pages now show only the buttons whose views exist; Delete and the
   review actions stay. Lists without CSV import or bulk edit no longer offer those buttons either (#23).
+Found by a first, partial lab run against Windows Server 2025:
+
+- A Windows object that does not exist is reported as missing again, instead of as an object with every field empty.
+  Windows PowerShell 5.1 printed "nothing found" as `{}`; the script envelope now turns it into `null`, and the
+  client also reads `{}` as missing. This affected MAC filters, superscopes, policies, DHCPv6 scopes, classes,
+  option values and every other lookup (#15).
+- Renaming a superscope uses the cmdlet's real `-Name` parameter instead of `-SuperscopeName`, which Windows rejected
+  (#14).
+- Option values on an IPv4 reservation are written and removed with `-ReservedIP` alone: Windows refuses `-ScopeId`
+  next to it, so a push of a reservation option failed (#20).
+- Option values on a DHCPv6 reservation are written and removed with `-ReservedIP` alone, for the same reason with
+  `-Prefix` (#17).
+- DHCPv6 leases no longer read an `AddressState` property Windows does not have; the Leases tab shows their state as
+  n/a, since Windows reports none for DHCPv6 (#22).
+- The policy lab test uses a condition Windows accepts (`*.Example.Test`), checks FQDN policies apart from policy IP
+  ranges and option values (which Windows refuses on FQDN policies, DHCP 20135 and 20136), and the fake server now
+  refuses a wildcard in the middle of a condition, as Windows does (#18).
