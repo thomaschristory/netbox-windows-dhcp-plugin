@@ -37,6 +37,11 @@ match).
   it changed are replicated to the partner with `Invoke-DhcpServerv4FailoverReplication` (all the relationship's
   scopes when a server-level object such as an option definition changed).
 - A push to the partner server leaves the relationship's scopes alone: they belong to the primary.
+- **Primary server role** is set when the relationship is created. Windows cannot change it afterwards
+  (`Set-DhcpServerv4Failover` has no role parameter), so a push that changes it in NetBox is refused: delete the
+  relationship and create it again, or swap the roles on Windows by hand and import. Switching a relationship from
+  load balance to hot standby lets Windows pick the roles; if it picks another role than NetBox holds, the push says
+  so and asks you to set that role in NetBox.
 
 So edit failover scopes as scopes of the primary server in NetBox; the partner's copies follow through replication.
 

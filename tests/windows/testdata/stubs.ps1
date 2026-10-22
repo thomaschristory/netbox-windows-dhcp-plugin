@@ -399,16 +399,20 @@ function Add-DhcpServerv4Failover {
 function Set-DhcpServerv4Failover {
     [CmdletBinding(SupportsShouldProcess)]
     param([string]$ComputerName, [Parameter(Mandatory)][string]$Name,
-        [ValidateSet('LoadBalance', 'HotStandby')][string]$Mode, [ValidateSet('Active', 'Standby')][string]$ServerRole,
+        [ValidateSet('LoadBalance', 'HotStandby')][string]$Mode,
         [uint32]$LoadBalancePercent, [uint32]$ReservePercent, [TimeSpan]$MaxClientLeadTime,
         [TimeSpan]$StateSwitchInterval, [bool]$AutoStateTransition, [string]$SharedSecret,
-        [switch]$Force, [switch]$PassThru)
+        [switch]$PartnerDown, [switch]$Force, [switch]$PassThru)
+    # No -ServerRole, as on Windows Server 2025 (issue #33): passing it fails parameter binding.
     Record 'Set-DhcpServerv4Failover' $PSBoundParameters
     $f = $global:Failovers[$Name]
-    foreach ($k in 'Mode', 'ServerRole', 'LoadBalancePercent', 'ReservePercent', 'MaxClientLeadTime',
+    foreach ($k in 'Mode', 'LoadBalancePercent', 'ReservePercent', 'MaxClientLeadTime',
         'StateSwitchInterval', 'AutoStateTransition') {
         if ($PSBoundParameters.ContainsKey($k)) { $f.$k = $PSBoundParameters[$k] }
     }
+    # unverified: the role Windows gives this server when the mode becomes HotStandby; the stub keeps or picks Active.
+    if ($Mode -eq 'HotStandby' -and -not $f.ServerRole) { $f.ServerRole = 'Active' }
+    if ($Mode -eq 'LoadBalance') { $f.ServerRole = '' }
 }
 
 function Remove-DhcpServerv4Failover {

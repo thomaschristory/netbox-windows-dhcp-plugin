@@ -154,6 +154,11 @@ Found by testing 0.1.0rc2:
   longer fails with DHCP 20023, which Windows returns for that change in one call. The push changes the range in
   two steps: it first narrows to the addresses both pools share (or, when they do not overlap, widens over both),
   then sets the final range. If the second step fails, it tries to put the old range back (#30).
+- Updating a hot standby failover relationship no longer fails with "A parameter cannot be found that matches
+  parameter name 'ServerRole'": `Set-DhcpServerv4Failover` has no such parameter, so the push no longer sends it.
+  Windows cannot change the role (active or standby) in place, so a push that changes it is refused with a message
+  saying to recreate the relationship. After switching a relationship to hot standby, the push checks the role
+  Windows chose against NetBox. Mode changes no longer wait for a confirmation nobody can answer (#33).
 - The policy lab test allows the lease time option (51) Windows lists next to a policy's own option values (#29).
 - The missing-module unit test no longer fails on a host with the Windows DHCP management tools (RSAT) installed: it
   runs PowerShell with an empty module path (#31).

@@ -716,10 +716,14 @@ class FakeDhcpServer:
 
     def _op_failover_set(self, p: dict) -> Any:
         f = self._failover("Set-DhcpServerv4Failover", _s(p, "name"))
+        # The script never sends a role: Set-DhcpServerv4Failover has none (issue #33).
         if _s(p, "mode"):
             f["mode"] = _s(p, "mode")
-        if _s(p, "server_role"):
-            f["server_role"] = _s(p, "server_role")
+            # unverified: the role Windows gives this server when the mode becomes HotStandby.
+            if f["mode"] == "HotStandby" and not f["server_role"]:
+                f["server_role"] = "Active"
+            elif f["mode"] == "LoadBalance":
+                f["server_role"] = ""
         self._apply_failover_settings(f, p)
         return f
 
