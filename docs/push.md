@@ -35,6 +35,20 @@ Creates and updates run parents first: classes, option definitions, scopes, supe
 reservations, policies, option values, failover relationships, MAC filters, list switches (IPv4 and DHCPv6 kinds
 side by side). Deletes run in the reverse order. Changes run one at a time.
 
+Policies are created and updated level by level (the server, then each scope) in ascending **processing order**,
+whatever their names. Windows numbers the policies of a level 1, 2, 3... without gaps: it refuses a number past the
+end (error DHCP 20110, for example order 2 when the scope has no policy yet), and a policy given a number already in
+use moves the others down. A policy NetBox did not change that an insert moves down (one below a policy created by
+hand, for example) is set back to its number in the same push, so it shows as a processing order update in the
+plan.
+
+NetBox does not renumber the other policies when one is deleted, but Windows closes the gap: delete order 1 of three
+and Windows holds the other two as 1 and 2 while NetBox still says 2 and 3. Order 3 no longer fits, and moving the
+other policy alone would put it below the third one, so the push leaves every policy at that level as it is (the
+delete itself still runs) and lists them under **Not pushed** until you renumber them 1, 2, 3... in NetBox. An
+import proposes the same renumbering. That Windows closes the gap on a delete, and renumbers on an update the way it
+does on a create, has not been checked on a real server yet (see [Limitations](limitations.md)).
+
 When a change fails, the push goes on with the others but skips the children of an object it could not create, and
 keeps the parents of an object it could not delete. The run then ends **failed**, with one line per error. A lost
 connection stops the run; the changes not attempted are listed.
@@ -42,7 +56,9 @@ connection stops the run; the changes not attempted are listed.
 ## Managed objects
 
 A push only deletes Windows objects that NetBox **manages**. The plugin keeps a record (**sync state**) of each
-Windows object it manages, with a fingerprint of its values when it was last pushed. An object becomes managed when:
+Windows object it manages, with a fingerprint of its values when it was last pushed (for a policy, everything but
+its processing order, which Windows changes by itself when another policy is added or removed). An object becomes
+managed when:
 
 - a push creates or updates it;
 - a push finds it identical on both sides (it adopts it, which is how objects merged from an import branch become
@@ -77,8 +93,10 @@ the Windows object is kept as it is.
 - an option without a value, options 1 and 51 (they come from the prefix and the valid lifetime), values of codes
   Windows has no definition for, and a definition of a code Windows defines itself;
 - two NetBox objects for one Windows object (two subnets on one prefix, two copies of an option);
-- a policy without criteria, two policies with the same processing order, or a policy option value whose policy
-  NetBox does not hold at the same level;
+- a policy without criteria, two policies with the same processing order, a policy whose processing order would
+  leave a gap at its level (order 3 where Windows would only hold two policies, counting those made by hand), the
+  other policies of that level when the policy is already on Windows (see above), or a policy option value whose
+  policy NetBox does not hold at the same level;
 - a superscope or failover relationship without scopes, a failover relationship whose partner has no Windows server
   in NetBox, or a hot standby relationship without the primary server's role;
 - DHCPv6 vendor classes, and a DHCPv6 option value with a policy (Windows has no DHCPv6 policies).

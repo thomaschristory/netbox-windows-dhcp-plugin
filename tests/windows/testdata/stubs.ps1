@@ -575,8 +575,17 @@ function Add-DhcpServerv4Policy {
         [string[]]$RelayAgent, [string[]]$CircuitId, [string[]]$RemoteId, [string[]]$SubscriberId, [string[]]$Fqdn,
         [TimeSpan]$LeaseDuration, [switch]$PassThru)
     Record 'Add-DhcpServerv4Policy' $PSBoundParameters
+    # Windows numbers the policies of a level 1, 2, 3... without gaps: a number past the end is DHCP 20110 (seen on
+    # Windows Server 2025), a used one moves the others down, none means the end of the list.
+    $level = @($global:Policies | Where-Object { "$($_.ScopeIdKey)" -eq "$ScopeId" })
+    $order = if ($PSBoundParameters.ContainsKey('ProcessingOrder')) { [int]$ProcessingOrder } else { $level.Count + 1 }
+    if ($order -lt 1 -or $order -gt $level.Count + 1) {
+        Write-DhcpError $PSCmdlet 20110 InvalidData "Failed to create policy $Name on DHCP server STUB."
+        return
+    }
+    foreach ($x in $level) { if ($x.ProcessingOrder -ge $order) { $x.ProcessingOrder = $x.ProcessingOrder + 1 } }
     [void]$global:Policies.Add([pscustomobject]@{ Name = $Name; ScopeIdKey = "$ScopeId"; Condition = $Condition
-        Description = $Description; ProcessingOrder = if ($ProcessingOrder) { $ProcessingOrder } else { 1 }
+        Description = $Description; ProcessingOrder = $order
         Enabled = $Enabled; VendorClass = $VendorClass; UserClass = $UserClass; MacAddress = $MacAddress
         ClientId = $ClientId; RelayAgent = $RelayAgent; CircuitId = $CircuitId; RemoteId = $RemoteId
         SubscriberId = $SubscriberId; Fqdn = $Fqdn; LeaseDuration = $LeaseDuration })
@@ -639,8 +648,8 @@ function Add-DhcpServerv6Scope {
     [CmdletBinding(SupportsShouldProcess)]
     param([string]$ComputerName, [Parameter(Mandatory)][ipaddress]$Prefix, [Parameter(Mandatory)][string]$Name,
         [string]$Description, [ValidateSet('Active', 'InActive')][string]$State = 'Active', [uint16]$Preference,
-        [TimeSpan]$PreferredLifeTime = '8.00:00:00', [TimeSpan]$ValidLifeTime = '12.00:00:00', [TimeSpan]$T1,
-        [TimeSpan]$T2, [switch]$PassThru)
+        [TimeSpan]$PreferredLifeTime = '8.00:00:00', [TimeSpan]$ValidLifeTime = '12.00:00:00',
+        [TimeSpan]$T1 = '4.00:00:00', [TimeSpan]$T2 = '6.09:36:00', [switch]$PassThru)
     Record 'Add-DhcpServerv6Scope' $PSBoundParameters
     $global:V6Scopes["$Prefix"] = [pscustomobject]@{ Prefix = $Prefix; Name = $Name; Description = $Description
         State = if ($State -eq 'InActive') { 'Inactive' } else { $State }; Preference = $Preference

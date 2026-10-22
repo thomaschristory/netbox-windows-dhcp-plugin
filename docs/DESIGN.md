@@ -145,6 +145,29 @@ relationships, MAC filters, list switches.
   NetBox keeps the Windows one. A policy without conditions is not pushed (Windows requires one), nor are policies
   sharing a processing order. A policy value is only pushed when NetBox holds its policy at the same level, since
   Windows names the policy by name only; the models check the policy's server and level too.
+- **Policy criteria (#21).** Windows Server 2025 stores a MAC prefix as whole bytes with a separator before the
+  wildcard (`02-4e-42-ab*` reads back `02-4e-42-ab-*`) and host names in lowercase. `normalize
+  .canonical_policy_criterion` gives that form; `windows_state.equal` and `push.fingerprint` compare and hash criteria
+  in it (`windows_state.canonical_criteria`), while pushes still send what NetBox holds. Other criteria compare
+  exactly until a real server shows Windows rewriting them. The fake server stores criteria the same way.
+- **Policy processing order (#24).** Windows numbers the policies of a level (the server, or one scope) 1, 2, 3...
+  without gaps: Add with a number past the end fails with DHCP 20110 (seen on Windows Server 2025), and a used number
+  moves the others down. `diff` stays generic (same-kind changes sorted by key); `push._order_policies` reorders the
+  policy creates and updates of each level by ascending processing order and simulates Windows' list as it goes:
+  starting from the Windows policies of the level (hand-made ones included) minus the planned deletes (deletes run
+  first; Windows is assumed to close the gap, unverified), each policy is inserted or moved to its number. A policy
+  NetBox did not change that the simulation shows moved down gets a processing-order-only update in the same push;
+  a number past the end is refused at plan time with a reason (and its policy values are then not attempted). When
+  that policy is already on Windows (NetBox does not renumber after a delete, Windows closes the gap), every create
+  and update of the level is refused with it: applying the rest alone would reverse the order clients are matched
+  in (delete order 1 of 3, and setting 2 back to 2 puts it below 3). A new policy past the end is only left out. The
+  fake server enforces the numbering on Add, Set and Remove, including DHCP 20110; the pwsh stub only on Add (its
+  Set copies the number without moving the others, and its Remove leaves the gap). Whether Set and Remove renumber
+  the same way on Windows (`# unverified:` in `push._order_level` and `fake._ordered`) is settled by the lab test
+  `test_policy_processing_order`. The policy fingerprint leaves the processing order out: Windows renumbers a level
+  by itself on every add, move or remove, so a policy it moved (one held back with the rest of its level, say) is
+  not taken for one edited by hand when NetBox later deletes it. Fingerprints recorded with the order (0.1.0rc1)
+  still match while the policy keeps that number (`push.unchanged`).
 - **Superscopes.** A sys4 `SharedNetwork` named `<server>/<superscope>` with the Windows name as description. Its
   prefix is the smallest supernet covering the member scopes (at most a /8; wider is refused), created in the import
   VRF when missing; sys4 checks
@@ -192,7 +215,18 @@ values holding IPv6 addresses compare the same way.
   holding any of them is never deleted. NetBox values of other DHCPv6 definitions and DHCPv6 vendor classes held in
   NetBox are left out the same way, so neither side proposes or pushes them.
 - **Scopes.** Windows DHCPv6 scopes are /64: a NetBox subnet with another prefix length is not pushed, and keeps its
-  Windows counterpart. Lifetimes left empty in NetBox keep the Windows values (a new scope gets Windows' defaults);
+  Windows counterpart. Lifetimes left empty in NetBox keep the Windows values (a new scope gets Windows' defaults:
+  preferred 8 days, valid 12 days, T1 4 days, T2 6.4 days = 552960 s, read back from Windows Server 2025 in #16 and
+  matching the cmdlet documentation). T1 and T2 left empty follow the preferred lifetime (`push.v6_timers`: half and
+  80 %, which gives exactly those defaults for 8 days): a new scope gets them, and an existing scope keeps its
+  Windows timers unless they would break T1 < T2 < preferred lifetime, which the cmdlet documentation asks for. When
+  NetBox sets only one of them, the empty one is worked out against it (`push._derive_timers`): the default if it
+  still falls on the right side, otherwise T1 = 5/8 of T2 or T2 halfway between T1 and the preferred lifetime. A timer
+  NetBox sets is never changed; one that leaves no room is sent as is and Windows refuses it. What
+  Windows itself picks for a short preferred lifetime without timers is unverified (lab test
+  `test_v6_scope_timers_with_a_short_preferred_lifetime`); the push sends explicit values either way. The fake server
+  refuses timers outside T1 < T2 < preferred (unverified that Windows does), so tests catch a push that would send
+  them; the pwsh stub does not check them;
   a scope without a name is named after its prefix. Deletes are never forced, so a scope with leases fails with
   DHCP 20007; as for IPv4, its managed reservations and values NetBox deleted with it are removed first, and the
   scope itself on a later push once its leases are gone. Windows has no DHCPv6 failover, so DHCPv6 changes neither replicate nor wait for a primary.

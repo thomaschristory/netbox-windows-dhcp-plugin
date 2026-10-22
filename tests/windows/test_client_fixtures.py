@@ -267,7 +267,8 @@ def test_classes_optiondefs_superscopes_filters() -> None:
 def test_policy() -> None:
     c, r = new_client("policy_get.json")
     pol = c.get_policy("printers", "10.1.20.0")
-    assert pol.criteria == {"mac_address": ["EQ", "3c-d9-2b*"]} and pol.processing_order == 1
+    # Windows' own spelling of a MAC prefix (#21).
+    assert pol.criteria == {"mac_address": ["EQ", "3c-d9-2b-*"]} and pol.processing_order == 1
     c.add_policy(Policy(name="p", scope_id="10.1.20.0", condition="or", criteria={"fqdn": ["EQ", "*.lab"]}))
     assert r.params["condition"] == "OR" and r.params["criteria"] == {"fqdn": ["EQ", "*.lab"]}
     with pytest.raises(ValueError, match="unknown criteria"):

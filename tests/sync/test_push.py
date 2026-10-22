@@ -328,12 +328,187 @@ def test_every_kind_is_adopted_with_the_same_fingerprint_from_both_sides(client)
         assert push.fingerprint(match) == push.fingerprint(record), record.kind
 
 
+def test_policy_conditions_windows_rewrites_converge(client, fake):
+    """#21: a MAC prefix and a host name Windows stores in its own spelling are no change on the next push."""
+    criteria = {"mac_address": ["EQ", "02-4e-42-ab*"], "fqdn": ["EQ", "*.Example.Test"]}
+    source = [scope(), policy(criteria=criteria)]
+    _, first = run(client, source)
+    assert not first.failed, first.failed
+    assert fake.policies["10.1.0.0", "printers"]["criteria"] == {
+        "mac_address": ["EQ", "02-4e-42-ab-*"],
+        "fqdn": ["EQ", "*.example.test"],
+    }
+    managed = state_after({}, first)
+    p2, second = run(client, source, managed)
+    assert p2.changes == []
+    # The same fingerprint from both spellings, so the policy is not taken for one changed on Windows...
+    assert second.upserts == first.upserts
+    # ...and deleting it in NetBox deletes it on Windows.
+    p3, third = run(client, [scope()], managed)
+    assert not p3.skipped and not third.failed
+    assert ("10.1.0.0", "printers") not in fake.policies
+
+
+def orders(fake, scope_id="10.1.0.0"):
+    """Policy names at one level, in Windows processing order."""
+    level = [p for (sid, _), p in fake.policies.items() if sid == scope_id]
+    return [(p["name"], p["processing_order"]) for p in sorted(level, key=lambda p: p["processing_order"])]
+
+
+def lab_policy(name, order, **over):
+    return policy(name=name, processing_order=order, ip_ranges=[], lease_seconds=None, **over)
+
+
+def test_policy_creates_follow_processing_order_not_names(client, fake):
+    """#24: Windows refuses order 2 before order 1 exists (DHCP 20110), whatever the names."""
+    source = [scope(), lab_policy("Alpha", 2), lab_policy("Zulu", 1)]
+    p, first = run(client, source)
+    assert not first.failed, first.failed
+    assert [c.key for c in p.changes if c.kind == "policy"] == ["10.1.0.0/zulu", "10.1.0.0/alpha"]
+    assert orders(fake) == [("Zulu", 1), ("Alpha", 2)]
+    p2, _ = run(client, source, state_after({}, first))
+    assert p2.changes == []
+
+
+def test_policy_inserted_before_others_converges_in_one_push(client, fake):
+    """Windows moves the others down when a policy takes a used number; the plan follows that."""
+    _, first = run(client, [scope(), lab_policy("A", 1), lab_policy("B", 2)])
+    managed = state_after({}, first)
+    source = [scope(), lab_policy("C", 1), lab_policy("A", 2), lab_policy("B", 3)]
+    p, result = run(client, source, managed)
+    assert not result.failed, result.failed
+    assert orders(fake) == [("C", 1), ("A", 2), ("B", 3)]
+    p2, _ = run(client, source, state_after(managed, result))
+    assert p2.changes == []
+
+
+def test_policies_swapping_orders(client, fake):
+    _, first = run(client, [scope(), lab_policy("A", 1), lab_policy("B", 2)])
+    managed = state_after({}, first)
+    source = [scope(), lab_policy("A", 2), lab_policy("B", 1)]
+    _, result = run(client, source, managed)
+    assert not result.failed, result.failed
+    assert orders(fake) == [("B", 1), ("A", 2)]
+    p2, _ = run(client, source, state_after(managed, result))
+    assert p2.changes == []
+
+
+def test_policy_moved_down_by_an_insert_is_put_back(client, fake):
+    """A policy NetBox did not change, pushed down by a new one above a hand-made one, is set back in the same push."""
+    _, first = run(client, [scope()])
+    client.add_policy(Policy(name="Hand", scope_id="10.1.0.0", criteria={"mac_address": ["EQ", "aa-*"]}))
+    _, second = run(client, [scope(), lab_policy("A", 2)], state_after({}, first))
+    managed = state_after(state_after({}, first), second)
+    assert orders(fake) == [("Hand", 1), ("A", 2)]
+    source = [scope(), lab_policy("C", 1), lab_policy("A", 2)]
+    p, result = run(client, source, managed)
+    assert not result.failed, result.failed
+    # Creating C at 1 pushes Hand to 2 and A to 3; A is set back to 2.
+    fixup = next(c for c in p.changes if c.key == "10.1.0.0/a")
+    assert fixup.changed_fields == ["processing_order"] and fixup.before["processing_order"] == 3
+    assert orders(fake) == [("C", 1), ("A", 2), ("Hand", 3)]
+    p2, _ = run(client, source, state_after(managed, result))
+    assert p2.changes == []
+
+
+def test_policy_order_past_the_end_is_reported(client, fake):
+    source = [scope(), lab_policy("A", 1), lab_policy("B", 3), option("10.1.0.0", 6, ["10.1.0.2"], policy="B")]
+    p, result = run(client, source)
+    reasons = by_key(p)
+    assert "processing order 3" in reasons["policy", "10.1.0.0/b"]
+    assert not result.failed, result.failed
+    assert orders(fake) == [("A", 1)]
+    # Its option value is not attempted either.
+    assert any(c.kind == "option" for c, _ in result.skipped)
+
+
+def test_deleting_a_policy_closes_the_gap(client, fake):
+    _, first = run(client, [scope(), lab_policy("A", 1), lab_policy("B", 2), lab_policy("C", 3)])
+    managed = state_after({}, first)
+    source = [scope(), lab_policy("B", 1), lab_policy("C", 2)]
+    _, result = run(client, source, managed)
+    assert not result.failed, result.failed
+    assert orders(fake) == [("B", 1), ("C", 2)]
+    p2, _ = run(client, source, state_after(managed, result))
+    assert p2.changes == []
+
+
+def test_deleting_a_policy_without_renumbering_keeps_the_others_in_order(client, fake):
+    """
+    NetBox does not renumber when a policy is deleted: removing order 1 of 3 leaves 2 and 3. Windows closes the gap, so
+    order 3 no longer fits; moving 2 alone would put it below 3 and reverse the order clients are matched in.
+    """
+    _, first = run(client, [scope(), lab_policy("A", 1), lab_policy("B", 2), lab_policy("C", 3)])
+    managed = state_after({}, first)
+    source = [scope(), lab_policy("B", 2), lab_policy("C", 3)]
+    p, result = run(client, source, managed)
+    assert not result.failed, result.failed
+    assert [(c.action, c.key) for c in p.changes] == [("delete", "10.1.0.0/a")]
+    assert "past the end" in by_key(p)["policy", "10.1.0.0/c"]
+    assert orders(fake) == [("B", 1), ("C", 2)]
+    # The next push still leaves them alone, and changes to them wait for the renumbering it asks for.
+    managed = state_after(managed, result)
+    source = [scope(), lab_policy("B", 2, description="edited"), lab_policy("C", 3)]
+    p2, result2 = run(client, source, managed)
+    assert not result2.applied and not result2.failed, (result2.applied, result2.failed)
+    reasons = by_key(p2)
+    assert "past the end" in reasons["policy", "10.1.0.0/c"]
+    assert "renumber" in reasons["policy", "10.1.0.0/b"]
+    assert orders(fake) == [("B", 1), ("C", 2)]
+    # Renumbered in NetBox: the edit goes through and nothing moves.
+    source = [scope(), lab_policy("B", 1, description="edited"), lab_policy("C", 2)]
+    p3, result3 = run(client, source, managed)
+    assert not p3.skipped and not result3.failed, (p3.skipped, result3.failed)
+    assert orders(fake) == [("B", 1), ("C", 2)]
+    assert fake.policies["10.1.0.0", "b"]["description"] == "edited"
+
+
+def test_policies_renumbered_by_windows_can_still_be_deleted(client, fake):
+    """
+    Windows renumbers the policies below a deleted one by itself. Those it moved, even ones the push left alone, are
+    not taken for policies changed on Windows when NetBox deletes them later.
+    """
+    _, first = run(client, [scope(), lab_policy("A", 1), lab_policy("B", 2), lab_policy("C", 3)])
+    managed = state_after({}, first)
+    # A deleted in NetBox without renumbering: B and C are held back (past the end) while Windows moves them up.
+    _, second = run(client, [scope(), lab_policy("B", 2), lab_policy("C", 3)], managed)
+    managed = state_after(managed, second)
+    assert orders(fake) == [("B", 1), ("C", 2)]
+    p, result = run(client, [scope()], managed)
+    assert not p.skipped and not result.failed, (p.skipped, result.failed)
+    assert orders(fake) == []
+
+
+def test_policy_fingerprints_recorded_with_the_order_still_match():
+    """0.1.0rc1 hashed the processing order: those SyncState rows still allow a delete while the order holds."""
+    record = Record("policy", "10.1.0.0/a", lab_policy("A", 1).fields)
+    legacy = push._fingerprint(record, keep_order=True)
+    assert legacy != push.fingerprint(record)
+    p = push.plan([scope()], [scope(), record], {("policy", record.key): legacy})
+    assert [(c.action, c.key) for c in p.changes] == [("delete", record.key)] and not p.skipped
+    moved = Record("policy", record.key, {**record.fields, "processing_order": 2})
+    p = push.plan([scope()], [scope(), moved], {("policy", record.key): legacy})
+    assert p.changes == [] and "changed on Windows" in p.skipped[0].reason
+
+
+def test_new_policy_past_the_end_leaves_the_others_alone(client, fake):
+    """Only a create is past the end: the policies already on Windows are still set as NetBox says."""
+    _, first = run(client, [scope(), lab_policy("A", 1), lab_policy("B", 2)])
+    managed = state_after({}, first)
+    source = [scope(), lab_policy("A", 2), lab_policy("B", 1), lab_policy("N", 5)]
+    p, result = run(client, source, managed)
+    assert not result.failed, result.failed
+    assert "past the end" in by_key(p)["policy", "10.1.0.0/n"]
+    assert orders(fake) == [("B", 1), ("A", 2)]
+
+
 def test_policies_sharing_a_processing_order_are_reported():
     source = [policy(), policy(name="Phones"), policy(name="Other", processing_order=2)]
     reasons = by_key(push.plan(source, [], {}))
     assert "share processing order 1" in reasons["policy", "10.1.0.0/printers"]
     assert "share processing order 1" in reasons["policy", "10.1.0.0/phones"]
-    assert ("policy", "10.1.0.0/other") not in reasons
+    # Without the two at 1, order 2 would leave a gap, which Windows refuses.
+    assert "past the end" in reasons["policy", "10.1.0.0/other"]
 
 
 def test_last_scope_of_a_relationship_is_replaced_before_it_is_deleted(client, fake):
@@ -387,3 +562,82 @@ def test_leased_scope_stays_in_its_relationship_when_the_update_runs_first(clien
     assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0", "10.2.0.0"]
     assert "10.2.0.0" in fake.scopes
     assert any("DHCP 20007" in msg for _, msg in result.failed)
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_policy_orders_converge_in_one_push(client, fake, seed):
+    """
+    Random starting points (managed and hand-made policies on Windows) and random NetBox orders 1..k: one push puts
+    every NetBox policy at its number without a Windows error, and the next push changes nothing.
+    """
+    import random
+
+    rnd = random.Random(seed)
+    names = [f"P{i}" for i in range(rnd.randint(1, 6))]
+    first_names = rnd.sample(names, rnd.randint(0, len(names)))
+    first = [scope()] + [lab_policy(n, i) for i, n in enumerate(rnd.sample(first_names, len(first_names)), 1)]
+    _, r1 = run(client, first)
+    assert not r1.failed, r1.failed
+    managed = state_after({}, r1)
+    for i in range(rnd.randint(0, 2)):
+        level = len([k for k in fake.policies if k[0] == "10.1.0.0"])
+        client.add_policy(
+            Policy(
+                name=f"Hand{i}",
+                scope_id="10.1.0.0",
+                criteria={"mac_address": ["EQ", "aa-*"]},
+                processing_order=rnd.randint(1, level + 1),
+            )
+        )
+    wanted_names = rnd.sample(names, rnd.randint(0, len(names)))
+    source = [scope()] + [lab_policy(n, i) for i, n in enumerate(rnd.sample(wanted_names, len(wanted_names)), 1)]
+    p, result = run(client, source, managed)
+    assert not result.failed, result.failed
+    assert not [s for s in p.skipped if s.change.kind == "policy" and "past the end" in s.reason]
+    got = dict(orders(fake))
+    for record in source[1:]:
+        assert got[record.fields["name"]] == record.fields["processing_order"], (orders(fake), record.key)
+    # Nothing left to create or update. A managed policy a hand-made one moved down counts as changed on Windows,
+    # so its delete may wait for a push where its number is back (the drift check), which is not this test's point.
+    p2, _ = run(client, source, state_after(managed, result))
+    assert [c for c in p2.changes if c.action != "delete"] == [], p2.changes
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_policy_orders_with_gaps_never_reverse_netbox_order(client, fake, seed):
+    """
+    Random NetBox numbers, gaps allowed (a policy deleted without renumbering the others, or a typo): a push never
+    fails on Windows, and two NetBox policies end up either in NetBox's order or in the order they already had.
+    """
+    import random
+
+    rnd = random.Random(seed)
+    names = [f"P{i}" for i in range(rnd.randint(1, 6))]
+    first_names = rnd.sample(names, rnd.randint(0, len(names)))
+    first = [scope()] + [lab_policy(n, i) for i, n in enumerate(rnd.sample(first_names, len(first_names)), 1)]
+    _, r1 = run(client, first)
+    managed = state_after({}, r1)
+    for i in range(rnd.randint(0, 2)):
+        level = len([k for k in fake.policies if k[0] == "10.1.0.0"])
+        client.add_policy(
+            Policy(
+                name=f"Hand{i}",
+                scope_id="10.1.0.0",
+                criteria={"mac_address": ["EQ", "aa-*"]},
+                processing_order=rnd.randint(1, level + 1),
+            )
+        )
+    before = [n for n, _ in orders(fake)]
+    wanted_names = rnd.sample(names, rnd.randint(0, len(names)))
+    numbers = rnd.sample(range(1, 9), len(wanted_names))
+    source = [scope()] + [lab_policy(n, o) for n, o in zip(wanted_names, numbers, strict=True)]
+    _, result = run(client, source, managed)
+    assert not result.failed, result.failed
+    after = [n for n, _ in orders(fake)]
+    netbox = {r.fields["name"]: r.fields["processing_order"] for r in source[1:]}
+    on_windows = [n for n in after if n in netbox]
+    for i, a in enumerate(on_windows):
+        for b in on_windows[i + 1 :]:
+            # a is above b on Windows after the push.
+            kept = a in before and b in before and before.index(a) < before.index(b)
+            assert netbox[a] < netbox[b] or kept, (before, after, netbox)

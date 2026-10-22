@@ -39,6 +39,7 @@ __all__ = (
     "SKIPPED_OPTION_IDS",
     "OptionValue",
     "WindowsState",
+    "canonical_criteria",
     "class6_key",
     "class_key",
     "equal",
@@ -371,6 +372,18 @@ def criteria(value: dict[str, list[str]]) -> dict[str, list[str]]:
     return out
 
 
+def canonical_criteria(value: dict[str, list[str]]) -> dict[str, list[str]]:
+    """
+    Policy criteria as Windows stores them, to compare and fingerprint (never to send). Windows rewrites a MAC prefix
+    ("02-4e-42-ab*" reads back "02-4e-42-ab-*") and lowercases a host name, so the spelling typed in NetBox and the one
+    read from Windows must not look like a change on every push.
+    """
+    out = {}
+    for name, items in criteria(value).items():
+        out[name] = [items[0], *(normalize.canonical_policy_criterion(name, v) for v in items[1:])]
+    return out
+
+
 def policy_record(p: Policy, ranges: list[list[str]]) -> Record:
     return Record(
         "policy",
@@ -685,13 +698,16 @@ NAME_FIELDS = frozenset(
 def equal(kind: str, name: str, a: Any, b: Any) -> bool:
     """
     Field comparison for ``diff``. Option values match when they are equal, or the same number written in hex or
-    decimal (Windows prints 0x0A, NetBox may hold 10). Windows names match without case, as on Windows. Other text is
-    compared exactly: a changed boot file name is a change.
+    decimal (Windows prints 0x0A, NetBox may hold 10). Windows names match without case, as on Windows. Policy
+    conditions match as Windows stores them (``canonical_criteria``). Other text is compared exactly: a changed boot
+    file name is a change.
     """
     if (kind, name) in NAME_FIELDS and isinstance(a, str) and isinstance(b, str):
         return a.casefold() == b.casefold()
     if (kind, name) == ("failover", "partner_server") and isinstance(a, str) and isinstance(b, str):
         return same_host(a, b)
+    if (kind, name) == ("policy", "criteria") and isinstance(a, dict) and isinstance(b, dict):
+        return canonical_criteria(a) == canonical_criteria(b)
     if name in ("value", "default_value") and isinstance(a, list) and isinstance(b, list):
         if len(a) != len(b):
             return False

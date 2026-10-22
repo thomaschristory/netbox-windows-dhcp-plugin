@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import pytest
 
+from netbox_windows_dhcp_plugin.sync import push
 from netbox_windows_dhcp_plugin.windows import client as wc
 from netbox_windows_dhcp_plugin.windows import normalize
+from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
 from .conftest import save_probe
 from .labkit import V6_PREFIX, Lab
@@ -22,10 +24,9 @@ def test_v6_scope_defaults_and_lifetimes(lab: Lab, probe_out) -> None:
     assert s.name == "nbwd-test-v6" and s.description == "lab"
     assert normalize.parse_duration(s.preferred_lifetime) == 8 * 86400
     assert normalize.parse_duration(s.valid_lifetime) == 12 * 86400
-    # What push.V6_LIFETIME_DEFAULTS assumes (the scope wizard's values; 0.5 and 0.8 of the preferred lifetime would
-    # give 6 days 9:36 for T2, so a failure here is a real finding).
-    assert normalize.parse_duration(s.t1, allow_zero=True) == 4 * 86400
-    assert normalize.parse_duration(s.t2, allow_zero=True) == 6 * 86400 + 10 * 3600
+    # Windows' own defaults, which push.V6_LIFETIME_DEFAULTS sends for a new scope: T1 4 days, T2 6.4 days (#16).
+    assert normalize.parse_duration(s.t1, allow_zero=True) == push.V6_LIFETIME_DEFAULTS["t1"] == 4 * 86400
+    assert normalize.parse_duration(s.t2, allow_zero=True) == push.V6_LIFETIME_DEFAULTS["t2"] == 552960
 
     s.preference = 5
     s.t1 = "1.00:00:00"
@@ -38,10 +39,33 @@ def test_v6_scope_defaults_and_lifetimes(lab: Lab, probe_out) -> None:
     assert normalize.parse_duration(after.t2) == 2 * 86400
 
     # Setting the defaults back explicitly is accepted.
-    after.t1, after.t2 = "4.00:00:00", "6.10:00:00"
+    after.t1, after.t2 = "4.00:00:00", "6.09:36:00"
     after.preferred_lifetime, after.valid_lifetime = "8.00:00:00", "12.00:00:00"
     back = lab.client.set_v6_scope(after)
-    assert normalize.parse_duration(back.t2) == 6 * 86400 + 10 * 3600
+    assert normalize.parse_duration(back.t1) == 4 * 86400
+    assert normalize.parse_duration(back.t2) == 552960
+
+
+def test_v6_scope_timers_with_a_short_preferred_lifetime(lab: Lab, probe_out) -> None:
+    """
+    push.py: what Windows gives T1 and T2 for a scope created with a 2 day preferred lifetime and no timers (fixed
+    4 and 6.4 days, or half and 80 % of it, or a refusal), and that the timers a push works out instead are accepted.
+    """
+    preferred = 2 * 86400
+    try:
+        s = lab.v6_scope("nbwd-test-v6short", preferred_lifetime="2.00:00:00", valid_lifetime="3.00:00:00")
+    except PSError as exc:
+        save_probe(probe_out, "v6-scope-short-preferred", {"refused": str(exc)})
+        s = lab.v6_scope("nbwd-test-v6short")
+    else:
+        save_probe(probe_out, "v6-scope-short-preferred", s.to_dict())
+    # Whatever Windows chose by itself, the timers a push sends when NetBox leaves them empty are accepted.
+    timers = push.v6_timers(preferred)
+    s.preferred_lifetime, s.valid_lifetime = "2.00:00:00", "3.00:00:00"
+    s.t1, s.t2 = normalize.format_duration(timers["t1"]), normalize.format_duration(timers["t2"])
+    after = lab.client.set_v6_scope(s)
+    assert normalize.parse_duration(after.t1) == timers["t1"] == 86400
+    assert normalize.parse_duration(after.t2) == timers["t2"]
 
 
 def test_v6_reservation_exclusion_lease_and_options(lab: Lab, probe_out) -> None:

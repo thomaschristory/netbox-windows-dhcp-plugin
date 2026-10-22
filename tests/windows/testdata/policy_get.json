@@ -1,1 +1,1 @@
-{"ok":true,"data":{"name":"printers","scope_id":"10.1.20.0","description":"HP printers","enabled":true,"processing_order":1,"condition":"OR","criteria":{"mac_address":["EQ","3c-d9-2b*"]},"lease_duration":""}}
+{"ok":true,"data":{"name":"printers","scope_id":"10.1.20.0","description":"HP printers","enabled":true,"processing_order":1,"condition":"OR","criteria":{"mac_address":["EQ","3c-d9-2b-*"]},"lease_duration":""}}

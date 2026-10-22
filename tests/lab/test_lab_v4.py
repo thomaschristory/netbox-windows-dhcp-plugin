@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import pytest
 
+from netbox_windows_dhcp_plugin.sync import windows_state
 from netbox_windows_dhcp_plugin.windows import client as wc
 from netbox_windows_dhcp_plugin.windows import normalize
+from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
 from .conftest import save_probe
 from .labkit import MAC_PREFIX, Lab
@@ -222,7 +224,9 @@ def test_fqdn_policy_round_trip(lab: Lab, probe_out) -> None:
     assert p.processing_order == 1
     assert normalize.parse_duration(p.lease_duration) == 86400
     assert p.criteria["fqdn"][0] == "EQ"
-    assert p.criteria["fqdn"][1].lower() == "*.example.test"
+    # Windows writes host names back in lowercase (#21); the sync must see that as no change.
+    assert p.criteria["fqdn"] == ["EQ", "*.example.test"]
+    assert windows_state.equal("policy", "criteria", {"fqdn": ["EQ", "*.Example.Test"]}, p.criteria)
     assert lab.client.get_policy(p.name, s.scope_id).criteria == p.criteria
 
     p.enabled = False
@@ -273,9 +277,9 @@ def test_mac_policy_ranges_and_options(lab: Lab, probe_out) -> None:
     assert p.description == "lab"
     assert p.processing_order == 1
     assert normalize.parse_duration(p.lease_duration) == 86400
-    assert p.criteria["mac_address"][0] == "EQ"
-    # Windows may write the prefix back as 02-4e-42-ab-* (issue #21); compare what is common to both spellings.
-    assert p.criteria["mac_address"][1].lower().replace("-", "").rstrip("*") == "024e42ab"
+    # Windows stores conditions in its own spelling (#21), which the sync must compare as no change.
+    assert p.criteria["mac_address"] == ["EQ", "02-4e-42-ab-*"]
+    assert windows_state.equal("policy", "criteria", {"mac_address": ["EQ", "02-4e-42-ab*"]}, p.criteria)
 
     r = lab.client.add_policy_ip_range(wc.PolicyIPRange(s.scope_id, p.name, f"{base}.50", f"{base}.60"))
     assert (r.start_range, r.end_range) == (f"{base}.50", f"{base}.60")
@@ -315,6 +319,34 @@ def test_user_class_policy_criteria(lab: Lab) -> None:
     )
     assert p.condition == "AND"
     assert p.criteria["user_class"] == ["EQ", u.name]
+
+
+def test_policy_processing_order(lab: Lab) -> None:
+    """push.py and fake.py: policies of a level are numbered 1, 2, 3... (#24); settles Set and removal renumbering."""
+    s = lab.scope("nbwd-test-polord")
+    crit = {"mac_address": ["EQ", "02-4e-42-ef*"]}
+
+    def add(name: str, order: int) -> wc.Policy:
+        return lab.policy(wc.Policy(name=name, scope_id=s.scope_id, criteria=crit, processing_order=order))
+
+    def orders() -> list[tuple[str, int | None]]:
+        return [(p.name, p.processing_order) for p in lab.client.list_policies(s.scope_id)]
+
+    with pytest.raises(PSError) as err:
+        add("nbwd-test-pol-b", 2)
+    assert err.value.id.startswith("DHCP 20110")
+    add("nbwd-test-pol-b", 1)
+    add("nbwd-test-pol-c", 2)
+    add("nbwd-test-pol-a", 1)
+    assert orders() == [("nbwd-test-pol-a", 1), ("nbwd-test-pol-b", 2), ("nbwd-test-pol-c", 3)]
+    # unverified in fake.py: Set moves a policy and renumbers those in between, and refuses one past the end.
+    lab.client.set_policy(wc.Policy(name="nbwd-test-pol-a", scope_id=s.scope_id, processing_order=3))
+    assert orders() == [("nbwd-test-pol-b", 1), ("nbwd-test-pol-c", 2), ("nbwd-test-pol-a", 3)]
+    with pytest.raises(PSError):
+        lab.client.set_policy(wc.Policy(name="nbwd-test-pol-a", scope_id=s.scope_id, processing_order=4))
+    # unverified in fake.py: removing a policy closes the gap.
+    lab.client.remove_policy("nbwd-test-pol-b", s.scope_id)
+    assert orders() == [("nbwd-test-pol-c", 1), ("nbwd-test-pol-a", 2)]
 
 
 def test_server_level_policy_is_listed(lab: Lab) -> None:

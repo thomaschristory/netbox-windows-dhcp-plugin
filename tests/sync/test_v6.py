@@ -9,10 +9,13 @@ from netbox_windows_dhcp_plugin.sync.windows_writer import WindowsWriter
 from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows.client import DhcpClass, OptionKeyV6, ReservationV6, ScopeV6
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
+from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
 PREFIX = "2001:db8:1::"
 # sys4's standard DHCPv6 codes used here: DNS servers (23) and the domain search list (24).
 STANDARD6 = {21, 22, 23, 24, 31}
+# Windows' default rebinding time (T2) for a new DHCPv6 scope: 6.4 days, as read back from Windows Server 2025 (#16).
+WINDOWS_T2 = 6 * 86400 + 9 * 3600 + 36 * 60
 
 
 @pytest.fixture
@@ -36,7 +39,7 @@ def scope6(**over):
         "preferred_lifetime": 8 * 86400,
         "valid_lifetime": 12 * 86400,
         "t1": 4 * 86400,
-        "t2": 6 * 86400 + 10 * 3600,
+        "t2": WINDOWS_T2,
     }
     fields.update(over)
     return Record("scope6", ws.scope6_key(fields["prefix"]), fields)
@@ -229,6 +232,95 @@ def test_new_scope_without_lifetimes_gets_windows_defaults(client, fake):
     assert fake.v6_scopes[PREFIX]["name"] == PREFIX
     p, _ = apply(client, source, merged({}, r))
     assert p.changes == []
+
+
+def test_lifetime_defaults_are_windows_own(client, fake):
+    """#16: a scope pushed without T1/T2 must get what Windows gives one made without them, not 6 days 10 hours."""
+    assert push.V6_LIFETIME_DEFAULTS == {
+        "preferred_lifetime": 8 * 86400,
+        "valid_lifetime": 12 * 86400,
+        "t1": 4 * 86400,
+        "t2": WINDOWS_T2,
+    }
+    # A scope made on Windows without lifetimes (by hand) and one pushed without them look the same.
+    client.add_v6_scope(ScopeV6(prefix="2001:db8:9::", name="by hand"))
+    assert fake.v6_scopes["2001:db8:9::"]["t2"] == "6.09:36:00"
+    _, r = apply(client, [scope6(t1=None, t2=None)])
+    assert not r.failed
+    assert fake.v6_scopes[PREFIX]["t1"] == "4.00:00:00"
+    assert fake.v6_scopes[PREFIX]["t2"] == "6.09:36:00"
+
+
+def test_default_timers_are_half_and_80_percent_of_the_default_preferred_lifetime():
+    defaults = push.V6_LIFETIME_DEFAULTS
+    assert push.v6_timers(defaults["preferred_lifetime"]) == {"t1": defaults["t1"], "t2": defaults["t2"]}
+
+
+def test_new_scope_with_a_short_preferred_lifetime_gets_timers_below_it(client, fake):
+    """T1 and T2 left empty follow the preferred lifetime, never 4 and 6.4 days past it (T1 < T2 < preferred)."""
+    source = [scope6(preferred_lifetime=2 * 86400, valid_lifetime=3 * 86400, t1=None, t2=None)]
+    _, r = apply(client, source)
+    assert not r.failed, r.failed
+    assert fake.v6_scopes[PREFIX]["t1"] == "1.00:00:00"
+    assert fake.v6_scopes[PREFIX]["t2"] == "1.14:24:00"  # 80 % of 2 days
+    p, _ = apply(client, source, merged({}, r))
+    assert p.changes == []
+
+
+def test_shortened_preferred_lifetime_moves_empty_timers_below_it(client, fake):
+    _, r = apply(client, [scope6(t1=None, t2=None)])
+    managed = merged({}, r)
+    # Windows keeps 4 and 6.4 days while they still fit below the preferred lifetime...
+    source = [scope6(preferred_lifetime=7 * 86400, t1=None, t2=None)]
+    _, r2 = apply(client, source, managed)
+    assert not r2.failed, r2.failed
+    assert (fake.v6_scopes[PREFIX]["t1"], fake.v6_scopes[PREFIX]["t2"]) == ("4.00:00:00", "6.09:36:00")
+    # ...and they follow it down once they would not.
+    source = [scope6(preferred_lifetime=2 * 86400, valid_lifetime=3 * 86400, t1=None, t2=None)]
+    _, r3 = apply(client, source, merged(managed, r2))
+    assert not r3.failed, r3.failed
+    assert (fake.v6_scopes[PREFIX]["t1"], fake.v6_scopes[PREFIX]["t2"]) == ("1.00:00:00", "1.14:24:00")
+
+
+@pytest.mark.parametrize(
+    ("t1", "t2", "expected"),
+    [
+        # Only T2 set, below the default T1 of 4 days: T1 goes to 5/8 of T2 (15 hours).
+        (None, 86400, ("0.15:00:00", "1.00:00:00")),
+        # Only T1 set, past the default T2 of 6.4 days: T2 goes halfway to the preferred lifetime of 8 days.
+        (7 * 86400, None, ("7.00:00:00", "7.12:00:00")),
+        # Only one set, and the default for the other still fits: the default is kept.
+        (None, 5 * 86400, ("4.00:00:00", "5.00:00:00")),
+        (86400, None, ("1.00:00:00", "6.09:36:00")),
+    ],
+)
+def test_new_scope_with_one_timer_set_gets_the_other_on_the_right_side_of_it(client, fake, t1, t2, expected):
+    source = [scope6(t1=t1, t2=t2)]
+    _, r = apply(client, source)
+    assert not r.failed, r.failed
+    assert (fake.v6_scopes[PREFIX]["t1"], fake.v6_scopes[PREFIX]["t2"]) == expected
+    p, _ = apply(client, source, merged({}, r))
+    assert p.changes == []
+
+
+def test_one_timer_set_below_the_windows_partner_moves_the_partner(client, fake):
+    _, r = apply(client, [scope6(t1=None, t2=None)])
+    managed = merged({}, r)
+    # Windows has 4 and 6.4 days; NetBox now sets T2 to 1 day and leaves T1 empty: 4 days would break T1 < T2.
+    source = [scope6(t1=None, t2=86400)]
+    _, r2 = apply(client, source, managed)
+    assert not r2.failed, r2.failed
+    assert (fake.v6_scopes[PREFIX]["t1"], fake.v6_scopes[PREFIX]["t2"]) == ("0.15:00:00", "1.00:00:00")
+    # A Windows T1 that still fits is kept.
+    fake.v6_scopes[PREFIX]["t1"] = "0.12:00:00"
+    p, _ = apply(client, source, merged(managed, r2))
+    assert p.changes == []
+
+
+def test_fake_refuses_timers_past_the_preferred_lifetime(client, fake):
+    with pytest.raises(PSError):
+        client.add_v6_scope(ScopeV6(prefix=PREFIX, name="v6", preferred_lifetime="2.00:00:00"))
+    assert PREFIX not in fake.v6_scopes
 
 
 def test_deletes_children_first(client, fake):

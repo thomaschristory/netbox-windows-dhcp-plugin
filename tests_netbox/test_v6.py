@@ -54,7 +54,8 @@ class ImportV6Test(V6Mixin, ImportTestMixin, TestCase):
         self.assertEqual(str(subnet.prefix.prefix), "2001:db8:1::/64")
         self.assertEqual((subnet.description, subnet.comments), ("v6 users", "office"))
         self.assertEqual((subnet.preferred_lifetime, subnet.valid_lifetime), (8 * 86400, 12 * 86400))
-        self.assertEqual((subnet.renew_timer, subnet.rebind_timer), (86400, 6 * 86400 + 10 * 3600))
+        # T2 is left to the fake, which uses the Windows default of 6.4 days (6 days 9:36), see #16.
+        self.assertEqual((subnet.renew_timer, subnet.rebind_timer), (86400, 552960))
         self.assertEqual(subnet.dhcp_server, self.dhcp)
         self.assertFalse(Pool.objects.filter(subnet=subnet).exists())
         self.assertEqual(WindowsScope.objects.get(subnet=subnet).preference, 5)

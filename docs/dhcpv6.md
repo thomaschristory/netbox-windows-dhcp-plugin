@@ -32,8 +32,14 @@ way.
 ## Rules
 
 - **Scopes are /64.** A NetBox subnet with another prefix length is not pushed.
-- **Lifetimes.** Left empty in NetBox, they keep the Windows values; a new scope gets Windows' defaults. A scope
-  without a name is named after its prefix.
+- **Lifetimes.** Left empty in NetBox, they keep the Windows values; a new scope gets Windows' defaults: preferred
+  8 days and valid 12 days. Renewal (T1) and rebinding (T2) times left empty follow the preferred lifetime: a new
+  scope gets half and 80 % of it (4 days and 6.4 days, that is 6 days 9:36, for the default 8 days, which is what
+  Windows gives a scope made without them), and an existing scope keeps its Windows timers unless they no longer fit
+  below the preferred lifetime (after you shorten it in NetBox), in which case they are worked out the same way.
+  When you set only one of T1 and T2, the empty one is placed on the right side of it: T1 at 5/8 of T2, or T2
+  halfway between T1 and the preferred lifetime, when the default would not fit.
+  Windows expects T1 < T2 < preferred lifetime. A scope without a name is named after its prefix.
 - **Reservations** need a DUID and an IAID. If a reservation has several IPv6 addresses, the first one (by NetBox ID)
   is the reserved one. Changing the address creates a new reservation and removes the old one, since the address is
   part of its key.

@@ -27,11 +27,12 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
      lab server into the dev stack, pushes creates, updates and deletes back for every kind, checks that a second
      push and import change nothing, and reads live leases. Both only touch `nbwd-test-` objects in
      `198.18.0.0/15` and `2001:db8:4e42::/64`, check before every delete and clean up on failure.
-   - **First partial lab run (Windows Server 2025, after 0.1.0rc1):** reported as issues #14 to #22. Fixed with
+   - **First partial lab run (Windows Server 2025, after 0.1.0rc1):** reported as issues #14 to #24. Fixed with
      fake, fixture and strict stub regression tests: the superscope rename parameter (#14), missing objects read as
      empty ones because Windows PowerShell 5.1 prints "nothing" as `{}` (#15), reservation option values sent with
      both the scope (or prefix) and the reserved IP (#20, #17), a DHCPv6 lease state Windows does not have (#22),
-     and the policy lab test (#18). The markers that run settled are gone.
+     the policy lab test (#18), the DHCPv6 T2 default of 6.4 days (#16), policy criteria compared as Windows
+     stores them (#21) and policies pushed in processing order (#24). The markers that run settled are gone.
    - **Still to do:** the rest of the lab run, fixing what it finds, recording scrubbed fixtures and removing the
      settled markers. With a single server the two failover markers (scope removal while in a relationship, what
      replication copies) stay unverified.

@@ -29,11 +29,12 @@ from typing import Any
 from ..windows import normalize
 from ..windows.psscript import NotFound, WindowsLayerError
 from ..windows.runner import RunnerError
-from .diff import CREATE, DELETE, UPDATE, Change, Record, diff, index
+from .diff import CREATE, DELETE, KIND_ORDER, UPDATE, Change, Record, diff, index
 from .windows_state import (
     NAME_FIELDS,
     SKIPPED_OPTION_IDS,
     V6_PREFIX_LENGTH,
+    canonical_criteria,
     class6_key,
     class_key,
     equal,
@@ -54,13 +55,19 @@ Key = tuple[str, str]
 # What Windows gives a scope created without a lease duration (8 days), and what a push then sends.
 DEFAULT_LEASE_SECONDS = 8 * 86400
 
-# What Windows gives a DHCPv6 scope created without lifetimes.
-# unverified: T1 and T2 defaults (4 days, and 6 days 10 hours, as the scope wizard shows).
+# What Windows gives a DHCPv6 scope created without lifetimes: preferred 8 days, valid 12 days, renewal (T1) 4 days
+# and rebinding (T2) 6.4 days, that is 6 days 9:36 (read back from Windows Server 2025, and what the
+# Add-DhcpServerv6Scope documentation says). T1 and T2 are half and 80 % of the preferred lifetime, the usual DHCP
+# ratios, and the documentation asks for T1 < T2 < preferred lifetime: so when NetBox leaves T1 or T2 empty, a push
+# works them out from the preferred lifetime it sends (see _prepare_scope6) rather than sending 4 and 6.4 days to a
+# scope whose addresses stop being preferred sooner than that.
+# unverified: what Windows itself gives T1 and T2 when a scope is created with a shorter preferred lifetime and no
+# timers (the lab test test_v6_scope_timers_with_a_short_preferred_lifetime records it).
 V6_LIFETIME_DEFAULTS = {
     "preferred_lifetime": 8 * 86400,
     "valid_lifetime": 12 * 86400,
     "t1": 4 * 86400,
-    "t2": 6 * 86400 + 10 * 3600,
+    "t2": 6 * 86400 + 9 * 3600 + 36 * 60,
 }
 
 # Field netbox_state sets on the extra copies of an object Windows can hold once ("#<pk>" keys): they name no Windows
@@ -161,9 +168,17 @@ def _canonical_value(v: Any) -> Any:
 def fingerprint(record: Record) -> str:
     """
     A hash of what an object looks like, to notice later whether someone changed it on Windows. Option numbers are
-    hashed in decimal, so 0x40 on Windows and 64 in NetBox give the same fingerprint.
+    hashed in decimal, so 0x40 on Windows and 64 in NetBox give the same fingerprint, and policy conditions as Windows
+    stores them. A policy's processing order is left out: Windows renumbers the policies of a level by itself whenever
+    one is added, moved or removed, so the number is no sign that someone edited the policy.
     """
+    return _fingerprint(record, keep_order=False)
+
+
+def _fingerprint(record: Record, keep_order: bool) -> str:
     fields = dict(record.fields)
+    if record.kind == "policy" and not keep_order:
+        fields.pop("processing_order", None)
     for name in ("value", "default_value"):
         if isinstance(fields.get(name), list):
             fields[name] = [_canonical_value(v) for v in fields[name]]
@@ -171,8 +186,27 @@ def fingerprint(record: Record) -> str:
     for kind, name in NAME_FIELDS:
         if kind == record.kind and isinstance(fields.get(name), str):
             fields[name] = fields[name].lower()
+    # Policy conditions as Windows stores them, so the NetBox spelling and the one read back hash the same. Fingerprints
+    # recorded before this rule (0.1.0rc1) still match for conditions already in that form. One recorded from another
+    # spelling (a MAC prefix "02-4e-42-ab*") no longer does: until the next push records it again, deleting that policy
+    # in NetBox is reported as changed on Windows and skipped. It cannot be matched the old way, since the old hash was
+    # of the NetBox spelling, which a deleted policy no longer has.
+    if record.kind == "policy" and isinstance(fields.get("criteria"), dict):
+        fields["criteria"] = canonical_criteria(fields["criteria"])
     data = json.dumps({"kind": record.kind, "key": record.key, "fields": fields}, sort_keys=True, default=str)
     return hashlib.sha256(data.encode()).hexdigest()
+
+
+def unchanged(stored: str, record: Record) -> bool:
+    """
+    Whether ``record`` (as Windows has it now) still matches the fingerprint recorded for it. Policy fingerprints
+    recorded before the processing order was left out (0.1.0rc1) included it: they still match while the policy keeps
+    the number it had then. Every push records the new form for the policies it finds in step, so this only matters
+    for a policy deleted in NetBox before any push since the upgrade.
+    """
+    if stored == fingerprint(record):
+        return True
+    return record.kind == "policy" and stored == _fingerprint(record, keep_order=True)
 
 
 # -- dependencies --------------------------------------------------------------------------------------------------
@@ -339,14 +373,63 @@ def _prepare(record: Record, target: Mapping[Key, Record]) -> Record:
     return record
 
 
+def v6_timers(preferred: int) -> dict[str, int]:
+    """Renewal (T1) and rebinding (T2) times for a preferred lifetime: half and 80 %, as Windows' defaults are."""
+    return {"t1": preferred // 2, "t2": preferred * 4 // 5}
+
+
+def _derive_timers(f: Mapping[str, int | None], missing: list[str], preferred: int) -> dict[str, int]:
+    """
+    Values for the empty timers in ``missing`` that keep T1 < T2 < preferred lifetime. With both empty: Windows' half
+    and 80 %. With one set in NetBox, the empty one is worked out from it, since the default for the empty one alone
+    could land on the wrong side of it (a T2 of 1 day with a default T1 of 4 days, say).
+    """
+    derived = v6_timers(preferred)
+    if len(missing) == 2:
+        return derived
+    if missing == ["t1"]:
+        # Renewal stays at half the preferred lifetime when that is still before T2, otherwise at the same 5/8 of T2
+        # that Windows' defaults keep between T1 and T2.
+        t2 = f["t2"]
+        return {"t1": derived["t1"] if derived["t1"] < t2 else t2 * 5 // 8}
+    t1 = f["t1"]
+    t2 = derived["t2"]
+    if t2 <= t1:
+        # Rebinding goes halfway between the renewal time NetBox sets and the preferred lifetime.
+        t2 = t1 + (preferred - t1) // 2
+    return {"t2": t2}
+
+
 def _prepare_scope6(record: Record, current: Record | None) -> Record:
-    """Lifetimes left empty in NetBox keep what Windows has, or get Windows' defaults; a name is required."""
+    """
+    Lifetimes left empty in NetBox keep what Windows has, or get Windows' defaults; a name is required. T1 and T2 left
+    empty follow the preferred lifetime: a new scope gets half and 80 % of it (4 and 6.4 days for the default 8), and
+    an existing one keeps its Windows values unless they no longer fit with the preferred lifetime and the timer
+    NetBox sets. When NetBox sets only one of T1 and T2, the other is worked out so that T1 < T2 < preferred lifetime
+    holds. A timer NetBox sets is never changed: if it leaves no room (T2 past the preferred lifetime, say), Windows
+    refuses the scope and the push reports its message.
+    """
     f = dict(record.fields)
     if not f.get("name"):
         f["name"] = f["prefix"]
-    for name, default in V6_LIFETIME_DEFAULTS.items():
+    for name in ("preferred_lifetime", "valid_lifetime"):
         if f.get(name) is None:
-            f[name] = current.fields.get(name) if current else default
+            f[name] = current.fields.get(name) if current else V6_LIFETIME_DEFAULTS[name]
+    missing = [name for name in ("t1", "t2") if f.get(name) is None]
+    if not missing:
+        return Record(record.kind, record.key, f)
+    for name in missing:
+        f[name] = current.fields.get(name) if current else None
+    preferred = f["preferred_lifetime"]
+    # A preferred lifetime Windows did not report (None) gives nothing to work from: keep the Windows timers.
+    if preferred is None:
+        return Record(record.kind, record.key, f)
+    t1, t2 = f.get("t1"), f.get("t2")
+    # A timer Windows did not report (None) is left alone on an existing scope, as the writer does with any None.
+    if current is None or (t1 is not None and t2 is not None and not t1 < t2 < preferred):
+        # A new scope, or Windows' timers no longer fit (the preferred lifetime or the other timer changed in
+        # NetBox): work out the empty ones instead.
+        f.update(_derive_timers(f, missing, preferred))
     return Record(record.kind, record.key, f)
 
 
@@ -413,7 +496,7 @@ def plan(
             result.unmanaged.append(key)
             deleting.discard(key)
             continue
-        if managed[key] != fingerprint(target_index[key]):
+        if not unchanged(managed[key], target_index[key]):
             result.skipped.append(Skip(change, DRIFTED))
             deleting.discard(key)
             continue
@@ -431,6 +514,7 @@ def plan(
             continue
         result.changes.append(change)
     result.changes = _membership_updates_first(result.changes, target_index)
+    result.changes = _order_policies(result.changes, source_index, target_index, result)
     return result
 
 
@@ -463,7 +547,7 @@ def _protect_memberships(
             out.append(c)
             continue
         key = (c.kind, c.key)
-        trusted = key in managed and managed[key] == fingerprint(target[key])
+        trusted = key in managed and unchanged(managed[key], target[key])
         before, after = (c.before or {}).get("scope_ids", []), (c.after or {}).get("scope_ids", [])
         protected = [
             s
@@ -503,6 +587,124 @@ def _membership_updates_first(changes: list[Change], target: Mapping[Key, Record
         if (before - after) & deleted and all(("scope", s) in target for s in after - before):
             first.append(c)
     return first + [c for c in changes if c not in first] if first else changes
+
+
+def _policy_level(fields: Mapping[str, Any]) -> str:
+    return fields.get("scope_id") or ""
+
+
+def _order_policies(
+    changes: list[Change], source: Mapping[Key, Record], target: Mapping[Key, Record], plan: Plan
+) -> list[Change]:
+    """
+    Policy creates and updates in an order Windows accepts. Windows numbers the policies of each level (the server,
+    or one scope) 1, 2, 3... without gaps: a policy given a used number moves the others down the list, and a number
+    past the end is refused (DHCP 20110, seen when creating order 2 on an empty scope). So, level by level, policies
+    are set in ascending processing order, whatever their names. Following what Windows does at each step also shows
+    which policies NetBox did not change get moved down by an insert: those are set back in the same push.
+    """
+    upserts = {c.key: c for c in changes if c.kind == "policy" and c.action != DELETE}
+    deleted = {c.key for c in changes if c.kind == "policy" and c.action == DELETE}
+    levels = {_policy_level(c.after or {}) for c in upserts.values()}
+    levels |= {_policy_level(c.before or {}) for c in changes if c.kind == "policy" and c.action == DELETE}
+    if not levels:
+        return changes
+    ordered = [c for level in sorted(levels) for c in _order_level(level, upserts, deleted, source, target, plan)]
+    rest = [c for c in changes if not (c.kind == "policy" and c.action != DELETE)]
+    # Back where the diff put policies: after the deletes, before the kinds that come after them.
+    last_delete = max((i for i, c in enumerate(rest) if c.action == DELETE), default=-1)
+    rank = KIND_ORDER.index("policy")
+    at = next((i for i in range(last_delete + 1, len(rest)) if _kind_rank(rest[i].kind) > rank), len(rest))
+    return rest[:at] + ordered + rest[at:]
+
+
+def _kind_rank(kind: str) -> int:
+    return KIND_ORDER.index(kind) if kind in KIND_ORDER else len(KIND_ORDER)
+
+
+def _order_level(
+    level: str,
+    upserts: Mapping[str, Change],
+    deleted: set[str],
+    source: Mapping[Key, Record],
+    target: Mapping[Key, Record],
+    plan: Plan,
+) -> list[Change]:
+    """The policy creates and updates of one level, as ``_order_policies`` describes."""
+    windows = sorted(
+        (r for (kind, _), r in target.items() if kind == "policy" and _policy_level(r.fields) == level),
+        key=lambda r: (r.fields.get("processing_order") is None, r.fields.get("processing_order") or 0, r.key),
+    )
+    wanted = sorted(
+        (r for (kind, _), r in source.items() if kind == "policy" and _policy_level(r.fields) == level),
+        key=lambda r: (r.fields.get("processing_order") is None, r.fields.get("processing_order") or 0, r.key),
+    )
+    level_changes = [c for c in upserts.values() if _policy_level(c.after or {}) == level]
+    if [r.fields.get("processing_order") for r in windows] != list(range(1, len(windows) + 1)):
+        # Not numbered the way this models Windows (it never should be): only put the changes in ascending order.
+        return sorted(level_changes, key=lambda c: ((c.after or {}).get("processing_order") or 0, c.key))
+    # Deletes run first, and Windows closes the gap a removed policy leaves.
+    # unverified: that Remove-DhcpServerv4Policy closes the gap, and that Set-DhcpServerv4Policy -ProcessingOrder moves
+    # the others down (and refuses a number past the end) the way Add does.
+    current = [r.key for r in windows if r.key not in deleted]
+    where = f"scope {level}" if level else "the server level"
+    out: list[Change] = []
+    restored: list[str] = []  # policies NetBox did not change, set back after an insert moved them down
+    stuck: list[Skip] = []  # policies already on Windows whose number does not fit
+    for record in wanted:
+        key, order = record.key, record.fields.get("processing_order")
+        change = upserts.get(key)
+        if key in current:
+            pos = current.index(key) + 1
+            if order is None:
+                order = pos  # No number: Set leaves it where it is.
+            if order == pos and change is None:
+                continue
+            if change is None:
+                # NetBox did not change it, but an insert above it moved it down: set it back. Everything else
+                # already matches, so the change only shows the processing order.
+                before = {**record.fields, "processing_order": pos}
+                change = Change(UPDATE, "policy", key, before=before, after=dict(record.fields))
+                restored.append(key)
+            if order > len(current):
+                stuck.append(Skip(change, _past_the_end(order, where, len(current))))
+                continue
+            current.remove(key)
+            current.insert(order - 1, key)
+        elif change is None:
+            continue
+        elif order is None:
+            current.append(key)  # Windows puts it at the end.
+        elif order > len(current) + 1:
+            # A new policy that does not fit is simply not created: the plan carries on as if it did not exist.
+            plan.skipped.append(Skip(change, _past_the_end(order, where, len(current) + 1)))
+            continue
+        else:
+            current.insert(order - 1, key)
+        out.append(change)
+    if stuck:
+        # A policy already on Windows cannot take its number (typically: a policy before it was deleted in NetBox,
+        # which does not renumber the others, while Windows closed the gap). Moving the others without it would
+        # change the order clients are matched in (deleting order 1 of 3 and setting 2 back to 2 puts it below 3),
+        # so nothing at this level is created or updated until NetBox numbers its policies 1, 2, 3... again.
+        plan.skipped.extend(stuck)
+        names = ", ".join((s.change.after or {}).get("name") or s.change.key for s in stuck)
+        reason = (
+            f"not pushed with the other policies at {where}: the processing order of {names} is past the end, and "
+            "applying the rest alone would reorder the policies Windows holds; renumber the policies in NetBox"
+        )
+        plan.skipped.extend(Skip(c, reason) for c in out if c.key in upserts)
+        return []
+    for key in restored:
+        plan.in_sync.pop(("policy", key), None)
+    return out
+
+
+def _past_the_end(order: int, where: str, highest: int) -> str:
+    return (
+        f"processing order {order} is past the end: Windows numbers the policies at {where} 1, 2, 3... without gaps "
+        f"and would accept at most {highest} here (DHCP 20110); renumber the policies in NetBox"
+    )
 
 
 def _released(child: Key, parent: Key, source: Mapping[Key, Record]) -> bool:

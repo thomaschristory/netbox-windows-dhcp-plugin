@@ -6,8 +6,10 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 Pre-release 0.1.0rc1 (2026-10-21) is on PyPI for testing ahead of the lab run; 0.1.0 follows once the lab tests
-pass. First release. Every v1 feature is in place and tested against the fake server and PowerShell stubs; the lab tests
-against a real Windows server are written (`make test-lab`, `make lab-e2e`) but not run yet.
+pass. First release. Every v1 feature is in place and tested against the fake server and PowerShell stubs. The lab
+tests against a real Windows server (`make test-lab`, `make lab-e2e`) have had a first partial run on Windows Server
+2025, which found the defects listed under Fixed; the full run is still to come, and the `# unverified:` markers it
+settles stay open until then.
 
 ### Added
 
@@ -100,6 +102,7 @@ Development
 - Read-only pages (sync runs, import proposals and their items) showed Edit, Clone, Add, Import or Edit Selected
   buttons that led to a "None" address and a 404. Pages now show only the buttons whose views exist; Delete and the
   review actions stay. Lists without CSV import or bulk edit no longer offer those buttons either (#23).
+
 Found by a first, partial lab run against Windows Server 2025:
 
 - A Windows object that does not exist is reported as missing again, instead of as an object with every field empty.
@@ -117,3 +120,24 @@ Found by a first, partial lab run against Windows Server 2025:
 - The policy lab test uses a condition Windows accepts (`*.Example.Test`), checks FQDN policies apart from policy IP
   ranges and option values (which Windows refuses on FQDN policies, DHCP 20135 and 20136), and the fake server now
   refuses a wildcard in the middle of a condition, as Windows does (#18).
+- A new DHCPv6 scope pushed without renewal and rebinding times now gets Windows' own default rebinding time (T2),
+  6.4 days (6 days 9:36), instead of 6 days 10 hours, so it matches a scope made on Windows without them (#16).
+  Renewal and rebinding times left empty in NetBox now follow the scope's preferred lifetime (half and 80 % of it,
+  which gives Windows' 4 and 6.4 days for the default 8 days), so a scope with a preferred lifetime shorter than
+  6.4 days no longer gets timers past it, which Windows documents as invalid. An existing scope keeps its Windows
+  timers while they still fit below the preferred lifetime. When only one of T1 and T2 is set in NetBox, the empty
+  one is now worked out against it (T1 at 5/8 of T2, or T2 halfway between T1 and the preferred lifetime, when the
+  default would not fit), instead of a default that could land on the wrong side and be refused by Windows.
+- Policy conditions Windows stores in its own spelling no longer show as changed after every push or import: a MAC
+  prefix such as `02-4e-42-ab*` (read back as `02-4e-42-ab-*`) and a host name in mixed case (read back in
+  lowercase) now compare equal, so a second push is a no-op (#21). Upgrading from 0.1.0rc1: a policy whose condition
+  NetBox spells differently from Windows was recorded under its old spelling, so until the next push records it
+  again, deleting it in NetBox is reported as changed on Windows and not deleted. Push once after upgrading.
+- A push now creates and updates the policies of each level in ascending processing order instead of by name, so
+  recreating policies whose names sort the other way no longer fails with DHCP 20110. Policies Windows moves down
+  when another takes their number are set back in the same push, and a processing order that would leave a gap is
+  reported in the plan instead of failing on Windows (#24). After a policy is deleted in NetBox without renumbering
+  the ones after it, the push no longer moves the others into the wrong order: it leaves that level as Windows holds
+  it and asks for the renumbering. Policies Windows renumbers by itself (after a delete, for example) are no longer taken for
+  policies changed on Windows when NetBox later deletes them: the processing order is no longer part of what the
+  push compares to notice hand edits.

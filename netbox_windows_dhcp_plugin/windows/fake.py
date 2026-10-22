@@ -886,49 +886,87 @@ class FakeDhcpServer:
                 if "*" in value[1:-1]:
                     raise _invalid(cmd, "Wildcard is valid either at the beginning or at the end of the condition.")
 
+    def _level(self, sid: str) -> list[tuple[str, str]]:
+        """The policies of one level (server or scope), in processing order."""
+        keys = [k for k in self.policies if k[0] == sid]
+        return sorted(keys, key=lambda k: (self.policies[k]["processing_order"] or 0, k[1]))
+
+    def _ordered(self, cmd: str, k: tuple[str, str], order: int | None) -> list[tuple[str, str]]:
+        """
+        The level's policies once policy ``k`` takes processing order ``order``. Windows numbers the policies of a
+        level 1, 2, 3... without gaps: taking a used number moves the others down the list, and a number past the end
+        fails with DHCP 20110 (seen on Windows Server 2025 for Add, with order 2 on an empty scope). No number puts a
+        new policy at the end and leaves an existing one where it is.
+        """
+        # unverified: that Set refuses a number past the end the same way, and that a removal closes the gap.
+        level = self._level(k[0])
+        if order is None:
+            return level if k in level else [*level, k]
+        others = [x for x in level if x != k]
+        if order < 1 or order > len(others) + 1:
+            verb = "update" if k in self.policies else "create"
+            raise _err(cmd, 20110, "InvalidData", f"Failed to {verb} policy {k[1]} on DHCP server FAKE.")
+        others.insert(order - 1, k)
+        return others
+
+    def _renumber(self, level: list[tuple[str, str]]) -> None:
+        for i, k in enumerate(level, 1):
+            self.policies[k]["processing_order"] = i
+
     def _apply_policy(self, pol: dict[str, Any], p: dict) -> None:
         if p.get("enabled") is not None:
             pol["enabled"] = bool(p["enabled"])
-        if p.get("processing_order") is not None:
-            pol["processing_order"] = int(p["processing_order"])
         if _s(p, "condition"):
             pol["condition"] = _s(p, "condition")
         if _n(p, "lease_seconds"):
             pol["lease_duration"] = normalize.format_duration(_n(p, "lease_seconds"))
         for k, v in (p.get("criteria") or {}).items():
             if v is not None:
-                pol["criteria"][k] = [str(x) for x in v]
+                # Windows stores conditions in its own spelling (seen on Windows Server 2025): a separator before a
+                # MAC prefix wildcard, host names in lowercase. The operator is the first item.
+                # unverified: that an uppercase MAC prefix is read back in lowercase.
+                items = [str(x) for x in v]
+                pol["criteria"][k] = items[:1] + [normalize.canonical_policy_criterion(k, x) for x in items[1:]]
+
+    @staticmethod
+    def _order(p: dict) -> int | None:
+        return None if p.get("processing_order") is None else int(p["processing_order"])
 
     def _op_policy_add(self, p: dict) -> Any:
-        k = self._policy_key("Add-DhcpServerv4Policy", p)
+        cmd = "Add-DhcpServerv4Policy"
+        k = self._policy_key(cmd, p)
         if k in self.policies:
-            raise _invalid("Add-DhcpServerv4Policy", f"The policy {_s(p, 'name')} already exists.", 20151)
+            raise _invalid(cmd, f"The policy {_s(p, 'name')} already exists.", 20151)
         if not (p.get("criteria") or {}):
-            raise _invalid("Add-DhcpServerv4Policy", "At least one condition is required.")
-        self._check_wildcards("Add-DhcpServerv4Policy", p)
-        order = 1 + max((v["processing_order"] or 0 for kk, v in self.policies.items() if kk[0] == k[0]), default=0)
+            raise _invalid(cmd, "At least one condition is required.")
+        self._check_wildcards(cmd, p)
+        level = self._ordered(cmd, k, self._order(p))
         pol: dict[str, Any] = {
             "name": _s(p, "name"),
             "scope_id": k[0],
             "description": _s(p, "description"),
             "enabled": True,
-            "processing_order": order,
+            "processing_order": None,
             "condition": "OR",
             "criteria": {},
             "lease_duration": "",
         }
         self._apply_policy(pol, p)
         self.policies[k] = pol
+        self._renumber(level)
         return pol
 
     def _op_policy_set(self, p: dict) -> Any:
-        k = self._policy_key("Set-DhcpServerv4Policy", p)
+        cmd = "Set-DhcpServerv4Policy"
+        k = self._policy_key(cmd, p)
         pol = self.policies.get(k)
         if pol is None:
-            raise _err("Set-DhcpServerv4Policy", 20152, "ObjectNotFound", f"The policy {_s(p, 'name')} does not exist.")
-        self._check_wildcards("Set-DhcpServerv4Policy", p)
+            raise _err(cmd, 20152, "ObjectNotFound", f"The policy {_s(p, 'name')} does not exist.")
+        self._check_wildcards(cmd, p)
+        level = self._ordered(cmd, k, self._order(p))
         pol["description"] = _s(p, "description")
         self._apply_policy(pol, p)
+        self._renumber(level)
         return pol
 
     def _op_policy_remove(self, p: dict) -> Any:
@@ -941,6 +979,7 @@ class FakeDhcpServer:
         self.policy_ranges.pop(k, None)
         for ok in [ok for ok in self.options if ok[1] == k[0] and ok[5].lower() == k[1]]:
             del self.options[ok]
+        self._renumber(self._level(k[0]))
         return None
 
     def _policy_for_range(self, cmd: str, p: dict) -> tuple[tuple[str, str], dict[str, Any]]:
@@ -986,7 +1025,7 @@ class FakeDhcpServer:
         return sc
 
     @staticmethod
-    def _apply_v6scope(sc: dict[str, Any], p: dict) -> None:
+    def _apply_v6scope(sc: dict[str, Any], p: dict, cmd: str) -> None:
         if _s(p, "state"):
             sc["state"] = "Inactive" if _s(p, "state").casefold() == "inactive" else _s(p, "state")
         if p.get("preference") is not None:
@@ -999,6 +1038,12 @@ class FakeDhcpServer:
         ):
             if _n(p, src):
                 sc[dst] = normalize.format_duration(_n(p, src))
+        # The cmdlet documentation asks for T1 < T2 < preferred lifetime. Refusing anything else makes the tests
+        # notice a push that would send renewal and rebinding times a real server may refuse or hand to clients.
+        # unverified: that Windows refuses such timers (and with which error), rather than storing them.
+        t1, t2, pref = (normalize.parse_duration(sc[k], allow_zero=True) for k in ("t1", "t2", "preferred_lifetime"))
+        if not t1 < t2 < pref:
+            raise _invalid(cmd, f"Invalid T1 or T2 for scope {sc['prefix']}: T1 < T2 < preferred lifetime expected.")
 
     def _op_v6scope_get(self, p: dict) -> Any:
         return self.v6_scopes.get(_s(p, "prefix"))
@@ -1018,10 +1063,11 @@ class FakeDhcpServer:
             "preference": 0,
             "preferred_lifetime": "8.00:00:00",
             "valid_lifetime": "12.00:00:00",
+            # Windows' defaults: T1 4 days, T2 6.4 days.
             "t1": "4.00:00:00",
-            "t2": "6.10:00:00",
+            "t2": "6.09:36:00",
         }
-        self._apply_v6scope(sc, p)
+        self._apply_v6scope(sc, p, "Add-DhcpServerv6Scope")
         self.v6_scopes[prefix] = sc
         return sc
 
@@ -1029,7 +1075,13 @@ class FakeDhcpServer:
         sc = self._v6scope("Set-DhcpServerv6Scope", _s(p, "prefix"))
         sc["name"] = _s(p, "name") or sc["name"]
         sc["description"] = _s(p, "description")
-        self._apply_v6scope(sc, p)
+        before = dict(sc)
+        try:
+            self._apply_v6scope(sc, p, "Set-DhcpServerv6Scope")
+        except _Fail:
+            sc.clear()
+            sc.update(before)
+            raise
         return sc
 
     def _op_v6scope_remove(self, p: dict) -> Any:
