@@ -38,7 +38,8 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
      allows option 51 (#29); the missing-module unit test no longer depends on RSAT being absent (#31); an Import
      panel on the server and sync run pages says whether an import is queued, running or done and, with branching,
      links its branch and change request and says main has not changed (#32). Then #36: with branching the Import
-button is a menu of import branch, the branch you work in, or main (confirmed, policy and permission checked). Also #33: hot standby updates no
+button is a menu of import branch, the branch you work in, or main (confirmed, policy and permission checked). And
+     #38: the Windows servers list links server names to the Windows server page (saved layouts included). Also #33: hot standby updates no
      longer send `-ServerRole`, which `Set-DhcpServerv4Failover` lacks; a role change is refused.
    - **Still to do:** the rest of the lab run, fixing what it finds, recording scrubbed fixtures and removing the
      settled markers. With a single server the two failover markers (scope removal while in a relationship, what
