@@ -4,7 +4,7 @@ from netbox.ui import attrs, panels
 
 class WindowsServerPanel(panels.ObjectAttributesPanel):
     title = _("Connection")
-    dhcp_server = attrs.RelatedObjectAttr("dhcp_server", linkify=True, label=_("DHCP server"))
+    dhcp_server = attrs.RelatedObjectAttr("dhcp_server", linkify=True, label=_("Generic DHCP server"))
     host = attrs.TextAttr("host", style="font-monospace", copy_button=True)
     transport = attrs.ChoiceAttr("transport")
     effective_port = attrs.NumericAttr("effective_port", label=_("Port"))

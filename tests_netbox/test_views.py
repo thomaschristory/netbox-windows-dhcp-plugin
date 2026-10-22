@@ -1,3 +1,6 @@
+import re
+
+from netbox_dhcp.models import DHCPServer
 from utilities.testing import TestCase, ViewTestCases
 
 from netbox_windows_dhcp_plugin.models import (
@@ -182,3 +185,63 @@ class ImportProposalListViewTest(TestCase):
         response = self.client.get("/plugins/windows-dhcp/importproposals/")
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.context["table"].data.data.ordered)
+
+
+class WindowsServerLinkTest(TestCase):
+    """Issue #38: a Windows server's name opens the Windows server, wherever it is listed."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_permissions(
+            "netbox_windows_dhcp_plugin.view_windowsserver",
+            "netbox_windows_dhcp_plugin.view_syncrun",
+            "netbox_dhcp.view_dhcpserver",
+        )
+        # Primary keys that differ between the Windows server and its DHCP server, so neither can stand in for the
+        # other in a URL.
+        servers = dhcp_servers(4)
+        windows_server(servers[0]).delete()
+        windows_server(servers[1]).delete()
+        self.dhcp = servers[3]
+        self.server = windows_server(self.dhcp)
+        self.assertNotEqual(self.server.pk, self.dhcp.pk)
+
+    def links(self, url):
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        return re.findall(r'<a href="([^"]+)"[^>]*>\s*([^<]+?)\s*</a>', response.content.decode())
+
+    def test_name_in_the_server_list_opens_the_windows_server(self):
+        links = self.links("/plugins/windows-dhcp/windowsservers/")
+        self.assertIn((self.server.get_absolute_url(), self.dhcp.name), links)
+        # The generic DHCP server stays one click away, under its own column.
+        self.assertIn((self.dhcp.get_absolute_url(), self.dhcp.name), links)
+        self.assertIn("Generic DHCP server", self.client.get("/plugins/windows-dhcp/windowsservers/").content.decode())
+
+    def test_matches_the_sync_run_links(self):
+        from netbox_windows_dhcp_plugin.choices import SyncKindChoices
+        from netbox_windows_dhcp_plugin.models import SyncRun
+
+        run = SyncRun.objects.create(windows_server=self.server, kind=SyncKindChoices.TEST)
+        target = (self.server.get_absolute_url(), self.dhcp.name)
+        self.assertIn(target, self.links("/plugins/windows-dhcp/windowsservers/"))
+        self.assertIn(target, self.links("/plugins/windows-dhcp/syncruns/"))
+        self.assertIn(target, self.links(run.get_absolute_url()))
+
+    def test_list_sorts_by_name(self):
+        other = windows_server(DHCPServer.objects.create(name="aaa-first"))
+        for sort, first in (("dhcp_server", other), ("-dhcp_server", self.server)):
+            html = self.client.get(f"/plugins/windows-dhcp/windowsservers/?sort={sort}").content.decode()
+            names = [
+                n for _, n in re.findall(r'<a href="(/plugins/windows-dhcp/windowsservers/\d+/)">([^<]+)</a>', html)
+            ]
+            self.assertEqual(names[0], first.dhcp_server.name, sort)
+
+    def test_saved_layouts_keep_the_windows_server_link(self):
+        # A layout saved before #38 lists "dhcp_server" only: that column now opens the Windows server.
+        from users.models import UserConfig
+
+        config, _ = UserConfig.objects.get_or_create(user=self.user)
+        config.set("tables.WindowsServerTable.columns", ["dhcp_server", "host"], commit=True)
+        links = self.links("/plugins/windows-dhcp/windowsservers/")
+        self.assertIn((self.server.get_absolute_url(), self.dhcp.name), links)

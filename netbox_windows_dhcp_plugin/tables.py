@@ -42,7 +42,20 @@ __all__ = (
 
 
 class WindowsServerTable(PrimaryModelTable):
-    dhcp_server = tables.Column(verbose_name=_("DHCP server"), linkify=True)
+    # The server's name opens this Windows server, as everywhere else in the plugin (#38). The column keeps its
+    # name so table layouts users saved before still show it, now with the right link. The generic
+    # netbox-plugin-dhcp server page has a column of its own.
+    dhcp_server = tables.Column(
+        verbose_name=_("Windows server"),
+        order_by=("dhcp_server__name",),
+        linkify=lambda record: record.get_absolute_url(),
+    )
+    generic_dhcp_server = tables.Column(
+        verbose_name=_("Generic DHCP server"),
+        accessor="dhcp_server",
+        order_by=("dhcp_server__name",),
+        linkify=True,
+    )
     transport = columns.ChoiceFieldColumn(verbose_name=_("Transport"))
     winrm_auth = columns.ChoiceFieldColumn(verbose_name=_("WinRM authentication"))
     winrm_https = columns.BooleanColumn(verbose_name=_("HTTPS"))
@@ -57,6 +70,7 @@ class WindowsServerTable(PrimaryModelTable):
             "pk",
             "id",
             "dhcp_server",
+            "generic_dhcp_server",
             "host",
             "transport",
             "port",
@@ -73,7 +87,15 @@ class WindowsServerTable(PrimaryModelTable):
             "created",
             "last_updated",
         )
-        default_columns = ("dhcp_server", "host", "transport", "winrm_auth", "credential_profile", "sync_enabled")
+        default_columns = (
+            "dhcp_server",
+            "host",
+            "transport",
+            "winrm_auth",
+            "credential_profile",
+            "sync_enabled",
+            "generic_dhcp_server",
+        )
 
 
 class WindowsScopeTable(NetBoxTable):

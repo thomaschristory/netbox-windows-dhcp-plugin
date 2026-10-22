@@ -104,6 +104,9 @@ Development
 
 ### Fixed
 
+- The Windows servers list links each server's name to its Windows server page (actions, Import panel, sync runs),
+  as the sync run pages do, saved table layouts included; the generic netbox-plugin-dhcp server stays linked in a
+  new **Generic DHCP server** column (#38).
 - The plugin's buttons (Test connection, Sync now, Dry run, Import now, and Apply all, Dismiss all, Apply and Dismiss
   on the review queue) were rendered without a CSRF token, so clicking them failed with "CSRF verification failed"
   (403). They now carry the token (#19).
