@@ -289,12 +289,16 @@ def test_mac_policy_ranges_and_options(lab: Lab, probe_out) -> None:
     k = wc.OptionKey(15, s.scope_id, policy_name=p.name)
     ov = lab.client.set_option_value(k, ["policy.example"])
     assert ov.value == ["policy.example"] and ov.policy_name == p.name
-    assert [x.value for x in lab.client.list_option_values(scope_id=s.scope_id, policy_name=p.name)] == [
-        ["policy.example"]
-    ]
+    # Windows also lists the policy's lease time as option 51 (issue #29), which the sync skips.
+    listed = {x.option_id: x.value for x in lab.client.list_option_values(scope_id=s.scope_id, policy_name=p.name)}
+    assert listed.pop(15) == ["policy.example"]
+    assert set(listed) <= windows_state.SKIPPED_OPTION_IDS
+    if 51 in listed:
+        assert listed[51] == ["86400"]
     lab.client.remove_option_value(k)
     with pytest.raises(wc.NotFound):
         lab.client.get_option_value(k)
+    assert 15 not in {x.option_id for x in lab.client.list_option_values(scope_id=s.scope_id, policy_name=p.name)}
 
     lab.client.remove_policy_ip_range(r)
     assert lab.client.list_policy_ip_ranges(s.scope_id, p.name) == []

@@ -200,6 +200,46 @@ def test_scope(pw: PwshRunner) -> None:
     assert find_call(pw.last_calls(), "Remove-DhcpServerv4Scope")["Force"] is False
 
 
+@pytest.mark.parametrize(
+    ("start", "end", "wide"),
+    [
+        ("10.1.20.20", "10.1.20.252", ("10.1.20.10", "10.1.20.252")),  # start narrows, end widens
+        ("10.1.20.5", "10.1.20.240", ("10.1.20.5", "10.1.20.250")),  # start widens, end narrows
+        ("10.1.20.100", "10.1.20.254", ("10.1.20.10", "10.1.20.254")),  # shifted up past the old start
+    ],
+)
+def test_scope_range_shift_widens_first(pw: PwshRunner, start: str, end: str, wide: tuple[str, str]) -> None:
+    """Issue #30: Windows refuses (DHCP 20023) a range that widens one end and narrows the other in one call."""
+    pw.seed = SEED_SCOPE
+    c = DhcpClient(pw)
+    got = c.get_scope("10.1.20.0")
+    with pytest.raises(PSError, match="Failed to set IP address range"):
+        raw = Script("raw", "Set-DhcpServerv4Scope -ScopeId 10.1.20.0 -StartRange $p.s -EndRange $p.e")
+        c._run(raw, {"s": start, "e": end})
+    pw.last_calls()
+    s = c.set_scope(Scope(**{**got.to_dict(), "start_range": start, "end_range": end, "description": "moved"}))
+    assert (s.start_range, s.end_range, s.description) == (start, end, "moved")
+    sets = [x for x in pw.last_calls() if x["cmd"] == "Set-DhcpServerv4Scope"]
+    assert len(sets) == 2
+    assert {k: v for k, v in sets[0].items() if k != "cmd"} == {
+        "ScopeId": "10.1.20.0",
+        "StartRange": wide[0],
+        "EndRange": wide[1],
+    }
+    assert (sets[1]["StartRange"], sets[1]["EndRange"]) == (start, end)
+
+
+@pytest.mark.parametrize(("start", "end"), [("10.1.20.5", "10.1.20.254"), ("10.1.20.20", "10.1.20.200")])
+def test_scope_range_one_direction_is_one_call(pw: PwshRunner, start: str, end: str) -> None:
+    pw.seed = SEED_SCOPE
+    c = DhcpClient(pw)
+    got = c.get_scope("10.1.20.0")
+    pw.last_calls()
+    s = c.set_scope(Scope(**{**got.to_dict(), "start_range": start, "end_range": end}))
+    assert (s.start_range, s.end_range) == (start, end)
+    assert len([x for x in pw.last_calls() if x["cmd"] == "Set-DhcpServerv4Scope"]) == 1
+
+
 def test_computer_name(pw: PwshRunner) -> None:
     pw.seed = SEED_SCOPE
     DhcpClient(pw, "dhcp02.example.local").get_scope("10.1.20.0")
@@ -319,16 +359,29 @@ def test_broken_script(pw: PwshRunner) -> None:
 
 
 def test_missing_module_is_not_not_found(pw: PwshRunner, tmp_path: Path) -> None:
+    # A host with the DHCP RSAT tools would find the real module (issue #31): search an empty module directory
+    # instead, so the module is missing whatever is installed.
+    empty = tmp_path / "no-modules"
+    empty.mkdir()
+    env = {**os.environ, "PSModulePath": str(empty)}
+    probe = subprocess.run(
+        [pw.pwsh, "-NoProfile", "-NonInteractive", "-Command", "[bool](Get-Command Get-DhcpServerv4Scope -EA 0)"],
+        capture_output=True,
+        env=env,
+        timeout=120,
+    )
+    if probe.stdout.decode(errors="replace").strip() != "False":
+        pytest.skip("the DhcpServer module is still found with an empty PSModulePath")
     pw2 = PwshRunner(pw.pwsh, tmp_path / "c2.jsonl")
-    pw2.run = lambda script, params=None: _run_without_stubs(pw.pwsh, script, params)  # type: ignore[method-assign]
+    pw2.run = lambda script, params=None: _run_without_stubs(pw.pwsh, script, params, env)  # type: ignore[method-assign]
     with pytest.raises(PSError, match="DhcpServer PowerShell module is not available") as ei:
         DhcpClient(pw2).list_scopes()
     assert not ei.value.not_found
 
 
-def _run_without_stubs(pwsh: str, script: str, params: Any) -> bytes:
+def _run_without_stubs(pwsh: str, script: str, params: Any, env: dict[str, str]) -> bytes:
     args, stdin = command_argv(render(script, params))
-    p = subprocess.run([pwsh, *args], input=stdin.encode(), capture_output=True, timeout=120)
+    p = subprocess.run([pwsh, *args], input=stdin.encode(), capture_output=True, env=env, timeout=120)
     return decode_output(p.stdout)
 
 

@@ -321,10 +321,14 @@ class FakeDhcpServer:
         return sc
 
     def _op_scope_set(self, p: dict) -> Any:
+        cmd = "Set-DhcpServerv4Scope"
         sid = _s(p, "scope_id")
-        old = self._scope("Set-DhcpServerv4Scope", sid)
+        old = self._scope(cmd, sid)
         p["subnet_mask"] = old["subnet_mask"]
-        self._check_range("Set-DhcpServerv4Scope", sid, old["subnet_mask"], _s(p, "start_range"), _s(p, "end_range"))
+        start, end = _s(p, "start_range"), _s(p, "end_range")
+        self._check_range(cmd, sid, old["subnet_mask"], start, end)
+        # The script's widen-then-narrow steps for a range that moves one end out and the other in (issue #30) end
+        # in the same state as one call, so the fake applies the result directly; the pwsh stubs model the refusal.
         sc = self._scope_from(sid, p, old)
         self.scopes[sid] = sc
         return sc

@@ -155,9 +155,21 @@ function Set-DhcpServerv4Scope {
         return
     }
     $old = $global:Scopes["$ScopeId"]
-    if (-not $PSBoundParameters.ContainsKey('LeaseDuration')) { $LeaseDuration = $old.LeaseDuration }
-    $global:Scopes["$ScopeId"] = New-Scope @{ ScopeId = $ScopeId; SubnetMask = $old.SubnetMask; Name = $Name; State = $State
-        StartRange = $StartRange; EndRange = $EndRange; LeaseDuration = $LeaseDuration; Description = $Description; Type = $Type }
+    $v = @{ ScopeId = $ScopeId; SubnetMask = $old.SubnetMask }
+    foreach ($k in 'Name', 'State', 'StartRange', 'EndRange', 'LeaseDuration', 'Description', 'Type') {
+        $v[$k] = if ($PSBoundParameters.ContainsKey($k)) { $PSBoundParameters[$k] } else { $old.$k }
+    }
+    # Windows refuses a range that widens one end and narrows the other in one call, after it has already applied the
+    # other values (issue #30).
+    $n = { param($ip) $b = ([ipaddress]"$ip").GetAddressBytes(); [Array]::Reverse($b); [BitConverter]::ToUInt32($b, 0) }
+    $cs = & $n $old.StartRange; $ce = & $n $old.EndRange; $ns = & $n $v.StartRange; $ne = & $n $v.EndRange
+    if (($ns -lt $cs -and $ne -lt $ce) -or ($ns -gt $cs -and $ne -gt $ce)) {
+        $v['StartRange'] = $old.StartRange; $v['EndRange'] = $old.EndRange
+        $global:Scopes["$ScopeId"] = New-Scope $v
+        Write-DhcpError $PSCmdlet 20023 InvalidData "Failed to set IP address range to a scope $ScopeId."
+        return
+    }
+    $global:Scopes["$ScopeId"] = New-Scope $v
 }
 
 # Removes silently; does not model the "scope has active leases" failure.

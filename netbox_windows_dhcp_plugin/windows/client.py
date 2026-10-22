@@ -413,6 +413,24 @@ S_SCOPE_SET = Script(
     "scope.set",
     _SCOPE_FUNC
     + r"""
+function ConvertTo-WdIPv4Number([string]$ip) {
+    $b = ([System.Net.IPAddress]::Parse($ip)).GetAddressBytes()
+    [Array]::Reverse($b)
+    [BitConverter]::ToUInt32($b, 0)
+}
+# Windows refuses, with DHCP 20023, a range change that widens one end and narrows the other in the same call
+# (issue #30): widen to cover both ranges first, so the call below only narrows.
+$cur = Get-DhcpServerv4Scope @cn -ScopeId $p.scope_id
+$cs = ConvertTo-WdIPv4Number "$($cur.StartRange)"
+$ce = ConvertTo-WdIPv4Number "$($cur.EndRange)"
+$ns = ConvertTo-WdIPv4Number $p.start_range
+$ne = ConvertTo-WdIPv4Number $p.end_range
+if (($ns -lt $cs -and $ne -lt $ce) -or ($ns -gt $cs -and $ne -gt $ce)) {
+    $w = @{ ScopeId = $p.scope_id; StartRange = "$($cur.StartRange)"; EndRange = "$($cur.EndRange)" }
+    if ($ns -lt $cs) { $w['StartRange'] = $p.start_range }
+    if ($ne -gt $ce) { $w['EndRange'] = $p.end_range }
+    Set-DhcpServerv4Scope @cn @w
+}
 $a = @{
     ScopeId       = $p.scope_id
     Name          = $p.name
@@ -1570,7 +1588,12 @@ class DhcpClient:
         return self._get(S_SCOPE_ADD, _scope_params(scope), Scope)
 
     def set_scope(self, scope: Scope) -> Scope:
-        """Update a scope. The subnet mask cannot change (remove and re-add instead)."""
+        """Update a scope. The subnet mask cannot change (remove and re-add instead).
+
+        A range that moves one bound out and the other in is set in two steps, widen then narrow, because Windows
+        refuses that change in one call (DHCP 20023). If the second step fails the scope keeps the wider range, and
+        the next dry run shows the range update still to do.
+        """
         return self._get(S_SCOPE_SET, _scope_params(scope), Scope)
 
     def remove_scope(self, scope_id: str, force: bool = False) -> None:

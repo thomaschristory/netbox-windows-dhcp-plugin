@@ -143,3 +143,12 @@ Found by a first, partial lab run against Windows Server 2025:
   it and asks for the renumbering. Policies Windows renumbers by itself (after a delete, for example) are no longer taken for
   policies changed on Windows when NetBox later deletes them: the processing order is no longer part of what the
   push compares to notice hand edits.
+
+Found by testing 0.1.0rc2:
+
+- Changing a scope's pool so that one end grows and the other shrinks (for example `.10-.200` to `.11-.210`) no
+  longer fails with DHCP 20023, which Windows returns for that change in one call. The push widens the range first,
+  then sets the final one (#30).
+- The policy lab test allows the lease time option (51) Windows lists next to a policy's own option values (#29).
+- The missing-module unit test no longer fails on a host with the Windows DHCP management tools (RSAT) installed: it
+  runs PowerShell with an empty module path (#31).
