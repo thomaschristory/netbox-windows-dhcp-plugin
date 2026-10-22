@@ -359,6 +359,49 @@ def test_failover_update_adds_and_removes_scopes_and_refuses_a_new_partner(clien
         )
 
 
+def hot_standby(**over):
+    fields = {"mode": "hotstandby", "server_role": "active", "load_balance_percent": None, "reserve_percent": 5}
+    return failover(**{**fields, **over})
+
+
+def test_hot_standby_update_keeps_its_role_and_sends_none(client, fake):
+    """Issue #33: Set-DhcpServerv4Failover has no -ServerRole."""
+    push(client, [r for r in wanted() if r.kind != "failover"] + [hot_standby()])
+    fake.calls.clear()
+    before = hot_standby().fields
+    after = hot_standby(reserve_percent=10, max_client_lead_time=120).fields
+    WindowsWriter(client).apply(Change("update", "failover", "ha", before=before, after=after))
+    assert fake.failovers["ha"]["reserve_percent"] == 10 and fake.failovers["ha"]["server_role"] == "Active"
+    assert [c.op for c in fake.calls if c.op.startswith("failover.")][:1] == ["failover.set"]
+
+
+def test_hot_standby_role_change_is_refused(client, fake):
+    push(client, [r for r in wanted() if r.kind != "failover"] + [hot_standby()])
+    fake.calls.clear()
+    with pytest.raises(PushRefused, match="role"):
+        WindowsWriter(client).apply(
+            Change(
+                "update", "failover", "ha", before=hot_standby().fields, after=hot_standby(server_role="standby").fields
+            )
+        )
+    assert not [c for c in fake.calls if c.op == "failover.set"]  # refused before anything changed
+    assert fake.failovers["ha"]["server_role"] == "Active"
+
+
+def test_switch_to_hot_standby_reports_the_role_windows_chose(client, fake):
+    push(client, wanted())
+    before = failover().fields
+    WindowsWriter(client).apply(Change("update", "failover", "ha", before=before, after=hot_standby().fields))
+    assert fake.failovers["ha"]["mode"] == "HotStandby"
+    push(client, wanted())  # back to load balance
+    fake.scopes["10.2.0.0"] = {**fake.scopes["10.1.0.0"], "scope_id": "10.2.0.0"}
+    after = hot_standby(server_role="standby", scope_ids=["10.1.0.0", "10.2.0.0"]).fields
+    with pytest.raises(PushRefused, match="made this server active, not standby; set that role in NetBox"):
+        WindowsWriter(client).apply(Change("update", "failover", "ha", before=before, after=after))
+    # The rest of the change was still made before the refusal.
+    assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0", "10.2.0.0"]
+
+
 def test_mac_filter_update_and_filter_list_delete(client, fake):
     push(client, wanted())
     before = wanted()[-2].fields

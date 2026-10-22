@@ -794,10 +794,12 @@ Remove-DhcpServerv4Class @cn -Name $p.name -Type $p.type -Confirm:$false
 
 # ---- IPv4 failover --------------------------------------------------------------------
 
-# unverified: output property names (ServerRole, EnableAuth, StateSwitchInterval as TimeSpan),
-# Set-DhcpServerv4Failover accepting -Mode/-ServerRole, and -Force on Invoke-...Replication
-# suppressing the confirmation prompt. Writes go to one partner; call replicate_failover
-# afterwards to copy scope configuration to the other.
+# Set-DhcpServerv4Failover has no -ServerRole (only Add has it; checked on Windows Server 2025, issue #33), so a hot
+# standby relationship's role is fixed when it is created.
+# unverified: output property names (ServerRole, EnableAuth, StateSwitchInterval as TimeSpan), which role Windows
+# gives this server when Set switches the mode to HotStandby, -Confirm:$false on Set suppressing the prompt a mode
+# change asks for, and -Force on Invoke-...Replication suppressing the confirmation prompt.
+# Writes go to one partner; call replicate_failover afterwards to copy scope configuration to the other.
 _FAILOVER_FUNC = r"""
 function ConvertTo-WdFailover($f) {
     [ordered]@{
@@ -861,9 +863,9 @@ S_FAILOVER_SET = Script(
     + r"""
 $a = @{ Name = $p.name }
 if ($p.mode) { $a['Mode'] = $p.mode }
-if ($p.server_role) { $a['ServerRole'] = $p.server_role }
 Add-WdFailoverSettings $a
-Set-DhcpServerv4Failover @cn @a -Force
+# A mode change asks for confirmation, which nobody can answer over WinRM.
+Set-DhcpServerv4Failover @cn @a -Force -Confirm:$false
 $out = Get-WdFailover
 """,
 )
@@ -1785,7 +1787,11 @@ class DhcpClient:
         return self._get(S_FAILOVER_ADD, self._failover_params(f, shared_secret), FailoverRelationship)
 
     def set_failover(self, f: FailoverRelationship, shared_secret: str = "") -> FailoverRelationship:
-        """Update settings. Scope membership changes go through add/remove_failover_scopes."""
+        """Update settings. Scope membership changes go through add/remove_failover_scopes.
+
+        ``server_role`` is not sent: Windows cannot change it in place (issue #33). Remove and re-add the relationship
+        to change it.
+        """
         return self._get(S_FAILOVER_SET, self._failover_params(f, shared_secret), FailoverRelationship)
 
     def remove_failover(self, name: str, force: bool = False) -> None:

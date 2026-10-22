@@ -483,6 +483,34 @@ def test_failover(pw: PwshRunner) -> None:
     assert [x.name for x in c.list_failovers()] == ["lb"]
 
 
+def test_hot_standby_update_sends_no_server_role(pw: PwshRunner) -> None:
+    """Issue #33: Set-DhcpServerv4Failover has no -ServerRole, so sending it failed parameter binding."""
+    pw.seed = (
+        SEED_SCOPE
+        + "Add-DhcpServerv4Failover -Name hs -PartnerServer dhcp02 -ScopeId 10.1.20.0 -ServerRole Active\n"
+        + "Add-DhcpServerv4Failover -Name lb -PartnerServer dhcp02 -ScopeId 10.1.20.0\n"
+    )
+    c = DhcpClient(pw)
+    f = c.set_failover(
+        FailoverRelationship(
+            name="hs",
+            partner_server="dhcp02",
+            mode="HotStandby",
+            server_role="Active",
+            reserve_percent=10,
+            max_client_lead_time=120,
+        )
+    )
+    assert (f.server_role, f.reserve_percent, f.max_client_lead_time) == ("Active", 10, 120)
+    st = find_call(pw.last_calls(), "Set-DhcpServerv4Failover")
+    assert "ServerRole" not in st and st["Mode"] == "HotStandby" and st["Confirm"] is False
+    # The stub refuses the parameter, as Windows does.
+    with pytest.raises(PSError, match="ServerRole"):
+        c._run(Script("raw", "Set-DhcpServerv4Failover -Name hs -ServerRole Standby"))
+    f = c.set_failover(FailoverRelationship(name="lb", mode="HotStandby", server_role="Standby"))
+    assert f.mode == "HotStandby" and f.server_role == "Active"  # the role is Windows' choice, not what was asked
+
+
 def test_superscopes(pw: PwshRunner) -> None:
     c = DhcpClient(pw)
     assert c.list_superscopes() == []  # scopes without a superscope are ignored
