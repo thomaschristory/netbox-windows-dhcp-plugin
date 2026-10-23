@@ -29,6 +29,8 @@ BRANCHING = "netbox_windows_dhcp_plugin.integrations.branching.branching_install
 IMPORT_BRANCH = "netbox_windows_dhcp_plugin.integrations.branching.import_branch"
 BRANCH_DELETION = "netbox_windows_dhcp_plugin.integrations.branching.branch_deletion"
 MERGED_AT = datetime(2026, 10, 23, 12, 26, 23, tzinfo=UTC)
+# How the panel words a known merge time (NetBox wraps the date in a tooltip).
+MERGED_ON = "The branch was merged into main on <span"
 
 
 def fake_branch(status="ready", merged_time=None):
@@ -396,7 +398,7 @@ class BranchImportStatusTest(ImportStatusTestBase):
             html = panel(self.server_page())
         self.assertNotIn("open import branch", html)
         self.assertIn("Added 1 difference to an import branch that was already open.", html)
-        self.assertIn("The branch was merged into main on 2026-10-23", html)
+        self.assertIn(MERGED_ON, html)
         self.assertIn("Main may have changed since", html)
         self.assertNotIn("Main has not been changed.", html)
 
@@ -407,7 +409,7 @@ class BranchImportStatusTest(ImportStatusTestBase):
             html = panel(self.server_page())
         self.assertEqual(status.branch.lifecycle, import_status.MERGED)
         self.assertIn("Imported 2 differences into a new branch.", html)
-        self.assertIn("The branch was merged into main on 2026-10-23", html)
+        self.assertIn(MERGED_ON, html)
 
     def test_merging_branch(self):
         self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x", changes=1)
@@ -423,7 +425,7 @@ class BranchImportStatusTest(ImportStatusTestBase):
             html = panel(self.server_page())
         self.assertEqual(status.branch.lifecycle, import_status.DELETED_MERGED)
         self.assertNotIn("open import branch", html)
-        self.assertIn("The branch was merged into main on 2026-10-23", html)
+        self.assertIn(MERGED_ON, html)
         self.assertIn("and has since been deleted.", html)
         self.assertIn("Main may have changed since", html)
         # The deletion record stays one click away; "no longer exists" is for a branch nothing more is known of.
@@ -457,7 +459,7 @@ class BranchImportStatusTest(ImportStatusTestBase):
         self.assertEqual(status.branch.lifecycle, import_status.GONE)
         self.assertIn("whether it was merged into main is not known here", html)
         self.assertNotIn("open import branch", html)
-        self.assertNotIn("was merged into main", html)
+        self.assertNotIn("The branch was merged", html)
 
     def test_hidden_branch_has_no_lifecycle_claim(self):
         self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x", changes=1)
@@ -498,7 +500,7 @@ class BranchImportStatusTest(ImportStatusTestBase):
         self.assertEqual(response.status_code, 200)
         history = panel(response.content.decode())
         self.assertNotIn("open import branch", history)
-        self.assertIn("The branch was merged into main on 2026-10-23", history)
+        self.assertIn(MERGED_ON, history)
 
     def test_server_panel_links_the_import_history(self):
         self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), changes=0)
