@@ -193,3 +193,9 @@ Found by testing 0.1.0rc3:
 - The Windows scopes list shows each scope's prefix in its own column, next to the subnet name, as the
   netbox-plugin-dhcp subnet list does, so scopes with similar or repeated names are told apart without opening them.
   The column links to the prefix and sorts by network (#47).
+- With branching, the Import panel no longer calls a merged or deleted branch "the open import branch", on the
+  Windows server page or on the sync run of an earlier import. It says what became of the branch: being merged,
+  merged into main (with the time), merged and since deleted, or deleted without being merged, read from the branch
+  or from its deletion in the change log. With no record you may view, it says the outcome is not known rather than
+  guessing a merge. A merged import no longer reads as "main matches Windows", the deleted branch row links its
+  deletion record, and the server panel links the server's import history (#44).

@@ -8,10 +8,20 @@
       <span class="badge text-bg-{{ info.branch.get_status_color }}">{{ info.branch.get_status_display }}</span>
     {% else %}
       <span class="font-monospace">{{ info.name }}</span>
-      {% if not info.exists %}<span class="text-muted">{% trans "(no longer exists)" %}</span>{% endif %}
+      {% if info.deletion %}
+        <span class="text-muted">(<a href="{{ info.deletion.get_absolute_url }}">{% trans "deleted" %}</a>)</span>
+      {% elif not info.exists %}
+        <span class="text-muted">{% trans "(no longer exists)" %}</span>
+      {% endif %}
     {% endif %}
   </td>
 </tr>
+{% if info.merged_time %}
+  <tr>
+    <th scope="row">{% trans "Merged" %}</th>
+    <td>{{ info.merged_time|isodatetime }}</td>
+  </tr>
+{% endif %}
 {% if info.change_request %}
   <tr>
     <th scope="row">{% trans "Change request" %}</th>

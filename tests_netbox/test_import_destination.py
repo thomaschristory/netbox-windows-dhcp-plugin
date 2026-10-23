@@ -498,7 +498,7 @@ class DirectImportStatusTest(TestCase):
 
     def test_direct_import_with_nothing_to_do(self):
         self.run_(changes=0)
-        self.assertIn("No differences found: main already matches Windows.", self.page())
+        self.assertIn("No differences found: main matched Windows when this import ran.", self.page())
 
     def test_partly_failed_direct_import_says_what_reached_main(self):
         self.run_(status=SyncStatusChoices.FAILED, changes=3, applied=2, failed=1)

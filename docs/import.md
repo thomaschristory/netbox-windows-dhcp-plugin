@@ -90,6 +90,12 @@ already holds the differences; one that found nothing at all says no branch was 
 or found nothing, an earlier import's branch that is still open stays listed. The sync run page shows the same for
 its own run. The panel only shows what you may view: sync runs, jobs, branches and change requests.
 
+Once a branch is no longer open, the panel says what became of it instead of calling it open: being merged, merged
+into main (with the time), or deleted. For a deleted branch it reads the deletion in the change log: merged before it
+was deleted, deleted without being merged, or, when there is no deletion record you may view, that the outcome is not
+known. A missing branch is never taken as proof of a merge, and a merged import never means main still matches
+Windows: import again to compare. The server panel also links the server's import history.
+
 Review the branch like any other: look at its diff, sync it with main if it is behind, then merge it (once the change
 request is approved). Merging queues a push (when **Sync enabled** is on), which finds nothing to do: NetBox now
 matches Windows, and the push records the imported objects as managed. With sync off, the first push after you turn
