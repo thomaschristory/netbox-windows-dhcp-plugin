@@ -258,7 +258,7 @@ while queued) and `SyncRun.destination` (migration 0005). Without branching the 
 
 **Repeated runs.** If an open import branch or proposal already exists for a server, the job updates it instead of opening another.
 
-**Where the result is (issue #32).** The Windows server page has an Import panel (`import_status.py`) built from the latest import `SyncRun` and any newer import job that has not started its run yet. It tells queued and running apart from finished, and refreshes itself over HTMX until the job ends. With branching it names and links the branch (`SyncRun.branch_name`, looked up in `integrations/branching.import_branch()`) and its change request, and says main has not changed while the branch is unmerged, telling a new branch from one the run added to (`branch_created` in the run summary); after a run that wrote no branch it still shows an earlier run's open branch. Without branching it links the import proposal and never mentions a branch. Everything is read as the viewing user (runs, jobs, proposals, branches and change requests they may not view are left out; change requests are read from main even inside a branch), and a job or run still claiming to run after `ABANDONED_JOB` counts as failed, so the panel stops polling. The sync run page shows the same panel for its own run.
+**Where the result is (issue #32).** The Windows server page has an Import panel (`import_status.py`) built from the latest import `SyncRun` and any newer import job that has not started its run yet. It tells queued and running apart from finished, and refreshes itself over HTMX until the job ends. With branching it names and links the branch (`SyncRun.branch_name`, looked up in `integrations/branching.import_branch()`) and its change request, and says main has not changed while the branch is unmerged, telling a new branch from one the run added to (`branch_created` in the run summary); after a run that wrote no branch it still shows an earlier run's open branch. Without branching it links the import proposal and never mentions a branch; proposal runs record `review` (items sent to the proposal) and `dismissed` (differences left out because the same change was dismissed before) in the run summary, so the panel says "No differences found" only when `changes` is 0 and otherwise says how many wait for review and how many stay dismissed (issue #43). Everything is read as the viewing user (runs, jobs, proposals, branches and change requests they may not view are left out; change requests are read from main even inside a branch), and a job or run still claiming to run after `ABANDONED_JOB` counts as failed, so the panel stops polling. The sync run page shows the same panel for its own run.
 
 **How it is built (milestone 3).**
 
@@ -294,7 +294,8 @@ while queued) and `SyncRun.destination` (migration 0005). Without branching the 
   request is created and submitted for review; if that fails, the branch is still recorded on the sync run.
   Branch writes need a real user (NetBox's change log records one).
 - **Proposal mode.** A repeated run replaces pending and failed items. A dismissal holds, across proposals, while
-  Windows proposes exactly the same values; a run with nothing new to review opens no proposal. Applying checks the
+  Windows proposes exactly the same values; a run with nothing new to review opens no proposal, and the run summary
+  counts the differences a dismissal kept out (`dismissed`) next to those sent to review (`review`). Applying checks the
   object still matches the item's "before" values and fails the item otherwise. Every object an apply writes
   (prefixes and addresses included) is checked against the reviewer's permissions and constraints, and a refusal
   rolls the item back.

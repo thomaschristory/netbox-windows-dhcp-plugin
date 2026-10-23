@@ -91,6 +91,22 @@ class ImportStatus:
         return (self.run.summary or {}).get("changes") if self.run is not None else None
 
     @property
+    def review(self):
+        """
+        Differences a proposal import sent to review. Runs from before issue #43 did not record it: every
+        difference went to review then, unless a dismissal hid it, which those runs cannot tell.
+        """
+        if self.run is None:
+            return None
+        summary = self.run.summary or {}
+        return summary.get("review", summary.get("changes"))
+
+    @property
+    def dismissed(self):
+        """Differences a proposal import left out because a reviewer had already dismissed the same change."""
+        return ((self.run.summary or {}).get("dismissed") or 0) if self.run is not None else 0
+
+    @property
     def branch_created(self):
         return bool((self.run.summary or {}).get("branch_created")) if self.run is not None else False
 

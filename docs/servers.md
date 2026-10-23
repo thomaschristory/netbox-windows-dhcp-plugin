@@ -82,7 +82,9 @@ The summary of a **push** or **dry run** holds:
 - for a push, `applied`, `failed` and `skipped` counts, and `errors` and `not_attempted` lists.
 
 The summary of an **import** holds the number of differences by action and `notes` about what was left out. With
-branching it also holds how many changes were written into the branch.
+branching it also holds how many changes were written into the branch. Without branching it also holds `review`
+(differences sent to the import proposal) and `dismissed` (differences left out because a reviewer had already
+dismissed exactly the same change); `changes` counts both.
 
 The job log (**Operations > Jobs**, or the job linked from the sync run) has one line per change and per note.
 

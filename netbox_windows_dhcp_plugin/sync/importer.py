@@ -96,14 +96,24 @@ class ImportResult:
     proposal: ImportProposal | None = None
     # Written straight into main (import_to_main).
     direct: bool = False
+    # Proposal imports only: how many differences went to review, and how many were left out because a reviewer
+    # had already dismissed exactly that change. None for branch and main imports, which have no dismissals.
+    review: int | None = None
+    dismissed: int = 0
 
     def summary(self):
+        """
+        Counts for the sync run. ``changes`` is every difference found. A proposal import also records ``review``
+        and ``dismissed``, so "nothing waits for review" is never read as "no differences" (issue #43).
+        """
         counts = {a: sum(1 for c in self.changes if c.action == a) for a in (CREATE, UPDATE, DELETE)}
         out = {"changes": len(self.changes), **counts}
         if self.direct:
             out.update(applied=self.applied, failed=len(self.failed))
         elif self.branch is not None:
             out.update(applied=self.applied, failed=len(self.failed), branch_created=self.branch_created)
+        if self.review is not None:
+            out.update(review=self.review, dismissed=self.dismissed)
         if self.notes:
             out["notes"] = self.notes
         return out
@@ -207,6 +217,8 @@ def import_to_proposal(windows_server, state, sync_run):
         for sequence, change in enumerate(changes)
         if (change.action, change.kind, change.key, _frozen(change.after)) not in dismissed
     ]
+    result.review = len(to_review)
+    result.dismissed = len(changes) - len(to_review)
     proposal = (
         ImportProposal.objects.select_for_update()
         .filter(windows_server=windows_server, status=ProposalStatusChoices.OPEN)
