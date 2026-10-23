@@ -53,7 +53,10 @@ A reservation update keeps the reservation's option values. Windows Server 2025 
 description change was sent with the client ID and type (#42), so the push sends the client ID and type (DHCPv6:
 DUID and IAID) only when they change, and after each reservation update it puts back any of the reservation's option
 values that went missing. This adds no line to the plan or the dry run. If a value cannot be put back, the
-reservation update counts as failed and names the option; the next push recreates the value.
+reservation update counts as failed and names each option it lost. The next push recreates a lost value only if
+NetBox holds it. Values NetBox does not hold, such as DHCPv6 vendor class values, option codes the plugin does not
+sync, or values added on Windows since the last import, never come back by themselves (an import cannot see them
+either, once Windows has dropped them): put them back by hand. The error says which kind each lost value is.
 
 When a change fails, the push goes on with the others but skips the children of an object it could not create, and
 keeps the parents of an object it could not delete. The run then ends **failed**, with one line per error. A lost

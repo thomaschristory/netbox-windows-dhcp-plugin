@@ -450,8 +450,35 @@ def test_failed_option_restore_names_the_reservation_and_the_option(client, fake
     fake.reservation_set_drops_options = True
     boom = PSError(message="boom", command="Set-DhcpServerv4OptionValue")
     fake.fail = lambda op, p: boom if op == "option.set" else None
-    with pytest.raises(PushRefused, match=r"10\.1\.0\.50.*option 15.*boom"):
+    with pytest.raises(PushRefused, match=r"10\.1\.0\.50.*option 15.*if NetBox holds.*boom"):
         WindowsWriter(client).apply(reservation_change(description="changed"))
+
+
+def test_failed_restore_says_whether_the_next_push_recreates_the_value(client, fake):
+    # Option 15 is in NetBox; the user class value was added by hand on Windows, so NetBox never sees it.
+    push(client, wanted())
+    client.set_option_value(OptionKey(6, reserved_ip="10.1.0.50", user_class="Phones"), ["10.0.0.7"])
+    fake.reservation_set_drops_options = True
+    boom = PSError(message="boom", command="Set-DhcpServerv4OptionValue")
+    fake.fail = lambda op, p: boom if op == "option.set" else None
+    writer = WindowsWriter(client, held_options={wanted()[8].key})
+    with pytest.raises(PushRefused) as caught:
+        writer.apply(reservation_change(description="changed"))
+    message = str(caught.value)
+    assert "option 15 (NetBox holds this value, so the next push recreates it)" in message
+    assert "option 6 (user class Phones) (NetBox does not hold this value" in message
+    assert "put it back by hand" in message
+
+
+def test_one_failed_restore_does_not_stop_the_others(client, fake):
+    push(client, wanted())
+    client.set_option_value(OptionKey(6, reserved_ip="10.1.0.50", user_class="Phones"), ["10.0.0.7"])
+    fake.reservation_set_drops_options = True
+    boom = PSError(message="boom", command="Set-DhcpServerv4OptionValue")
+    fake.fail = lambda op, p: boom if op == "option.set" and p.get("option_id") == 15 else None
+    with pytest.raises(PushRefused, match=r"option 15 "):
+        WindowsWriter(client).apply(reservation_change(description="changed"))
+    assert reservation_values(fake) == {(6, "", "phones"): ["10.0.0.7"]}
 
 
 def test_v6_description_update_keeps_reservation_options(client, fake):
@@ -472,3 +499,30 @@ def test_v6_description_update_keeps_reservation_options(client, fake):
     WindowsWriter(client).apply(Change("update", "reservation6", key, before=before, after=after))
     assert fake.v6_reservations["2001:db8:1::10"]["description"] == "x"
     assert [v["value"] for k, v in fake.v6_options.items() if k[2] == "2001:db8:1::10"] == [["host.example"]]
+
+
+def test_v6_failed_restore_of_a_vendor_class_value_says_to_put_it_back_by_hand(client, fake):
+    client.add_v6_scope(ScopeV6(prefix="2001:db8:1::", name="v6"))
+    client.add_v6_reservation(ReservationV6("2001:db8:1::", "2001:db8:1::10", "00-01-00-01-aa", 7, "pc", "desk"))
+    client.set_v6_option_value(OptionKeyV6(24, reserved_ip="2001:db8:1::10"), ["host.example"])
+    client.set_v6_option_value(OptionKeyV6(17, reserved_ip="2001:db8:1::10", vendor_class="Lab"), ["x"])
+    fake.reservation_set_drops_options = True
+    boom = PSError(message="boom", command="Set-DhcpServerv6OptionValue")
+    fake.fail = lambda op, p: boom if op == "v6option.set" else None
+    before = {
+        "prefix": "2001:db8:1::",
+        "ip_address": "2001:db8:1::10",
+        "client_duid": "00-01-00-01-aa",
+        "iaid": 7,
+        "name": "pc",
+        "description": "desk",
+    }
+    key = ws.reservation6_key("2001:db8:1::", "2001:db8:1::10")
+    held = {ws.option6_key("2001:db8:1::/2001:db8:1::10", 24)}
+    with pytest.raises(PushRefused) as caught:
+        WindowsWriter(client, held_options=held).apply(
+            Change("update", "reservation6", key, before=before, after={**before, "description": "x"})
+        )
+    message = str(caught.value)
+    assert "option 24 (NetBox holds this value, so the next push recreates it)" in message
+    assert "option 17 (vendor class Lab) (it is a DHCPv6 vendor class value" in message

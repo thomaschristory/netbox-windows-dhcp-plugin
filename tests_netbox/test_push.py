@@ -108,6 +108,29 @@ class PushJobTest(PushTestMixin, TestCase):
         self.assertEqual(self.fake.options[(3, "", "10.1.0.50", "", "", "")]["value"], ["10.1.0.254"])
         self.assertEqual(self._run(DryRunJob).summary["changes"], 0)
 
+    def test_failed_reservation_value_restore_says_whether_the_next_push_recreates_it(self):
+        """Issue #42 review: a value NetBox does not hold never comes back by itself, and the error says so."""
+        from netbox_windows_dhcp_plugin.windows.client import OptionKey
+        from netbox_windows_dhcp_plugin.windows.psscript import PSError
+
+        self._run()  # adopts everything
+        # Added by hand on Windows after the import: NetBox does not hold it.
+        DhcpClient(self.fake).set_option_value(OptionKey(15, reserved_ip="10.1.0.50"), ["by.hand"])
+        self.fake.reservation_set_drops_options = True
+        self.fake.fail = lambda op, p: (
+            PSError("denied", "PermissionDenied", "", "Set-DhcpServerv4OptionValue") if op == "option.set" else None
+        )
+        reservation = HostReservation.objects.get()
+        reservation.snapshot()
+        reservation.comments = "changed in NetBox"
+        reservation.save()
+        with self.assertRaises(JobFailed):
+            self._run()
+        run = SyncRun.objects.get(kind=SyncKindChoices.PUSH, status=SyncStatusChoices.FAILED)
+        self.assertIn("option 3 (NetBox holds this value, so the next push recreates it)", run.error)
+        self.assertIn("option 15 (NetBox does not hold this value", run.error)
+        self.assertIn("put it back by hand", run.error)
+
     def test_deleted_in_netbox_is_deleted_on_windows_once_managed(self):
         self._run()  # adopts everything
         HostReservation.objects.get().delete()

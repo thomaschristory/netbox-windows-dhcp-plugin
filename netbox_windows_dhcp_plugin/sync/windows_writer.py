@@ -32,7 +32,7 @@ from ..windows.client import (
 from ..windows.psscript import WindowsLayerError
 from ..windows.runner import RunnerError
 from .diff import CREATE, DELETE, UPDATE, Change
-from .windows_state import NO_BOOTP_LIMIT, option6_target, same_host
+from .windows_state import NO_BOOTP_LIMIT, ipv6, option6_key, option6_target, option_key, same_host
 
 __all__ = ("PushRefused", "WindowsWriter", "option_target")
 
@@ -49,14 +49,40 @@ def option_target(parent: str) -> tuple[str, str]:
     return scope_id, ip
 
 
+def _option_name(v: Any) -> str:
+    """``15``, or ``15 (vendor class MSFT 5.0, user class Phones)``."""
+    classes = [f"{label} class {name}" for label, name in (("vendor", v.vendor_class), ("user", v.user_class)) if name]
+    return f"{v.option_id} ({', '.join(classes)})" if classes else str(v.option_id)
+
+
 def _option_identity(v: Any) -> tuple[int, str, str]:
     # Class names are not case sensitive on Windows.
     return (int(v.option_id), (v.vendor_class or "").lower(), (v.user_class or "").lower())
 
 
+# Why a reservation option value the writer could not put back will not come back by itself (issue #42).
+HELD_BY_NETBOX = "NetBox holds this value, so the next push recreates it"
+V6_VENDOR_VALUE = (
+    "it is a DHCPv6 vendor class value, which NetBox does not hold: no push or import recreates it, put it back by hand"
+)
+NOT_HELD = (
+    "NetBox does not hold this value (an unsupported option code, or a value added on Windows since the last "
+    "import): no push recreates it, put it back by hand"
+)
+MAYBE_HELD = "if NetBox holds this value the next push recreates it; otherwise put it back by hand"
+
+
 class WindowsWriter:
-    def __init__(self, client: DhcpClient, failover_secret: Callable[[str], str] | None = None) -> None:
+    def __init__(
+        self,
+        client: DhcpClient,
+        failover_secret: Callable[[str], str] | None = None,
+        held_options: set[str] | None = None,
+    ) -> None:
         self.client = client
+        # Keys of the option values (kinds option and option6) the push writes from NetBox. A reservation update
+        # that loses a value it cannot put back uses this to say whether a later push brings it back. None: unknown.
+        self.held_options = held_options
         # Returns the shared secret of a failover relationship (by name) from its credential profile. The secret
         # only ever goes from there to the cmdlet: it is never part of a change, a record or a log line.
         self.failover_secret = failover_secret or (lambda name: "")
@@ -209,6 +235,7 @@ class WindowsWriter:
         if change.action == CREATE:
             self.client.add_reservation(r)
             return
+        parent = f"{r.scope_id}/{r.ip_address}"
         self._keep_reservation_options(
             r.ip_address,
             lambda: self.client.list_option_values(scope_id=r.scope_id, reserved_ip=r.ip_address, all=True),
@@ -222,11 +249,21 @@ class WindowsWriter:
                 ),
                 v.value,
             ),
+            lambda v: self._held_note(option_key(parent, v.option_id, v.vendor_class, v.user_class)),
         )
+
+    def _held_note(self, key: str) -> str:
+        if self.held_options is None:
+            return MAYBE_HELD
+        return HELD_BY_NETBOX if key in self.held_options else NOT_HELD
 
     @staticmethod
     def _keep_reservation_options(
-        ip: str, list_values: Callable[[], list], update: Callable[[], Any], restore: Callable[[Any], Any]
+        ip: str,
+        list_values: Callable[[], list],
+        update: Callable[[], Any],
+        restore: Callable[[Any], Any],
+        held_note: Callable[[Any], str],
     ) -> None:
         """
         Update a reservation and put back any of its option values the update removed.
@@ -237,10 +274,15 @@ class WindowsWriter:
         values before and after (two extra list calls per reservation update) and writes back any that went missing
         or changed. The plan is untouched: option deletes run before reservation updates, so a value NetBox removes
         is already gone from the snapshot, and option creates and updates run after, so they still win.
+
+        The snapshot holds every value, including ones NetBox never sees (DHCPv6 vendor class values, unsupported
+        codes, values added on Windows since the last import). A later push cannot recreate those, so one failed
+        restore does not stop the others, and the error says for each lost value whether it comes back by itself.
         """
         before = list_values()
         update()
         after = {_option_identity(v): v.value for v in list_values()}
+        failed = []
         for v in before:
             if after.get(_option_identity(v)) == v.value:
                 continue
@@ -249,10 +291,12 @@ class WindowsWriter:
             except RunnerError:
                 raise  # the connection is gone: the push stops, as for any other change
             except WindowsLayerError as exc:
-                raise PushRefused(
-                    f"reservation {ip} was updated, but Windows dropped option {v.option_id} "
-                    f"and putting it back failed: {exc}"
-                ) from exc
+                failed.append(f"option {_option_name(v)} ({held_note(v)}): {exc}")
+        if failed:
+            raise PushRefused(
+                f"reservation {ip} was updated, but Windows dropped option values and putting them back failed: "
+                + "; ".join(failed)
+            )
 
     # -- option values -------------------------------------------------------------------------------------------
 
@@ -505,7 +549,13 @@ class WindowsWriter:
                 ),
                 v.value,
             ),
+            lambda v: self._held_note6(r.prefix, r.ip_address, v),
         )
+
+    def _held_note6(self, prefix: str, ip: str, v: Any) -> str:
+        if v.vendor_class:
+            return V6_VENDOR_VALUE
+        return self._held_note(option6_key(f"{ipv6(prefix)}/{ipv6(ip)}", v.option_id, v.user_class))
 
     def _apply_option6(self, change: Change) -> None:
         f = change.after or change.before or {}
