@@ -41,7 +41,7 @@ Windows Server 2016 or later with the DHCP Server role.
 ## Quick start
 
 ```bash
-pip install --pre netbox-windows-dhcp-plugin   # or ==0.1.0rc3; --pre is needed until 0.1.0 is out
+pip install --pre netbox-windows-dhcp-plugin   # or ==0.1.0rc4; --pre is needed until 0.1.0 is out
 # extras: [kerberos] for Kerberos (needs system GSSAPI libraries), [branching] for branching and change control
 ```
 
