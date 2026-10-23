@@ -5,8 +5,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Pre-releases on PyPI for testing ahead of the full lab run: 0.1.0rc1 (2026-10-21), and 0.1.0rc2 (2026-10-22) with the
-fixes below from testing rc1 and a first partial lab run (the ones before "Found by testing 0.1.0rc2"). 0.1.0 follows once the lab tests pass.
+Pre-releases on PyPI for testing ahead of the full lab run: 0.1.0rc1 (2026-10-21); 0.1.0rc2 (2026-10-22) with the
+fixes below from testing rc1 and a first partial lab run (the ones before "Found by testing 0.1.0rc2"); and 0.1.0rc3
+(2026-10-23) with the fixes found by testing rc2, the import destination menu (#36) and the Windows servers list links
+(#38). 0.1.0 follows once the lab tests pass.
 
 First release. Every v1 feature is in place and tested against the fake server and PowerShell stubs. The lab tests
 against a real Windows server (`make test-lab`, `make lab-e2e`) have had a first partial run on Windows Server 2025,
