@@ -34,7 +34,7 @@
       {% elif status.state == "failed" %}
         <div class="alert alert-danger mb-2" role="alert">
           {% trans "The import failed." %}
-          {% if status.branch.main_unchanged %}{% trans "Anything it wrote is in the branch below. Main has not been changed." %}{% endif %}
+          {% if status.branch.main_unchanged %}{% trans "Anything it wrote is in the branch below. Main has not been changed." %}{% elif status.branch %}{% include "netbox_windows_dhcp_plugin/inc/import_branch_outcome.html" with info=status.branch %}{% endif %}
           {% if status.direct %}
             {% if status.applied is None %}
               {% trans "Anything it wrote before failing stays in main: see the change log." %}
@@ -49,7 +49,8 @@
       {% elif status.direct %}
         <div class="alert alert-success mb-2" role="status">
           {% if not status.changes %}
-            {% trans "No differences found: main already matches Windows." %}
+            {# Main matched Windows when the import ran; that says nothing about main today. #}
+            {% trans "No differences found: main matched Windows when this import ran." %}
           {% else %}
             {% blocktrans count n=status.changes %}Imported {{ n }} difference directly into main.{% plural %}Imported {{ n }} differences directly into main.{% endblocktrans %}
             {% trans "No branch or change request was used." %}
@@ -59,20 +60,29 @@
         <div class="alert alert-success mb-2" role="status">
           {% if status.chosen_branch %}
             {% if not status.changes %}
-              {% trans "No differences found: the branch below already matches Windows." %}
+              {% trans "No differences found: the branch below matched Windows when this import ran." %}
             {% else %}
               {% blocktrans count n=status.changes %}Imported {{ n }} difference into the branch you chose.{% plural %}Imported {{ n }} differences into the branch you chose.{% endblocktrans %}
             {% endif %}
           {% elif not status.changes %}
-            {% trans "No new differences since the last import: the branch below already holds them." %}
+            {% if status.branch.main_unchanged %}
+              {% trans "No new differences since the last import: the branch below already holds them." %}
+            {% else %}
+              {% trans "No new differences since the import before it: the branch below already held them." %}
+            {% endif %}
           {% elif status.branch_created %}
             {% blocktrans count n=status.changes %}Imported {{ n }} difference into a new branch.{% plural %}Imported {{ n }} differences into a new branch.{% endblocktrans %}
-          {% else %}
+          {% elif status.branch.main_unchanged %}
             {% blocktrans count n=status.changes %}Added {{ n }} difference to the open import branch.{% plural %}Added {{ n }} differences to the open import branch.{% endblocktrans %}
+          {% else %}
+            {# The branch was open when the run added to it; what became of it since follows (issue #44). #}
+            {% blocktrans count n=status.changes %}Added {{ n }} difference to an import branch that was already open.{% plural %}Added {{ n }} differences to an import branch that was already open.{% endblocktrans %}
           {% endif %}
           {% if status.branch.main_unchanged %}
             <strong>{% trans "Main has not been changed." %}</strong>
             {% trans "Review the branch, then merge it to bring the changes into main." %}
+          {% else %}
+            {% include "netbox_windows_dhcp_plugin/inc/import_branch_outcome.html" with info=status.branch %}
           {% endif %}
         </div>
       {% elif status.uses_branching %}
@@ -127,7 +137,10 @@
         {% if refresh_url %}
           <tr>
             <th scope="row">{% trans "Sync run" %}</th>
-            <td><a href="{{ status.run.get_absolute_url }}">{{ status.run }}</a></td>
+            <td>
+              <a href="{{ status.run.get_absolute_url }}">{{ status.run }}</a>
+              <a href="{% url 'plugins:netbox_windows_dhcp_plugin:syncrun_list' %}?windows_server_id={{ status.run.windows_server_id }}&amp;kind=import" class="ms-2">{% trans "All imports" %}</a>
+            </td>
           </tr>
         {% endif %}
         <tr>

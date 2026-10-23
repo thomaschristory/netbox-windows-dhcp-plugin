@@ -7,12 +7,13 @@ panel points at the import proposal and never mentions a branch.
 """
 
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest import mock
+from unittest import mock, skipUnless
 
 from core.choices import JobStatusChoices
 from core.models import Job
+from django.apps import apps
 from django.urls import reverse
 from django.utils import timezone
 from utilities.testing import TestCase
@@ -26,11 +27,14 @@ from .fixtures import dhcp_servers, windows_server
 
 BRANCHING = "netbox_windows_dhcp_plugin.integrations.branching.branching_installed"
 IMPORT_BRANCH = "netbox_windows_dhcp_plugin.integrations.branching.import_branch"
+BRANCH_DELETION = "netbox_windows_dhcp_plugin.integrations.branching.branch_deletion"
+MERGED_AT = datetime(2026, 10, 23, 12, 26, 23, tzinfo=UTC)
 
 
-def fake_branch(status="ready"):
+def fake_branch(status="ready", merged_time=None):
     return SimpleNamespace(
         status=status,
+        merged_time=merged_time,
         get_absolute_url=lambda: "/plugins/branching/branches/7/",
         get_status_color=lambda: "green",
         get_status_display=lambda: status.title(),
@@ -372,10 +376,141 @@ class BranchImportStatusTest(ImportStatusTestBase):
 
     def test_deleted_branch(self):
         self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x")
-        with mock.patch(IMPORT_BRANCH, return_value=(None, None, False)):
+        with (
+            mock.patch(IMPORT_BRANCH, return_value=(None, None, False)),
+            mock.patch(BRANCH_DELETION, return_value=None),
+        ):
             html = self.server_page()
         self.assertIn("(no longer exists)", html)
         self.assertNotIn("Main has not been changed.", html)
+
+    # Issue #44: a branch that was merged or deleted is no longer called open.
+
+    def deletion(self, status, merged_time=None):
+        change = SimpleNamespace(get_absolute_url=lambda: "/core/changelog/9/")
+        return mock.patch(BRANCH_DELETION, return_value=(change, status, merged_time))
+
+    def test_merged_branch_is_not_called_open(self):
+        self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x", changes=1)
+        with mock.patch(IMPORT_BRANCH, return_value=(fake_branch("merged", MERGED_AT), None, True)):
+            html = panel(self.server_page())
+        self.assertNotIn("open import branch", html)
+        self.assertIn("Added 1 difference to an import branch that was already open.", html)
+        self.assertIn("The branch was merged into main on 2026-10-23", html)
+        self.assertIn("Main may have changed since", html)
+        self.assertNotIn("Main has not been changed.", html)
+
+    def test_archived_branch_reads_as_merged(self):
+        self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x", created=True)
+        with mock.patch(IMPORT_BRANCH, return_value=(fake_branch("archived", MERGED_AT), None, True)):
+            status = import_status.for_server(self.server, self.user)
+            html = panel(self.server_page())
+        self.assertEqual(status.branch.lifecycle, import_status.MERGED)
+        self.assertIn("Imported 2 differences into a new branch.", html)
+        self.assertIn("The branch was merged into main on 2026-10-23", html)
+
+    def test_merging_branch(self):
+        self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x", changes=1)
+        with mock.patch(IMPORT_BRANCH, return_value=(fake_branch("merging"), None, True)):
+            html = panel(self.server_page())
+        self.assertIn("The branch is being merged into main.", html)
+        self.assertNotIn("open import branch", html)
+
+    def test_branch_merged_then_deleted(self):
+        self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x", changes=1)
+        with mock.patch(IMPORT_BRANCH, return_value=(None, None, False)), self.deletion("merged", MERGED_AT):
+            status = import_status.for_server(self.server, self.user)
+            html = panel(self.server_page())
+        self.assertEqual(status.branch.lifecycle, import_status.DELETED_MERGED)
+        self.assertNotIn("open import branch", html)
+        self.assertIn("The branch was merged into main on 2026-10-23", html)
+        self.assertIn("and has since been deleted.", html)
+        self.assertIn("Main may have changed since", html)
+        # The deletion record stays one click away; "no longer exists" is for a branch nothing more is known of.
+        self.assertIn('(<a href="/core/changelog/9/">deleted</a>)', html)
+        self.assertNotIn("(no longer exists)", html)
+        self.assertIn('<th scope="row">Merged</th>', html)
+
+    def test_branch_merged_then_deleted_without_a_merge_time(self):
+        self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x", changes=1)
+        with mock.patch(IMPORT_BRANCH, return_value=(None, None, False)), self.deletion("archived"):
+            html = panel(self.server_page())
+        self.assertIn("The branch was merged into main and has since been deleted.", html)
+
+    def test_branch_deleted_without_being_merged(self):
+        self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x", changes=1)
+        with mock.patch(IMPORT_BRANCH, return_value=(None, None, False)), self.deletion("ready"):
+            html = panel(self.server_page())
+        self.assertIn("deleted without being merged into main", html)
+        self.assertNotIn("was merged into main on", html)
+        self.assertNotIn("open import branch", html)
+
+    def test_missing_branch_is_not_read_as_merged(self):
+        # No deletion record the user may view: the outcome is unknown, and the panel says so.
+        self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x", changes=1)
+        with (
+            mock.patch(IMPORT_BRANCH, return_value=(None, None, False)),
+            mock.patch(BRANCH_DELETION, return_value=None),
+        ):
+            status = import_status.for_server(self.server, self.user)
+            html = panel(self.server_page())
+        self.assertEqual(status.branch.lifecycle, import_status.GONE)
+        self.assertIn("whether it was merged into main is not known here", html)
+        self.assertNotIn("open import branch", html)
+        self.assertNotIn("was merged into main", html)
+
+    def test_hidden_branch_has_no_lifecycle_claim(self):
+        self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x", changes=1)
+        with mock.patch(IMPORT_BRANCH, return_value=(None, None, True)), mock.patch(BRANCH_DELETION) as lookup:
+            html = panel(self.server_page())
+        lookup.assert_not_called()
+        self.assertNotIn("open import branch", html)
+        self.assertNotIn("merged into main", html)
+        self.assertNotIn("not known here", html)
+
+    def test_deleted_branch_lookup_starts_at_the_run(self):
+        run = self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x")
+        with mock.patch(IMPORT_BRANCH, return_value=(None, None, False)), self.deletion("merged") as lookup:
+            import_status.for_run(run, self.user)
+        lookup.assert_called_once_with("dhcp-import/dhcp1/x", self.user, since=run.created)
+
+    def test_failed_run_into_a_merged_branch(self):
+        self.make_run(
+            self.job(JobStatusChoices.STATUS_FAILED), status=SyncStatusChoices.FAILED, branch_name="dhcp-import/dhcp1/x"
+        )
+        with mock.patch(IMPORT_BRANCH, return_value=(None, None, False)), self.deletion("merged", MERGED_AT):
+            html = panel(self.server_page())
+        self.assertIn("The import failed.", html)
+        self.assertIn("and has since been deleted.", html)
+        self.assertNotIn("Main has not been changed.", html)
+
+    def test_merged_and_deleted_then_nothing_new(self):
+        # The follow-up on #44: a later import with nothing new gives the server page a truthful latest result, and
+        # the earlier run's own page still says what became of its branch instead of calling it open.
+        old = self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x", changes=1)
+        self.age(old, 1)
+        self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), changes=0)
+        with mock.patch(IMPORT_BRANCH, return_value=(None, None, False)), self.deletion("merged", MERGED_AT):
+            latest = panel(self.server_page())
+            response = self.client.get(old.get_absolute_url())
+        self.assertIn("nothing was imported and no branch was created", latest)
+        self.assertNotIn("dhcp-import/dhcp1/x", latest)
+        self.assertEqual(response.status_code, 200)
+        history = panel(response.content.decode())
+        self.assertNotIn("open import branch", history)
+        self.assertIn("The branch was merged into main on 2026-10-23", history)
+
+    def test_server_panel_links_the_import_history(self):
+        self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), changes=0)
+        html = panel(self.server_page())
+        self.assertIn(f"/plugins/windows-dhcp/syncruns/?windows_server_id={self.server.pk}&amp;kind=import", html)
+
+    def test_direct_import_does_not_claim_main_still_matches(self):
+        run = self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), changes=0)
+        SyncRun.objects.filter(pk=run.pk).update(destination="main")
+        html = panel(self.server_page())
+        self.assertIn("main matched Windows when this import ran", html)
+        self.assertNotIn("already matches", html)
 
     def test_no_differences_no_branch(self):
         self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), changes=0)
@@ -394,3 +529,58 @@ class BranchImportStatusTest(ImportStatusTestBase):
             response = self.client.post(url, follow=True)
         text = " ".join(str(m) for m in response.context["messages"])
         self.assertIn("It writes into an import branch, not into main", text)
+
+
+@skipUnless(apps.is_installed("netbox_branching"), "needs netbox-branching")
+class BranchDeletionLookupTest(TestCase):
+    """branching.branch_deletion reads a deleted branch's last status from the change log (issue #44)."""
+
+    def setUp(self):
+        super().setUp()
+        from django.contrib.contenttypes.models import ContentType
+        from netbox_branching.models import Branch
+
+        self.branch_type = ContentType.objects.get_for_model(Branch)
+
+    def record(self, name, status, merged_time=None, time=None):
+        from core.models import ObjectChange
+
+        change = ObjectChange.objects.create(
+            user=self.user,
+            user_name=self.user.username,
+            request_id=uuid.uuid4(),
+            action="delete",
+            changed_object_type=self.branch_type,
+            changed_object_id=1,
+            object_repr=name,
+            prechange_data={"name": name, "status": status, "merged_time": merged_time},
+        )
+        if time is not None:
+            ObjectChange.objects.filter(pk=change.pk).update(time=time)
+        return change
+
+    def test_merged_then_deleted(self):
+        from netbox_windows_dhcp_plugin.integrations import branching
+
+        self.add_permissions("core.view_objectchange")
+        change = self.record("dhcp-import/dhcp1/x", "merged", "2026-10-23T12:26:23.328Z")
+        self.record("dhcp-import/dhcp1/other", "ready")
+        found, status, merged_time = branching.branch_deletion("dhcp-import/dhcp1/x", self.user)
+        self.assertEqual((found.pk, status), (change.pk, "merged"))
+        self.assertEqual(merged_time, datetime(2026, 10, 23, 12, 26, 23, 328000, tzinfo=UTC))
+
+    def test_needs_permission_to_view_the_change_log(self):
+        from netbox_windows_dhcp_plugin.integrations import branching
+
+        self.record("dhcp-import/dhcp1/x", "merged")
+        self.assertIsNone(branching.branch_deletion("dhcp-import/dhcp1/x", self.user))
+
+    def test_ignores_a_same_named_branch_deleted_before_the_run(self):
+        from netbox_windows_dhcp_plugin.integrations import branching
+
+        self.add_permissions("core.view_objectchange")
+        now = timezone.now()
+        self.record("mywork", "merged", time=now - timedelta(days=2))
+        self.assertIsNone(branching.branch_deletion("mywork", self.user, since=now - timedelta(days=1)))
+        later = self.record("mywork", "ready")
+        self.assertEqual(branching.branch_deletion("mywork", self.user, since=now - timedelta(days=1))[0].pk, later.pk)

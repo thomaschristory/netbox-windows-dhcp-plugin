@@ -359,6 +359,42 @@ def import_branch(name, user):
     return branch, change_request, exists
 
 
+def branch_deletion(name, user, since=None):
+    """
+    The change log record of a deleted branch, so the Import panel can say whether it was merged before it went
+    (issue #44): ``(change, status, merged_time)`` or None.
+
+    ``status`` and ``merged_time`` are the branch's own values just before it was deleted. None when no deletion of a
+    branch of that name since ``since`` is recorded, when ``user`` may not view the change log, or when netbox-branching
+    is not installed; a missing branch alone says nothing about whether it was merged.
+    """
+    if not name or not branching_installed():
+        return None
+    from core.models import ObjectChange
+    from django.contrib.contenttypes.models import ContentType
+    from django.db import DEFAULT_DB_ALIAS
+    from django.utils.dateparse import parse_datetime
+    from netbox_branching.models import Branch
+
+    changes = (
+        ObjectChange.objects.using(DEFAULT_DB_ALIAS)
+        .restrict(user, "view")
+        .filter(
+            changed_object_type=ContentType.objects.get_for_model(Branch),
+            action="delete",
+            prechange_data__name=name,
+        )
+    )
+    if since is not None:
+        changes = changes.filter(time__gte=since)
+    change = changes.order_by("-time").first()
+    if change is None:
+        return None
+    data = change.prechange_data or {}
+    merged_time = data.get("merged_time")
+    return change, data.get("status"), parse_datetime(merged_time) if isinstance(merged_time, str) else None
+
+
 def create_import_branch(windows_server, user, description):
     """
     Create and provision an import branch, synchronously (we are already in a background job).

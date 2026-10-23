@@ -1,0 +1,27 @@
+{% load i18n %}
+{# What became of an import's branch once it is no longer open (issue #44). info: an import_status.BranchInfo. #}
+{# A missing branch alone never reads as merged: only the branch itself or its deletion record says so. #}
+{% with lifecycle=info.lifecycle %}
+  {% if lifecycle == "merging" %}
+    {% trans "The branch is being merged into main." %}
+  {% elif lifecycle == "reverting" %}
+    {% trans "The branch's merge into main is being reverted." %}
+  {% elif lifecycle == "merged" or lifecycle == "deleted-merged" %}
+    {% if info.merged_time %}
+      {% if lifecycle == "merged" %}
+        {% blocktrans with time=info.merged_time|isodatetime %}The branch was merged into main on {{ time }}.{% endblocktrans %}
+      {% else %}
+        {% blocktrans with time=info.merged_time|isodatetime %}The branch was merged into main on {{ time }} and has since been deleted.{% endblocktrans %}
+      {% endif %}
+    {% elif lifecycle == "merged" %}
+      {% trans "The branch was merged into main." %}
+    {% else %}
+      {% trans "The branch was merged into main and has since been deleted." %}
+    {% endif %}
+    {% trans "Main may have changed since: import again to compare it with Windows." %}
+  {% elif lifecycle == "deleted-unmerged" %}
+    {% trans "The branch was deleted without being merged into main (or after its merge was reverted), so its changes are not in main." %}
+  {% elif lifecycle == "gone" %}
+    {% trans "The branch is no longer available, and whether it was merged into main is not known here." %}
+  {% endif %}
+{% endwith %}

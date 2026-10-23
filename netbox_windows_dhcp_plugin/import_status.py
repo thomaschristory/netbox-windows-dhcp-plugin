@@ -25,6 +25,20 @@ FAILED = "failed"
 
 # netbox-branching Branch statuses in which the branch's changes may already be in main.
 _MERGED_STATUSES = ("merging", "reverting", "merged", "archived")
+# Statuses of a branch whose merge has finished (an archived branch is a merged one whose schema was dropped).
+_DONE_STATUSES = ("merged", "archived")
+
+# What became of an import's branch (issue #44), for the Import panel's wording.
+OPEN = "open"
+MERGING = "merging"
+REVERTING = "reverting"
+MERGED = "merged"
+# The branch exists but the user may not view it, so its state is unknown to them.
+HIDDEN = "hidden"
+DELETED_MERGED = "deleted-merged"
+DELETED_UNMERGED = "deleted-unmerged"
+# Gone, and no deletion record the user may view says how it ended: never read this as merged.
+GONE = "gone"
 
 
 @dataclass
@@ -34,11 +48,35 @@ class BranchInfo:
     change_request: object = None
     # The branch is still there, even if the user may not view it.
     exists: bool = False
+    # For a deleted branch: its deletion in the change log, and its status and merge time just before it went.
+    deletion: object = None
+    deleted_status: str | None = None
+    deleted_merged_time: object = None
 
     @property
     def main_unchanged(self):
         """True while the branch still exists unmerged, so its changes are not in main."""
         return self.branch is not None and self.branch.status not in _MERGED_STATUSES
+
+    @property
+    def lifecycle(self):
+        if self.branch is not None:
+            if self.branch.status in _DONE_STATUSES:
+                return MERGED
+            if self.branch.status in (MERGING, REVERTING):
+                return self.branch.status
+            return OPEN
+        if self.exists:
+            return HIDDEN
+        if self.deletion is None or self.deleted_status in (MERGING, REVERTING, None):
+            return GONE
+        return DELETED_MERGED if self.deleted_status in _DONE_STATUSES else DELETED_UNMERGED
+
+    @property
+    def merged_time(self):
+        if self.branch is not None:
+            return getattr(self.branch, "merged_time", None) if self.lifecycle == MERGED else None
+        return self.deleted_merged_time if self.lifecycle == DELETED_MERGED else None
 
 
 @dataclass
@@ -159,11 +197,18 @@ def _run_destination(run, has_proposal):
     return ImportDestinationChoices.BRANCH
 
 
-def _branch(name, user):
+def _branch(name, user, since=None):
+    """What became of the branch an import wrote into. ``since``: when the run started, so an older deleted branch of
+    the same name is not taken for this one."""
     if not name:
         return None
     branch, change_request, exists = branching.import_branch(name, user)
-    return BranchInfo(name=name, branch=branch, change_request=change_request, exists=exists)
+    info = BranchInfo(name=name, branch=branch, change_request=change_request, exists=exists)
+    if not exists:
+        deletion = branching.branch_deletion(name, user, since=since)
+        if deletion is not None:
+            info.deletion, info.deleted_status, info.deleted_merged_time = deletion
+    return info
 
 
 def for_run(run, user, job=None, now=None):
@@ -206,7 +251,7 @@ def for_run(run, user, job=None, now=None):
         state=state,
         run=run,
         job=job,
-        branch=_branch(run.branch_name, user),
+        branch=_branch(run.branch_name, user, since=run.created),
         proposal=proposal,
         proposal_hidden=hidden,
         open_proposal=open_proposal,
@@ -254,8 +299,8 @@ def for_server(server, user, now=None):
         earlier = runs.exclude(branch_name="").exclude(destination=ImportDestinationChoices.CURRENT)
         if status.branch is not None:
             earlier = earlier.exclude(branch_name=status.branch.name)
-        earlier = earlier.values_list("branch_name", flat=True).first()
-        info = _branch(earlier, user)
+        earlier = earlier.values_list("branch_name", "created").first()
+        info = _branch(earlier[0], user, since=earlier[1]) if earlier else None
         if info is not None and info.main_unchanged:
             status.earlier_branch = info
     return status
