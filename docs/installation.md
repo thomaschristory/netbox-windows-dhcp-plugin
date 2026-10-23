@@ -25,8 +25,8 @@ Optional:
 Install it into NetBox's virtual environment, and add it to `local_requirements.txt` so NetBox upgrades keep it:
 
 !!! note "Release candidate"
-    Until 0.1.0 is out, PyPI only has release candidates (the latest is 0.1.0rc3), which pip skips by default. Ask for it by
-    version (`pip install netbox-windows-dhcp-plugin==0.1.0rc3`, and the same line in `local_requirements.txt`) or
+    Until 0.1.0 is out, PyPI only has release candidates (the latest is 0.1.0rc4), which pip skips by default. Ask for it by
+    version (`pip install netbox-windows-dhcp-plugin==0.1.0rc4`, and the same line in `local_requirements.txt`) or
     add `--pre`.
 
 ```bash
