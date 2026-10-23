@@ -165,6 +165,12 @@ def test_reservation() -> None:
     assert r.op == "reservation.add" and r.params["client_id"] == "aa-bb-cc-dd-ee-ff" and r.params["type"] == "Both"
     c.set_reservation(res)
     assert r.op == "reservation.set" and "Set-DhcpServerv4Reservation @cn @a" in r.script
+    # Issue #42: the current reservation is read first, so the client ID and type are only sent when they change.
+    assert r.script.index("$cur = Get-WdReservation") < r.script.index("Set-DhcpServerv4Reservation @cn @a")
+    assert r.params["client_id"] == "aa-bb-cc-dd-ee-ff"
+    c.set_v6_reservation(ReservationV6("2001:db8:1::", "2001:db8:1::10", "00-01", 7))
+    assert r.op == "v6reservation.set"
+    assert r.script.index("$cur = Get-WdReservationV6") < r.script.index("Set-DhcpServerv6Reservation @cn @a")
     c.remove_reservation("10.1.20.5")
     assert r.op == "reservation.remove" and r.params == {"ip_address": "10.1.20.5"}
     c, _ = new_client("ok_null.json")

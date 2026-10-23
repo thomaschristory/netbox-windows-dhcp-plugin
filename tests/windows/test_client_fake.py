@@ -141,6 +141,46 @@ def test_reservations(c: DhcpClient) -> None:
         c.get_option_value(OptionKey(6, reserved_ip="10.1.20.5"))
 
 
+def test_reservation_identity_change_drops_its_options(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    """Issue #42: the fake treats a new client ID or type as Windows recreating the reservation (unverified)."""
+    c.add_scope(scope())
+    res = Reservation("10.1.20.0", "10.1.20.5", "aa-bb-cc-dd-ee-ff", "pc", "desk", "Both")
+    c.add_reservation(res)
+    key = OptionKey(15, reserved_ip="10.1.20.5")
+    c.set_option_value(key, ["pc.example"])
+    c.set_reservation(Reservation("10.1.20.0", "10.1.20.5", "AA:BB:CC:DD:EE:FF", "pc2", "new", "Both"))
+    assert c.get_option_value(key).value == ["pc.example"]
+    c.set_reservation(Reservation("10.1.20.0", "10.1.20.5", "aa-bb-cc-dd-ee-00", "pc2", "new", "Both"))
+    with pytest.raises(NotFound):
+        c.get_option_value(key)
+    c.set_option_value(key, ["pc.example"])
+    c.set_reservation(Reservation("10.1.20.0", "10.1.20.5", "aa-bb-cc-dd-ee-00", "pc2", "new", "Dhcp"))
+    with pytest.raises(NotFound):
+        c.get_option_value(key)
+    c.set_option_value(key, ["pc.example"])
+    fake.reservation_set_drops_options = True
+    c.set_reservation(Reservation("10.1.20.0", "10.1.20.5", "aa-bb-cc-dd-ee-00", "pc2", "other", "Dhcp"))
+    with pytest.raises(NotFound):
+        c.get_option_value(key)
+
+
+def test_v6_reservation_identity_change_drops_its_options(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    c.add_v6_scope(ScopeV6(prefix="2001:db8:1::", name="v6"))
+    c.add_v6_reservation(ReservationV6("2001:db8:1::", "2001:db8:1::10", "00-01-ab", 7))
+    key = OptionKeyV6(24, reserved_ip="2001:db8:1::10")
+
+    def survives(duid: str, iaid: int) -> bool:
+        c.set_v6_option_value(key, ["host.example"])
+        c.set_v6_reservation(ReservationV6("2001:db8:1::", "2001:db8:1::10", duid, iaid, description="x"))
+        return any(k[2] == "2001:db8:1::10" for k in fake.v6_options)
+
+    assert survives("00:01:AB", 7)
+    assert not survives("00-01-ac", 7)
+    assert not survives("00-01-ac", 8)
+    fake.reservation_set_drops_options = True
+    assert not survives("00-01-ac", 8)
+
+
 def test_exclusions(c: DhcpClient) -> None:
     c.add_scope(scope())
     e = ExclusionRange("10.1.20.0", "10.1.20.1", "10.1.20.9")

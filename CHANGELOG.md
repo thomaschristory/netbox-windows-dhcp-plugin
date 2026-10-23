@@ -173,3 +173,12 @@ Found by testing 0.1.0rc2:
 - The policy lab test allows the lease time option (51) Windows lists next to a policy's own option values (#29).
 - The missing-module unit test no longer fails on a host with the Windows DHCP management tools (RSAT) installed: it
   runs PowerShell with an empty module path (#31).
+
+Found by testing 0.1.0rc3:
+- A reservation description or name change no longer drops its option values on Windows (IPv4 and DHCPv6, #42).
+  The push only sends the client ID, type, DUID or IAID when they change, and puts back any reservation option value
+  Windows removed during the update. The dry run is unchanged: it still lists only the reservation update. If a value
+  cannot be put back, the reservation change is reported as failed, naming each lost option and saying whether it
+  comes back by itself: the next push recreates a value NetBox holds, but values NetBox does not hold (DHCPv6 vendor
+  class values, option codes the plugin does not sync, values added on Windows since the last import) must be put
+  back by hand.

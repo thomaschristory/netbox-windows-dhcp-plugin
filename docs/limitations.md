@@ -22,7 +22,10 @@ open questions include:
 - what renewal (T1) and rebinding (T2) times Windows gives a DHCPv6 scope created with a short preferred lifetime and
   no timers, and whether it refuses timers past the preferred lifetime (a push never sends those: see
   [DHCPv6](dhcpv6.md#rules));
-- failover replication after a push, and removing a scope that is in a relationship, which need two servers.
+- failover replication after a push, and removing a scope that is in a relationship, which need two servers;
+- whether changing the client ID, type, DUID or IAID of an existing reservation makes Windows recreate it and drop
+  its option values (#42). Either way the push tries to put back any reservation option value an update removed; if
+  that fails, only values NetBox holds come back on the next push (see [Push](push.md)).
 
 The lab tests that settle them are written (see [Development](development.md#lab-tests)). A first partial run against
 Windows Server 2025 found and fixed a few defects (the DHCPv6 rebinding time default, how policy conditions and policy

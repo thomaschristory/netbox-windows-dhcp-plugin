@@ -641,3 +641,52 @@ def test_policy_orders_with_gaps_never_reverse_netbox_order(client, fake, seed):
             # a is above b on Windows after the push.
             kept = a in before and b in before and before.index(a) < before.index(b)
             assert netbox[a] < netbox[b] or kept, (before, after, netbox)
+
+
+# -- issue #42: reservation updates keep the reservation's option values ------------------------------------------
+
+
+def with_description(source, description):
+    out = list(source)
+    res = out[4]
+    out[4] = Record(res.kind, res.key, {**res.fields, "description": description})
+    return out
+
+
+def test_reservation_description_change_keeps_its_option_values(client, fake):
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    # The worst case seen on Windows Server 2025: the update drops the reservation's values.
+    fake.reservation_set_drops_options = True
+    source = with_description(wanted(), "changed")
+    p, result = run(client, source, managed)
+    # The dry run shows only the reservation update, as before the fix.
+    assert [(c.action, c.kind) for c in p.changes] == [("update", "reservation")]
+    assert len(result.applied) == 1 and not result.failed
+    assert fake.options[(15, "", "10.1.0.50", "", "", "")]["value"] == ["pc.example"]
+    p2, _ = run(client, source, state_after(managed, result))
+    assert p2.changes == []
+
+
+def test_reservation_option_deleted_in_the_same_push_stays_deleted(client, fake):
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    fake.reservation_set_drops_options = True
+    source = [r for r in with_description(wanted(), "changed") if r.key != wanted()[8].key]
+    p, result = run(client, source, managed)
+    assert sorted((c.action, c.kind) for c in p.changes) == [("delete", "option"), ("update", "reservation")]
+    assert not result.failed
+    assert not [k for k in fake.options if k[2] == "10.1.0.50"]
+    assert run(client, source, state_after(managed, result))[0].changes == []
+
+
+def test_reservation_option_updated_in_the_same_push_ends_with_the_new_value(client, fake):
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    fake.reservation_set_drops_options = True
+    source = with_description(wanted(), "changed")
+    source[8] = option("10.1.0.0/10.1.0.50", 15, ["new.example"])
+    p, result = run(client, source, managed)
+    assert not result.failed
+    assert fake.options[(15, "", "10.1.0.50", "", "", "")]["value"] == ["new.example"]
+    assert run(client, source, state_after(managed, result))[0].changes == []

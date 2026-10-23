@@ -150,7 +150,10 @@ def run(windows_server, client, dry_run=False, logger=log):
     outcome = PushOutcome(plan=plan, notes=notes)
     if dry_run:
         return outcome
-    writer = WindowsWriter(client, failover_secret=failover_secret_lookup(windows_server))
+    # The option values the push writes: a reservation update that loses one of these gets it back on the next push.
+    skipped = {(s.change.kind, s.change.key) for s in plan.skipped}
+    held = {r.key for r in source if r.kind in ("option", "option6") and (r.kind, r.key) not in skipped}
+    writer = WindowsWriter(client, failover_secret=failover_secret_lookup(windows_server), held_options=held)
     outcome.result = push.execute(plan, writer)
     _save_state(windows_server, outcome.result)
     outcome.replication_errors = _replicate(windows_server, client, outcome.result.applied, logger)

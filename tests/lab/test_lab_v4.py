@@ -9,6 +9,8 @@ from __future__ import annotations
 import pytest
 
 from netbox_windows_dhcp_plugin.sync import windows_state
+from netbox_windows_dhcp_plugin.sync.diff import Change
+from netbox_windows_dhcp_plugin.sync.windows_writer import WindowsWriter
 from netbox_windows_dhcp_plugin.windows import client as wc
 from netbox_windows_dhcp_plugin.windows import normalize
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
@@ -128,6 +130,40 @@ def test_reservation_and_exclusion(lab: Lab) -> None:
     lab.client.remove_option_value(k)
     with pytest.raises(wc.NotFound):
         lab.client.get_option_value(k)
+
+
+def test_reservation_update_keeps_its_option_values(lab: Lab, probe_out) -> None:
+    """Issue #42: client.py sends the client ID and type only on change; whether a new client ID drops the values."""
+    s = lab.scope("nbwd-test-res42")
+    base = s.scope_id.rsplit(".", 1)[0]
+    r = lab.client.add_reservation(
+        wc.Reservation(s.scope_id, f"{base}.20", MAC_PREFIX + "00-00-42", "nbwd-test-host42", "lab", "Dhcp")
+    )
+    k = wc.OptionKey(15, s.scope_id, reserved_ip=r.ip_address)
+    lab.client.set_option_value(k, ["host.example"])
+    r.description = "changed"
+    assert lab.client.set_reservation(r).description == "changed"
+    assert lab.client.get_option_value(k).value == ["host.example"]
+
+    # A new client ID is sent to Windows; record whether the value survives, to settle the unverified note.
+    r.client_id = MAC_PREFIX + "00-00-43"
+    assert lab.client.set_reservation(r).client_id.lower() == MAC_PREFIX + "00-00-43"
+    left = lab.client.list_option_values(scope_id=s.scope_id, reserved_ip=r.ip_address, all=True)
+    save_probe(probe_out, "v4-reservation-identity-change-options", [x.to_dict() for x in left])
+
+    # Whatever Windows does, the push writer puts the value back.
+    lab.client.set_option_value(k, ["host.example"])
+    before = {
+        "scope_id": s.scope_id,
+        "ip_address": r.ip_address,
+        "client_id": r.client_id,
+        "name": r.name,
+        "description": "changed",
+        "reservation_type": "dhcp",
+    }
+    change = Change("update", "reservation", r.ip_address, before=before, after={**before, "description": "again"})
+    WindowsWriter(lab.client).apply(change)
+    assert lab.client.get_option_value(k).value == ["host.example"]
 
 
 def test_classes_and_class_data(lab: Lab, probe_out) -> None:

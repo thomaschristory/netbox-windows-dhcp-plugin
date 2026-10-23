@@ -713,6 +713,13 @@ function Set-DhcpServerv6Reservation {
     param([string]$ComputerName, [Parameter(Mandatory)][ipaddress]$IPAddress, [string]$ClientDuid, [uint32]$Iaid,
         [string]$Name, [string]$Description, [switch]$PassThru)
     Record 'Set-DhcpServerv6Reservation' $PSBoundParameters
+    # Like the IPv4 stub: only parameters actually passed change.
+    $r = $global:V6Reservations["$IPAddress"]
+    if (-not $r) { return }
+    if ($ClientDuid) { $r.ClientDuid = $ClientDuid }
+    if ($PSBoundParameters.ContainsKey('Iaid')) { $r.Iaid = $Iaid }
+    if ($Name) { $r.Name = $Name }
+    if ($PSBoundParameters.ContainsKey('Description')) { $r.Description = $Description }
 }
 
 function Remove-DhcpServerv6Reservation {

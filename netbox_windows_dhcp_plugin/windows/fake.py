@@ -14,6 +14,10 @@ Modelled server behaviour:
 * removing a scope with leases fails with DHCP 20007 unless forced; removing a scope
   cascades to its reservations, exclusions, options, policies, failover and
   superscope membership; removing a reservation drops its options;
+* a reservation Set that changes the client ID or type (DHCPv6: the DUID or IAID)
+  drops the reservation's option values, as if Windows recreated it (unverified, issue
+  #42); ``reservation_set_drops_options`` makes every reservation Set drop them, the
+  worst case seen on Windows Server 2025 for a description change;
 * not-found errors use the same codes as the server (ObjectNotFound / DHCP 20005,
   20010, 20018) so the client's not-found mapping is exercised;
 * an option value on a reservation is named by the reserved IP alone: Set and Remove
@@ -158,6 +162,10 @@ class FakeDhcpServer:
         # True: answer "nothing found" with {} rather than null, as a server did before issue #15 was fixed, so tests
         # can check the client still reads it as missing.
         self.empty_result_as_object = False
+        # True: every reservation Set (IPv4 and DHCPv6) drops the reservation's option values, as Windows Server 2025
+        # did for a description change sent with the client ID and type (issue #42). Tests use it to check the push
+        # puts the values back.
+        self.reservation_set_drops_options = False
 
     # -- Runner ----------------------------------------------------------------
 
@@ -366,8 +374,15 @@ class FakeDhcpServer:
 
     def _drop_reservation(self, ip: str) -> None:
         self.reservations.pop(ip, None)
+        self._drop_reservation_options(ip)
+
+    def _drop_reservation_options(self, ip: str) -> None:
         for k in [k for k in self.options if k[2] == ip]:
             del self.options[k]
+
+    def _drop_v6_reservation_options(self, ip: str) -> None:
+        for k in [k for k in self.v6_options if k[2] == ip]:
+            del self.v6_options[k]
 
     def _op_reservation_get(self, p: dict) -> Any:
         self._scope("Get-DhcpServerv4Reservation", _s(p, "scope_id"))
@@ -412,9 +427,13 @@ class FakeDhcpServer:
         if r is None:
             raise _err(cmd, 20018, "ObjectNotFound", f"Failed to get reservation {ip}")
         try:
-            r["client_id"] = normalize.canonical_mac(_s(p, "client_id"))
+            cid = normalize.canonical_mac(_s(p, "client_id"))
         except ValueError as e:
             raise _invalid(cmd, str(e)) from None
+        # unverified: a new client ID or type makes Windows recreate the reservation, which loses its values (#42).
+        if self.reservation_set_drops_options or cid != r["client_id"] or _s(p, "type").lower() != r["type"].lower():
+            self._drop_reservation_options(ip)
+        r["client_id"] = cid
         r["type"] = _s(p, "type")
         r["description"] = _s(p, "description")
         if _s(p, "name"):
@@ -1149,8 +1168,12 @@ class FakeDhcpServer:
         r = self.v6_reservations.get(ip)
         if r is None:
             raise _err("Set-DhcpServerv6Reservation", 20018, "ObjectNotFound", f"Failed to get reservation {ip}")
-        r["client_duid"] = normalize.canonical_duid(_s(p, "client_duid"))
-        r["iaid"] = _n(p, "iaid")
+        duid, iaid = normalize.canonical_duid(_s(p, "client_duid")), _n(p, "iaid")
+        # unverified: a new DUID or IAID makes Windows recreate the reservation, which loses its values (#42).
+        if self.reservation_set_drops_options or duid != r["client_duid"] or iaid != r["iaid"]:
+            self._drop_v6_reservation_options(ip)
+        r["client_duid"] = duid
+        r["iaid"] = iaid
         r["description"] = _s(p, "description")
         if _s(p, "name"):
             r["name"] = _s(p, "name")
@@ -1161,8 +1184,7 @@ class FakeDhcpServer:
         if ip not in self.v6_reservations:
             raise _err("Remove-DhcpServerv6Reservation", 20018, "ObjectNotFound", f"Failed to delete reservation {ip}")
         del self.v6_reservations[ip]
-        for k in [k for k in self.v6_options if k[2] == ip]:
-            del self.v6_options[k]
+        self._drop_v6_reservation_options(ip)
         return None
 
     @staticmethod

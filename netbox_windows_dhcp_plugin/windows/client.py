@@ -525,13 +525,23 @@ $r = Get-WdReservation
 if ($r) { $out = ConvertTo-WdReservation $r }
 """,
 )
-# Set is keyed by IP only (no -ScopeId); an empty description clears it.
+# Set is keyed by IP only (no -ScopeId); an empty description clears it. The client ID and type are only sent when
+# they change: a description update sent with them on Windows Server 2025 reported success but dropped the
+# reservation's option values (issue #42). The writer also puts back any value an update loses.
+# unverified: whether Set-DhcpServerv4Reservation with a new -ClientId or -Type alone drops the option values.
 S_RESERVATION_SET = Script(
     "reservation.set",
     _RESERVATION_FUNC
     + r"""
-$a = @{ IPAddress = $p.ip_address; ClientId = $p.client_id; Type = $p.type; Description = "$($p.description)" }
+$a = @{ IPAddress = $p.ip_address; Description = "$($p.description)" }
 if ($p.name) { $a['Name'] = $p.name }
+# A missing reservation is left to the Set, which reports it as not found (DHCP 20018).
+$cur = Get-WdReservation
+# -ne ignores case, so only a different MAC counts, whatever its separators or case.
+if (-not $cur -or ("$($cur.ClientId)" -replace '[-:.]', '') -ne ("$($p.client_id)" -replace '[-:.]', '')) {
+    $a['ClientId'] = $p.client_id
+}
+if (-not $cur -or "$($cur.Type)" -ne $p.type) { $a['Type'] = $p.type }
 Set-DhcpServerv4Reservation @cn @a
 $r = Get-WdReservation
 if ($r) { $out = ConvertTo-WdReservation $r }
@@ -1265,13 +1275,19 @@ Add-DhcpServerv6Reservation @cn @a
 $out = Get-WdReservationV6
 """,
 )
+# As for IPv4, the DUID and IAID are only sent when they change (issue #42).
+# unverified: whether Set-DhcpServerv6Reservation with a new -ClientDuid or -Iaid alone drops the option values.
 S_V6RES_SET = Script(
     "v6reservation.set",
     _V6RES_FUNC
     + r"""
-$a = @{ IPAddress = $p.ip_address; ClientDuid = $p.client_duid; Iaid = [uint32]$p.iaid }
-$a['Description'] = "$($p.description)"
+$a = @{ IPAddress = $p.ip_address; Description = "$($p.description)" }
 if ($p.name) { $a['Name'] = $p.name }
+$cur = Get-WdReservationV6
+if (-not $cur -or ($cur.client_duid -replace '[-:.]', '') -ne ("$($p.client_duid)" -replace '[-:.]', '')) {
+    $a['ClientDuid'] = $p.client_duid
+}
+if (-not $cur -or [uint32]$cur.iaid -ne [uint32]$p.iaid) { $a['Iaid'] = [uint32]$p.iaid }
 Set-DhcpServerv6Reservation @cn @a
 $out = Get-WdReservationV6
 """,
