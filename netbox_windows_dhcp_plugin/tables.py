@@ -100,6 +100,11 @@ class WindowsServerTable(PrimaryModelTable):
 
 class WindowsScopeTable(NetBoxTable):
     subnet = tables.Column(verbose_name=_("Subnet"), linkify=True)
+    # The scope's network next to its name, as on the netbox-plugin-dhcp subnet list (#47): names alone can be
+    # generic or repeat across servers.
+    prefix = tables.Column(
+        verbose_name=_("Prefix"), accessor="subnet__prefix", linkify=True, order_by=("subnet__prefix__prefix",)
+    )
     state = columns.ChoiceFieldColumn(verbose_name=_("State"))
     scope_type = columns.ChoiceFieldColumn(verbose_name=_("Type"))
     activate_policies = columns.BooleanColumn(verbose_name=_("Policies"))
@@ -111,6 +116,7 @@ class WindowsScopeTable(NetBoxTable):
             "pk",
             "id",
             "subnet",
+            "prefix",
             "state",
             "scope_type",
             "delay_ms",
@@ -121,7 +127,7 @@ class WindowsScopeTable(NetBoxTable):
             "created",
             "last_updated",
         )
-        default_columns = ("subnet", "state", "scope_type", "delay_ms", "activate_policies")
+        default_columns = ("subnet", "prefix", "state", "scope_type", "delay_ms", "activate_policies")
 
 
 class WindowsReservationTable(NetBoxTable):

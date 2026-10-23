@@ -190,3 +190,6 @@ Found by testing 0.1.0rc3:
   later import took over (or that was deleted) says so and links the server's open proposal instead of claiming a
   proposal you may not view, and a run recorded before this fix with no proposal linked says only how many
   differences it found.
+- The Windows scopes list shows each scope's prefix in its own column, next to the subnet name, as the
+  netbox-plugin-dhcp subnet list does, so scopes with similar or repeated names are told apart without opening them.
+  The column links to the prefix and sorts by network (#47).
