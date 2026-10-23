@@ -524,6 +524,11 @@ def test_failover(pw: PwshRunner) -> None:
     c.replicate_failover("lb")  # the cmdlet's own output must not break the envelope
     rep = find_call(pw.last_calls(), "Invoke-DhcpServerv4FailoverReplication")
     assert rep["Name"] == ["lb"] and rep["Force"] is True and "ScopeId" not in rep
+    # Both given: the scoped parameter set, never both (#51); scope ids alone work the same way.
+    for name in ("lb", ""):
+        c.replicate_failover(name, ["10.1.30.0"])
+        rep = find_call(pw.last_calls(), "Invoke-DhcpServerv4FailoverReplication")
+        assert rep["ScopeId"] == ["10.1.30.0"] and "Name" not in rep
     c.remove_failover("lb")
     assert find_call(pw.last_calls(), "Remove-DhcpServerv4Failover")["Force"] is False
     assert [x.name for x in c.list_failovers()] == ["lb"]

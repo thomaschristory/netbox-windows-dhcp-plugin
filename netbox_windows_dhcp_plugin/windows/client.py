@@ -904,12 +904,12 @@ Remove-DhcpServerv4FailoverScope @cn -Name $p.name -ScopeId $ids -Force:([bool]$
 $out = Get-WdFailover
 """,
 )
+# -Name and -ScopeId are separate parameter sets: passing both fails with AmbiguousParameterSet (issue #51).
+# replicate_failover sends one of them, never both.
 S_FAILOVER_REPLICATE = Script(
     "failover.replicate",
     r"""
-$a = @{}
-if ($p.name) { $a['Name'] = $p.name }
-if (@($p.scope_ids).Count -gt 0) { $a['ScopeId'] = [string[]]@($p.scope_ids) }
+if (@($p.scope_ids).Count -gt 0) { $a = @{ ScopeId = [string[]]@($p.scope_ids) } } else { $a = @{ Name = $p.name } }
 $null = Invoke-DhcpServerv4FailoverReplication @cn @a -Force
 """,
 )
@@ -1826,8 +1826,15 @@ class DhcpClient:
         )
 
     def replicate_failover(self, name: str = "", scope_ids: Sequence[str] = ()) -> None:
-        """Copy scope configuration to the partner (Invoke-DhcpServerv4FailoverReplication)."""
-        self._do(S_FAILOVER_REPLICATE, {"name": name, "scope_ids": [_ipv4(s) for s in scope_ids]})
+        """Copy scope configuration to the partner (Invoke-DhcpServerv4FailoverReplication).
+
+        With ``scope_ids`` only those scopes are copied, even when ``name`` is given too: Windows takes a relationship
+        name or scope ids, not both, and widening the copy to every scope of the relationship would be a surprise.
+        """
+        ids = [_ipv4(s) for s in scope_ids]
+        if not ids and not name:
+            raise ValueError("replicate_failover needs a relationship name or scope ids")
+        self._do(S_FAILOVER_REPLICATE, {"name": "" if ids else name, "scope_ids": ids})
 
     # -- IPv4 superscopes --------------------------------------------------------
 

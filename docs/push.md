@@ -144,4 +144,4 @@ push.
 ## Failover
 
 After pushing to the primary server of a failover relationship, the push replicates the changed scopes to the
-partner. See [Failover](failover.md).
+partner. A replication that fails is retried by the next push to the primary. See [Failover](failover.md).

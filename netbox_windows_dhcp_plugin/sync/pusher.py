@@ -9,9 +9,10 @@ from dataclasses import dataclass, field
 from django.db import transaction
 from netbox_dhcp.models import Subnet
 
+from ..choices import SyncKindChoices
 from ..connection import failover_secret_lookup
-from ..models import FailoverRelationship, SyncState
-from ..windows.psscript import WindowsLayerError
+from ..models import FailoverRelationship, SyncRun, SyncState
+from ..windows.psscript import NotFound, WindowsLayerError
 from . import netbox_state, push, windows_state
 from .windows_writer import WindowsWriter, option_target
 
@@ -28,6 +29,8 @@ class PushOutcome:
     result: push.Result | None = None
     notes: list[str] = field(default_factory=list)
     replication_errors: list[str] = field(default_factory=list)
+    # Scopes whose replication failed, by relationship name: the next push replicates them again.
+    replication_pending: dict[str, list[str]] = field(default_factory=dict)
 
     @property
     def failed(self):
@@ -41,6 +44,8 @@ class PushOutcome:
             out["notes"] = self.notes
         if self.replication_errors:
             out["replication_errors"] = self.replication_errors
+        if self.replication_pending:
+            out["replication_pending"] = self.replication_pending
         return out
 
     def errors(self):
@@ -96,26 +101,70 @@ def _hold_partner_scopes(windows_server, plan, logger):
         plan.changes = kept
 
 
+def _pending_replication(windows_server):
+    """
+    The scopes an earlier push wrote to Windows but could not replicate. A push that wrote nothing has nothing new to
+    replicate, so without this the partner would stay behind until the next change. Pushes that stopped before
+    writing (no summary: connection or credential errors) are skipped, so what they inherited is not lost.
+    """
+    last = (
+        SyncRun.objects.filter(windows_server=windows_server, kind=SyncKindChoices.PUSH, completed__isnull=False)
+        .exclude(summary={})
+        .order_by("-completed", "-pk")
+        .first()
+    )
+    pending = (last.summary.get("replication_pending") if last else None) or {}
+    return {name: set(ids) for name, ids in pending.items()}
+
+
 def _replicate(windows_server, client, applied, logger):
-    """After writing to a failover primary, copy the changed scopes to the partner. Returns error lines."""
-    if not applied:
-        return []
+    """
+    After writing to a failover primary, copy the changed scopes to the partner, plus those an earlier push failed
+    to copy. Returns the error lines and the scopes still to copy, by relationship name.
+    """
+    pending = _pending_replication(windows_server)
+    if not applied and not pending:
+        return [], {}
     touched = {_scope_of(c) for c in applied} - {None}
     server_level = "" in touched
-    errors = []
+    errors, still_pending = [], {}
     for relationship in FailoverRelationship.objects.filter(primary_server=windows_server.dhcp_server):
         scopes = _relationship_scopes(relationship)
-        changed = sorted(scopes if server_level else touched & scopes)
+        # Scopes since dropped from the relationship are no longer the partner's business.
+        changed = sorted(
+            (scopes if server_level else touched & scopes) | (pending.get(relationship.name, set()) & scopes)
+        )
         if not changed:
             continue
         try:
-            # unverified: replication of the listed scopes copies their exclusions, reservations and options.
-            client.replicate_failover(name=relationship.name, scope_ids=changed)
-        except WindowsLayerError as exc:
+            # Only scopes Windows already has in the relationship can be replicated: one that is not (its create or
+            # its addition to the relationship failed in this push) would make Windows refuse the whole call. Such
+            # scopes wait for a later push, which adds them first.
+            on_windows = set(client.get_failover(relationship.name).scope_ids)
+        except NotFound:
+            on_windows = set()
+        except (WindowsLayerError, ValueError) as exc:
             errors.append(f"failover replication {relationship.name}: {exc}")
+            still_pending[relationship.name] = changed
+            continue
+        ready = [s for s in changed if s in on_windows]
+        waiting = [s for s in changed if s not in on_windows]
+        if waiting:
+            still_pending[relationship.name] = waiting
+            logger.warning(
+                f"Not in {relationship.name} on Windows yet, replication waits for the next push: {', '.join(waiting)}"
+            )
+        if not ready:
+            continue
+        try:
+            # unverified: replication of the listed scopes copies their exclusions, reservations and options.
+            client.replicate_failover(name=relationship.name, scope_ids=ready)
+        except (WindowsLayerError, ValueError) as exc:
+            errors.append(f"failover replication {relationship.name}: {exc}")
+            still_pending[relationship.name] = changed
         else:
-            logger.info(f"Replicated {len(changed)} scope(s) to the partner of {relationship.name}")
-    return errors
+            logger.info(f"Replicated {len(ready)} scope(s) to the partner of {relationship.name}")
+    return errors, still_pending
 
 
 @transaction.atomic
@@ -156,5 +205,7 @@ def run(windows_server, client, dry_run=False, logger=log):
     writer = WindowsWriter(client, failover_secret=failover_secret_lookup(windows_server), held_options=held)
     outcome.result = push.execute(plan, writer)
     _save_state(windows_server, outcome.result)
-    outcome.replication_errors = _replicate(windows_server, client, outcome.result.applied, logger)
+    outcome.replication_errors, outcome.replication_pending = _replicate(
+        windows_server, client, outcome.result.applied, logger
+    )
     return outcome
