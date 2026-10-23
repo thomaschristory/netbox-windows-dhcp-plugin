@@ -780,6 +780,11 @@ class FakeDhcpServer:
             raise _invalid(cmd, "Parameter set cannot be resolved using the specified named parameters.")
         if _s(p, "name"):
             self._failover(cmd, _s(p, "name"))
+        # unverified: that Windows refuses the whole call when one scope is in no failover relationship.
+        in_failover = {sid for f in self.failovers.values() for sid in f["scope_ids"]}
+        for sid in p.get("scope_ids") or []:
+            if sid not in in_failover:
+                raise _invalid(cmd, f"The scope {sid} is not part of a failover relationship.")
         self.replications.append({"name": _s(p, "name"), "scope_ids": list(p.get("scope_ids") or [])})
         return None
 

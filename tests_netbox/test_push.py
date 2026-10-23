@@ -329,6 +329,21 @@ class FailoverPushTest(PushTestMixin, TestCase):
         self._run()
         self.assertEqual(self.fake.replications, [{"name": "", "scope_ids": ["10.1.0.0"]}])
 
+    def test_scopes_not_yet_in_the_windows_relationship_wait_for_the_next_push(self):
+        # The scope is not in the relationship on Windows (say its addition failed): replicating it would make Windows
+        # refuse the whole call, so it waits instead. That alone does not fail the push.
+        self.fake.failovers["fo"]["scope_ids"] = []
+        self._change_subnet()
+        run = self._run()
+        self.assertEqual(run.status, SyncStatusChoices.COMPLETED)
+        self.assertEqual(self.fake.replications, [])
+        self.assertEqual(run.summary["replication_pending"], {"fo": ["10.1.0.0"]})
+        # Once the scope is in the relationship, the next push replicates it.
+        self.fake.failovers["fo"]["scope_ids"] = ["10.1.0.0"]
+        run = self._run()
+        self.assertEqual(self.fake.replications, [{"name": "", "scope_ids": ["10.1.0.0"]}])
+        self.assertNotIn("replication_pending", run.summary)
+
     def test_pending_replication_skips_scopes_no_longer_in_the_relationship(self):
         self._fail_replication()
         self._change_subnet()

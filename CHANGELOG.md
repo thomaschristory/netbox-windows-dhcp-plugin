@@ -207,3 +207,4 @@ Found by testing 0.1.0rc4:
   replicates the changed scopes with `-ScopeId` only, never widening the copy to the whole relationship (#51).
 - A failed failover replication is retried by the next push to the primary, even one with nothing else to write, so
   the partner no longer stays behind until the next change. The push's sync run lists the scopes still to replicate.
+  A scope that is not yet in the relationship on Windows waits for a later push instead of blocking the others.

@@ -12,7 +12,7 @@ from netbox_dhcp.models import Subnet
 from ..choices import SyncKindChoices
 from ..connection import failover_secret_lookup
 from ..models import FailoverRelationship, SyncRun, SyncState
-from ..windows.psscript import WindowsLayerError
+from ..windows.psscript import NotFound, WindowsLayerError
 from . import netbox_state, push, windows_state
 from .windows_writer import WindowsWriter, option_target
 
@@ -137,13 +137,33 @@ def _replicate(windows_server, client, applied, logger):
         if not changed:
             continue
         try:
+            # Only scopes Windows already has in the relationship can be replicated: one that is not (its create or
+            # its addition to the relationship failed in this push) would make Windows refuse the whole call. Such
+            # scopes wait for a later push, which adds them first.
+            on_windows = set(client.get_failover(relationship.name).scope_ids)
+        except NotFound:
+            on_windows = set()
+        except (WindowsLayerError, ValueError) as exc:
+            errors.append(f"failover replication {relationship.name}: {exc}")
+            still_pending[relationship.name] = changed
+            continue
+        ready = [s for s in changed if s in on_windows]
+        waiting = [s for s in changed if s not in on_windows]
+        if waiting:
+            still_pending[relationship.name] = waiting
+            logger.warning(
+                f"Not in {relationship.name} on Windows yet, replication waits for the next push: {', '.join(waiting)}"
+            )
+        if not ready:
+            continue
+        try:
             # unverified: replication of the listed scopes copies their exclusions, reservations and options.
-            client.replicate_failover(name=relationship.name, scope_ids=changed)
-        except WindowsLayerError as exc:
+            client.replicate_failover(name=relationship.name, scope_ids=ready)
+        except (WindowsLayerError, ValueError) as exc:
             errors.append(f"failover replication {relationship.name}: {exc}")
             still_pending[relationship.name] = changed
         else:
-            logger.info(f"Replicated {len(changed)} scope(s) to the partner of {relationship.name}")
+            logger.info(f"Replicated {len(ready)} scope(s) to the partner of {relationship.name}")
     return errors, still_pending
 
 
