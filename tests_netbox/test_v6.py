@@ -6,6 +6,7 @@ from netbox_dhcp.models import HostReservation, Option, Pool, Subnet
 
 from netbox_windows_dhcp_plugin import signals
 from netbox_windows_dhcp_plugin.choices import SyncStatusChoices
+from netbox_windows_dhcp_plugin.jobs import DryRunJob
 from netbox_windows_dhcp_plugin.models import SyncState, WindowsClass, WindowsReservation, WindowsScope
 from netbox_windows_dhcp_plugin.sync import importer, netbox_state
 from netbox_windows_dhcp_plugin.windows import DhcpClient
@@ -155,6 +156,21 @@ class PushV6Test(V6Mixin, PushTestMixin, TestCase):
         self.assertEqual(self.fake.v6_reservations[RESERVED]["iaid"], 11)
         self.assertEqual(self.fake.v6_options[(24, PREFIX, "", "", "")]["value"], ["example.org", "example.net"])
         self.assertEqual(self._run().summary["changes"], 0)
+
+    def test_reservation_description_change_keeps_its_option_values(self):
+        """Issue #42, DHCPv6: Windows may drop a reservation's values on update; the push puts them back."""
+        self._run()
+        self.fake.reservation_set_drops_options = True
+        reservation = HostReservation.objects.get(subnet__prefix__prefix__family=6)
+        reservation.snapshot()
+        reservation.comments = "changed in NetBox"
+        reservation.save()
+        run = self._run()
+        self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)
+        self.assertEqual((run.summary["update"], run.summary["failed"]), (1, 0), run.summary.get("planned"))
+        self.assertEqual(self.fake.v6_reservations[RESERVED]["description"], "changed in NetBox")
+        self.assertEqual(self.fake.v6_options[(23, "", RESERVED, "", "")]["value"], ["2001:db8::56"])
+        self.assertEqual(self._run(DryRunJob).summary["changes"], 0)
 
     def test_deleted_in_netbox_is_deleted_on_windows_once_managed(self):
         self._run()

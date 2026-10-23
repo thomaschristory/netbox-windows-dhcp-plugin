@@ -49,6 +49,12 @@ delete itself still runs) and lists them under **Not pushed** until you renumber
 import proposes the same renumbering. That Windows closes the gap on a delete, and renumbers on an update the way it
 does on a create, has not been checked on a real server yet (see [Limitations](limitations.md)).
 
+A reservation update keeps the reservation's option values. Windows Server 2025 was seen dropping them when a
+description change was sent with the client ID and type (#42), so the push sends the client ID and type (DHCPv6:
+DUID and IAID) only when they change, and after each reservation update it puts back any of the reservation's option
+values that went missing. This adds no line to the plan or the dry run. If a value cannot be put back, the
+reservation update counts as failed and names the option; the next push recreates the value.
+
 When a change fails, the push goes on with the others but skips the children of an object it could not create, and
 keeps the parents of an object it could not delete. The run then ends **failed**, with one line per error. A lost
 connection stops the run; the changes not attempted are listed.

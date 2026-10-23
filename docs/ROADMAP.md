@@ -41,6 +41,10 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
 button is a menu of import branch, the branch you work in, or main (confirmed, policy and permission checked). And
      #38: the Windows servers list links server names to the Windows server page (saved layouts included). Also #33: hot standby updates no
      longer send `-ServerRole`, which `Set-DhcpServerv4Failover` lacks; a role change is refused.
+   - **rc3 acceptance (after 0.1.0rc3, for rc4):** #42, a reservation description update dropped the reservation's
+     option values on Windows Server 2025. The client sends the client ID and type (DHCPv6: DUID and IAID) only when
+     they change, and the push writer puts back any reservation option value an update removed. Lab tests added for
+     both families; whether an identity change alone drops the values stays unverified.
    - **Still to do:** the rest of the lab run, fixing what it finds, recording scrubbed fixtures and removing the
      settled markers. With a single server the two failover markers (scope removal while in a relationship, what
      replication copies) stay unverified.

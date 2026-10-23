@@ -4,6 +4,7 @@ from netbox_windows_dhcp_plugin.sync import windows_state as ws
 from netbox_windows_dhcp_plugin.sync.diff import Change, Record, diff
 from netbox_windows_dhcp_plugin.sync.windows_writer import PushRefused, WindowsWriter
 from netbox_windows_dhcp_plugin.windows import DhcpClient
+from netbox_windows_dhcp_plugin.windows.client import OptionKey, OptionKeyV6, ReservationV6, ScopeV6
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
@@ -411,3 +412,63 @@ def test_mac_filter_update_and_filter_list_delete(client, fake):
     assert fake.filters["00-15-5d-*"]["list"] == "Allow"
     WindowsWriter(client).apply(Change("delete", "filterlists", "server", before={"allow": False, "deny": True}))
     assert fake.filter_lists == {"allow": False, "deny": True}
+
+
+# -- issue #42: a reservation update must not lose the reservation's option values ------------------------------------
+
+
+def reservation_change(**after):
+    before = wanted()[4].fields
+    return Change("update", "reservation", wanted()[4].key, before=before, after={**before, **after})
+
+
+def reservation_values(fake, ip="10.1.0.50"):
+    return {(k[0], k[3].lower(), k[4].lower()): v["value"] for k, v in fake.options.items() if k[2] == ip}
+
+
+def test_description_update_keeps_reservation_options_even_when_windows_drops_them(client, fake):
+    push(client, wanted())
+    client.set_option_value(OptionKey(6, reserved_ip="10.1.0.50", user_class="Phones"), ["10.0.0.7"])
+    kept = reservation_values(fake)
+    assert len(kept) == 2
+    # The worst case seen on Windows Server 2025: every Set drops the reservation's values (issue #42).
+    fake.reservation_set_drops_options = True
+    WindowsWriter(client).apply(reservation_change(description="changed"))
+    assert fake.reservations["10.1.0.50"]["description"] == "changed"
+    assert reservation_values(fake) == kept
+
+
+def test_reservation_create_does_not_read_options(client, fake):
+    push(client, [r for r in wanted() if r.kind != "reservation" and not r.key.startswith("10.1.0.0/10.1.0.50")])
+    fake.calls.clear()
+    WindowsWriter(client).apply(Change("create", "reservation", wanted()[4].key, after=wanted()[4].fields))
+    assert "option.list" not in fake.ops()
+
+
+def test_failed_option_restore_names_the_reservation_and_the_option(client, fake):
+    push(client, wanted())
+    fake.reservation_set_drops_options = True
+    boom = PSError(message="boom", command="Set-DhcpServerv4OptionValue")
+    fake.fail = lambda op, p: boom if op == "option.set" else None
+    with pytest.raises(PushRefused, match=r"10\.1\.0\.50.*option 15.*boom"):
+        WindowsWriter(client).apply(reservation_change(description="changed"))
+
+
+def test_v6_description_update_keeps_reservation_options(client, fake):
+    client.add_v6_scope(ScopeV6(prefix="2001:db8:1::", name="v6"))
+    client.add_v6_reservation(ReservationV6("2001:db8:1::", "2001:db8:1::10", "00-01-00-01-aa", 7, "pc", "desk"))
+    client.set_v6_option_value(OptionKeyV6(24, reserved_ip="2001:db8:1::10"), ["host.example"])
+    fake.reservation_set_drops_options = True
+    before = {
+        "prefix": "2001:db8:1::",
+        "ip_address": "2001:db8:1::10",
+        "client_duid": "00-01-00-01-aa",
+        "iaid": 7,
+        "name": "pc",
+        "description": "desk",
+    }
+    key = ws.reservation6_key("2001:db8:1::", "2001:db8:1::10")
+    after = {**before, "description": "x"}
+    WindowsWriter(client).apply(Change("update", "reservation6", key, before=before, after=after))
+    assert fake.v6_reservations["2001:db8:1::10"]["description"] == "x"
+    assert [v["value"] for k, v in fake.v6_options.items() if k[2] == "2001:db8:1::10"] == [["host.example"]]

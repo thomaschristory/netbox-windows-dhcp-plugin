@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from netbox_windows_dhcp_plugin.sync import push
+from netbox_windows_dhcp_plugin.sync.diff import Change
+from netbox_windows_dhcp_plugin.sync.windows_writer import WindowsWriter
 from netbox_windows_dhcp_plugin.windows import client as wc
 from netbox_windows_dhcp_plugin.windows import normalize
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
@@ -156,3 +158,33 @@ def test_v6_option_values_all(lab: Lab, probe_out) -> None:
     seen = {(x.option_id, x.user_class): x.value for x in values}
     assert seen.get((24, "")) == ["plain.example"]
     assert seen.get((24, c.name)) == ["user.example"]
+
+
+def test_v6_reservation_update_keeps_its_option_values(lab: Lab, probe_out) -> None:
+    """Issue #42: client.py sends the DUID and IAID only on change; whether a new IAID drops the values."""
+    lab.v6_scope("nbwd-test-v6res42")
+    ip = "2001:db8:4e42::21"
+    r = lab.client.add_v6_reservation(wc.ReservationV6(V6_PREFIX, ip, DUID, 7, "nbwd-test-v6host42", "lab"))
+    k = wc.OptionKeyV6(24, prefix=V6_PREFIX, reserved_ip=ip)
+    lab.client.set_v6_option_value(k, ["host.example"])
+    r.description = "changed"
+    assert lab.client.set_v6_reservation(r).description == "changed"
+    assert lab.client.get_v6_option_value(k).value == ["host.example"]
+
+    r.iaid = 8
+    assert lab.client.set_v6_reservation(r).iaid == 8
+    left = lab.client.list_v6_option_values(prefix=V6_PREFIX, reserved_ip=ip, all=True)
+    save_probe(probe_out, "v6-reservation-identity-change-options", [x.to_dict() for x in left])
+
+    lab.client.set_v6_option_value(k, ["host.example"])
+    before = {
+        "prefix": V6_PREFIX,
+        "ip_address": ip,
+        "client_duid": DUID,
+        "iaid": 8,
+        "name": r.name,
+        "description": "changed",
+    }
+    change = Change("update", "reservation6", ip, before=before, after={**before, "description": "again"})
+    WindowsWriter(lab.client).apply(change)
+    assert lab.client.get_v6_option_value(k).value == ["host.example"]

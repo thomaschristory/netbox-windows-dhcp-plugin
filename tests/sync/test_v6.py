@@ -398,3 +398,18 @@ def test_user_class_names_are_not_case_sensitive_on_windows(client):
 def test_hidden_records_keeps_its_positional_parameters(client):
     # standard_codes6 is keyword only, so existing positional callers keep their meaning.
     assert ws.hidden_records(ws.read(client), ws.SKIPPED_OPTION_IDS) == []
+
+
+def test_reservation_description_change_keeps_its_option_values(client, fake):
+    """Issue #42, DHCPv6: the update only shows the reservation, and its option 24 survives."""
+    source = [*wanted(), option6(f"{PREFIX}/2001:db8:1::10", 24, ["host.example"])]
+    _, first = apply(client, source)
+    managed = merged({}, first)
+    fake.reservation_set_drops_options = True
+    source[2] = reservation6(description="changed")
+    p, result = apply(client, source, managed)
+    assert [(c.action, c.kind) for c in p.changes] == [("update", "reservation6")]
+    assert len(result.applied) == 1 and not result.failed
+    values = {k[0]: v["value"] for k, v in fake.v6_options.items() if k[2] == "2001:db8:1::10"}
+    assert values == {23: ["2001:db8::56"], 24: ["host.example"]}
+    assert apply(client, source, merged(managed, result))[0].changes == []

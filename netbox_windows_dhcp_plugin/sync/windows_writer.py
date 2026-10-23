@@ -29,6 +29,8 @@ from ..windows.client import (
     ScopeV6,
     Superscope,
 )
+from ..windows.psscript import WindowsLayerError
+from ..windows.runner import RunnerError
 from .diff import CREATE, DELETE, UPDATE, Change
 from .windows_state import NO_BOOTP_LIMIT, option6_target, same_host
 
@@ -45,6 +47,11 @@ def option_target(parent: str) -> tuple[str, str]:
         return "", ""
     scope_id, _, ip = parent.partition("/")
     return scope_id, ip
+
+
+def _option_identity(v: Any) -> tuple[int, str, str]:
+    # Class names are not case sensitive on Windows.
+    return (int(v.option_id), (v.vendor_class or "").lower(), (v.user_class or "").lower())
 
 
 class WindowsWriter:
@@ -201,8 +208,51 @@ class WindowsWriter:
         )
         if change.action == CREATE:
             self.client.add_reservation(r)
-        else:
-            self.client.set_reservation(r)
+            return
+        self._keep_reservation_options(
+            r.ip_address,
+            lambda: self.client.list_option_values(scope_id=r.scope_id, reserved_ip=r.ip_address, all=True),
+            lambda: self.client.set_reservation(r),
+            lambda v: self.client.set_option_value(
+                OptionKey(
+                    option_id=v.option_id,
+                    reserved_ip=r.ip_address,
+                    vendor_class=v.vendor_class,
+                    user_class=v.user_class,
+                ),
+                v.value,
+            ),
+        )
+
+    @staticmethod
+    def _keep_reservation_options(
+        ip: str, list_values: Callable[[], list], update: Callable[[], Any], restore: Callable[[Any], Any]
+    ) -> None:
+        """
+        Update a reservation and put back any of its option values the update removed.
+
+        On Windows Server 2025 a reservation Set reported success but dropped the reservation's option values
+        (issue #42). The client now leaves the client ID and type (DHCPv6: DUID and IAID) out of the Set when they
+        have not changed, which is what seemed to trigger it, but this guard does not rely on that: it reads the
+        values before and after (two extra list calls per reservation update) and writes back any that went missing
+        or changed. The plan is untouched: option deletes run before reservation updates, so a value NetBox removes
+        is already gone from the snapshot, and option creates and updates run after, so they still win.
+        """
+        before = list_values()
+        update()
+        after = {_option_identity(v): v.value for v in list_values()}
+        for v in before:
+            if after.get(_option_identity(v)) == v.value:
+                continue
+            try:
+                restore(v)
+            except RunnerError:
+                raise  # the connection is gone: the push stops, as for any other change
+            except WindowsLayerError as exc:
+                raise PushRefused(
+                    f"reservation {ip} was updated, but Windows dropped option {v.option_id} "
+                    f"and putting it back failed: {exc}"
+                ) from exc
 
     # -- option values -------------------------------------------------------------------------------------------
 
@@ -441,8 +491,21 @@ class WindowsWriter:
         )
         if change.action == CREATE:
             self.client.add_v6_reservation(r)
-        else:
-            self.client.set_v6_reservation(r)
+            return
+        self._keep_reservation_options(
+            r.ip_address,
+            lambda: self.client.list_v6_option_values(prefix=r.prefix, reserved_ip=r.ip_address, all=True),
+            lambda: self.client.set_v6_reservation(r),
+            lambda v: self.client.set_v6_option_value(
+                OptionKeyV6(
+                    option_id=v.option_id,
+                    reserved_ip=r.ip_address,
+                    vendor_class=v.vendor_class,
+                    user_class=v.user_class,
+                ),
+                v.value,
+            ),
+        )
 
     def _apply_option6(self, change: Change) -> None:
         f = change.after or change.before or {}

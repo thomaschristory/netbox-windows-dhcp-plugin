@@ -299,6 +299,52 @@ def test_reservation(pw: PwshRunner) -> None:
     find_call(pw.last_calls(), "Remove-DhcpServerv4Reservation")
 
 
+def test_reservation_set_sends_identity_only_on_change(pw: PwshRunner) -> None:
+    """Issue #42: a description change must not resend the client ID and type, which lost the option values."""
+    pw.seed = (
+        SEED_SCOPE
+        + "Add-DhcpServerv4Reservation -ScopeId 10.1.20.0 -IPAddress 10.1.20.5 "
+        + "-ClientId aa-bb-cc-dd-ee-ff -Name printer -Type Dhcp"
+    )
+    c = DhcpClient(pw)
+
+    def set_call(client_id: str, type_: str) -> dict[str, Any]:
+        r = Reservation("10.1.20.0", "10.1.20.5", client_id, "printer", "changed", type_)
+        assert c.set_reservation(r).description == "changed"
+        return find_call(pw.last_calls(), "Set-DhcpServerv4Reservation")
+
+    st = set_call("aa-bb-cc-dd-ee-ff", "Dhcp")
+    assert st["Description"] == "changed" and st["IPAddress"] == "10.1.20.5"
+    assert "ClientId" not in st and "Type" not in st and "ScopeId" not in st
+    # The same MAC in another case or separator is not a change.
+    st = set_call("AA:BB:CC:DD:EE:FF", "DHCP")
+    assert "ClientId" not in st and "Type" not in st
+    st = set_call("aa-bb-cc-dd-ee-00", "Dhcp")
+    assert st["ClientId"] == "aa-bb-cc-dd-ee-00" and "Type" not in st
+    st = set_call("aa-bb-cc-dd-ee-ff", "Both")
+    assert st["Type"] == "Both" and "ClientId" not in st
+
+
+def test_v6_reservation_set_sends_identity_only_on_change(pw: PwshRunner) -> None:
+    pw.seed = (
+        "Add-DhcpServerv6Scope -Prefix 2001:db8:1:: -Name v6\n"
+        + "Add-DhcpServerv6Reservation -Prefix 2001:db8:1:: -IPAddress 2001:db8:1::10 -ClientDuid 00-01-ab -Iaid 7\n"
+    )
+    c = DhcpClient(pw)
+
+    def set_call(duid: str, iaid: int) -> dict[str, Any]:
+        r = c.set_v6_reservation(ReservationV6("2001:db8:1::", "2001:db8:1::10", duid, iaid, "pc", "changed"))
+        assert r.description == "changed" and r.name == "pc"
+        return find_call(pw.last_calls(), "Set-DhcpServerv6Reservation")
+
+    st = set_call("00:01:AB", 7)
+    assert st["Description"] == "changed" and "ClientDuid" not in st and "Iaid" not in st and "Prefix" not in st
+    st = set_call("00-01-ac", 7)
+    assert st["ClientDuid"] == "00-01-ac" and "Iaid" not in st
+    st = set_call("00-01-ab", 8)
+    assert st["Iaid"] == 8 and "ClientDuid" not in st
+
+
 def test_exclusion(pw: PwshRunner) -> None:
     pw.seed = SEED_SCOPE
     c = DhcpClient(pw)

@@ -90,6 +90,24 @@ class PushJobTest(PushTestMixin, TestCase):
         self.assertEqual(self.fake.scopes["10.1.0.0"]["name"], "renamed in NetBox")
         self.assertEqual(self.fake.scopes["10.1.0.0"]["state"], "Inactive")
 
+    def test_reservation_description_change_keeps_its_option_values(self):
+        """Issue #42: Windows may drop a reservation's values on update; the push puts them back."""
+        self._run()  # adopts everything
+        self.fake.reservation_set_drops_options = True
+        reservation = HostReservation.objects.get()
+        reservation.snapshot()
+        # The Windows description is the sys4 comments field (the sys4 description is the Windows name).
+        reservation.comments = "changed in NetBox"
+        reservation.save()
+        dry = self._run(DryRunJob)
+        self.assertEqual([(c["action"], c["kind"]) for c in dry.summary["planned"]], [("update", "reservation")])
+        run = self._run()
+        self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)
+        self.assertEqual((run.summary["update"], run.summary["failed"]), (1, 0))
+        self.assertEqual(self.fake.reservations["10.1.0.50"]["description"], "changed in NetBox")
+        self.assertEqual(self.fake.options[(3, "", "10.1.0.50", "", "", "")]["value"], ["10.1.0.254"])
+        self.assertEqual(self._run(DryRunJob).summary["changes"], 0)
+
     def test_deleted_in_netbox_is_deleted_on_windows_once_managed(self):
         self._run()  # adopts everything
         HostReservation.objects.get().delete()
