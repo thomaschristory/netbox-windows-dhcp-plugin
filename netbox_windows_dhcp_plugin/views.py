@@ -358,7 +358,7 @@ class WindowsServerDryRunView(WindowsServerPushView):
 
 _register(
     WindowsScope,
-    WindowsScope.objects.select_related("subnet"),
+    WindowsScope.objects.select_related("subnet__prefix"),
     table=tables.WindowsScopeTable,
     filterset=filtersets.WindowsScopeFilterSet,
     filterset_form=forms.WindowsScopeFilterForm,

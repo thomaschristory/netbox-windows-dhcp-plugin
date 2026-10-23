@@ -1,6 +1,7 @@
 import re
 
-from netbox_dhcp.models import DHCPServer
+from ipam.models import Prefix
+from netbox_dhcp.models import DHCPServer, Subnet
 from utilities.testing import TestCase, ViewTestCases
 
 from netbox_windows_dhcp_plugin.models import (
@@ -8,6 +9,7 @@ from netbox_windows_dhcp_plugin.models import (
     ImportProposal,
     MacFilter,
     MacFilterLists,
+    WindowsScope,
     WindowsServer,
     WindowsVendorOption,
     WindowsVendorOptionDefinition,
@@ -245,3 +247,37 @@ class WindowsServerLinkTest(TestCase):
         config.set("tables.WindowsServerTable.columns", ["dhcp_server", "host"], commit=True)
         links = self.links("/plugins/windows-dhcp/windowsservers/")
         self.assertIn((self.server.get_absolute_url(), self.dhcp.name), links)
+
+
+class WindowsScopeListTest(TestCase):
+    """Issue #47: the scope list shows each scope's network next to its name."""
+
+    def setUp(self):
+        super().setUp()
+        self.add_permissions("netbox_windows_dhcp_plugin.view_windowsscope", "ipam.view_prefix")
+        server = dhcp_servers(1)[0]
+        windows_server(server)
+        first, second = subnets(server, 2)
+        # Two scopes with the same friendly name stay told apart by their prefixes.
+        for subnet in (first, second):
+            subnet.name = f"{server.name}/Office LAN {subnet.pk}"
+            subnet.save()
+        v6 = Subnet.objects.create(
+            name=f"{server.name}/v6", dhcp_server=server, prefix=Prefix.objects.create(prefix="2001:db8:47::/64")
+        )
+        self.scopes = [WindowsScope.objects.create(subnet=s) for s in (first, second, v6)]
+
+    def test_prefix_column_is_shown_by_default(self):
+        response = self.client.get("/plugins/windows-dhcp/windowsscopes/")
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode()
+        for scope in self.scopes:
+            prefix = scope.subnet.prefix
+            self.assertIn(f'<a href="{prefix.get_absolute_url()}">{prefix.prefix}</a>', html)
+            self.assertIn(scope.subnet.name, html)
+
+    def test_sorts_by_prefix(self):
+        for sort, first in (("prefix", "10.1.0.0/24"), ("-prefix", "2001:db8:47::/64")):
+            html = self.client.get(f"/plugins/windows-dhcp/windowsscopes/?sort={sort}").content.decode()
+            prefixes = re.findall(r'<a href="/ipam/prefixes/\d+/">([^<]+)</a>', html)
+            self.assertEqual(prefixes[0], first, sort)
