@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from core.choices import JobStatusChoices
 from django.utils import timezone
 
-from .choices import ImportDestinationChoices, SyncKindChoices, SyncStatusChoices
+from .choices import ImportDestinationChoices, ProposalStatusChoices, SyncKindChoices, SyncStatusChoices
 from .integrations import branching
 from .models import ImportProposal, SyncRun
 
@@ -49,6 +49,11 @@ class ImportStatus:
     job: object = None
     branch: BranchInfo | None = None
     proposal: object = None
+    # The run's proposal exists but the user may not view it. Only then does the panel say so: a run can also lose
+    # its proposal because a later import took the open proposal over, or because someone deleted it.
+    proposal_hidden: bool = False
+    # When the run's own proposal is not linked any more: the server's open proposal, if the user may view it.
+    open_proposal: object = None
     # Where the run wrote (ImportDestinationChoices), or None when there is no run yet.
     destination: str | None = None
     # A newer import job that has not started its run yet: QUEUED or RUNNING (the run is created a moment after the
@@ -93,13 +98,18 @@ class ImportStatus:
     @property
     def review(self):
         """
-        Differences a proposal import sent to review. Runs from before issue #43 did not record it: every
-        difference went to review then, unless a dismissal hid it, which those runs cannot tell.
+        Differences a proposal import sent to review, or None when that is not known. Runs from before issue #43
+        did not record it: every difference went to review then unless a reviewer had dismissed it, so only a run
+        still linked to a proposal (visible or not) can be read as "all of them".
         """
         if self.run is None:
             return None
         summary = self.run.summary or {}
-        return summary.get("review", summary.get("changes"))
+        if "review" in summary:
+            return summary["review"]
+        if self.proposal is not None or self.proposal_hidden:
+            return summary.get("changes")
+        return None
 
     @property
     def dismissed(self):
@@ -138,13 +148,13 @@ def _job_destination(job):
     return destination or branching.import_destinations()[0]
 
 
-def _run_destination(run, proposal):
+def _run_destination(run, has_proposal):
     """Where a run wrote. Runs from before #36 recorded nothing: a branch name or a proposal says which it was."""
     if run.destination:
         return run.destination
     if run.branch_name:
         return ImportDestinationChoices.BRANCH
-    if proposal is not None or not branching.branching_installed():
+    if has_proposal or not branching.branching_installed():
         return ImportDestinationChoices.PROPOSAL
     return ImportDestinationChoices.BRANCH
 
@@ -170,6 +180,8 @@ def for_run(run, user, job=None, now=None):
         # Failed, or a run whose job ended without finishing it (the worker stopped, for example).
         state = FAILED
     proposal = None
+    hidden = False
+    open_proposal = None
     if not run.branch_name and run.destination != ImportDestinationChoices.MAIN:
         proposal = (
             ImportProposal.objects.restrict(user, "view")
@@ -178,13 +190,27 @@ def for_run(run, user, job=None, now=None):
             .order_by("-pk")
             .first()
         )
+        if proposal is None and (run.summary or {}).get("changes"):
+            # Nothing visible, yet the run found differences. Tell a proposal hidden by permissions apart from one
+            # that is no longer this run's: a repeat import takes the open proposal over, and proposals can be
+            # deleted. Only the first may be called "a proposal you may not view".
+            hidden = ImportProposal.objects.filter(sync_run=run).exists()
+            if not hidden:
+                open_proposal = (
+                    ImportProposal.objects.restrict(user, "view")
+                    .filter(windows_server_id=run.windows_server_id, status=ProposalStatusChoices.OPEN)
+                    .order_by("-pk")
+                    .first()
+                )
     return ImportStatus(
         state=state,
         run=run,
         job=job,
         branch=_branch(run.branch_name, user),
         proposal=proposal,
-        destination=_run_destination(run, proposal),
+        proposal_hidden=hidden,
+        open_proposal=open_proposal,
+        destination=_run_destination(run, proposal is not None or hidden),
     )
 
 

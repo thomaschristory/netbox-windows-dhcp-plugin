@@ -85,13 +85,19 @@
         <div class="alert alert-success mb-2" role="status">
           {% if not status.changes %}
             {% trans "No differences found." %}
+          {% elif status.review is None %}
+            {# A run from before #43 with no proposal linked: it cannot tell whether anything went to review. #}
+            {% blocktrans count n=status.changes %}{{ n }} difference found; no import proposal is linked to this run.{% plural %}{{ n }} differences found; no import proposal is linked to this run.{% endblocktrans %}
           {% elif not status.review %}
             {% trans "No new differences waiting for review." %}
             {% blocktrans count n=status.dismissed %}{{ n }} difference found earlier was dismissed and stays ignored while Windows shows the same values.{% plural %}{{ n }} differences found earlier were dismissed and stay ignored while Windows shows the same values.{% endblocktrans %}
           {% elif status.proposal %}
             {% blocktrans count n=status.review %}{{ n }} difference waits for review in an import proposal.{% plural %}{{ n }} differences wait for review in an import proposal.{% endblocktrans %}
-          {% else %}
+          {% elif status.proposal_hidden %}
             {% blocktrans count n=status.review %}{{ n }} difference waits for review in an import proposal you may not view.{% plural %}{{ n }} differences wait for review in an import proposal you may not view.{% endblocktrans %}
+          {% else %}
+            {# A later import took the open proposal over (it moves to the newest run), or the proposal was deleted. #}
+            {% blocktrans count n=status.review %}{{ n }} difference was sent for review. That import proposal now belongs to a later import or no longer exists.{% plural %}{{ n }} differences were sent for review. That import proposal now belongs to a later import or no longer exists.{% endblocktrans %}
           {% endif %}
           {% if status.review and status.dismissed %}
             {% blocktrans count n=status.dismissed %}{{ n }} difference dismissed earlier stays ignored while Windows shows the same values.{% plural %}{{ n }} differences dismissed earlier stay ignored while Windows shows the same values.{% endblocktrans %}
@@ -111,6 +117,11 @@
           <tr>
             <th scope="row">{% trans "Import proposal" %}</th>
             <td><a href="{{ status.proposal.get_absolute_url }}">{{ status.proposal }}</a></td>
+          </tr>
+        {% elif status.open_proposal %}
+          <tr>
+            <th scope="row">{% trans "Open import proposal" %}</th>
+            <td><a href="{{ status.open_proposal.get_absolute_url }}">{{ status.open_proposal }}</a></td>
           </tr>
         {% endif %}
         {% if refresh_url %}

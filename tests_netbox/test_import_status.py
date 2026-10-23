@@ -184,6 +184,54 @@ class StandaloneImportStatusTest(ImportStatusTestBase):
         self.assertNotIn("No differences found", text)
         self.assertIn("2 differences wait for review in an import proposal you may not view.", text)
 
+    def test_earlier_run_whose_proposal_a_later_run_took_over(self):
+        # A repeat import reuses the open proposal and points it at the newer run, so the earlier run has none.
+        first = self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), changes=2, review=2, dismissed=0)
+        second = self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), changes=2, review=2, dismissed=0)
+        proposal = ImportProposal.objects.create(windows_server=self.server, sync_run=second)
+        status = import_status.for_run(first, self.user)
+        self.assertEqual((status.proposal, status.proposal_hidden, status.open_proposal), (None, False, proposal))
+        text = panel(self.client.get(first.get_absolute_url()).content.decode())
+        self.assertNotIn("may not view", text)
+        self.assertNotIn("No differences found", text)
+        self.assertIn("2 differences were sent for review. That import proposal now belongs to a later import", text)
+        self.assertIn("Open import proposal", text)
+        self.assertIn(proposal.get_absolute_url(), text)
+
+    def test_deleted_proposal_is_not_called_hidden(self):
+        run = self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), changes=1, review=1, dismissed=0)
+        text = panel(self.server_page())
+        self.assertNotIn("may not view", text)
+        self.assertIn("1 difference was sent for review. That import proposal now belongs to a later import", text)
+        self.assertNotIn("Open import proposal", text)
+        self.assertIsNone(import_status.for_run(run, self.user).open_proposal)
+
+    def test_legacy_run_without_review_count_or_proposal(self):
+        # Recorded before #43 (no "review" key) in exactly the #43 case: the only difference had been dismissed.
+        run = self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), changes=1, update=1)
+        self.assertIsNone(import_status.for_run(run, self.user).review)
+        for html in (self.server_page(), self.client.get(run.get_absolute_url()).content.decode()):
+            text = panel(html)
+            self.assertIn("1 difference found; no import proposal is linked to this run.", text)
+            self.assertNotIn("may not view", text)
+            self.assertNotIn("waits for review", text)
+            self.assertNotIn("No differences found", text)
+
+    def test_legacy_run_with_hidden_proposal(self):
+        run = self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), changes=2)
+        ImportProposal.objects.create(windows_server=self.server, sync_run=run)
+        self.user.is_superuser = False
+        self.user.save()
+        self.add_permissions(
+            "netbox_windows_dhcp_plugin.view_windowsserver",
+            "netbox_windows_dhcp_plugin.view_syncrun",
+            "core.view_job",
+        )
+        status = import_status.for_run(run, self.user)
+        self.assertEqual((status.proposal, status.proposal_hidden, status.review), (None, True, 2))
+        text = panel(self.server_page())
+        self.assertIn("2 differences wait for review in an import proposal you may not view.", text)
+
     def test_a_job_that_failed_without_a_run(self):
         self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED))
         failed = self.job(JobStatusChoices.STATUS_ERRORED)

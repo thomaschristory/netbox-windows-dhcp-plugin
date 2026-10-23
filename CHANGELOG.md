@@ -186,4 +186,7 @@ Found by testing 0.1.0rc3:
   differences found." The Import panel and the sync run now say that nothing new waits for review and how many
   dismissed differences stay ignored while Windows shows the same values. The count of differences waiting for review
   no longer includes dismissed ones, a proposal you may not view is no longer read as "no differences", and the sync
-  run summary and job log record how many differences were dismissed earlier (#43).
+  run summary and job log record how many differences were dismissed earlier (#43). An earlier run whose proposal a
+  later import took over (or that was deleted) says so and links the server's open proposal instead of claiming a
+  proposal you may not view, and a run recorded before this fix with no proposal linked says only how many
+  differences it found.
