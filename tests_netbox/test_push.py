@@ -10,6 +10,7 @@ from core.models import Job
 from dcim.models import MACAddress
 from django.db import connection
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from ipam.models import IPRange
 from netbox_dhcp.models import HostReservation, Option, Subnet
 from utilities.testing import APITestCase
@@ -24,6 +25,7 @@ from netbox_windows_dhcp_plugin.sync import diff, netbox_state, windows_state
 from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows.client import Reservation
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
+from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
 from .fixtures import PluginAPIMixin, dhcp_servers, windows_server
 from .test_import import ImportTestMixin
@@ -111,7 +113,6 @@ class PushJobTest(PushTestMixin, TestCase):
     def test_failed_reservation_value_restore_says_whether_the_next_push_recreates_it(self):
         """Issue #42 review: a value NetBox does not hold never comes back by itself, and the error says so."""
         from netbox_windows_dhcp_plugin.windows.client import OptionKey
-        from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
         self._run()  # adopts everything
         # Added by hand on Windows after the import: NetBox does not hold it.
@@ -169,8 +170,6 @@ class PushJobTest(PushTestMixin, TestCase):
         self.assertEqual(self._run(DryRunJob).status, SyncStatusChoices.COMPLETED)
 
     def test_windows_errors_on_one_object_fail_the_run_but_not_the_rest(self):
-        from netbox_windows_dhcp_plugin.windows.psscript import PSError
-
         self.target = FakeDhcpServer()
         self.target.fail = lambda op, p: (
             PSError("denied", "PermissionDenied", "", "Add-DhcpServerv4Class") if op == "class.add" else None
@@ -275,11 +274,72 @@ class FailoverPushTest(PushTestMixin, TestCase):
         subnet.description = "changed"
         subnet.save()
         self._run()
-        self.assertEqual(self.fake.replications[-1]["scope_ids"], ["10.1.0.0"])
+        # Only the scoped parameter set: Windows refuses a relationship name with scope ids (#51).
+        self.assertEqual(self.fake.replications[-1], {"name": "", "scope_ids": ["10.1.0.0"]})
 
     def test_nothing_changed_nothing_replicated(self):
         self._run()
         self.assertEqual(self.fake.replications, [])
+
+    def _fail_replication(self):
+        self.fake.fail = lambda op, p: (
+            PSError("denied", "PermissionDenied", "", "Invoke-DhcpServerv4FailoverReplication")
+            if op == "failover.replicate"
+            else None
+        )
+
+    def _change_subnet(self):
+        subnet = Subnet.objects.get()
+        subnet.snapshot()
+        subnet.description = "changed"
+        subnet.save()
+
+    def test_failed_replication_is_retried_by_the_next_push(self):
+        self._fail_replication()
+        self._change_subnet()
+        with self.assertRaises(JobFailed):
+            self._run()
+        failed = SyncRun.objects.get(kind=SyncKindChoices.PUSH)
+        self.assertEqual(failed.summary["replication_pending"], {"fo": ["10.1.0.0"]})
+        self.assertIn("failover replication fo", failed.error)
+        # Nothing left to write, but the partner is still behind: the next push replicates again.
+        self.fake.fail = None
+        run = self._run()
+        self.assertEqual(run.status, SyncStatusChoices.COMPLETED)
+        self.assertEqual(self.fake.replications, [{"name": "", "scope_ids": ["10.1.0.0"]}])
+        self.assertNotIn("replication_pending", run.summary)
+        # Once copied, it is not copied again.
+        self._run()
+        self.assertEqual(len(self.fake.replications), 1)
+
+    def test_pending_replication_survives_a_push_that_stopped_before_writing(self):
+        self._fail_replication()
+        self._change_subnet()
+        with self.assertRaises(JobFailed):
+            self._run()
+        # A later push that never reached Windows (a connection error) records no summary.
+        SyncRun.objects.create(
+            windows_server=self.server,
+            kind=SyncKindChoices.PUSH,
+            status=SyncStatusChoices.FAILED,
+            completed=timezone.now(),
+            error="connection refused",
+        )
+        self.fake.fail = None
+        self._run()
+        self.assertEqual(self.fake.replications, [{"name": "", "scope_ids": ["10.1.0.0"]}])
+
+    def test_pending_replication_skips_scopes_no_longer_in_the_relationship(self):
+        self._fail_replication()
+        self._change_subnet()
+        with self.assertRaises(JobFailed):
+            self._run()
+        failed = SyncRun.objects.get(kind=SyncKindChoices.PUSH)
+        failed.summary["replication_pending"] = {"fo": ["10.1.0.0", "10.9.9.0"], "gone": ["10.1.0.0"]}
+        failed.save()
+        self.fake.fail = None
+        self._run()
+        self.assertEqual(self.fake.replications, [{"name": "", "scope_ids": ["10.1.0.0"]}])
 
     def test_partner_leaves_failover_scopes_to_the_primary(self):
         # Make this server the partner instead.

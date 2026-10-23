@@ -200,3 +200,10 @@ Found by testing 0.1.0rc3:
   or from its deletion in the change log. With no record you may view, it says the outcome is not known rather than
   guessing a merge. A merged import no longer reads as "main matches Windows", the deleted branch row links its
   deletion record, and the server panel links the server's import history (#44).
+
+Found by testing 0.1.0rc4:
+- Failover replication after a push to the primary no longer fails with `AmbiguousParameterSet`. The plugin passed
+  both `-Name` and `-ScopeId` to `Invoke-DhcpServerv4FailoverReplication`, which takes one or the other; it now
+  replicates the changed scopes with `-ScopeId` only, never widening the copy to the whole relationship (#51).
+- A failed failover replication is retried by the next push to the primary, even one with nothing else to write, so
+  the partner no longer stays behind until the next change. The push's sync run lists the scopes still to replicate.

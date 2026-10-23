@@ -129,7 +129,10 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   applying import items suppresses this. A queued job that never started within 15 minutes of being due counts as
   lost and no longer blocks new pushes; a push that keeps finding its server busy gives up after two hours.
 - **Failover.** After a push to a relationship's primary, the touched scopes (all of the relationship's scopes when
-  a server-level object changed) are replicated. A push to a partner leaves the relationship's scopes to the primary.
+  a server-level object changed) are replicated, by `-ScopeId` only (it and `-Name` are separate parameter sets,
+  #51). Scopes whose replication failed are kept in the push's `SyncRun.summary["replication_pending"]`; the next push
+  to the primary (skipping runs that never reached Windows) replicates them again, even with no changes, restricted to
+  scopes still in the relationship. A push to a partner leaves the relationship's scopes to the primary.
 
 **Remaining objects (milestone 5).** Every kind goes through the same records, diff, plan and writers. Dependency
 order: classes, option definitions, scopes, superscopes, exclusions, reservations, policies, option values, failover

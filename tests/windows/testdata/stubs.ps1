@@ -441,9 +441,13 @@ function Remove-DhcpServerv4FailoverScope {
 }
 
 # Like the real cmdlet, writes the replicated scopes to the pipeline (the script must discard them).
+# Name and ScopeId are separate parameter sets, as on Windows: passing both fails with AmbiguousParameterSet (#51).
 function Invoke-DhcpServerv4FailoverReplication {
-    [CmdletBinding(SupportsShouldProcess)]
-    param([string]$ComputerName, [string[]]$Name, [ipaddress[]]$ScopeId, [switch]$Force)
+    [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'Name')]
+    param([string]$ComputerName,
+        [Parameter(Mandatory, ParameterSetName = 'Name')][string[]]$Name,
+        [Parameter(Mandatory, ParameterSetName = 'ScopeId')][ipaddress[]]$ScopeId,
+        [switch]$Force)
     Record 'Invoke-DhcpServerv4FailoverReplication' $PSBoundParameters
     'replicated'
 }

@@ -774,8 +774,12 @@ class FakeDhcpServer:
         return f
 
     def _op_failover_replicate(self, p: dict) -> Any:
+        cmd = "Invoke-DhcpServerv4FailoverReplication"
+        # Like Windows: a relationship name or scope ids, never both (issue #51).
+        if _s(p, "name") and p.get("scope_ids"):
+            raise _invalid(cmd, "Parameter set cannot be resolved using the specified named parameters.")
         if _s(p, "name"):
-            self._failover("Invoke-DhcpServerv4FailoverReplication", _s(p, "name"))
+            self._failover(cmd, _s(p, "name"))
         self.replications.append({"name": _s(p, "name"), "scope_ids": list(p.get("scope_ids") or [])})
         return None
 

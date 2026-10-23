@@ -242,6 +242,9 @@ def test_failover() -> None:
         c.add_failover(FailoverRelationship(name="x", partner_server="p", mode="HotStandby", scope_ids=["10.1.20.0"]))
     c.replicate_failover("x")
     assert r.op == "failover.replicate" and "Invoke-DhcpServerv4FailoverReplication @cn @a -Force" in r.script
+    assert r.params == {"name": "x", "scope_ids": []}
+    c.replicate_failover("x", ["10.1.20.0"])
+    assert r.params == {"name": "", "scope_ids": ["10.1.20.0"]}
     # A single relationship serialised without its array wrapper still lists as one.
     c, _ = new_client("failover_list_single.json")
     got = c.list_failovers()

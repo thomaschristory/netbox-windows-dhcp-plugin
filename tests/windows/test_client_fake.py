@@ -275,7 +275,10 @@ def test_failover(c: DhcpClient, fake: FakeDhcpServer) -> None:
     with pytest.raises(PSError, match="last scope"):
         c.remove_failover_scopes("fo", ["10.1.30.0"])
     c.replicate_failover("fo")
-    assert fake.replications == [{"name": "fo", "scope_ids": []}]
+    c.replicate_failover("fo", ["10.1.30.0"])  # the scope ids win: Windows refuses both (#51)
+    assert fake.replications == [{"name": "fo", "scope_ids": []}, {"name": "", "scope_ids": ["10.1.30.0"]}]
+    with pytest.raises(ValueError, match="name or scope ids"):
+        c.replicate_failover()
     assert [x.name for x in c.list_failovers()] == ["fo"]
     c.remove_failover("fo", force=True)
     assert c.list_failovers() == []

@@ -34,8 +34,10 @@ match).
   server you want to write to first.** After that, the partner's imports and pushes leave the relationship alone, and
   applying it from the partner is refused while NetBox holds it with the other server as primary.
 - **Push** writes relationships, and the scopes in them, to the primary only. After a push to the primary, the scopes
-  it changed are replicated to the partner with `Invoke-DhcpServerv4FailoverReplication` (all the relationship's
-  scopes when a server-level object such as an option definition changed).
+  it changed are replicated to the partner with `Invoke-DhcpServerv4FailoverReplication -ScopeId` (all the
+  relationship's scopes when a server-level object such as an option definition changed). If replication fails, the
+  push is marked failed and the next push to the primary replicates those scopes again, even when it has nothing else
+  to write: run **Sync now** on the primary once the cause is fixed.
 - A push to the partner server leaves the relationship's scopes alone: they belong to the primary.
 - **Primary server role** is set when the relationship is created. Windows cannot change it afterwards
   (`Set-DhcpServerv4Failover` has no role parameter), so a push that changes it in NetBox is refused. To change it,
