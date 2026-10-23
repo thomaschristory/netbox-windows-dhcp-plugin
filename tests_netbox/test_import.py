@@ -1,3 +1,4 @@
+import dataclasses
 import uuid
 from datetime import timedelta
 from unittest import mock, skipUnless
@@ -230,8 +231,45 @@ class ProposalImportTest(ImportTestMixin, TestCase):
         proposal.refresh_from_db()
         self.assertEqual(proposal.status, ProposalStatusChoices.DISMISSED)
         # The next run finds the same difference: nothing new to review, so no new proposal.
-        self.assertIsNone(self.propose().proposal)
+        result = self.propose()
+        self.assertIsNone(result.proposal)
         self.assertEqual(ImportProposal.objects.filter(status=ProposalStatusChoices.OPEN).count(), 0)
+        # The summary still says there is a difference, and that a dismissal is why nothing waits for review
+        # (issue #43: the panel must not read this as "no differences").
+        dismissed = proposal.items.count()
+        self.assertEqual((result.review, result.dismissed), (0, dismissed))
+        summary = result.summary()
+        self.assertEqual((summary["changes"], summary["review"], summary["dismissed"]), (dismissed, 0, dismissed))
+
+    def test_summary_counts_new_and_dismissed_differences(self):
+        self.apply_all()
+        self.client.remove_reservation("10.1.0.50")
+        proposal = self.propose().proposal
+        dismissed = proposal.items.count()
+        importer.dismiss_items(list(proposal.items.all()))
+        scope = self.client.get_scope("10.1.0.0")
+        self.client.set_scope(dataclasses.replace(scope, description="moved upstairs"))
+        result = self.propose()
+        self.assertEqual(list(result.proposal.items.values_list("kind", flat=True)), ["scope"])
+        summary = result.summary()
+        self.assertEqual((summary["changes"], summary["review"], summary["dismissed"]), (dismissed + 1, 1, dismissed))
+
+    def test_run_that_only_finds_dismissed_differences_closes_the_open_proposal(self):
+        self.apply_all()
+        scope = self.client.get_scope("10.1.0.0")
+        self.client.remove_reservation("10.1.0.50")
+        self.client.set_scope(dataclasses.replace(scope, description="moved upstairs"))
+        proposal = self.propose().proposal
+        dismissed = proposal.items.exclude(kind="scope").count()
+        importer.dismiss_items(list(proposal.items.exclude(kind="scope")))
+        proposal.refresh_from_db()
+        self.assertEqual(proposal.status, ProposalStatusChoices.OPEN)
+        # Windows goes back to what NetBox holds for the scope: only the dismissed differences remain.
+        self.client.set_scope(scope)
+        result = self.propose()
+        proposal.refresh_from_db()
+        self.assertEqual(proposal.status, ProposalStatusChoices.DISMISSED)
+        self.assertEqual((result.review, result.dismissed), (0, dismissed))
 
     def test_netbox_duplicates_do_not_break_the_import(self):
         self.apply_all()
@@ -347,6 +385,16 @@ class ImportJobTest(ImportTestMixin, TestCase):
         self.assertEqual(run.summary["create"], 13)
         self.assertNotIn("notes", run.summary)  # nothing skipped
         self.assertEqual(ImportProposal.objects.get().sync_run, run)
+        self.assertEqual((run.summary["review"], run.summary["dismissed"]), (13, 0))
+
+    def test_rerun_after_dismissing_everything_says_why_nothing_waits(self):
+        # Issue #43: the repeat run still finds the differences, it only proposes none of them again.
+        importer.dismiss_items(list(importer.import_to_proposal(self.server, self.state(), None).proposal.items.all()))
+        with self.assertLogs("netbox.jobs.ImportJob", level="INFO") as logs:
+            run = self._run()
+        self.assertEqual(run.status, SyncStatusChoices.COMPLETED)
+        self.assertEqual((run.summary["changes"], run.summary["review"], run.summary["dismissed"]), (13, 0, 13))
+        self.assertTrue(any("13 already dismissed" in line for line in logs.output), logs.output)
 
     def test_one_import_per_server_at_a_time(self):
         from django.db import connection

@@ -123,7 +123,12 @@ trigger a push (NetBox and Windows then agree), and the applied objects are reco
 
 A repeated import updates the open proposal: pending and failed items are replaced by the new differences. A
 dismissed item stays dismissed, in later proposals too, as long as Windows still shows exactly the same values; if
-the Windows values change, it comes back. An import with nothing new to review opens no proposal.
+the Windows values change, it comes back. An import with nothing new to review opens no proposal. The Import panel
+and the sync run then say that nothing new waits for review and how many earlier dismissed differences stay ignored,
+rather than "No differences found", which only appears when NetBox and Windows really agree. When some differences
+are new and others were dismissed before, the count waiting for review leaves the dismissed ones out. Because a
+repeated import moves the open proposal to the newest run, an earlier sync run says its differences were sent for
+review and links the server's open proposal.
 
 ## Scheduled imports
 

@@ -587,6 +587,8 @@ class DirectImportTest(TransactionTestCase):
         self.assertEqual((run.status, run.destination, run.branch_name), (SyncStatusChoices.COMPLETED, MAIN, ""))
         self.assertEqual(run.summary["failed"], 0)
         self.assertEqual(run.summary["applied"], run.summary["changes"])
+        # Only proposal imports count dismissals (issue #43).
+        self.assertNotIn("review", run.summary)
         self.assertEqual(Subnet.objects.get().name, "dhcp1/10.1.0.0")
         self.assertEqual(HostReservation.objects.count(), 1)
         self.assertFalse(Branch.objects.exists())
@@ -630,6 +632,7 @@ class DirectImportTest(TransactionTestCase):
         self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)
         self.assertEqual((run.destination, run.branch_name), (CURRENT, "feature-x"))
         self.assertFalse(run.summary["branch_created"])
+        self.assertNotIn("review", run.summary)
         self.assertEqual(list(Branch.objects.values_list("name", flat=True)), ["feature-x"])
         self.assertFalse(Subnet.objects.exists())  # main is untouched
         with activate_branch(branch):

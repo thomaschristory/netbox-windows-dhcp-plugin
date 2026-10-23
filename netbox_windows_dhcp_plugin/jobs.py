@@ -269,7 +269,11 @@ class ImportJob(JobRunner):
                 sync_run.error = "\n".join(result.failed)
             else:
                 sync_run.status = SyncStatusChoices.COMPLETED
-            self.logger.info(f"Import from {server.host}: {len(result.changes)} difference(s)")
+            message = f"Import from {server.host}: {len(result.changes)} difference(s)"
+            if result.dismissed:
+                # Still differences, only not proposed again: say so rather than look like fewer differences.
+                message += f", {result.dismissed} already dismissed (not proposed again)"
+            self.logger.info(message)
         finally:
             if sync_run.status == SyncStatusChoices.RUNNING:
                 sync_run.status = SyncStatusChoices.FAILED
