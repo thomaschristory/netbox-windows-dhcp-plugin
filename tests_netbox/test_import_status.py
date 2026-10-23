@@ -476,6 +476,45 @@ class BranchImportStatusTest(ImportStatusTestBase):
             import_status.for_run(run, self.user)
         lookup.assert_called_once_with("dhcp-import/dhcp1/x", self.user, since=run.created)
 
+    def test_recreated_branch_of_the_same_name_is_not_the_runs(self):
+        # A branch the user chose, deleted after the run and created again under the same name: the new branch says
+        # nothing about the run's, so the panel reads the old one's deletion instead.
+        run = self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="mywork", changes=1)
+        SyncRun.objects.filter(pk=run.pk).update(destination="current", completed=timezone.now() - timedelta(hours=2))
+        newer = fake_branch()
+        newer.created = timezone.now()
+        with (
+            mock.patch(IMPORT_BRANCH, return_value=(newer, FakeChangeRequest(), True)),
+            self.deletion("merged", MERGED_AT),
+        ):
+            status = import_status.for_server(self.server, self.user)
+            html = panel(self.server_page())
+        self.assertEqual(status.branch.lifecycle, import_status.DELETED_MERGED)
+        self.assertIsNone(status.branch.change_request)
+        self.assertIn("and has since been deleted.", html)
+        self.assertNotIn("Main has not been changed.", html)
+        self.assertNotIn("/plugins/branching/branches/7/", html)
+
+    def test_branch_the_run_created_is_its_own(self):
+        # An import branch is created after its run starts, but before the run finishes.
+        run = self.make_run(
+            self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x", created=True
+        )
+        SyncRun.objects.filter(pk=run.pk).update(completed=run.created + timedelta(minutes=1))
+        own = fake_branch()
+        own.created = run.created + timedelta(seconds=1)
+        with mock.patch(IMPORT_BRANCH, return_value=(own, None, True)):
+            status = import_status.for_server(self.server, self.user)
+        self.assertEqual(status.branch.lifecycle, import_status.OPEN)
+
+    def test_legacy_run_without_branch_created(self):
+        run = self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), branch_name="dhcp-import/dhcp1/x", changes=1)
+        SyncRun.objects.filter(pk=run.pk).update(summary={"changes": 1})
+        with mock.patch(IMPORT_BRANCH, return_value=(fake_branch("merged", MERGED_AT), None, True)):
+            html = panel(self.server_page())
+        self.assertIn("Imported 1 difference into the import branch below.", html)
+        self.assertNotIn("already open", html)
+
     def test_failed_run_into_a_merged_branch(self):
         self.make_run(
             self.job(JobStatusChoices.STATUS_FAILED), status=SyncStatusChoices.FAILED, branch_name="dhcp-import/dhcp1/x"
@@ -584,5 +623,16 @@ class BranchDeletionLookupTest(TestCase):
         now = timezone.now()
         self.record("mywork", "merged", time=now - timedelta(days=2))
         self.assertIsNone(branching.branch_deletion("mywork", self.user, since=now - timedelta(days=1)))
-        later = self.record("mywork", "ready")
-        self.assertEqual(branching.branch_deletion("mywork", self.user, since=now - timedelta(days=1))[0].pk, later.pk)
+        first = self.record("mywork", "merged", time=now - timedelta(hours=2))
+        self.assertEqual(branching.branch_deletion("mywork", self.user, since=now - timedelta(days=1))[0].pk, first.pk)
+
+    def test_takes_the_first_deletion_after_the_run(self):
+        # The run's branch was deleted first; a later branch of the same name was created and deleted after it.
+        from netbox_windows_dhcp_plugin.integrations import branching
+
+        self.add_permissions("core.view_objectchange")
+        now = timezone.now()
+        first = self.record("mywork", "merged", time=now - timedelta(hours=2))
+        self.record("mywork", "ready", time=now - timedelta(hours=1))
+        found, status, _ = branching.branch_deletion("mywork", self.user, since=now - timedelta(days=1))
+        self.assertEqual((found.pk, status), (first.pk, "merged"))

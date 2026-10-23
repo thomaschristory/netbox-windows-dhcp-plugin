@@ -387,7 +387,8 @@ def branch_deletion(name, user, since=None):
     )
     if since is not None:
         changes = changes.filter(time__gte=since)
-    change = changes.order_by("-time").first()
+    # The first deletion since: the run's branch existed then, so a later one of the same name is a newer branch.
+    change = changes.order_by("time").first()
     if change is None:
         return None
     data = change.prechange_data or {}

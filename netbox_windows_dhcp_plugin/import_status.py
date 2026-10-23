@@ -156,7 +156,9 @@ class ImportStatus:
 
     @property
     def branch_created(self):
-        return bool((self.run.summary or {}).get("branch_created")) if self.run is not None else False
+        """Whether the run opened its branch, or None when it did not record it (runs from before issue #32)."""
+        summary = (self.run.summary or {}) if self.run is not None else {}
+        return bool(summary["branch_created"]) if "branch_created" in summary else None
 
 
 def _abandoned(created, now):
@@ -197,12 +199,18 @@ def _run_destination(run, has_proposal):
     return ImportDestinationChoices.BRANCH
 
 
-def _branch(name, user, since=None):
-    """What became of the branch an import wrote into. ``since``: when the run started, so an older deleted branch of
-    the same name is not taken for this one."""
+def _branch(name, user, since=None, until=None):
+    """
+    What became of the branch an import wrote into. ``since``: when the run started, so an older deleted branch of the
+    same name is not taken for this one. ``until``: when it finished; a branch of that name created later is a new
+    one (a branch the user chose can be deleted and created again), not the run's.
+    """
     if not name:
         return None
     branch, change_request, exists = branching.import_branch(name, user)
+    created = getattr(branch, "created", None)
+    if until is not None and created is not None and created > until:
+        branch, change_request, exists = None, None, False
     info = BranchInfo(name=name, branch=branch, change_request=change_request, exists=exists)
     if not exists:
         deletion = branching.branch_deletion(name, user, since=since)
@@ -251,7 +259,7 @@ def for_run(run, user, job=None, now=None):
         state=state,
         run=run,
         job=job,
-        branch=_branch(run.branch_name, user, since=run.created),
+        branch=_branch(run.branch_name, user, since=run.created, until=run.completed),
         proposal=proposal,
         proposal_hidden=hidden,
         open_proposal=open_proposal,
@@ -299,8 +307,8 @@ def for_server(server, user, now=None):
         earlier = runs.exclude(branch_name="").exclude(destination=ImportDestinationChoices.CURRENT)
         if status.branch is not None:
             earlier = earlier.exclude(branch_name=status.branch.name)
-        earlier = earlier.values_list("branch_name", "created").first()
-        info = _branch(earlier[0], user, since=earlier[1]) if earlier else None
+        earlier = earlier.values_list("branch_name", "created", "completed").first()
+        info = _branch(earlier[0], user, since=earlier[1], until=earlier[2]) if earlier else None
         if info is not None and info.main_unchanged:
             status.earlier_branch = info
     return status

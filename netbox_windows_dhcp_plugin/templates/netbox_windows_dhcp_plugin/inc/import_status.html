@@ -72,6 +72,9 @@
             {% endif %}
           {% elif status.branch_created %}
             {% blocktrans count n=status.changes %}Imported {{ n }} difference into a new branch.{% plural %}Imported {{ n }} differences into a new branch.{% endblocktrans %}
+          {% elif status.branch_created is None %}
+            {# Recorded before runs said whether they opened their branch. #}
+            {% blocktrans count n=status.changes %}Imported {{ n }} difference into the import branch below.{% plural %}Imported {{ n }} differences into the import branch below.{% endblocktrans %}
           {% elif status.branch.main_unchanged %}
             {% blocktrans count n=status.changes %}Added {{ n }} difference to the open import branch.{% plural %}Added {{ n }} differences to the open import branch.{% endblocktrans %}
           {% else %}
