@@ -6,7 +6,7 @@ from netbox.models import PrimaryModel
 from netbox.models.features import JobsMixin
 
 from ..choices import TransportChoices, WinRMAuthChoices
-from ..conf import CredentialError, get_setting, host_allowed, normalise_host
+from ..conf import CredentialError, get_setting, host_allowed, insecure_credssp_allowed, normalise_host
 
 __all__ = ("WindowsServer",)
 
@@ -63,7 +63,7 @@ class WindowsServer(JobsMixin, PrimaryModel):
     winrm_https = models.BooleanField(
         verbose_name=_("WinRM over HTTPS"),
         default=True,
-        help_text=_("Over HTTP, NTLM and Kerberos messages are still encrypted"),
+        help_text=_("Over HTTP, NTLM, Kerberos and CredSSP messages are still encrypted"),
     )
     verify_tls = models.BooleanField(
         verbose_name=_("verify host"),
@@ -169,6 +169,26 @@ class WindowsServer(JobsMixin, PrimaryModel):
         if self.winrm_auth == WinRMAuthChoices.BASIC and not self.verify_tls:
             # Basic sends the password itself; without verification anyone in the path can read it.
             raise ValidationError({"verify_tls": _("Basic authentication requires certificate verification.")})
+        if self.winrm_auth == WinRMAuthChoices.CREDSSP and not (self.winrm_https and self.verify_tls):
+            self._clean_credssp_transport()
+
+    def _clean_credssp_transport(self):
+        # CredSSP hands the password to the server; without HTTPS and verification nothing proves who that is.
+        try:
+            allowed = insecure_credssp_allowed(self.credential_profile)
+        except CredentialError as e:
+            raise ValidationError({"credential_profile": str(e)}) from None
+        if allowed:
+            return
+        field = "winrm_https" if not self.winrm_https else "verify_tls"
+        raise ValidationError(
+            {
+                field: _(
+                    "CredSSP requires HTTPS with certificate verification, unless the credential profile sets "
+                    "allow_insecure_credssp (labs only)."
+                )
+            }
+        )
 
     @property
     def dhcp_host(self):

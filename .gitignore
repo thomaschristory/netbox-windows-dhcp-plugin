@@ -16,5 +16,7 @@ dev/data/
 CLAUDE.md
 .claude/
 
+# Lab server settings and credentials for the dev stack
+dev/env/lab.env
 # Lab test output (raw envelopes and property dumps): may identify the lab, never commit
 .lab/

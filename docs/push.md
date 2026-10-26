@@ -14,7 +14,8 @@ within the [safety rules](#what-a-push-will-not-do).
 | Without branching | Every save or delete of a DHCP object: one push per affected server, `push_debounce` seconds (10) after the change is committed, so a burst of edits becomes one push |
 | Always | **Sync now** on the Windows server page, or the REST action |
 
-Nothing is pushed while **Sync enabled** is off on the Windows server.
+Nothing is pushed while **Sync enabled** is off on the Windows server. Turning it on does not push the changes made in the
+meantime by itself: run a dry run to see them, then **Sync now**.
 
 A change affects a server when it touches one of its sys4 subnets, pools, reservations, options or option
 definitions, one of the plugin's objects for it, or a prefix, IP range, IP address or MAC address one of those points

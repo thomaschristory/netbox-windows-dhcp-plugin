@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "netbox-plugin-dhcp>=0.2,<0.3",
-    "pypsrp>=0.8",
+    "pypsrp[credssp]>=0.8",
     "paramiko>=3.5",
 ]
 

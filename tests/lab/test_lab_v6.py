@@ -188,3 +188,22 @@ def test_v6_reservation_update_keeps_its_option_values(lab: Lab, probe_out) -> N
     change = Change("update", "reservation6", ip, before=before, after={**before, "description": "again"})
     WindowsWriter(lab.client).apply(change)
     assert lab.client.get_v6_option_value(k).value == ["host.example"]
+
+
+def test_v6_scope_refuses_timers_out_of_order(lab: Lab, probe_out) -> None:
+    """fake.py: Windows refuses T1 < T2 < preferred lifetime not holding, rather than storing the timers."""
+    lab.v6_scope("nbwd-test-v6timers")
+    seen: dict[str, str] = {}
+    for label, t1, t2 in (("t1_above_t2", 3, 2), ("t2_above_preferred", 4, 9)):
+        try:
+            lab.raw(
+                "probe.v6timers",
+                "Set-DhcpServerv6Scope -Prefix $p.x -T1 ([TimeSpan]::FromDays($p.a)) -T2 ([TimeSpan]::FromDays($p.b))",
+                {"x": V6_PREFIX, "a": t1, "b": t2},
+            )
+            got = lab.client.get_v6_scope(V6_PREFIX)
+            seen[label] = f"stored: t1={got.t1} t2={got.t2}"
+        except PSError as exc:
+            seen[label] = f"refused: {exc.id}: {exc}"
+    save_probe(probe_out, "v6-scope-timers-out-of-order", seen)
+    assert all(v.startswith("refused") for v in seen.values()), seen

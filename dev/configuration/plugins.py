@@ -5,9 +5,16 @@ from netbox_branching.utilities import DynamicSchemaDict
 PLUGINS = ["netbox_dhcp", "netbox_windows_dhcp_plugin", "netbox_change_control", "netbox_branching"]
 PLUGINS_CONFIG = {
     "netbox_windows_dhcp_plugin": {
-        # Set WINDOWS_DHCP_USERNAME and WINDOWS_DHCP_PASSWORD in dev/env/netbox.env to test against a lab server.
+        # Set WINDOWS_DHCP_USERNAME and WINDOWS_DHCP_PASSWORD in dev/env/lab.env to test against a lab server.
         "credentials": {
-            "lab": {"username_env": "WINDOWS_DHCP_USERNAME", "password_env": "WINDOWS_DHCP_PASSWORD"},
+            # Lab servers often only have the HTTP listener; CredSSP (failover) needs this there. Never in production.
+            "lab": {
+                "username_env": "WINDOWS_DHCP_USERNAME",
+                "password_env": "WINDOWS_DHCP_PASSWORD",
+                "allow_insecure_credssp": True,
+            },
+            # The failover phase of make lab-e2e (WINDOWS_DHCP_LAB_PARTNER set).
+            "lab-failover": {"secret_env": "WINDOWS_DHCP_LAB_FAILOVER_SECRET"},
         },
     },
 }

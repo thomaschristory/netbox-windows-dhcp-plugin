@@ -14,6 +14,11 @@ error names the step, the cmdlet and the PowerShell message.
 | `Basic authentication needs HTTPS with certificate verification` | Use NTLM or Kerberos, or HTTPS with verification |
 | `winrm: host, username and password are required` | The profile has no username or password |
 | `winrm: kerberos_realm is required with kerberos auth` | Set **Kerberos realm** on the Windows server |
+| `...Failover...: Failed to verify if a failover relationship ... exists on server ... (PermissionDenied)` | The server could not reach its partner as your account. Use CredSSP for failover servers, see [Failover](failover.md#connecting-to-the-servers) |
+| `CredSSP hands the password to the server, so it needs HTTPS with certificate verification` | Turn on **WinRM over HTTPS** and **Verify host** (the server needs an HTTPS listener with a certificate the worker trusts). In a lab only, set `allow_insecure_credssp` on the credential profile |
+| `Failover relationship x on server y is not in NORMAL state` | The partner cannot be reached. The plugin never forces a removal, which would leave the partner serving the scope alone. Bring the partner back and push again |
+| `failover partner 'x' matches no Windows server in NetBox` | Windows names the partner by its computer name on one side of a relationship. Give the partner's Windows server that name as host (a DNS name rather than an IP address), or import the relationship from the other server first, see [Failover](failover.md#how-it-syncs) |
+| `winrm: CredSSP needs the requests-credssp package` | Install the plugin with its dependencies (`pypsrp[credssp]`) where the worker runs |
 | `winrm: ...` with `401`, `Unauthorized` or `credentials were rejected` | Wrong user name or password, or the account may not log in remotely: add it to **Remote Management Users** |
 | `winrm: ...` with `certificate verify failed` | The worker does not trust the server's certificate. Set `REQUESTS_CA_BUNDLE`, or check that `host` matches the certificate name |
 | `winrm: ...` with `Connection refused` or a timeout | No listener on that port, or a firewall. Check with `Test-WSMan` from another machine and `winrm enumerate winrm/config/listener` on the server |

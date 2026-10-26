@@ -1,7 +1,7 @@
 """Build a Windows DHCP client for a WindowsServer, resolving its credential profile."""
 
 from .choices import TransportChoices, WinRMAuthChoices
-from .conf import CredentialError, check_host_allowed, get_credentials, get_setting
+from .conf import CredentialError, check_host_allowed, get_credentials, get_setting, insecure_credssp_allowed
 from .windows import DhcpClient, limit
 
 
@@ -18,6 +18,16 @@ def check_connection_allowed(server):
         and not (server.winrm_https and server.verify_tls)
     ):
         raise CredentialError("Basic authentication needs HTTPS with certificate verification")
+    if (
+        server.transport == TransportChoices.WINRM
+        and server.winrm_auth == WinRMAuthChoices.CREDSSP
+        and not (server.winrm_https and server.verify_tls)
+        and not insecure_credssp_allowed(server.credential_profile)
+    ):
+        raise CredentialError(
+            "CredSSP hands the password to the server, so it needs HTTPS with certificate verification "
+            "(or allow_insecure_credssp on the credential profile, for labs)"
+        )
 
 
 def build_runner(server):

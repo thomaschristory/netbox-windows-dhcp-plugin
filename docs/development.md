@@ -1,7 +1,7 @@
 # Development
 
-Requires [uv](https://docs.astral.sh/uv/) and Docker. PowerShell (`pwsh`) is optional: with it, the unit tests also
-run the real scripts against stub cmdlets.
+Requires [uv](https://docs.astral.sh/uv/) and Docker (Compose 2.24 or later, for the optional `dev/env/lab.env`).
+PowerShell (`pwsh`) is optional: with it, the unit tests also run the real scripts against stub cmdlets.
 
 ```bash
 git clone https://github.com/thomaschristory/netbox-windows-dhcp-plugin
@@ -92,14 +92,18 @@ It installs the DHCP role, creates a local account `nbwd-lab` in DHCP Administra
 
 ### Running them
 
-Put the connection settings in `dev/env/netbox.env` (never committed) or the environment:
+Put the connection settings in `dev/env/lab.env` (gitignored; the dev stack loads it too, so run `make dev` after
+changing it: `make restart` does not reload it, nor install new dependencies) or the environment:
 
 | Variable | Meaning |
 |---|---|
 | `WINDOWS_DHCP_LAB_HOST` | Host name or address of the lab server |
 | `WINDOWS_DHCP_USERNAME`, `WINDOWS_DHCP_PASSWORD` | The account |
-| `WINDOWS_DHCP_LAB_PORT` | Optional, default 5986 |
-| `WINDOWS_DHCP_LAB_AUTH` | Optional: `ntlm` (default), `basic` or `kerberos` |
+| `WINDOWS_DHCP_LAB_PORT` | Optional, default 5986 (5985 with `WINDOWS_DHCP_LAB_HTTPS=0`) |
+| `WINDOWS_DHCP_LAB_HTTPS` | `0` uses the HTTP listener |
+| `WINDOWS_DHCP_LAB_AUTH` | Optional: `ntlm` (default), `basic`, `kerberos` or `credssp` (needed by the failover tests) |
+| `WINDOWS_DHCP_LAB_PARTNER` | Optional: a second server, as the first reaches it; runs the failover tests (with `credssp`) |
+| `WINDOWS_DHCP_LAB_FAILOVER_SECRET` | Optional shared secret for the test relationship |
 | `WINDOWS_DHCP_LAB_REALM` | Optional, Kerberos realm |
 | `WINDOWS_DHCP_LAB_INSECURE` | `1` skips the certificate check (self-signed lab certificate) |
 | `WINDOWS_DHCP_LAB_RECORD` | `1` saves every raw PowerShell answer under `.lab/record/`, to turn into fixtures after scrubbing |

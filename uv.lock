@@ -611,7 +611,7 @@ source = { editable = "." }
 dependencies = [
     { name = "netbox-plugin-dhcp" },
     { name = "paramiko" },
-    { name = "pypsrp" },
+    { name = "pypsrp", extra = ["credssp"] },
 ]
 
 [package.optional-dependencies]
@@ -640,7 +640,7 @@ requires-dist = [
     { name = "netbox-plugin-dhcp", specifier = ">=0.2,<0.3" },
     { name = "netboxlabs-netbox-branching", marker = "extra == 'branching'", specifier = ">=1.2.2" },
     { name = "paramiko", specifier = ">=3.5" },
-    { name = "pypsrp", specifier = ">=0.8" },
+    { name = "pypsrp", extras = ["credssp"], specifier = ">=0.8" },
     { name = "pypsrp", extras = ["kerberos"], marker = "extra == 'kerberos'", specifier = ">=0.8" },
 ]
 provides-extras = ["branching", "kerberos"]
@@ -786,6 +786,9 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+credssp = [
+    { name = "requests-credssp" },
+]
 kerberos = [
     { name = "pyspnego", extra = ["kerberos"] },
 ]
@@ -884,6 +887,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ac/c3/e2a2b89f2d3e2179abd6d00ebd70bff6273f37fb3e0cc209f48b39d00cbf/requests-2.34.2.tar.gz", hash = "sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed", size = 142856, upload-time = "2026-05-14T19:25:27.735Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl", hash = "sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0", size = 73075, upload-time = "2026-05-14T19:25:26.443Z" },
+]
+
+[[package]]
+name = "requests-credssp"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "pyspnego" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/bc/c3/de13b8598287440ab1df7eba97b93278d309dffb920f0163a09e089b71ec/requests-credssp-2.0.0.tar.gz", hash = "sha256:229afe2f6e1c9fabef64fc2bdf2a10e794ca6c4a0c00a687d53fbfaf7b8ee71d", size = 13349, upload-time = "2022-02-21T02:00:59.757Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8b/8d/0330147347692deb564cbd72c7cc3aae3b4be148c5d521a1445c096c35cb/requests_credssp-2.0.0-py2.py3-none-any.whl", hash = "sha256:47c8b250eef663f9b55af179f341e823f1f7f63b8b2b9037063e641a2df4bfa3", size = 10118, upload-time = "2022-02-21T02:00:58.568Z" },
 ]
 
 [[package]]

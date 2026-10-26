@@ -61,8 +61,8 @@ DEFAULT_LEASE_SECONDS = 8 * 86400
 # ratios, and the documentation asks for T1 < T2 < preferred lifetime: so when NetBox leaves T1 or T2 empty, a push
 # works them out from the preferred lifetime it sends (see _prepare_scope6) rather than sending 4 and 6.4 days to a
 # scope whose addresses stop being preferred sooner than that.
-# unverified: what Windows itself gives T1 and T2 when a scope is created with a shorter preferred lifetime and no
-# timers (the lab test test_v6_scope_timers_with_a_short_preferred_lifetime records it).
+# Windows does the same for a scope created with a shorter preferred lifetime and no timers: 2 days gives T1 1 day
+# and T2 1 day 14:24 (lab, Windows Server 2025), and it refuses timers that break T1 < T2 < preferred (WIN32 87).
 V6_LIFETIME_DEFAULTS = {
     "preferred_lifetime": 8 * 86400,
     "valid_lifetime": 12 * 86400,
@@ -574,9 +574,9 @@ def _protect_memberships(
 def _membership_updates_first(changes: list[Change], target: Mapping[Key, Record]) -> list[Change]:
     """
     A scope leaving a superscope or failover relationship and being deleted: the membership update goes before the
-    deletes. Windows refuses to remove the last scope of a relationship, so it must first gain the scopes NetBox now
-    lists, which only works when those already exist on Windows (otherwise the usual order stands, and the next push
-    finishes the job).
+    deletes. Windows has no empty superscope (removing its last scope deletes it), so it must first gain the scopes
+    NetBox now lists, which only works when those already exist on Windows (otherwise the usual order stands, and the
+    next push finishes the job). A failover relationship may be left empty, but the same order keeps it simple.
     """
     deleted = {c.key for c in changes if c.action == DELETE and c.kind == "scope"}
     first = []
@@ -644,8 +644,8 @@ def _order_level(
         # Not numbered the way this models Windows (it never should be): only put the changes in ascending order.
         return sorted(level_changes, key=lambda c: ((c.after or {}).get("processing_order") or 0, c.key))
     # Deletes run first, and Windows closes the gap a removed policy leaves.
-    # unverified: that Remove-DhcpServerv4Policy closes the gap, and that Set-DhcpServerv4Policy -ProcessingOrder moves
-    # the others down (and refuses a number past the end) the way Add does.
+    # Remove-DhcpServerv4Policy closes the gap, and Set-DhcpServerv4Policy -ProcessingOrder moves the others down (and
+    # refuses a number past the end) the way Add does (lab, Windows Server 2025).
     current = [r.key for r in windows if r.key not in deleted]
     where = f"scope {level}" if level else "the server level"
     out: list[Change] = []

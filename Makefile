@@ -7,7 +7,7 @@ PY = /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py
 test:
 	uv run pytest -v
 
-# Opt-in: the real client against the lab Windows DHCP server named in dev/env/netbox.env (see tests/lab/conftest.py).
+# Opt-in: the real client against the lab Windows DHCP server named in dev/env/lab.env (see tests/lab/conftest.py).
 # Creates and removes nbwd-test-* objects in 198.18.0.0/15 and 2001:db8:4e42::/64 only.
 test-lab:
 	WINDOWS_DHCP_LAB=1 uv run pytest -v -p no:cacheprovider tests/lab

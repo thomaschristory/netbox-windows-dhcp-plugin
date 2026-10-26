@@ -1,36 +1,22 @@
 # Limitations
 
-## Not yet checked on a real server
+## Checked on a real server
 
-The plugin is pre-release. Every feature is tested against an in-memory fake Windows server and against the real
-PowerShell scripts run with stub cmdlets. A first, partial lab run against Windows Server 2025 checked superscope
-creation and partial removal, MAC filter removal, option values on reservations (IPv4 and DHCPv6) and on policies, and
-the DHCPv6 lease properties; what it found is fixed. Superscope rename failed in that run: its corrected parameters
-were read from `Get-Command` on the server, but the fixed rename has not run there yet. Some cmdlets and property
-names have still not been run against a real Windows DHCP server. They are marked `# unverified:` in the code. The
-open questions include:
+Every feature is tested against an in-memory fake Windows server and against the real PowerShell scripts run with
+stub cmdlets. The lab tests (see [Development](development.md#lab-tests)) have also run in full against two Windows
+Server 2025 DHCP servers in a workgroup, over WinRM: every cmdlet the plugin uses, a full import, push of creates,
+updates and deletes, the Leases tab, and a failover relationship created, replicated and removed through a push
+(over CredSSP, see [Failover](failover.md#connecting-to-the-servers)). What they found is fixed.
 
-- whether option values of every user and vendor class are read at each level;
-- where Windows returns the class data (IPv4 and DHCPv6), and how it reports an unlimited lease time;
-- the property names returned for scope settings (offer delay, BOOTP limit, activate policies, superscope), policies,
-  failover relationships, DHCPv6 scopes, IPv4 leases and exclusion ranges;
-- DHCPv6 reservation removal and class updates;
-- renaming a superscope, removing a whole superscope (its scopes should stay), and vendor option definitions;
-- how Windows renumbers policies: that removing one closes the gap, and that changing a processing order moves the
-  others down and refuses a number past the end the way creating one does (seen only for creates);
-- whether a MAC prefix condition written in uppercase reads back in lowercase;
-- what renewal (T1) and rebinding (T2) times Windows gives a DHCPv6 scope created with a short preferred lifetime and
-  no timers, and whether it refuses timers past the preferred lifetime (a push never sends those: see
-  [DHCPv6](dhcpv6.md#rules));
-- failover replication after a push, and removing a scope that is in a relationship, which need two servers;
-- whether changing the client ID, type, DUID or IAID of an existing reservation makes Windows recreate it and drop
-  its option values (#42). Either way the push tries to put back any reservation option value an update removed; if
-  that fails, only values NetBox holds come back on the next push (see [Push](push.md)).
+A few details have not been seen on a real server yet, and are marked `# unverified:` in the code:
 
-The lab tests that settle them are written (see [Development](development.md#lab-tests)). A first partial run against
-Windows Server 2025 found and fixed a few defects (the DHCPv6 rebinding time default, how policy conditions and policy
-order compare), but the questions above stay open until a full run. Until then, try the plugin on a lab server before
-a production one, and use **Dry run** before turning **Sync enabled** on.
+- whether changing only a reservation's client type (IPv4) or DUID (DHCPv6) drops its option values, as a new client
+  ID or IAID does (#42). Either way the push puts back any reservation option value an update removed;
+- whether `Set-DhcpServerv4Policy` leaves conditions it is not given unchanged (a push sends every condition the
+  policy has in NetBox);
+- Kerberos, Basic and SSH connections, and HTTPS listeners: the lab used NTLM and CredSSP over HTTP.
+
+Try the plugin on a lab server before a production one, and use **Dry run** before turning **Sync enabled** on.
 
 ## Scope of v1
 

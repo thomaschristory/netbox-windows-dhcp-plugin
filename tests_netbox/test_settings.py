@@ -8,6 +8,7 @@ from netbox_windows_dhcp_plugin.conf import (
     get_credentials,
     profiles_without_allowed_hosts,
 )
+from netbox_windows_dhcp_plugin.connection import check_connection_allowed
 
 from .fixtures import dhcp_servers, windows_server
 
@@ -133,3 +134,56 @@ class ServerValidationTest(TestCase):
         with self.assertRaises(ValidationError) as ctx:
             self.server.full_clean()
         self.assertIn("verify_tls", ctx.exception.message_dict)
+
+
+CREDSSP_PROFILES = {
+    "lab": {"allowed_hosts": ["*.example.com"]},
+    "lab-http": {"allowed_hosts": ["*.example.com"], "allow_insecure_credssp": True},
+    "lab-typo": {"allowed_hosts": ["*.example.com"], "allow_insecure_credssp": "yes"},
+}
+
+
+@override_settings(
+    PLUGINS_CONFIG={**settings.PLUGINS_CONFIG, "netbox_windows_dhcp_plugin": {"credentials": CREDSSP_PROFILES}}
+)
+class CredSSPTransportTest(TestCase):
+    """CredSSP hands the password to the server: like Basic, only over HTTPS with verification, unless the
+    credential profile allows otherwise (review of #55)."""
+
+    def setUp(self):
+        self.server = windows_server(dhcp_servers(1)[0])
+        self.server.winrm_auth = "credssp"
+
+    def test_https_with_verification_is_fine(self):
+        self.server.full_clean()
+        check_connection_allowed(self.server)
+
+    def test_http_is_refused(self):
+        self.server.winrm_https = False
+        with self.assertRaises(ValidationError) as ctx:
+            self.server.full_clean()
+        self.assertIn("winrm_https", ctx.exception.message_dict)
+        with self.assertRaisesMessage(CredentialError, "allow_insecure_credssp"):
+            check_connection_allowed(self.server)
+
+    def test_unverified_https_is_refused(self):
+        self.server.verify_tls = False
+        with self.assertRaises(ValidationError) as ctx:
+            self.server.full_clean()
+        self.assertIn("verify_tls", ctx.exception.message_dict)
+        with self.assertRaises(CredentialError):
+            check_connection_allowed(self.server)
+
+    def test_profile_can_allow_http_for_a_lab(self):
+        self.server.credential_profile = "lab-http"
+        self.server.winrm_https = False
+        self.server.full_clean()
+        check_connection_allowed(self.server)
+
+    def test_opt_out_must_be_a_real_boolean(self):
+        self.server.credential_profile = "lab-typo"
+        self.server.winrm_https = False
+        with self.assertRaises(ValidationError):
+            self.server.full_clean()
+        with self.assertRaisesMessage(CredentialError, "must be true or false"):
+            check_connection_allowed(self.server)

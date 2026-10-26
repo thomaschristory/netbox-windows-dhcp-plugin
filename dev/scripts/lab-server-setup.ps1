@@ -173,7 +173,7 @@ $addresses = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue 
     Select-Object -ExpandProperty IPAddress
 
 Write-Host ''
-Write-Host 'Done. On the NetBox side, put these in dev/env/netbox.env (never commit it):' -ForegroundColor Green
+Write-Host 'Done. On the NetBox side, put these in dev/env/lab.env (gitignored):' -ForegroundColor Green
 Write-Host ''
 Write-Host "    WINDOWS_DHCP_LAB_HOST=<one of: $(($dnsNames + $addresses) -join ', ')>"
 if ($LabUser) {

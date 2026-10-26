@@ -27,8 +27,14 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
 
 ## Transport
 
-- **WinRM** uses HTTPS with certificate verification by default. Over HTTP, NTLM and Kerberos still encrypt every
-  message. Turning verification off is possible for labs; the Windows server page shows it.
+- **WinRM** uses HTTPS with certificate verification by default. Over HTTP, NTLM, Kerberos and CredSSP still encrypt
+  every message. Turning verification off is possible for labs; the Windows server page shows it.
+- **CredSSP** hands the account's password to the DHCP server, which can then act as that account towards other
+  servers: that is what failover needs. Use it only for servers that are part of a failover pair, with an account
+  that can do nothing but manage DHCP. Because the password goes to whoever answers, the plugin only allows CredSSP
+  over HTTPS with certificate verification, as for Basic: over HTTP, or without verification, the NTLM exchange
+  inside CredSSP does not prove who the server is, and `allowed_hosts` only checks the name configured, not who
+  answers at that name. A credential profile can set `allow_insecure_credssp` to lift this in a lab.
 - **Basic** authentication sends the password itself, so the plugin only allows it over HTTPS with verification on.
 - **SSH** always checks the host key, from the pinned key on the Windows server or the worker's `known_hosts`; an
   unknown or changed key fails the connection. There is no way to turn this off.

@@ -15,6 +15,8 @@ DEFAULTS = {
     # Add "allowed_hosts" (a list of host names or IPs; * and ? match within one label) to limit which hosts a profile's
     # credentials may be sent to. Without it, anyone allowed to edit a Windows server can point it at a machine
     # they control and capture the credentials.
+    # CredSSP (needed for failover) hands the password to the server, so it requires HTTPS with certificate
+    # verification, as Basic does. "allow_insecure_credssp": True on a profile lifts that, for labs only.
     "credentials": {},
     # Name given to imported netbox-plugin-dhcp objects, whose names must be unique across all servers.
     "subnet_name_template": "{server}/{scope_id}",
@@ -148,6 +150,20 @@ def check_host_allowed(profile_name, *hosts, profiles=None):
             raise CredentialError(f"{host!r} is not a valid host name or IP address")
         if host and not host_allowed(profile_name, profiles[profile_name], host):
             raise CredentialError(f"credential profile {profile_name!r} may not be used with host {host!r}")
+
+
+def insecure_credssp_allowed(profile_name, profiles=None):
+    """
+    Whether the profile lets CredSSP run without HTTPS and certificate verification. Over plain HTTP, or without
+    verification, CredSSP's inner NTLM does not prove who the server is, and CredSSP then hands the password to
+    whoever answered. An unknown profile allows nothing (the connection reports it).
+    """
+    profiles = get_setting("credentials") if profiles is None else profiles
+    value = (profiles.get(profile_name) or {}).get("allow_insecure_credssp", False)
+    if not isinstance(value, bool):
+        # "yes" or 1 would read as allowed; make the administrator say exactly what they mean.
+        raise CredentialError(f"credential profile {profile_name!r}: allow_insecure_credssp must be true or false")
+    return value
 
 
 def profiles_without_allowed_hosts(profiles=None):

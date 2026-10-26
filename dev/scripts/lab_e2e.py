@@ -2,7 +2,7 @@
 End-to-end lab run against the dev stack: Windows -> NetBox -> Windows, for every kind, IPv4 and DHCPv6.
 
 Run with ``make lab-e2e`` (inside the netbox container, through ``manage.py shell -c``; exits non-zero on
-failure). Needs the lab variables in dev/env/netbox.env (see tests/lab/conftest.py) and the ``lab`` credential
+failure). Needs the lab variables in dev/env/lab.env (see tests/lab/conftest.py) and the ``lab`` credential
 profile of dev/configuration/plugins.py.
 
 Steps:
@@ -14,7 +14,11 @@ Steps:
 5. Change the description of every test object that has one in NetBox, then push (update path).
 6. Read live leases for a test scope through the Leases tab (LeaseJob in the worker).
 7. Delete every test object in NetBox, then push (delete path).
-After every push: a second dry-run push and an import change nothing.
+8. Optional, with WINDOWS_DHCP_LAB_PARTNER and WINDOWS_DHCP_LAB_AUTH=credssp: a test scope in a failover relationship
+   made in NetBox and pushed (Windows copies the scope to the partner), an edit replicated to the partner after the
+   push, then the relationship and the scope deleted. The partner is written only through the relationship.
+After every push: a second dry-run push and an import change nothing. (The log numbers these 1 to 6: leases are
+logged under 4, deletes under 5, failover under 6.)
 
 Safety: before every real push, a dry run must only touch test objects, decided per kind from the record key
 (``is_test``: scope IDs in 198.19.0.0/16, the DHCPv6 test prefix, ``nbwd-test-`` names, ``02-4e-42-`` MACs), and the
@@ -95,7 +99,9 @@ def is_test(kind, key):
         return head == "v6" and rest.partition("/")[0] == V6_PREFIX
     if kind == "class6":
         return key.startswith("v6/user/") and _ours(key.removeprefix("v6/user/"))
-    # failover, filterlists and anything new: never ours.
+    if kind == "failover":
+        return _ours(key)
+    # filterlists and anything new: never ours.
     return False
 
 
@@ -154,14 +160,15 @@ def create_windows_objects(lab):
 # -- NetBox side -----------------------------------------------------------------------------------------------------
 
 
-def netbox_server(env):
-    dhcp, _ = DHCPServer.objects.get_or_create(name=SERVER_NAME)
+def netbox_server(env, name=SERVER_NAME, host=""):
+    dhcp, _ = DHCPServer.objects.get_or_create(name=name)
     server = WindowsServer.objects.filter(dhcp_server=dhcp).first()
     if server is None:
         server = WindowsServer(dhcp_server=dhcp)
-    server.host = env["WINDOWS_DHCP_LAB_HOST"]
+    server.host = host or env["WINDOWS_DHCP_LAB_HOST"]
     server.port = int(env["WINDOWS_DHCP_LAB_PORT"]) if env.get("WINDOWS_DHCP_LAB_PORT") else None
     server.credential_profile = "lab"
+    server.winrm_https = env.get("WINDOWS_DHCP_LAB_HTTPS", "1") != "0"
     server.verify_tls = env.get("WINDOWS_DHCP_LAB_INSECURE") != "1"
     server.winrm_auth = env.get("WINDOWS_DHCP_LAB_AUTH", "ntlm").lower()
     server.kerberos_realm = env.get("WINDOWS_DHCP_LAB_REALM", "")
@@ -309,6 +316,85 @@ def read_leases_tab(server, scope_id, expect_ip):
     log(f"leases: {len(ips)} lease(s) read, {expect_ip} shown on the Leases tab")
 
 
+# -- failover (optional: a second server) ----------------------------------------------------------------------------
+
+FAILOVER = "nbwd-test-e2e-fo"
+
+
+def failover_phase(env, server, lab):
+    """
+    A relationship made in NetBox and pushed to the first server, which creates it on both; then an edit replicated
+    to the partner after the push; then the relationship deleted in NetBox and pushed. Needs CredSSP (see
+    docs/failover.md). The partner is only read, apart from what the relationship itself puts there.
+    """
+    partner_host = env["WINDOWS_DHCP_LAB_PARTNER"]
+    partner = netbox_server(env, name=SERVER_NAME + "-partner", host=partner_host)
+    pc = wc.DhcpClient(make_runner(dict(env, WINDOWS_DHCP_LAB_HOST=partner_host)))
+    if any(f.name == FAILOVER for f in pc.list_failovers()):
+        raise Abort(f"6. the partner already has {FAILOVER}: remove it by hand")
+
+    s = lab.scope("nbwd-test-e2e-fo", description="e2e")
+    base = s.scope_id.rsplit(".", 1)[0]
+    lab.client.add_reservation(
+        wc.Reservation(s.scope_id, f"{base}.20", MAC_PREFIX + "00-0e-20", "nbwd-test-e2e-fohost", "e2e", "Dhcp")
+    )
+    lab._cleanups.clear()
+    import_into_netbox(server)
+    subnet = netbox_state.server_subnets(server.dhcp_server).get(prefix__prefix=f"{s.scope_id}/24")
+
+    rel = FailoverRelationship(
+        name=FAILOVER,
+        primary_server=server.dhcp_server,
+        partner_server=partner.dhcp_server,
+        mode="loadbalance",
+        load_balance_percent=60,
+        max_client_lead_time=1800,
+        shared_secret_profile="lab-failover" if env.get("WINDOWS_DHCP_LAB_FAILOVER_SECRET") else "",
+    )
+    rel.full_clean()
+    rel.save()
+    rel.subnets.set([subnet])
+    guarded_push(server, "6. push failover create", {"create"})
+    got = pc.get_failover(FAILOVER)
+    if got.scope_ids != [s.scope_id] or got.load_balance_percent != 40:
+        raise Abort(f"6. the partner holds {got.to_dict()}")
+    if [r.ip_address for r in pc.list_reservations(s.scope_id)] != [f"{base}.20"]:
+        raise Abort("6. the partner did not get the scope's reservation")
+    log("6. the relationship is on both servers, with the scope and its reservation on the partner")
+    expect_push_noop(server, "6. after create")
+    expect_import_noop(server, "6. after create")
+    # The partner holds its own copy of the relationship's scopes (an import of it would bring them in); a push to it
+    # leaves them to the primary.
+    expect_push_noop(partner, "6. partner after create")
+
+    edit_descriptions(server)
+    guarded_push(server, "6. push updates", {"update"})
+    if pc.get_scope(s.scope_id).description != "e2e changed":
+        raise Abort("6. the scope edit was not replicated to the partner")
+    if pc.get_reservation(s.scope_id, f"{base}.20").description != "e2e changed":
+        raise Abort("6. the reservation edit was not replicated to the partner")
+    log("6. the edits reached the partner through replication")
+    expect_push_noop(server, "6. after update")
+
+    Writer(server).apply(
+        Change(
+            DELETE,
+            "failover",
+            FAILOVER.lower(),
+            before=next(r for r in test_records(server) if r.kind == "failover").fields,
+        )
+    )
+    guarded_push(server, "6. push failover delete", {"delete"})
+    if any(f.name == FAILOVER for f in pc.list_failovers()) or s.scope_id in [x.scope_id for x in pc.list_scopes()]:
+        raise Abort("6. the relationship or its scope is still on the partner")
+    log("6. the relationship is gone from both servers, and the scope from the partner")
+    expect_push_noop(server, "6. after delete")
+
+    delete_test_objects(server)
+    guarded_push(server, "6. push deletes", {"delete"})
+    expect_push_noop(server, "6. after deletes")
+
+
 # -- main ------------------------------------------------------------------------------------------------------------
 
 
@@ -316,12 +402,15 @@ def main():
     env = lab_env()
     for key in ("WINDOWS_DHCP_LAB_HOST", "WINDOWS_DHCP_USERNAME", "WINDOWS_DHCP_PASSWORD"):
         if not env.get(key):
-            raise Abort(f"{key} is not set (dev/env/netbox.env)")
+            raise Abort(f"{key} is not set (dev/env/lab.env)")
     lab = Lab(wc.DhcpClient(make_runner(env)))
     leftovers = lab.sweep()
     if leftovers:
         raise Abort(f"sweep: {leftovers}")
     server = netbox_server(env)
+    # What an aborted failover phase left in NetBox (Windows was swept above).
+    for rel in FailoverRelationship.objects.filter(primary_server=server.dhcp_server, name__istartswith="nbwd-test-"):
+        rel.delete()
     if FailoverRelationship.objects.filter(primary_server=server.dhcp_server).exists():
         # A push to a failover primary replicates whole relationships to the partner, outside the plan the guard
         # checks. The lab is a single server; refuse rather than guess.
@@ -368,6 +457,10 @@ def main():
         left = [s.scope_id for s in lab.client.list_scopes() if s.name.startswith("nbwd-test-")]
         if left:
             raise Abort(f"5. scopes still on Windows after the delete push: {left}")
+        if env.get("WINDOWS_DHCP_LAB_PARTNER"):
+            if env.get("WINDOWS_DHCP_LAB_AUTH", "").lower() != "credssp":
+                raise Abort("6. failover needs WINDOWS_DHCP_LAB_AUTH=credssp (see docs/failover.md)")
+            failover_phase(env, server, lab)
         ok = True
     finally:
         errors = lab.sweep()

@@ -575,7 +575,12 @@ class Writer:
         for ws in WindowsServer.objects.exclude(dhcp_server=self.dhcp).select_related("dhcp_server"):
             if windows_state.same_host(ws.dhcp_host, host):
                 return ws.dhcp_server
-        raise ApplyError(f"failover partner {host!r} is not a Windows server in NetBox: add it first")
+        # Windows reports the partner as it was named when the relationship was created, and on the partner's side by
+        # the other server's computer name: a server NetBox knows by IP address then does not match.
+        raise ApplyError(
+            f"failover partner {host!r} matches no Windows server in NetBox: add the partner, or give its Windows "
+            "server this name as host (or computer name), or import the relationship from the other server first"
+        )
 
     def failover(self, name):
         return FailoverRelationship.objects.filter(primary_server=self.dhcp, name__iexact=name).first()

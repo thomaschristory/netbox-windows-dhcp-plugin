@@ -142,7 +142,7 @@ def test_reservations(c: DhcpClient) -> None:
 
 
 def test_reservation_identity_change_drops_its_options(c: DhcpClient, fake: FakeDhcpServer) -> None:
-    """Issue #42: the fake treats a new client ID or type as Windows recreating the reservation (unverified)."""
+    """Issue #42: a new client ID or type drops the option values, as the lab saw for a new client ID."""
     c.add_scope(scope())
     res = Reservation("10.1.20.0", "10.1.20.5", "aa-bb-cc-dd-ee-ff", "pc", "desk", "Both")
     c.add_reservation(res)
@@ -272,15 +272,18 @@ def test_failover(c: DhcpClient, fake: FakeDhcpServer) -> None:
     assert f.reserve_percent == 10 and f.max_client_lead_time == 7200
     assert c.add_failover_scopes("fo", ["10.1.30.0"]).scope_ids == ["10.1.20.0", "10.1.30.0"]
     assert c.remove_failover_scopes("fo", ["10.1.20.0"]).scope_ids == ["10.1.30.0"]
-    with pytest.raises(PSError, match="last scope"):
-        c.remove_failover_scopes("fo", ["10.1.30.0"])
+    with pytest.raises(PSError, match="not part"):
+        c.remove_failover_scopes("fo", ["10.1.20.0"])
+    # The last scope can leave too: Windows keeps the relationship, empty, on both partners (lab, Windows Server 2025).
+    assert c.remove_failover_scopes("fo", ["10.1.30.0"]).scope_ids == []
+    c.add_failover_scopes("fo", ["10.1.30.0"])
     c.replicate_failover("fo")
     c.replicate_failover("fo", ["10.1.30.0"])  # the scope ids win: Windows refuses both (#51)
     assert fake.replications == [{"name": "fo", "scope_ids": []}, {"name": "", "scope_ids": ["10.1.30.0"]}]
     with pytest.raises(ValueError, match="name or scope ids"):
         c.replicate_failover()
     assert [x.name for x in c.list_failovers()] == ["fo"]
-    c.remove_failover("fo", force=True)
+    c.remove_failover("fo")
     assert c.list_failovers() == []
 
 

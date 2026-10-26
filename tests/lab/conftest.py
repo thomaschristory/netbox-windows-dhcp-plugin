@@ -1,14 +1,15 @@
 """Lab test tier: the real DhcpClient against a real Windows DHCP server, over the real WinRM transport.
 
 Opt-in only. Every test here is skipped unless ``WINDOWS_DHCP_LAB=1`` is set (``make test-lab`` sets it) and the
-lab connection variables are present, either in the environment or in ``dev/env/netbox.env`` (which is never
-committed):
+lab connection variables are present, either in the environment or in ``dev/env/lab.env`` (gitignored;
+the dev stack loads it too):
 
     WINDOWS_DHCP_LAB_HOST        host name or address of the DHCP server
     WINDOWS_DHCP_USERNAME        DOMAIN\\user (or user@REALM)
     WINDOWS_DHCP_PASSWORD
-    WINDOWS_DHCP_LAB_PORT        optional, default 5986 (HTTPS)
-    WINDOWS_DHCP_LAB_AUTH        optional, ntlm (default), basic or kerberos
+    WINDOWS_DHCP_LAB_PORT        optional, default 5986 (HTTPS) or 5985 (HTTP)
+    WINDOWS_DHCP_LAB_HTTPS       optional, 0 uses the HTTP listener (NTLM, Kerberos or CredSSP message encryption)
+    WINDOWS_DHCP_LAB_AUTH        optional, ntlm (default), basic, kerberos or credssp (failover tests)
     WINDOWS_DHCP_LAB_INSECURE    optional, 1 skips TLS certificate checks (self-signed lab certificate)
     WINDOWS_DHCP_LAB_REALM       optional, Kerberos realm
     WINDOWS_DHCP_LAB_RECORD      optional, 1 saves every raw JSON envelope under .lab/record/ (gitignored), to
