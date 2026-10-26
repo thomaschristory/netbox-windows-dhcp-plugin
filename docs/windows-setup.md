@@ -74,7 +74,7 @@ NTLM over HTTP does not prove the identity of the server.
 |---|---|---|
 | NTLM (default) | Domain or local accounts | Works out of the box with WinRM. User name as `DOMAIN\user`, or `user` for a local account |
 | Kerberos | Domain accounts, NTLM disabled | Needs the `[kerberos]` extra, GSSAPI libraries and `krb5.conf` where the worker runs, a realm on the Windows server in NetBox, and the server's real DNS name as `host` |
-| CredSSP | Failover relationships | Needed to create or change a [failover relationship](failover.md#connecting-to-the-servers) or replicate it: the cmdlets make the server call its partner as you. Enable it on each DHCP server with `Enable-WSManCredSSP -Role Server -Force`. The password is handed to the DHCP server, so use an account that can only manage DHCP |
+| CredSSP | Failover relationships | Needed to create or change a [failover relationship](failover.md#connecting-to-the-servers) or replicate it: the cmdlets make the server call its partner as you. Enable it on each DHCP server with `Enable-WSManCredSSP -Role Server -Force`. The password is handed to the DHCP server, so the plugin requires HTTPS with certificate verification (a lab can lift that on the credential profile), and the account should only manage DHCP |
 | Basic | Local accounts only, when NTLM is not possible | Sends the password itself, so the plugin only allows it over HTTPS with certificate verification. Enable it on the server with `Set-Item WSMan:\localhost\Service\Auth\Basic $true` |
 
 For Kerberos, the plugin gets a ticket with the profile's user name and password; the user name may be given as

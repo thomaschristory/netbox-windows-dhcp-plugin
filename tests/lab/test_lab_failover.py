@@ -119,7 +119,7 @@ def test_failover_lifecycle(lab: Lab, partner: Lab, probe_out) -> None:
     seen["after_remove_scope_relationship"] = ",".join(lab.client.get_failover(NAME).scope_ids)
     seen["after_remove_scope_partner_has_b"] = str(b.scope_id in partner_scope_ids(partner))
 
-    # Leaving the relationship deletes the scope on the partner and keeps it here. The last scope cannot leave.
+    # Leaving the relationship deletes the scope on the partner and keeps it here.
     if b.scope_id in lab.client.get_failover(NAME).scope_ids:
         assert lab.client.remove_failover_scopes(NAME, [b.scope_id]).scope_ids == [s.scope_id]
         assert b.scope_id not in partner_scope_ids(partner)
@@ -145,10 +145,10 @@ def test_failover_lifecycle(lab: Lab, partner: Lab, probe_out) -> None:
         seen["hot_standby_role"] = f"refused: {exc.id}: {exc}"
     save_probe(probe_out, "v4-failover-behaviour", seen)
 
-    assert seen["replicate_with_loose_scope"].startswith("refused"), seen
-    assert seen["remove_scope_not_in_it"].startswith("refused"), seen
-    assert seen["remove_scope_in_relationship"].startswith("refused"), seen
-    assert seen["hot_standby_role"] in ("Active", "Standby"), seen
+    assert seen["replicate_with_loose_scope"].startswith("refused: DHCP 20116"), seen
+    assert seen["remove_scope_not_in_it"].startswith("refused: DHCP 20116"), seen
+    assert seen["remove_scope_in_relationship"].startswith("refused: DHCP 20113"), seen
+    assert seen["hot_standby_role"] == "Active" and seen["hot_standby_partner_role"] == "Standby", seen
 
     # Removing the relationship deletes its scopes on the partner and keeps them here.
     lab.remove_failover(NAME)
@@ -172,3 +172,7 @@ def test_failover_last_scope_leaving(lab: Lab, partner: Lab, probe_out) -> None:
     seen["partner"] = [f.to_dict() for f in partner.client.list_failovers() if f.name == NAME]
     seen["partner_has_scope"] = s.scope_id in partner_scope_ids(partner)
     save_probe(probe_out, "v4-failover-last-scope", seen)
+    # Windows keeps the relationship, empty, on both partners, and the scope leaves the partner.
+    assert isinstance(seen["result"], dict) and seen["result"]["scope_ids"] == [], seen
+    assert [f["scope_ids"] for f in seen["here"]] == [[]] and [f["scope_ids"] for f in seen["partner"]] == [[]], seen
+    assert seen["partner_has_scope"] is False, seen

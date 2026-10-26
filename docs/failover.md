@@ -41,7 +41,8 @@ Enable-WSManCredSSP -Role Server -Force
 Over NTLM or Kerberos (without constrained delegation) those cmdlets fail with `PermissionDenied`, for example
 `Failed to verify if a failover relationship by the name ... exists on server ...`. Reading relationships works with
 any method. Both partners must accept the account: in a workgroup, the same local account with the same password on
-both. CredSSP hands the password to the DHCP server (see [Security](security.md#transport)).
+both. CredSSP hands the password to the DHCP server, so it needs **WinRM over HTTPS** with **Verify host** on;
+`allow_insecure_credssp` on the credential profile lifts that for a lab (see [Security](security.md#transport)).
 
 ## How it syncs
 
@@ -102,6 +103,10 @@ Changing the partner, or turning authentication off, is refused: Windows only al
 relationship.
 
 A relationship can be left with no scopes: Windows keeps it, empty, on both partners.
+
+While the partner cannot be reached, Windows refuses to remove the relationship or one of its scopes ("not in
+NORMAL state"), and so does the push: removing it on one side only would leave the other partner serving the scope
+on its own. Bring the partner back and push again.
 
 !!! tip "Give the Windows servers their names"
     Windows names the partner as it was given when the relationship was created on one side, and by its computer

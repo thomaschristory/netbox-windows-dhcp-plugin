@@ -14,7 +14,11 @@ Steps:
 5. Change the description of every test object that has one in NetBox, then push (update path).
 6. Read live leases for a test scope through the Leases tab (LeaseJob in the worker).
 7. Delete every test object in NetBox, then push (delete path).
-After every push: a second dry-run push and an import change nothing.
+8. Optional, with WINDOWS_DHCP_LAB_PARTNER and WINDOWS_DHCP_LAB_AUTH=credssp: a test scope in a failover relationship
+   made in NetBox and pushed (Windows copies the scope to the partner), an edit replicated to the partner after the
+   push, then the relationship and the scope deleted. The partner is written only through the relationship.
+After every push: a second dry-run push and an import change nothing. (The log numbers these 1 to 6: leases are
+logged under 4, deletes under 5, failover under 6.)
 
 Safety: before every real push, a dry run must only touch test objects, decided per kind from the record key
 (``is_test``: scope IDs in 198.19.0.0/16, the DHCPv6 test prefix, ``nbwd-test-`` names, ``02-4e-42-`` MACs), and the

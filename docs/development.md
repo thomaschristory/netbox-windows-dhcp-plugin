@@ -1,7 +1,7 @@
 # Development
 
-Requires [uv](https://docs.astral.sh/uv/) and Docker. PowerShell (`pwsh`) is optional: with it, the unit tests also
-run the real scripts against stub cmdlets.
+Requires [uv](https://docs.astral.sh/uv/) and Docker (Compose 2.24 or later, for the optional `dev/env/lab.env`).
+PowerShell (`pwsh`) is optional: with it, the unit tests also run the real scripts against stub cmdlets.
 
 ```bash
 git clone https://github.com/thomaschristory/netbox-windows-dhcp-plugin
@@ -92,7 +92,8 @@ It installs the DHCP role, creates a local account `nbwd-lab` in DHCP Administra
 
 ### Running them
 
-Put the connection settings in `dev/env/lab.env` (gitignored; the dev stack loads it too) or the environment:
+Put the connection settings in `dev/env/lab.env` (gitignored; the dev stack loads it too, so run `make dev` after
+changing it: `make restart` does not reload it, nor install new dependencies) or the environment:
 
 | Variable | Meaning |
 |---|---|

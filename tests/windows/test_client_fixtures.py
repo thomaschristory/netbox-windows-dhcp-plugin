@@ -261,11 +261,17 @@ def test_failover_load_balance_from_windows() -> None:
     assert f.load_balance_percent == 60 and f.max_client_lead_time == 1800 and f.state_switch_interval is None
 
 
-def test_failover_writes_never_ask() -> None:
-    # Without -Force the failover cmdlets ask for confirmation, which fails over WinRM (lab, Windows Server 2025).
-    for script in (wc.S_FAILOVER_ADD, wc.S_FAILOVER_SET, wc.S_FAILOVER_REMOVE, wc.S_FAILOVER_REMOVE_SCOPE):
-        line = next(x for x in script.body.splitlines() if "-DhcpServerv4Failover" in x and "Get-" not in x)
-        assert line.rstrip().endswith("-Force"), line
+def test_failover_force_only_where_safe() -> None:
+    # Add and Set ask for confirmation without -Force, which fails over WinRM. The removes do not ask in the Normal
+    # state, and with the partner unreachable -Force would remove on this server only (lab, Windows Server 2025).
+    def line(script):
+        return next(x for x in script.body.splitlines() if "-DhcpServerv4Failover" in x and "Get-" not in x)
+
+    for script in (wc.S_FAILOVER_ADD, wc.S_FAILOVER_SET):
+        assert line(script).rstrip().endswith("-Force"), line(script)
+    assert "-Force" in wc.S_FAILOVER_REPLICATE.body
+    for script in (wc.S_FAILOVER_REMOVE, wc.S_FAILOVER_REMOVE_SCOPE):
+        assert "-Force" not in line(script), line(script)
 
 
 def test_classes_optiondefs_superscopes_filters() -> None:

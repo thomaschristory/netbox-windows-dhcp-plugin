@@ -371,8 +371,8 @@ function Get-DhcpServerv4Failover {
     $global:Failovers.Values
 }
 
-# The failover cmdlets ask for confirmation unless -Force is given (ShouldContinue, which -Confirm:$false does not
-# suppress; seen on Windows Server 2025). Over WinRM nobody can answer, so the real cmdlet fails like this.
+# Add, Set and replication of failover ask for confirmation unless -Force is given (ShouldContinue, which -Confirm:$false
+# does not suppress; seen on Windows Server 2025). Over WinRM nobody can answer, so the real cmdlet fails like this.
 function Assert-WdForce([bool]$Force) {
     if (-not $Force) {
         throw 'Exception calling "EndProcessing" with "0" argument(s): "Windows PowerShell is in NonInteractive mode. Read and Prompt functionality is not available."'
@@ -429,7 +429,6 @@ function Remove-DhcpServerv4Failover {
     [CmdletBinding(SupportsShouldProcess)]
     param([string]$ComputerName, [Parameter(Mandatory)][string[]]$Name, [switch]$Force, [switch]$PassThru)
     Record 'Remove-DhcpServerv4Failover' $PSBoundParameters
-    Assert-WdForce $Force
 }
 
 function Add-DhcpServerv4FailoverScope {
@@ -446,7 +445,6 @@ function Remove-DhcpServerv4FailoverScope {
     param([string]$ComputerName, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][ipaddress[]]$ScopeId,
         [switch]$Force, [switch]$PassThru)
     Record 'Remove-DhcpServerv4FailoverScope' $PSBoundParameters
-    Assert-WdForce $Force
     $f = $global:Failovers[$Name]
     $ids = @($ScopeId | ForEach-Object { "$_" })
     $f.ScopeId = @($f.ScopeId | Where-Object { $ids -notcontains "$_" })

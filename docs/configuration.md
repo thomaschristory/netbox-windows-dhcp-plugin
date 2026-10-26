@@ -37,6 +37,7 @@ credential profile, and the profile says where the secrets come from. A profile 
 | `private_key` | SSH key login: an Ed25519, ECDSA or RSA key in PEM or OpenSSH format |
 | `secret` | The shared secret of a [failover relationship](failover.md#shared-secret) |
 | `allowed_hosts` | The hosts the profile's credentials may be sent to, see [below](#allowed_hosts) |
+| `allow_insecure_credssp` | `True` lets CredSSP run over HTTP or without certificate verification. Labs only, see [Security](security.md#transport) |
 
 Every value except `allowed_hosts` can be given in three ways:
 

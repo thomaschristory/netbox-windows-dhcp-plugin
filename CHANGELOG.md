@@ -211,12 +211,14 @@ Found by testing 0.1.0rc4:
   A scope that is not yet in the relationship on Windows waits for a later push instead of blocking the others.
 
 Found by the full lab run (two Windows Server 2025 servers):
-- Failover relationships could not be created, changed or removed over WinRM: `Add-DhcpServerv4Failover`,
-  `Remove-DhcpServerv4Failover` and `Remove-DhcpServerv4FailoverScope` asked for a confirmation nobody can answer
-  ("PowerShell is in NonInteractive mode"). Every failover write now sends `-Force`, which on these cmdlets only
-  skips the question.
+- Failover relationships could not be created over WinRM: `Add-DhcpServerv4Failover` asked for a confirmation nobody
+  can answer ("PowerShell is in NonInteractive mode"). Add, Set and replication now send `-Force`. The removes never
+  do: they do not ask while the relationship is healthy, and with the partner unreachable `-Force` would remove the
+  relationship or scope on one server only. Such a push now fails with "not in NORMAL state" and changes nothing.
 - Failover writes need the DHCP server to reach its partner as you, which NTLM and Kerberos cannot pass on
-  (`PermissionDenied`). The new **CredSSP** WinRM authentication makes them work; see the failover page.
+  (`PermissionDenied`). The new **CredSSP** WinRM authentication makes them work; see the failover page. CredSSP
+  hands the password to the server, so it requires HTTPS with certificate verification, unless the credential
+  profile sets `allow_insecure_credssp` (for labs).
 - An import or push no longer fails when a scope disappears while the server is being read (for example the partner's
   copy, when a failover relationship is removed at that moment): that scope counts as gone, the rest is read.
 - A failover partner that matches no Windows server in NetBox now says how to fix it. Windows names the partner by its

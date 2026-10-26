@@ -526,12 +526,11 @@ $r = Get-WdReservation
 if ($r) { $out = ConvertTo-WdReservation $r }
 """,
 )
-# Set is keyed by IP only (no -ScopeId); an empty description clears it. The client ID and type are only sent when
-# they change: a description update sent with them on Windows Server 2025 reported success but dropped the
-# reservation's option values (issue #42). The writer also puts back any value an update loses.
-# Set-DhcpServerv4Reservation with a new -ClientId drops the reservation's option values (lab, Windows Server 2025): the
-# push puts them
-# back (WindowsWriter._keep_reservation_options).
+# Set is keyed by IP only (no -ScopeId); an empty description clears it. The client ID and type are only sent when they
+# change: a description update sent with them on Windows Server 2025 reported success but dropped the reservation's
+# option values (issue #42). The writer also puts back any value an update loses. Set-DhcpServerv4Reservation with a new
+# -ClientId drops the reservation's option values (lab, Windows Server 2025): the push puts them back
+# (WindowsWriter._keep_reservation_options).
 S_RESERVATION_SET = Script(
     "reservation.set",
     _RESERVATION_FUNC
@@ -690,8 +689,7 @@ $out = @(Get-DhcpServerv4Lease @cn @a | ForEach-Object {
 # ---- IPv4 option definitions ----------------------------------------------------------
 
 # -All on Get (all vendor classes) and Set with -Name/-Description/-DefaultValue checked (lab, Windows Server 2025);
-# type and
-# multi-valued cannot be changed in place: remove and add instead.
+# type and multi-valued cannot be changed in place: remove and add instead.
 _OPTIONDEF_FUNC = r"""
 function ConvertTo-WdOptionDef($d) {
     [ordered]@{
@@ -810,9 +808,12 @@ Remove-DhcpServerv4Class @cn -Name $p.name -Type $p.type -Confirm:$false
 
 # Set-DhcpServerv4Failover has no -ServerRole (only Add has it; checked on Windows Server 2025, issue #33), so a hot
 # standby relationship's role is fixed when it is created.
-# Every write here sends -Force: without it the cmdlets ask for confirmation (ShouldContinue, which -Confirm:$false
+# Add, Set and replication send -Force: without it they ask for confirmation (ShouldContinue, which -Confirm:$false
 # does not suppress), and over WinRM that fails with "PowerShell is in NonInteractive mode" (Windows Server 2025).
-# On these cmdlets -Force means nothing more than "do not ask".
+# The removes never send it. They do not ask while the relationship is in the Normal state, and when it is not (the
+# partner is unreachable) -Force removes the relationship or scope on this server only, leaving the partner to serve
+# the scope on its own: without it Windows refuses ("not in NORMAL state"), which is the safe outcome.
+# Add-DhcpServerv4FailoverScope has no -Force and does not ask.
 # The server calls its partner as the caller for every write, so these need CredSSP (see winrm.py).
 # Output property names (ServerRole, null in load balance mode; EnableAuth; MaxClientLeadTime and StateSwitchInterval
 # as TimeSpan, the latter null when off) checked (lab, Windows Server 2025). A switch to HotStandby makes this server
@@ -889,7 +890,7 @@ $out = Get-WdFailover
 S_FAILOVER_REMOVE = Script(
     "failover.remove",
     r"""
-Remove-DhcpServerv4Failover @cn -Name $p.name -Force
+Remove-DhcpServerv4Failover @cn -Name $p.name -Confirm:$false
 """,
 )
 S_FAILOVER_ADD_SCOPE = Script(
@@ -907,7 +908,7 @@ S_FAILOVER_REMOVE_SCOPE = Script(
     + _FAILOVER_FUNC
     + r"""
 $ids = [string[]]@($p.scope_ids)
-Remove-DhcpServerv4FailoverScope @cn -Name $p.name -ScopeId $ids -Force
+Remove-DhcpServerv4FailoverScope @cn -Name $p.name -ScopeId $ids -Confirm:$false
 $out = Get-WdFailover
 """,
 )
@@ -1282,9 +1283,8 @@ Add-DhcpServerv6Reservation @cn @a
 $out = Get-WdReservationV6
 """,
 )
-# As for IPv4, the DUID and IAID are only sent when they change (issue #42).
-# Set-DhcpServerv6Reservation with a new -Iaid drops the reservation's option values (lab, Windows Server 2025): the
-# push puts them back.
+# As for IPv4, the DUID and IAID are only sent when they change (issue #42). Set-DhcpServerv6Reservation with a new
+# -Iaid drops the reservation's option values (lab, Windows Server 2025): the push puts them back.
 S_V6RES_SET = Script(
     "v6reservation.set",
     _V6RES_FUNC

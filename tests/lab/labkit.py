@@ -263,6 +263,13 @@ class Lab:
         s = self.client.get_scope(scope_id)
         if not (in_v4(s.scope_id) and ours(s.name)):
             raise UnsafeError(f"refusing to remove scope {s.scope_id} ({s.name!r})")
+        # Windows refuses to remove a scope still in a failover relationship (DHCP 20113): leave a test one first.
+        for f in self.client.list_failovers():
+            if ours(f.name) and scope_id in f.scope_ids:
+                if len(f.scope_ids) == 1:
+                    self.remove_failover(f.name)
+                else:
+                    self.client.remove_failover_scopes(f.name, [scope_id])
         # Lab scopes never hold real leases (the range is not routed), so force only clears test leases.
         self.client.remove_scope(scope_id, force=True)
 

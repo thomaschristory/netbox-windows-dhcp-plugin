@@ -18,6 +18,7 @@ from netbox_windows_dhcp_plugin.windows.client import (
     Superscope,
 )
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
+from netbox_windows_dhcp_plugin.windows.psscript import NotFound
 
 
 @pytest.fixture
@@ -319,3 +320,35 @@ def test_a_scope_deleted_during_the_read_is_left_out(client):
     assert [s.scope_id for s in state.scopes] == ["10.1.0.0"]
     assert state.v6_scopes == []
     assert [r.ip_address for r in state.reservations] == ["10.1.0.50"]
+
+
+def test_a_reservation_deleted_during_the_read_keeps_its_scope(client):
+    # Review of #55: a NotFound for something inside the scope (here a reservation deleted between the list and the
+    # read of its options) must not make the whole scope look deleted. The scope is read again.
+    c = client
+    real = c.list_option_values
+    calls = {"n": 0}
+
+    def flaky(**kw):
+        if kw.get("reserved_ip") == "10.1.0.50" and calls["n"] == 0:
+            calls["n"] += 1
+            raise NotFound("Get-DhcpServerv4OptionValue: Failed to get reservation 10.1.0.50 (ObjectNotFound)")
+        return real(**kw)
+
+    c.list_option_values = flaky
+    state = ws.read(c)
+    assert [s.scope_id for s in state.scopes] == ["10.1.0.0"]
+    assert [r.ip_address for r in state.reservations] == ["10.1.0.50"]
+
+
+def test_a_scope_that_keeps_failing_to_read_fails_the_read(client):
+    c = client
+
+    def broken(**kw):
+        if kw.get("reserved_ip"):
+            raise NotFound("Get-DhcpServerv4OptionValue: (ObjectNotFound)")
+        return []
+
+    c.list_option_values = broken
+    with pytest.raises(NotFound):
+        ws.read(c)

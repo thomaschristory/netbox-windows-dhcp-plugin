@@ -523,7 +523,8 @@ def test_failover(pw: PwshRunner) -> None:
     assert st["Force"] is True and "SharedSecret" not in st and "ServerRole" not in st
     assert c.add_failover_scopes("lb", ["10.1.30.0"]).scope_ids == ["10.1.20.0", "10.1.30.0"]
     assert c.remove_failover_scopes("lb", ["10.1.20.0"]).scope_ids == []
-    assert find_call(pw.last_calls(), "Remove-DhcpServerv4FailoverScope")["Force"] is True
+    # Never forced: with the partner unreachable, -Force would remove the scope on this server only.
+    assert "Force" not in find_call(pw.last_calls(), "Remove-DhcpServerv4FailoverScope")
     c.replicate_failover("lb")  # the cmdlet's own output must not break the envelope
     rep = find_call(pw.last_calls(), "Invoke-DhcpServerv4FailoverReplication")
     assert rep["Name"] == ["lb"] and rep["Force"] is True and "ScopeId" not in rep
@@ -533,7 +534,7 @@ def test_failover(pw: PwshRunner) -> None:
         rep = find_call(pw.last_calls(), "Invoke-DhcpServerv4FailoverReplication")
         assert rep["ScopeId"] == ["10.1.30.0"] and "Name" not in rep
     c.remove_failover("lb")
-    assert find_call(pw.last_calls(), "Remove-DhcpServerv4Failover")["Force"] is True
+    assert "Force" not in find_call(pw.last_calls(), "Remove-DhcpServerv4Failover")
     assert [x.name for x in c.list_failovers()] == ["lb"]
 
 
