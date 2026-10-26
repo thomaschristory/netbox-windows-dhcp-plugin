@@ -16,7 +16,8 @@ from netbox_windows_dhcp_plugin.windows.psscript import Script
 from netbox_windows_dhcp_plugin.windows.winrm import WinRMConfig, WinRMRunner
 
 REPO = Path(__file__).resolve().parents[2]
-ENV_FILE = REPO / "dev" / "env" / "netbox.env"
+# Older checkouts kept the lab settings in netbox.env, which is tracked: lab.env (gitignored) wins.
+ENV_FILES = (REPO / "dev" / "env" / "netbox.env", REPO / "dev" / "env" / "lab.env")
 
 PREFIX = "nbwd-test-"
 LAB_V4 = ipaddress.ip_network("198.18.0.0/15")
@@ -28,11 +29,10 @@ FREE_OPTION_IDS = range(240, 255)
 
 
 def _load_env_file() -> dict[str, str]:
-    """WINDOWS_DHCP_* keys from dev/env/netbox.env (KEY=VALUE lines; no shell expansion)."""
+    """WINDOWS_DHCP_* keys from dev/env/netbox.env and dev/env/lab.env (KEY=VALUE lines; no shell expansion)."""
     out: dict[str, str] = {}
-    if not ENV_FILE.is_file():
-        return out
-    for line in ENV_FILE.read_text().splitlines():
+    lines = [line for f in ENV_FILES if f.is_file() for line in f.read_text().splitlines()]
+    for line in lines:
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -252,6 +252,11 @@ class Lab:
         self.on_cleanup(f"filter {mac}", lambda: self.remove_filter(mac))
         return self.client.add_filter(f)
 
+    def failover(self, f: wc.FailoverRelationship, shared_secret: str = "") -> wc.FailoverRelationship:
+        assert ours(f.name) and all(in_v4(sid) for sid in f.scope_ids), f
+        self.on_cleanup(f"failover {f.name}", lambda: self.remove_failover(f.name))
+        return self.client.add_failover(f, shared_secret)
+
     # -- guarded removes ---------------------------------------------------------------------------------------------
 
     def remove_scope(self, scope_id: str) -> None:
@@ -298,6 +303,13 @@ class Lab:
             raise UnsafeError(f"refusing to remove superscope {s.name!r}")
         self.client.remove_superscope(name)
 
+    def remove_failover(self, name: str) -> None:
+        """Removing a relationship also deletes its scopes on the partner (they stay here)."""
+        f = self.client.get_failover(name)
+        if not ours(f.name) or not all(in_v4(sid) for sid in f.scope_ids):
+            raise UnsafeError(f"refusing to remove failover relationship {f.name!r}")
+        self.client.remove_failover(name)
+
     def remove_filter(self, mac: str) -> None:
         f = self.client.get_filter(mac)
         if not f.mac_address.lower().startswith(MAC_PREFIX):
@@ -319,6 +331,9 @@ class Lab:
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"sweep {label}: {exc}")
 
+        for f in c.list_failovers():
+            if ours(f.name):
+                attempt(f"failover {f.name}", lambda n=f.name: self.remove_failover(n))
         for s in c.list_superscopes():
             if ours(s.name):
                 attempt(f"superscope {s.name}", lambda n=s.name: self.remove_superscope(n))
@@ -356,6 +371,8 @@ def make_runner(env: dict[str, str]) -> Any:
         password=env["WINDOWS_DHCP_PASSWORD"],
         port=int(env["WINDOWS_DHCP_LAB_PORT"]) if env.get("WINDOWS_DHCP_LAB_PORT") else None,
         auth=env.get("WINDOWS_DHCP_LAB_AUTH", "ntlm"),
+        # Some labs only have the HTTP listener (5985). NTLM still encrypts the WinRM messages there.
+        https=env.get("WINDOWS_DHCP_LAB_HTTPS", "1") != "0",
         kerberos_realm=env.get("WINDOWS_DHCP_LAB_REALM", ""),
         cert_validation=env.get("WINDOWS_DHCP_LAB_INSECURE") != "1",
         timeout=120,

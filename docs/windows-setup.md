@@ -64,7 +64,7 @@ in the network path could then read the traffic.
 
 ## WinRM over HTTP
 
-Over HTTP (port 5985), NTLM and Kerberos still encrypt every message, so the server can keep
+Over HTTP (port 5985), NTLM, Kerberos and CredSSP still encrypt every message, so the server can keep
 `AllowUnencrypted = false`. Untick **WinRM over HTTPS** on the Windows server in NetBox. HTTPS is still preferred:
 NTLM over HTTP does not prove the identity of the server.
 
@@ -74,6 +74,7 @@ NTLM over HTTP does not prove the identity of the server.
 |---|---|---|
 | NTLM (default) | Domain or local accounts | Works out of the box with WinRM. User name as `DOMAIN\user`, or `user` for a local account |
 | Kerberos | Domain accounts, NTLM disabled | Needs the `[kerberos]` extra, GSSAPI libraries and `krb5.conf` where the worker runs, a realm on the Windows server in NetBox, and the server's real DNS name as `host` |
+| CredSSP | Failover relationships | Needed to create or change a [failover relationship](failover.md#connecting-to-the-servers) or replicate it: the cmdlets make the server call its partner as you. Enable it on each DHCP server with `Enable-WSManCredSSP -Role Server -Force`. The password is handed to the DHCP server, so use an account that can only manage DHCP |
 | Basic | Local accounts only, when NTLM is not possible | Sends the password itself, so the plugin only allows it over HTTPS with certificate verification. Enable it on the server with `Set-Item WSMan:\localhost\Service\Auth\Basic $true` |
 
 For Kerberos, the plugin gets a ticket with the profile's user name and password; the user name may be given as
@@ -105,7 +106,7 @@ The plugin never accepts an unknown host key, and **Verify host** cannot be turn
 
 **Remote DHCP server** (`computer_name`) on the Windows server in NetBox runs the cmdlets against another server
 (`-ComputerName`) through the host you connect to. Your credentials then have to travel one hop further, which
-Windows only allows with CredSSP or Kerberos constrained delegation. Connecting straight to each DHCP server is
+Windows only allows with CredSSP (choose it as the WinRM authentication) or Kerberos constrained delegation. Connecting straight to each DHCP server is
 simpler and recommended. When you do use it, the credential profile's `allowed_hosts` must cover both names.
 
 ## Checking the account by hand

@@ -503,10 +503,12 @@ def test_failover(pw: PwshRunner) -> None:
     add = find_call(pw.last_calls(), "Add-DhcpServerv4Failover")
     assert add["SharedSecret"] == "s3'cret" and add["MaxClientLeadTime"] == 1800 and add["ServerRole"] == "Standby"
     assert "LoadBalancePercent" not in add
+    # Every failover write sends -Force: without it Windows asks for confirmation, which fails over WinRM.
+    assert add["Force"] is True
 
     seed_fo = (
         SEED_SCOPE
-        + "Add-DhcpServerv4Failover -Name lb -PartnerServer dhcp02 -ScopeId 10.1.20.0 -LoadBalancePercent 60\n"
+        + "Add-DhcpServerv4Failover -Name lb -PartnerServer dhcp02 -ScopeId 10.1.20.0 -LoadBalancePercent 60 -Force\n"
     )
     pw.seed = seed_fo
     f = c.get_failover("lb")
@@ -521,6 +523,7 @@ def test_failover(pw: PwshRunner) -> None:
     assert st["Force"] is True and "SharedSecret" not in st and "ServerRole" not in st
     assert c.add_failover_scopes("lb", ["10.1.30.0"]).scope_ids == ["10.1.20.0", "10.1.30.0"]
     assert c.remove_failover_scopes("lb", ["10.1.20.0"]).scope_ids == []
+    assert find_call(pw.last_calls(), "Remove-DhcpServerv4FailoverScope")["Force"] is True
     c.replicate_failover("lb")  # the cmdlet's own output must not break the envelope
     rep = find_call(pw.last_calls(), "Invoke-DhcpServerv4FailoverReplication")
     assert rep["Name"] == ["lb"] and rep["Force"] is True and "ScopeId" not in rep
@@ -530,7 +533,7 @@ def test_failover(pw: PwshRunner) -> None:
         rep = find_call(pw.last_calls(), "Invoke-DhcpServerv4FailoverReplication")
         assert rep["ScopeId"] == ["10.1.30.0"] and "Name" not in rep
     c.remove_failover("lb")
-    assert find_call(pw.last_calls(), "Remove-DhcpServerv4Failover")["Force"] is False
+    assert find_call(pw.last_calls(), "Remove-DhcpServerv4Failover")["Force"] is True
     assert [x.name for x in c.list_failovers()] == ["lb"]
 
 
@@ -538,8 +541,8 @@ def test_hot_standby_update_sends_no_server_role(pw: PwshRunner) -> None:
     """Issue #33: Set-DhcpServerv4Failover has no -ServerRole, so sending it failed parameter binding."""
     pw.seed = (
         SEED_SCOPE
-        + "Add-DhcpServerv4Failover -Name hs -PartnerServer dhcp02 -ScopeId 10.1.20.0 -ServerRole Active\n"
-        + "Add-DhcpServerv4Failover -Name lb -PartnerServer dhcp02 -ScopeId 10.1.20.0\n"
+        + "Add-DhcpServerv4Failover -Name hs -PartnerServer dhcp02 -ScopeId 10.1.20.0 -ServerRole Active -Force\n"
+        + "Add-DhcpServerv4Failover -Name lb -PartnerServer dhcp02 -ScopeId 10.1.20.0 -Force\n"
     )
     c = DhcpClient(pw)
     f = c.set_failover(
@@ -554,7 +557,7 @@ def test_hot_standby_update_sends_no_server_role(pw: PwshRunner) -> None:
     )
     assert (f.server_role, f.reserve_percent, f.max_client_lead_time) == ("Active", 10, 120)
     st = find_call(pw.last_calls(), "Set-DhcpServerv4Failover")
-    assert "ServerRole" not in st and st["Mode"] == "HotStandby" and st["Confirm"] is False
+    assert "ServerRole" not in st and st["Mode"] == "HotStandby" and st["Force"] is True
     # The stub refuses the parameter, as Windows does.
     with pytest.raises(PSError, match="ServerRole"):
         c._run(Script("raw", "Set-DhcpServerv4Failover -Name hs -ServerRole Standby"))

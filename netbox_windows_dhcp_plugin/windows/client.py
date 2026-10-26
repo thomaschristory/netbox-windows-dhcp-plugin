@@ -347,8 +347,9 @@ function ConvertTo-WdTimeSpan($t) { if ($null -eq $t) { '' } else { ([TimeSpan]$
 
 # ---- IPv4 scopes (scope.go) -------------------------------------------------
 
-# unverified: Delay, MaxBootpClients, ActivatePolicies and SuperscopeName properties and the
-# matching -Delay/-MaxBootpClients/-ActivatePolicies parameters (not used by the Go provider).
+# Delay, MaxBootpClients, ActivatePolicies and SuperscopeName properties and the matching
+# -Delay/-MaxBootpClients/-ActivatePolicies parameters (not used by the Go provider) checked in the lab (Windows Server
+# 2025).
 _SCOPE_FUNC = r"""
 function ConvertTo-WdScope($s) {
     [ordered]@{
@@ -420,8 +421,8 @@ function ConvertTo-WdIPv4Number([string]$ip) {
 }
 # Windows refuses, with DHCP 20023, a range change that widens one end and narrows the other in the same call
 # (issue #30), so such a change takes a first step that only narrows or only widens, and the call below the other.
-# unverified: the refusal when the start widens and the end narrows (the lab saw the other direction), and this
-# two-step sequence run as one script.
+# Both directions are refused, and this two-step sequence handles them and a move to a range that does not overlap
+# (lab, Windows Server 2025).
 $cur = Get-DhcpServerv4Scope @cn -ScopeId $p.scope_id
 $os = "$($cur.StartRange)"
 $oe = "$($cur.EndRange)"
@@ -528,7 +529,9 @@ if ($r) { $out = ConvertTo-WdReservation $r }
 # Set is keyed by IP only (no -ScopeId); an empty description clears it. The client ID and type are only sent when
 # they change: a description update sent with them on Windows Server 2025 reported success but dropped the
 # reservation's option values (issue #42). The writer also puts back any value an update loses.
-# unverified: whether Set-DhcpServerv4Reservation with a new -ClientId or -Type alone drops the option values.
+# Set-DhcpServerv4Reservation with a new -ClientId drops the reservation's option values (lab, Windows Server 2025): the
+# push puts them
+# back (WindowsWriter._keep_reservation_options).
 S_RESERVATION_SET = Script(
     "reservation.set",
     _RESERVATION_FUNC
@@ -599,7 +602,7 @@ Remove-DhcpServerv4ExclusionRange @cn @a -Confirm:$false
 # The client already leaves scope_id out in that case; the elseif keeps the rule here too.
 # -PolicyName on Get/Set/Remove was checked on Windows Server 2025 with a MAC policy (issue #18). A policy with an FQDN
 # condition refuses ordinary option values (DHCP 20136), a Windows rule.
-# unverified: -All on Get (list).
+# -All on Get (list) returns the values of every user and vendor class (lab, Windows Server 2025).
 _OPTION_FUNC = r"""
 $sel = @{}
 if ($p.reserved_ip) { $sel['ReservedIP'] = $p.reserved_ip }
@@ -686,8 +689,9 @@ $out = @(Get-DhcpServerv4Lease @cn @a | ForEach-Object {
 
 # ---- IPv4 option definitions ----------------------------------------------------------
 
-# unverified: -All on Get (all vendor classes); Set accepting -Name/-Description/-DefaultValue
-# (type and multi-valued cannot be changed in place: remove and add instead).
+# -All on Get (all vendor classes) and Set with -Name/-Description/-DefaultValue checked (lab, Windows Server 2025);
+# type and
+# multi-valued cannot be changed in place: remove and add instead.
 _OPTIONDEF_FUNC = r"""
 function ConvertTo-WdOptionDef($d) {
     [ordered]@{
@@ -753,7 +757,7 @@ Remove-DhcpServerv4OptionDefinition @cn @vc -OptionId $p.option_id -Confirm:$fal
 
 # ---- IPv4 user and vendor classes -------------------------------------------------------
 
-# unverified: whether the ASCII class data is in .AsciiData (and .Data holds hex) or in .Data.
+# The ASCII class data is in .AsciiData; .Data holds it in hex, as 0x6e62... (lab, Windows Server 2025).
 _CLASS_FUNC = r"""
 function ConvertTo-WdClass($c) {
     $data = "$($c.AsciiData)"
@@ -806,9 +810,13 @@ Remove-DhcpServerv4Class @cn -Name $p.name -Type $p.type -Confirm:$false
 
 # Set-DhcpServerv4Failover has no -ServerRole (only Add has it; checked on Windows Server 2025, issue #33), so a hot
 # standby relationship's role is fixed when it is created.
-# unverified: output property names (ServerRole, EnableAuth, StateSwitchInterval as TimeSpan), which role Windows
-# gives this server when Set switches the mode to HotStandby, -Confirm:$false on Set suppressing the prompt a mode
-# change asks for, and -Force on Invoke-...Replication suppressing the confirmation prompt.
+# Every write here sends -Force: without it the cmdlets ask for confirmation (ShouldContinue, which -Confirm:$false
+# does not suppress), and over WinRM that fails with "PowerShell is in NonInteractive mode" (Windows Server 2025).
+# On these cmdlets -Force means nothing more than "do not ask".
+# The server calls its partner as the caller for every write, so these need CredSSP (see winrm.py).
+# Output property names (ServerRole, null in load balance mode; EnableAuth; MaxClientLeadTime and StateSwitchInterval
+# as TimeSpan, the latter null when off) checked (lab, Windows Server 2025). A switch to HotStandby makes this server
+# active.
 # Writes go to one partner; call replicate_failover afterwards to copy scope configuration to the other.
 _FAILOVER_FUNC = r"""
 function ConvertTo-WdFailover($f) {
@@ -862,7 +870,7 @@ S_FAILOVER_ADD = Script(
 $a = @{ Name = $p.name; PartnerServer = $p.partner_server; ScopeId = [string[]]@($p.scope_ids) }
 if ($p.mode -eq 'HotStandby') { $a['ServerRole'] = $p.server_role }
 Add-WdFailoverSettings $a
-Add-DhcpServerv4Failover @cn @a
+Add-DhcpServerv4Failover @cn @a -Force
 $out = Get-WdFailover
 """,
 )
@@ -874,15 +882,14 @@ S_FAILOVER_SET = Script(
 $a = @{ Name = $p.name }
 if ($p.mode) { $a['Mode'] = $p.mode }
 Add-WdFailoverSettings $a
-# A mode change asks for confirmation, which nobody can answer over WinRM.
-Set-DhcpServerv4Failover @cn @a -Force -Confirm:$false
+Set-DhcpServerv4Failover @cn @a -Force
 $out = Get-WdFailover
 """,
 )
 S_FAILOVER_REMOVE = Script(
     "failover.remove",
     r"""
-Remove-DhcpServerv4Failover @cn -Name $p.name -Force:([bool]$p.force) -Confirm:$false
+Remove-DhcpServerv4Failover @cn -Name $p.name -Force
 """,
 )
 S_FAILOVER_ADD_SCOPE = Script(
@@ -900,7 +907,7 @@ S_FAILOVER_REMOVE_SCOPE = Script(
     + _FAILOVER_FUNC
     + r"""
 $ids = [string[]]@($p.scope_ids)
-Remove-DhcpServerv4FailoverScope @cn -Name $p.name -ScopeId $ids -Force:([bool]$p.force) -Confirm:$false
+Remove-DhcpServerv4FailoverScope @cn -Name $p.name -ScopeId $ids -Force
 $out = Get-WdFailover
 """,
 )
@@ -920,7 +927,7 @@ $null = Invoke-DhcpServerv4FailoverReplication @cn @a -Force
 # returns one object per superscope (with a ScopeId array) or one per member scope. Creating a
 # superscope and dropping some of its members (Remove -ScopeId) were checked on Windows Server 2025
 # (issue #14).
-# unverified: that removing a whole superscope leaves the member scopes in place (documented behaviour).
+# Removing a whole superscope leaves the member scopes in place, and rename works (lab, Windows Server 2025).
 _SUPERSCOPE_FUNC = r"""
 function Get-WdSuperscopes {
     $m = [ordered]@{}
@@ -1043,9 +1050,9 @@ $out = [ordered]@{ allow = [bool]$l.Allow; deny = [bool]$l.Deny }
 # ---- IPv4 policies ----------------------------------------------------------------------
 
 # Criteria parameter names come from this fixed table, never from $p.
-# unverified: output property names (Condition, ProcessingOrder, LeaseDuration and the
-# criteria arrays, operator first), and that Set leaves unspecified criteria unchanged
-# (clearing a criterion is not supported here: remove and re-add the policy).
+# Output property names (Condition, ProcessingOrder, LeaseDuration and the criteria arrays, operator first)
+# checked (lab, Windows Server 2025). Clearing a criterion is not supported here: remove and re-add the policy.
+# unverified: that Set leaves criteria it is not given unchanged.
 _POLICY_FUNC = (
     "$crit = [ordered]@{ "
     + "; ".join(f"{k} = '{v}'" for k, v in POLICY_CRITERIA.items())
@@ -1165,8 +1172,8 @@ Remove-DhcpServerv4PolicyIPRange @cn @a -Confirm:$false
 
 # ---- DHCPv6 scopes ----------------------------------------------------------------------
 
-# unverified: v6 scope output property names (PreferredLifetime, ValidLifetime, T1, T2,
-# Preference) and the -PreferredLifeTime/-ValidLifeTime/-T1/-T2 parameter names.
+# v6 scope output property names (PreferredLifetime, ValidLifetime, T1, T2, Preference) and the
+# -PreferredLifeTime/-ValidLifeTime/-T1/-T2 parameter names checked (lab, Windows Server 2025).
 _V6SCOPE_FUNC = r"""
 function ConvertTo-WdScopeV6($s) {
     [ordered]@{
@@ -1237,7 +1244,7 @@ Remove-DhcpServerv6Scope @cn -Prefix $p.prefix -Force:([bool]$p.force) -Confirm:
 # ---- DHCPv6 reservations ----------------------------------------------------------------
 
 # Set-DhcpServerv6Reservation keyed by -IPAddress alone, like v4, was checked on Windows Server 2025 (issue #17).
-# unverified: Remove-DhcpServerv6Reservation keyed by -IPAddress alone.
+# Remove-DhcpServerv6Reservation keyed by -IPAddress alone works (lab, Windows Server 2025).
 _V6RES_FUNC = r"""
 function ConvertTo-WdReservationV6($r) {
     [ordered]@{
@@ -1276,7 +1283,8 @@ $out = Get-WdReservationV6
 """,
 )
 # As for IPv4, the DUID and IAID are only sent when they change (issue #42).
-# unverified: whether Set-DhcpServerv6Reservation with a new -ClientDuid or -Iaid alone drops the option values.
+# Set-DhcpServerv6Reservation with a new -Iaid drops the reservation's option values (lab, Windows Server 2025): the
+# push puts them back.
 S_V6RES_SET = Script(
     "v6reservation.set",
     _V6RES_FUNC
@@ -1357,7 +1365,8 @@ Remove-DhcpServerv6OptionValue @cn @sel -OptionId $p.option_id -Confirm:$false
 
 # ---- DHCPv6 exclusions (read only: a push leaves them alone) ----------------------------------
 
-# unverified: Get-DhcpServerv6ExclusionRange output property names (Prefix, StartRange, EndRange).
+# Get-DhcpServerv6ExclusionRange output property names (Prefix, StartRange, EndRange) checked (lab, Windows Server
+# 2025).
 S_V6EXCLUSION_LIST = Script(
     "v6exclusion.list",
     r"""
@@ -1399,7 +1408,7 @@ $out = @(Get-DhcpServerv6Lease @cn -Prefix $p.prefix | ForEach-Object {
 
 # Windows keeps DHCPv6 classes apart from the IPv4 ones. A vendor class also needs its enterprise number (-VendorId),
 # which the plugin does not keep, so only user classes are ever written.
-# unverified: whether the ASCII class data is in .AsciiData (and .Data holds hex) or in .Data, as for IPv4.
+# The ASCII class data is in .AsciiData and .Data holds hex, as for IPv4 (lab, Windows Server 2025).
 _V6CLASS_FUNC = r"""
 function ConvertTo-WdClassV6($c) {
     $data = "$($c.AsciiData)"
@@ -1431,7 +1440,7 @@ Add-DhcpServerv6Class @cn @a
 $out = Get-WdClassV6
 """,
 )
-# unverified: Set-DhcpServerv6Class taking -Name, -Type, -Data and -Description like the IPv4 cmdlet.
+# Set-DhcpServerv6Class takes -Name, -Type, -Data and -Description like the IPv4 cmdlet (lab, Windows Server 2025).
 S_V6CLASS_SET = Script(
     "v6class.set",
     _V6CLASS_FUNC
@@ -1810,18 +1819,18 @@ class DhcpClient:
         """
         return self._get(S_FAILOVER_SET, self._failover_params(f, shared_secret), FailoverRelationship)
 
-    def remove_failover(self, name: str, force: bool = False) -> None:
-        self._do(S_FAILOVER_REMOVE, {"name": name, "force": bool(force)})
+    def remove_failover(self, name: str) -> None:
+        self._do(S_FAILOVER_REMOVE, {"name": name})
 
     def add_failover_scopes(self, name: str, scope_ids: Sequence[str]) -> FailoverRelationship:
         return self._get(
             S_FAILOVER_ADD_SCOPE, {"name": name, "scope_ids": [_ipv4(s) for s in scope_ids]}, FailoverRelationship
         )
 
-    def remove_failover_scopes(self, name: str, scope_ids: Sequence[str], force: bool = False) -> FailoverRelationship:
+    def remove_failover_scopes(self, name: str, scope_ids: Sequence[str]) -> FailoverRelationship:
         return self._get(
             S_FAILOVER_REMOVE_SCOPE,
-            {"name": name, "scope_ids": [_ipv4(s) for s in scope_ids], "force": bool(force)},
+            {"name": name, "scope_ids": [_ipv4(s) for s in scope_ids]},
             FailoverRelationship,
         )
 

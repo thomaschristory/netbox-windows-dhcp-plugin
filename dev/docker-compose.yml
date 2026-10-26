@@ -5,7 +5,11 @@ x-netbox: &netbox
     context: ..
     dockerfile: dev/Dockerfile
   image: netbox-windows-dhcp-dev:local
-  env_file: env/netbox.env
+  env_file:
+    - env/netbox.env
+    # Lab server settings and credentials (tests/lab/conftest.py lists them), kept out of git.
+    - path: env/lab.env
+      required: false
   user: "netbox:root"
   volumes:
     - ./configuration/plugins.py:/etc/netbox/config/plugins.py:ro

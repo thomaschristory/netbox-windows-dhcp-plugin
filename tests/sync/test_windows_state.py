@@ -14,6 +14,7 @@ from netbox_windows_dhcp_plugin.windows.client import (
     PolicyIPRange,
     Reservation,
     Scope,
+    ScopeV6,
     Superscope,
 )
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
@@ -293,3 +294,28 @@ def test_backslashes_are_kept():
 def test_values_ending_in_a_backslash_are_not_stored():
     state = ws.WindowsState(options=[ws.OptionValue(option_id=67, value=["boot\\"])])
     assert ws.to_records(state)[0] == []
+
+
+@pytest.mark.parametrize("value", ["10675199.02:48:05", ""])
+def test_unlimited_lease_records_no_lease_time(value):
+    # An unlimited lease reads back as TimeSpan.MaxValue, printed by client.py as 10675199.02:48:05 (lab, Windows
+    # Server 2025): too long for parse_duration, so no lease time, and a push keeps the scope's own.
+    assert ws._lease_seconds(value) is None
+    assert ws._lease_seconds("8.00:00:00") == 8 * 86400
+
+
+def test_a_scope_deleted_during_the_read_is_left_out(client):
+    # Seen in the lab: removing a failover relationship deletes its scopes on the partner, which a read already
+    # under way had listed. Its per-scope reads then fail with ObjectNotFound; that scope is gone, the rest is fine.
+    c = client
+    c.add_scope(Scope(name="Gone", start_range="10.2.0.10", end_range="10.2.0.20", subnet_mask="255.255.255.0"))
+    c.add_v6_scope(ScopeV6(prefix="2001:db8:9::", name="Gone6"))
+    listed, listed6 = c.list_scopes(), c.list_v6_scopes()
+    c.remove_scope("10.2.0.0", force=True)
+    c.remove_v6_scope("2001:db8:9::", force=True)
+    c.list_scopes = lambda: listed
+    c.list_v6_scopes = lambda: listed6
+    state = ws.read(c)
+    assert [s.scope_id for s in state.scopes] == ["10.1.0.0"]
+    assert state.v6_scopes == []
+    assert [r.ip_address for r in state.reservations] == ["10.1.0.50"]

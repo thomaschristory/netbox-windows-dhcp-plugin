@@ -32,6 +32,7 @@ from ..windows.client import (
     ScopeV6,
     Superscope,
 )
+from ..windows.psscript import NotFound
 from .diff import Record
 
 __all__ = (
@@ -128,41 +129,64 @@ def read(client: DhcpClient) -> WindowsState:
         filters=client.list_filters(),
         filter_lists=client.get_filter_lists(),
     )
-    # unverified: -All is expected to return the values of every user and vendor class at each level.
+    # -All returns the values of every user and vendor class at each level (lab, Windows Server 2025).
     state.options.extend(client.list_option_values(all=True))
     for policy in client.list_policies():
         state.policies.append(policy)
         state.options.extend(_scope_options(client, "", policy_name=policy.name))
-    for scope in state.scopes:
-        sid = scope.scope_id
-        state.exclusions.extend(client.list_exclusion_ranges(sid))
-        reservations = client.list_reservations(sid)
-        state.reservations.extend(reservations)
-        state.options.extend(_scope_options(client, sid))
-        for r in reservations:
-            state.options.extend(_scope_options(client, sid, r.ip_address))
-        for policy in client.list_policies(scope_id=sid):
-            policy.scope_id = sid
-            state.policies.append(policy)
-            state.policy_ranges.extend(client.list_policy_ip_ranges(sid, policy.name))
-            state.options.extend(_scope_options(client, sid, policy_name=policy.name))
+    # A scope can disappear while it is read, for example when a failover relationship is removed on its partner:
+    # its reads then fail with not found. It is gone, as if it had not been listed; the rest of the read stands.
+    state.scopes = [scope for scope in state.scopes if _read_scope(client, state, scope.scope_id)]
     _read_v6(client, state)
     return state
+
+
+def _read_scope(client: DhcpClient, state: WindowsState, sid: str) -> bool:
+    """Add what one scope holds to ``state``; False, and nothing added, when the scope no longer exists."""
+    part = WindowsState()
+    try:
+        part.exclusions = client.list_exclusion_ranges(sid)
+        part.reservations = client.list_reservations(sid)
+        part.options = _scope_options(client, sid)
+        for r in part.reservations:
+            part.options.extend(_scope_options(client, sid, r.ip_address))
+        for policy in client.list_policies(scope_id=sid):
+            policy.scope_id = sid
+            part.policies.append(policy)
+            part.policy_ranges.extend(client.list_policy_ip_ranges(sid, policy.name))
+            part.options.extend(_scope_options(client, sid, policy_name=policy.name))
+    except NotFound:
+        return False
+    state.exclusions.extend(part.exclusions)
+    state.reservations.extend(part.reservations)
+    state.options.extend(part.options)
+    state.policies.extend(part.policies)
+    state.policy_ranges.extend(part.policy_ranges)
+    return True
 
 
 def _read_v6(client: DhcpClient, state: WindowsState) -> None:
     state.v6_classes = client.list_v6_classes()
     state.v6_scopes = client.list_v6_scopes()
-    # unverified: -All is expected to return the values of every user and vendor class at each level, as for IPv4.
+    # -All returns the values of every user class at each level, as for IPv4 (lab, Windows Server 2025).
     state.v6_options.extend(client.list_v6_option_values(all=True))
-    for scope in state.v6_scopes:
-        prefix = scope.prefix
-        state.v6_exclusions.extend(client.list_v6_exclusion_ranges(prefix))
+    state.v6_scopes = [scope for scope in state.v6_scopes if _read_v6_scope(client, state, scope.prefix)]
+
+
+def _read_v6_scope(client: DhcpClient, state: WindowsState, prefix: str) -> bool:
+    """As _read_scope, for a DHCPv6 scope."""
+    try:
+        exclusions = client.list_v6_exclusion_ranges(prefix)
         reservations = client.list_v6_reservations(prefix)
-        state.v6_reservations.extend(reservations)
-        state.v6_options.extend(_v6_options(client, prefix))
+        options = _v6_options(client, prefix)
         for r in reservations:
-            state.v6_options.extend(_v6_options(client, prefix, r.ip_address))
+            options.extend(_v6_options(client, prefix, r.ip_address))
+    except NotFound:
+        return False
+    state.v6_exclusions.extend(exclusions)
+    state.v6_reservations.extend(reservations)
+    state.v6_options.extend(options)
+    return True
 
 
 def _v6_options(client: DhcpClient, prefix: str, reserved_ip: str = "") -> list:
@@ -312,7 +336,9 @@ def _lease_seconds(value: str) -> int | None:
     try:
         return normalize.parse_duration(value)
     except ValueError:
-        # unverified: an unlimited lease is reported as a value parse_duration does not accept.
+        # An unlimited lease reads back as TimeSpan.MaxValue (10675199.02:48:05.4775807), whether it was set as that or
+        # as
+        # 0xFFFFFFFF seconds (lab, Windows Server 2025); parse_duration refuses it, so no lease time is recorded.
         return None
 
 

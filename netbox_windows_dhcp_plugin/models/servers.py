@@ -63,7 +63,7 @@ class WindowsServer(JobsMixin, PrimaryModel):
     winrm_https = models.BooleanField(
         verbose_name=_("WinRM over HTTPS"),
         default=True,
-        help_text=_("Over HTTP, NTLM and Kerberos messages are still encrypted"),
+        help_text=_("Over HTTP, NTLM, Kerberos and CredSSP messages are still encrypted"),
     )
     verify_tls = models.BooleanField(
         verbose_name=_("verify host"),

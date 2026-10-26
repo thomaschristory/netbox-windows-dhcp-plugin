@@ -6,8 +6,12 @@ writes the base64 script to its stdin and closes everything. A new connection pe
 is deliberate: NTLM authenticates a TCP connection, and the Go provider saw EOFs, 401s
 and hangs when connections were pooled or shared between concurrent calls.
 
-pypsrp handles SPNEGO/NTLM/Kerberos message encryption over plain HTTP itself
+pypsrp handles SPNEGO/NTLM/Kerberos/CredSSP message encryption over plain HTTP itself
 (``encryption="auto"``), so the server can keep ``AllowUnencrypted=false``.
+
+CredSSP hands the password to the DHCP server, which can then act as the user towards other servers. Failover needs
+that: Add-DhcpServerv4Failover and friends make the server talk to its partner as the caller, which an NTLM or plain
+Kerberos logon cannot do (the "double hop", refused with PermissionDenied).
 
 pypsrp is imported lazily so the rest of the Windows layer imports without it.
 This module must not import Django or NetBox.
@@ -22,12 +26,13 @@ from typing import Any
 
 from .runner import ExecResult, RunnerError, execute
 
-__all__ = ["AUTH_BASIC", "AUTH_KERBEROS", "AUTH_NTLM", "WinRMConfig", "WinRMRunner", "kerberos_user"]
+__all__ = ["AUTH_BASIC", "AUTH_CREDSSP", "AUTH_KERBEROS", "AUTH_NTLM", "WinRMConfig", "WinRMRunner", "kerberos_user"]
 
 AUTH_NTLM = "ntlm"
 AUTH_BASIC = "basic"
 AUTH_KERBEROS = "kerberos"
-AUTHS = (AUTH_NTLM, AUTH_BASIC, AUTH_KERBEROS)
+AUTH_CREDSSP = "credssp"
+AUTHS = (AUTH_NTLM, AUTH_BASIC, AUTH_KERBEROS, AUTH_CREDSSP)
 _STDIN_CHUNK = 64 * 1024
 
 
@@ -39,7 +44,7 @@ class WinRMConfig:
     port: int | None = None  # default 5986 with HTTPS, 5985 without
     https: bool = True
     cert_validation: bool = True  # False skips TLS certificate checks (lab use only)
-    auth: str = AUTH_NTLM  # ntlm, basic or kerberos
+    auth: str = AUTH_NTLM  # ntlm, basic, kerberos or credssp
     kerberos_realm: str = ""  # appended to the user name as user@REALM
     kerberos_spn: str = ""  # e.g. HTTP/dhcp01.example.com; default WSMAN/<host> (pypsrp default)
     timeout: int = 60  # seconds: connection/read timeout and WS-Man operation timeout
@@ -69,7 +74,7 @@ class WinRMRunner:
             raise ValueError("winrm: host, username and password are required")
         auth = (cfg.auth or AUTH_NTLM).lower()
         if auth not in AUTHS:
-            raise ValueError(f"winrm: unsupported auth {cfg.auth!r} (want ntlm, basic or kerberos)")
+            raise ValueError(f"winrm: unsupported auth {cfg.auth!r} (want ntlm, basic, kerberos or credssp)")
         if auth == AUTH_KERBEROS and not cfg.kerberos_realm and "@" not in cfg.username:
             raise ValueError("winrm: kerberos_realm is required with kerberos auth (or give the user as user@REALM)")
         cfg.auth = auth
@@ -116,6 +121,12 @@ class WinRMRunner:
             from pypsrp.wsman import WSMan
         except ImportError as e:  # pragma: no cover - dependency is declared
             raise RunnerError("winrm: the pypsrp package is not installed") from e
+        if self.cfg.auth == AUTH_CREDSSP:
+            # pypsrp only imports it on the first request, with a less helpful message.
+            try:
+                import requests_credssp  # noqa: F401
+            except ImportError as e:
+                raise RunnerError("winrm: CredSSP needs the requests-credssp package (pypsrp[credssp])") from e
 
         wsman = WSMan(**self.wsman_kwargs())
         with wsman, WinRS(wsman) as shell:

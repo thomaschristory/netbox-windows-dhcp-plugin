@@ -176,7 +176,8 @@ class WindowsWriter:
         if change.action == DELETE:
             # A scope leaves its failover relationship first. The push plan only gets here when NetBox manages that
             # relationship and no longer lists the scope in it.
-            # unverified: whether Remove-DhcpServerv4Scope refuses a scope that is still in a relationship.
+            # Remove-DhcpServerv4Scope refuses a scope that is still in a relationship (DHCP 20113, lab, Windows Server
+            # 2025).
             relationships = [rel.name for rel in self.client.list_failovers() if change.key in rel.scope_ids]
             if relationships and self.client.list_leases(change.key):
                 # Leaving the relationship removes the scope from the partner, and Windows would then refuse to

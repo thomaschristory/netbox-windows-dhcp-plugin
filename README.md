@@ -6,9 +6,8 @@ A NetBox plugin that keeps Microsoft Windows DHCP servers in step with the data 
 **Documentation: https://thomaschristory.github.io/netbox-windows-dhcp-plugin/**
 
 > **Status: pre-release.** Every v1 feature is built and tested against an in-memory fake server and PowerShell
-> stubs. A first, partial lab run against Windows Server 2025 checked part of the cmdlets and its findings are fixed.
-> The cmdlets it did not reach are still marked `# unverified:` in the code until the rest of the lab tests run (see the
-> [roadmap](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/blob/main/docs/ROADMAP.md) and
+> stubs, and the lab tests have run in full against two Windows Server 2025 DHCP servers (import, push, leases and
+> failover). A few details are still marked `# unverified:` in the code (see the
 > [limitations](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/limitations/)). Try it on a lab server
 > first.
 
@@ -25,7 +24,7 @@ A NetBox plugin that keeps Microsoft Windows DHCP servers in step with the data 
   vendor class options, policies, failover relationships (with replication to the partner) and MAC filters.
 - DHCPv6 scopes, reservations (DUID and IAID), user classes and option values.
 - A **Leases** tab on the subnet page, read live from Windows in a background job.
-- WinRM (NTLM, Kerberos, Basic; HTTPS by default) or SSH, as in
+- WinRM (NTLM, Kerberos, Basic, CredSSP for failover; HTTPS by default) or SSH, as in
   [terraform-provider-windowsddi](https://github.com/thomaschristory/terraform-provider-windowsddi). Credentials
   live in named profiles in the plugin configuration, limited to `allowed_hosts`, never in the database.
 - REST API and GraphQL for every model; all Windows I/O in background jobs.

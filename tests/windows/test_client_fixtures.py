@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from netbox_windows_dhcp_plugin.windows import client as wc
 from netbox_windows_dhcp_plugin.windows.client import (
     ALL_SCRIPTS,
     S_SUPERSCOPE_RENAME,
@@ -249,6 +250,22 @@ def test_failover() -> None:
     c, _ = new_client("failover_list_single.json")
     got = c.list_failovers()
     assert len(got) == 1 and got[0].load_balance_percent == 50
+
+
+def test_failover_load_balance_from_windows() -> None:
+    # Scrubbed from a lab run on Windows Server 2025: in load balance mode ServerRole and ReservePercent are null,
+    # and StateSwitchInterval is null when automatic switching is off.
+    c, _ = new_client("failover_get_loadbalance.json")
+    f = c.get_failover("dhcp01-dhcp02")
+    assert f.mode == "LoadBalance" and f.server_role == "" and f.reserve_percent is None
+    assert f.load_balance_percent == 60 and f.max_client_lead_time == 1800 and f.state_switch_interval is None
+
+
+def test_failover_writes_never_ask() -> None:
+    # Without -Force the failover cmdlets ask for confirmation, which fails over WinRM (lab, Windows Server 2025).
+    for script in (wc.S_FAILOVER_ADD, wc.S_FAILOVER_SET, wc.S_FAILOVER_REMOVE, wc.S_FAILOVER_REMOVE_SCOPE):
+        line = next(x for x in script.body.splitlines() if "-DhcpServerv4Failover" in x and "Get-" not in x)
+        assert line.rstrip().endswith("-Force"), line
 
 
 def test_classes_optiondefs_superscopes_filters() -> None:

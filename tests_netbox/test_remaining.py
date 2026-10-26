@@ -190,7 +190,9 @@ class ImportRemainingTest(RemainingObjectsMixin, TestCase):
         item = result.proposal.items.get(kind="failover")
         importer.apply_items([item])
         item.refresh_from_db()
-        self.assertIn("not a Windows server in NetBox", item.error)
+        self.assertIn("matches no Windows server in NetBox", item.error)
+        # Windows names the partner by its computer name on one side: say how to make it match (lab, 2026-10-26).
+        self.assertIn("host", item.error)
 
 
 @override_settings(PLUGINS_CONFIG=SECRET_PROFILES)

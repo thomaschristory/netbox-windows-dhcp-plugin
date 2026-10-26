@@ -28,6 +28,21 @@ Give both partners a Windows server in NetBox. The partner's host is what the re
 `computer_name` when it is reached through a management host, else its `host`; short and fully qualified names
 match).
 
+## Connecting to the servers
+
+Creating or changing a relationship, adding or removing its scopes, and replication make the server you connect to
+call its partner as your account. Windows only lets it do that when it holds your credentials, so give both
+partners' Windows servers in NetBox **WinRM authentication: CredSSP**, and enable CredSSP on each DHCP server:
+
+```powershell
+Enable-WSManCredSSP -Role Server -Force
+```
+
+Over NTLM or Kerberos (without constrained delegation) those cmdlets fail with `PermissionDenied`, for example
+`Failed to verify if a failover relationship by the name ... exists on server ...`. Reading relationships works with
+any method. Both partners must accept the account: in a workgroup, the same local account with the same password on
+both. CredSSP hands the password to the DHCP server (see [Security](security.md#transport)).
+
 ## How it syncs
 
 - **Import** cannot tell which partner should be the primary: the first partner imported becomes it. **Import the
@@ -86,6 +101,10 @@ until you set one.
 Changing the partner, or turning authentication off, is refused: Windows only allows it by removing the
 relationship.
 
-!!! note "Not yet checked on a real pair"
-    Replication after a push, and a scope leaving a relationship, have not been run against two real Windows
-    servers yet (see [Limitations](limitations.md)).
+A relationship can be left with no scopes: Windows keeps it, empty, on both partners.
+
+!!! tip "Give the Windows servers their names"
+    Windows names the partner as it was given when the relationship was created on one side, and by its computer
+    name on the other side. A failover partner is found by host name (short and fully qualified names match), so
+    give both Windows servers in NetBox their DNS names rather than IP addresses, or import the primary first as
+    above.

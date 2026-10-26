@@ -135,6 +135,18 @@ def test_kerberos() -> None:
     assert WinRMRunner(cfg(auth="kerberos", username="svc@EXAMPLE.LOCAL")).wsman_kwargs()["username"] == "svc"
 
 
+def test_credssp() -> None:
+    """CredSSP (needed for failover writes, see winrm.py) is sent as pypsrp's own auth name, encrypted over HTTP."""
+    k = WinRMRunner(cfg(auth="CredSSP", https=False)).wsman_kwargs()
+    assert k["auth"] == "credssp" and k["encryption"] == "auto" and k["username"] == "EXAMPLE\\svc"
+
+
+def test_credssp_without_requests_credssp(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(sys.modules, "requests_credssp", None)
+    with pytest.raises(RunnerError, match="requests-credssp"):
+        WinRMRunner(cfg(auth="credssp")).run("x")
+
+
 def test_kerberos_user() -> None:
     assert kerberos_user("EXAMPLE\\svc") == "svc"
     assert kerberos_user("svc@example.local") == "svc"
@@ -143,7 +155,7 @@ def test_kerberos_user() -> None:
 
 @pytest.mark.parametrize(
     ("kw", "match"),
-    [({"host": ""}, "required"), ({"password": ""}, "required"), ({"auth": "credssp"}, "unsupported auth")],
+    [({"host": ""}, "required"), ({"password": ""}, "required"), ({"auth": "negotiate"}, "unsupported auth")],
 )
 def test_validation(kw: dict[str, Any], match: str) -> None:
     with pytest.raises(ValueError, match=match):

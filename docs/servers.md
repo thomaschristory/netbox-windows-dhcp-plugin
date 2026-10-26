@@ -15,8 +15,8 @@ branched.
 | Transport | WinRM | WinRM or SSH |
 | Port | empty | Empty means 5986 (WinRM over HTTPS), 5985 (WinRM over HTTP) or 22 (SSH) |
 | Credential profile | | Name of a [credential profile](configuration.md#credential-profiles). Its `allowed_hosts` must cover the host |
-| WinRM authentication | NTLM | NTLM, Basic or Kerberos, see [Preparing Windows](windows-setup.md#authentication-methods) |
-| WinRM over HTTPS | on | Off uses HTTP; NTLM and Kerberos messages are still encrypted |
+| WinRM authentication | NTLM | NTLM, Basic, Kerberos or CredSSP (failover), see [Preparing Windows](windows-setup.md#authentication-methods) |
+| WinRM over HTTPS | on | Off uses HTTP; NTLM, Kerberos and CredSSP messages are still encrypted |
 | Verify host | on | Check the TLS certificate (WinRM) or the host key (SSH). Cannot be turned off for SSH, nor for Basic |
 | Kerberos realm | empty | Required with Kerberos, for example `CORP.EXAMPLE` |
 | Kerberos SPN | empty | Empty means `WSMAN/<host>` |

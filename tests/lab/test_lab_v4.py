@@ -438,3 +438,39 @@ def test_failover_read_only(lab: Lab, probe_out) -> None:
     """Single-server lab: only check that the list call works. Writes need a partner."""
     rels = lab.client.list_failovers()
     save_probe(probe_out, "v4-failover", [r.to_dict() for r in rels])
+
+
+def test_scope_range_shifts(lab: Lab, probe_out) -> None:
+    """client.py (#30): range changes that widen one end and narrow the other, in both directions, and a move."""
+    s = lab.scope("nbwd-test-shift")
+    base = s.scope_id.rsplit(".", 1)[0]
+    sid = {"s": s.scope_id, "a": f"{base}.5", "b": f"{base}.150"}
+    # One plain Set that widens the start and narrows the end: record whether Windows refuses it (DHCP 20023).
+    seen: dict[str, str] = {}
+    try:
+        lab.raw("probe.shift", "Set-DhcpServerv4Scope -ScopeId $p.s -StartRange $p.a -EndRange $p.b", sid)
+        seen["start_widens_end_narrows"] = "accepted"
+    except PSError as exc:
+        seen["start_widens_end_narrows"] = f"refused: {exc.id}"
+    save_probe(probe_out, "v4-scope-range-shift", seen)
+
+    def shift(start: str, end: str) -> None:
+        got = lab.client.get_scope(s.scope_id)
+        got.start_range, got.end_range = f"{base}.{start}", f"{base}.{end}"
+        after = lab.client.set_scope(got)
+        assert (after.start_range, after.end_range) == (f"{base}.{start}", f"{base}.{end}")
+
+    shift("10", "200")  # back to the start, whatever the probe did
+    shift("5", "150")  # start widens, end narrows
+    shift("20", "220")  # start narrows, end widens
+    shift("230", "250")  # no overlap with the old range
+
+
+def test_policy_mac_prefix_case(lab: Lab, probe_out) -> None:
+    """fake.py: Windows reads an uppercase MAC prefix back in lowercase."""
+    s = lab.scope("nbwd-test-maccase")
+    p = lab.policy(
+        wc.Policy(name="nbwd-test-maccase", scope_id=s.scope_id, criteria={"mac_address": ["EQ", "02-4E-42-AB*"]})
+    )
+    save_probe(probe_out, "v4-policy-mac-case", p.to_dict())
+    assert p.criteria["mac_address"] == ["EQ", "02-4e-42-ab-*"]

@@ -35,11 +35,13 @@ class WinRMAuthChoices(ChoiceSet):
     NTLM = "ntlm"
     BASIC = "basic"
     KERBEROS = "kerberos"
+    CREDSSP = "credssp"
 
     CHOICES = [
         (NTLM, _("NTLM")),
         (BASIC, _("Basic")),
         (KERBEROS, _("Kerberos")),
+        (CREDSSP, _("CredSSP")),
     ]
 
 

@@ -13,16 +13,16 @@ fixes below from testing rc1 and a first partial lab run (the ones before "Found
 lab tests pass.
 
 First release. Every v1 feature is in place and tested against the fake server and PowerShell stubs. The lab tests
-against a real Windows server (`make test-lab`, `make lab-e2e`) have had a first partial run on Windows Server 2025,
-which found the defects listed under Fixed; the full run is still to come, and the `# unverified:` markers it settles
-stay open until then.
+against real Windows servers (`make test-lab`, `make lab-e2e`) ran in full on two Windows Server 2025 DHCP servers,
+failover included; what they found is listed under Fixed, and the few details they could not reach are listed in
+the documentation's limitations page.
 
 ### Added
 
 Connections and security
 
-- Windows server connection settings linked to netbox-plugin-dhcp servers: WinRM (NTLM, Basic or Kerberos, HTTPS by
-  default) or SSH, with an optional `computer_name` for a management host.
+- Windows server connection settings linked to netbox-plugin-dhcp servers: WinRM (NTLM, Basic, Kerberos or CredSSP, HTTPS by
+  default; CredSSP is what failover writes need) or SSH, with an optional `computer_name` for a management host.
 - Credential profiles in `PLUGINS_CONFIG`, each secret inline, from an environment variable or a file. Nothing secret
   is stored in the database, the change log or job logs.
 - `allowed_hosts` on credential profiles limits which hosts their credentials can be sent to, checked when a Windows
@@ -209,3 +209,16 @@ Found by testing 0.1.0rc4:
 - A failed failover replication is retried by the next push to the primary, even one with nothing else to write, so
   the partner no longer stays behind until the next change. The push's sync run lists the scopes still to replicate.
   A scope that is not yet in the relationship on Windows waits for a later push instead of blocking the others.
+
+Found by the full lab run (two Windows Server 2025 servers):
+- Failover relationships could not be created, changed or removed over WinRM: `Add-DhcpServerv4Failover`,
+  `Remove-DhcpServerv4Failover` and `Remove-DhcpServerv4FailoverScope` asked for a confirmation nobody can answer
+  ("PowerShell is in NonInteractive mode"). Every failover write now sends `-Force`, which on these cmdlets only
+  skips the question.
+- Failover writes need the DHCP server to reach its partner as you, which NTLM and Kerberos cannot pass on
+  (`PermissionDenied`). The new **CredSSP** WinRM authentication makes them work; see the failover page.
+- An import or push no longer fails when a scope disappears while the server is being read (for example the partner's
+  copy, when a failover relationship is removed at that moment): that scope counts as gone, the rest is read.
+- A failover partner that matches no Windows server in NetBox now says how to fix it. Windows names the partner by its
+  computer name on one side of a relationship, so a server NetBox knows by IP address did not match, and the message
+  only said to add a server that was already there.

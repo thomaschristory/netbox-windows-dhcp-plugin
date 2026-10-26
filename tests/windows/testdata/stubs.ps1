@@ -371,6 +371,14 @@ function Get-DhcpServerv4Failover {
     $global:Failovers.Values
 }
 
+# The failover cmdlets ask for confirmation unless -Force is given (ShouldContinue, which -Confirm:$false does not
+# suppress; seen on Windows Server 2025). Over WinRM nobody can answer, so the real cmdlet fails like this.
+function Assert-WdForce([bool]$Force) {
+    if (-not $Force) {
+        throw 'Exception calling "EndProcessing" with "0" argument(s): "Windows PowerShell is in NonInteractive mode. Read and Prompt functionality is not available."'
+    }
+}
+
 function Add-DhcpServerv4Failover {
     [CmdletBinding(SupportsShouldProcess, DefaultParameterSetName = 'LoadBalance')]
     param([string]$ComputerName, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][string]$PartnerServer,
@@ -381,6 +389,7 @@ function Add-DhcpServerv4Failover {
         [TimeSpan]$MaxClientLeadTime, [TimeSpan]$StateSwitchInterval, [bool]$AutoStateTransition,
         [string]$SharedSecret, [switch]$Force, [switch]$PassThru)
     Record 'Add-DhcpServerv4Failover' $PSBoundParameters
+    Assert-WdForce $Force
     $hot = $PSCmdlet.ParameterSetName -eq 'HotStandby'
     $global:Failovers[$Name] = [pscustomobject]@{
         Name = $Name; PartnerServer = $PartnerServer; ScopeId = $ScopeId
@@ -405,12 +414,13 @@ function Set-DhcpServerv4Failover {
         [switch]$PartnerDown, [switch]$Force, [switch]$PassThru)
     # No -ServerRole, as on Windows Server 2025 (issue #33): passing it fails parameter binding.
     Record 'Set-DhcpServerv4Failover' $PSBoundParameters
+    Assert-WdForce $Force
     $f = $global:Failovers[$Name]
     foreach ($k in 'Mode', 'LoadBalancePercent', 'ReservePercent', 'MaxClientLeadTime',
         'StateSwitchInterval', 'AutoStateTransition') {
         if ($PSBoundParameters.ContainsKey($k)) { $f.$k = $PSBoundParameters[$k] }
     }
-    # unverified: the role Windows gives this server when the mode becomes HotStandby; the stub keeps or picks Active.
+    # Windows makes this server active when the mode becomes HotStandby (lab, Windows Server 2025).
     if ($Mode -eq 'HotStandby' -and -not $f.ServerRole) { $f.ServerRole = 'Active' }
     if ($Mode -eq 'LoadBalance') { $f.ServerRole = '' }
 }
@@ -419,6 +429,7 @@ function Remove-DhcpServerv4Failover {
     [CmdletBinding(SupportsShouldProcess)]
     param([string]$ComputerName, [Parameter(Mandatory)][string[]]$Name, [switch]$Force, [switch]$PassThru)
     Record 'Remove-DhcpServerv4Failover' $PSBoundParameters
+    Assert-WdForce $Force
 }
 
 function Add-DhcpServerv4FailoverScope {
@@ -435,6 +446,7 @@ function Remove-DhcpServerv4FailoverScope {
     param([string]$ComputerName, [Parameter(Mandatory)][string]$Name, [Parameter(Mandatory)][ipaddress[]]$ScopeId,
         [switch]$Force, [switch]$PassThru)
     Record 'Remove-DhcpServerv4FailoverScope' $PSBoundParameters
+    Assert-WdForce $Force
     $f = $global:Failovers[$Name]
     $ids = @($ScopeId | ForEach-Object { "$_" })
     $f.ScopeId = @($f.ScopeId | Where-Object { $ids -notcontains "$_" })
@@ -449,6 +461,7 @@ function Invoke-DhcpServerv4FailoverReplication {
         [Parameter(Mandatory, ParameterSetName = 'ScopeId')][ipaddress[]]$ScopeId,
         [switch]$Force)
     Record 'Invoke-DhcpServerv4FailoverReplication' $PSBoundParameters
+    Assert-WdForce $Force
     'replicated'
 }
 
