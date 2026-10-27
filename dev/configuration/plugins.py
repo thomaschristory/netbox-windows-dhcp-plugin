@@ -1,8 +1,10 @@
 # Mounted over /etc/netbox/config/plugins.py in the netbox-docker image. Development only.
+import os
+
 from netbox_branching.utilities import DynamicSchemaDict
 
 # netbox-branching must come last.
-PLUGINS = ["netbox_dhcp", "netbox_windows_dhcp_plugin", "netbox_change_control", "netbox_branching"]
+PLUGINS = ["netbox_windows_dhcp_plugin", "netbox_change_control", "netbox_branching"]
 PLUGINS_CONFIG = {
     "netbox_windows_dhcp_plugin": {
         # Set WINDOWS_DHCP_USERNAME and WINDOWS_DHCP_PASSWORD in dev/env/lab.env to test against a lab server.
@@ -30,6 +32,8 @@ DATABASES = DynamicSchemaDict(
             "HOST": "postgres",
             "PORT": "",
             "CONN_MAX_AGE": 300,
+            # NETBOX_TEST_DB lets several test runs work side by side, each in its own database.
+            "TEST": {"NAME": os.environ.get("NETBOX_TEST_DB", "test_netbox")},
         }
     }
 )

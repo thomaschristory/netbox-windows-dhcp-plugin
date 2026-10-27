@@ -1,11 +1,14 @@
 # netbox-windows-dhcp-plugin
 
-A NetBox plugin that keeps Microsoft Windows DHCP servers in step with the data modelled by
-[netbox-plugin-dhcp](https://github.com/sys4/netbox-plugin-dhcp), in both directions, over WinRM or SSH.
+A NetBox plugin that models Microsoft Windows DHCP servers in NetBox and keeps both in step, in both directions,
+over WinRM or SSH.
 
 **Documentation: https://thomaschristory.github.io/netbox-windows-dhcp-plugin/**
 
-> **Status: 0.1.0, the first release.** Every v1 feature is built and tested against an in-memory fake server and
+> **Status: 0.2.0 in development.** The plugin no longer needs netbox-plugin-dhcp: it holds the whole Windows DHCP
+> configuration in its own models. 0.2.0 is a fresh start from 0.1.x (see the
+> [upgrade notes](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-01x)).
+> Every v1 feature is built and tested against an in-memory fake server and
 > PowerShell stubs, and the lab tests have run in full against two Windows Server 2022 DHCP servers (import, push,
 > leases and failover, over WinRM HTTP and HTTPS and over SSH). Kerberos and SSH key authentication have not been
 > tried on a real server yet (see the
@@ -22,9 +25,11 @@ A NetBox plugin that keeps Microsoft Windows DHCP servers in step with the data 
   branching, plus "Sync now" and "Dry run". A push only deletes Windows objects NetBox manages; objects made by hand
   on Windows are left alone until imported.
 - IPv4 scopes, superscopes, exclusion ranges, reservations, option definitions and values, user and vendor classes,
-  vendor class options, policies, failover relationships (with replication to the partner) and MAC filters.
+  vendor class options, policies, failover relationships (with replication to the partner) and MAC filters, each a
+  plugin model. Scopes and reservations point at NetBox prefixes, IP ranges, IP addresses and MAC addresses, so the
+  addresses show up in IPAM too. A Windows server can be linked to its device or virtual machine.
 - DHCPv6 scopes, reservations (DUID and IAID), user classes and option values.
-- A **Leases** tab on the subnet page, read live from Windows in a background job.
+- A **Leases** tab on the scope page, read live from Windows in a background job.
 - WinRM (NTLM, Kerberos, Basic, CredSSP for failover; HTTPS by default) or SSH, as in
   [terraform-provider-windowsddi](https://github.com/thomaschristory/terraform-provider-windowsddi). Credentials
   live in named profiles in the plugin configuration, limited to `allowed_hosts`, never in the database.
@@ -34,7 +39,8 @@ A NetBox plugin that keeps Microsoft Windows DHCP servers in step with the data 
 
 | Plugin | NetBox | netbox-plugin-dhcp | netbox-branching | Python |
 |---|---|---|---|---|
-| 0.1.x | 4.7 | 0.2.x | 1.2.2+ (optional) | 3.12 to 3.14 |
+| 0.2.x | 4.7 | not used | 1.2.2+ (optional) | 3.12 to 3.14 |
+| 0.1.x | 4.7 | 0.2.x (required) | 1.2.2+ (optional) | 3.12 to 3.14 |
 
 Windows Server 2016 or later with the DHCP Server role.
 
@@ -46,7 +52,7 @@ pip install netbox-windows-dhcp-plugin
 ```
 
 ```python
-PLUGINS = ["netbox_dhcp", "netbox_windows_dhcp_plugin"]
+PLUGINS = ["netbox_windows_dhcp_plugin"]
 
 PLUGINS_CONFIG = {
     "netbox_windows_dhcp_plugin": {
@@ -90,7 +96,7 @@ Requires [uv](https://docs.astral.sh/uv/) and Docker.
 ```bash
 make lint        # ruff check and format check
 make test        # unit tests, no NetBox needed
-make dev         # NetBox, netbox-plugin-dhcp, branching and change control in docker
+make dev         # NetBox, branching and change control in docker
 make test-netbox # NetBox integration tests inside the dev stack
 make docs        # build the documentation site
 make dist        # build and check the wheel and sdist

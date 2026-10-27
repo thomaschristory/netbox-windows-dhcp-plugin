@@ -23,7 +23,7 @@ from netbox_windows_dhcp_plugin.choices import SyncKindChoices, SyncStatusChoice
 from netbox_windows_dhcp_plugin.jobs import ImportJob
 from netbox_windows_dhcp_plugin.models import ImportProposal, SyncRun
 
-from .fixtures import dhcp_servers, windows_server
+from .fixtures import windows_server
 
 BRANCHING = "netbox_windows_dhcp_plugin.integrations.branching.branching_installed"
 IMPORT_BRANCH = "netbox_windows_dhcp_plugin.integrations.branching.import_branch"
@@ -61,8 +61,7 @@ class ImportStatusTestBase(TestCase):
         super().setUp()
         self.user.is_superuser = True
         self.user.save()
-        (dhcp,) = dhcp_servers(1)
-        self.server = windows_server(dhcp)
+        self.server = windows_server()
 
     def job(self, status):
         return Job.objects.create(object=self.server, name=ImportJob.name, status=status, job_id=uuid.uuid4())

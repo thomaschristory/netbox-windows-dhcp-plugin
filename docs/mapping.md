@@ -1,127 +1,125 @@
 # How objects map
 
-netbox-plugin-dhcp ("sys4") is modelled on Kea, so it has no place for several Windows concepts. The plugin reuses
-sys4 objects where they fit and adds its own models, linked to them, for the rest. It never changes sys4's tables.
+The plugin has one model for each Windows DHCP concept, under the **Windows DHCP** menu. Every DHCP object belongs
+to a [Windows server](servers.md), directly or through its scope, and keeps the name it has on Windows. Scopes and
+reservations point at core NetBox objects (prefix, IP range, IP address, MAC address), so DHCP addresses show up in
+IPAM like any other.
 
 ## Summary
 
-| On Windows | In NetBox | Plugin model for the Windows-only part |
+| On Windows | Plugin model | Core NetBox objects it points at |
 |---|---|---|
-| DHCP server | sys4 **DHCP Server** | **Windows server** (connection settings) |
-| IPv4 scope | sys4 **Subnet** with one **Pool** | **Scope settings** (`WindowsScope`) |
-| DHCPv6 scope | sys4 **Subnet** (a /64, no pool) | **Scope settings** (state, preference) |
-| Superscope | sys4 **Shared Network** | |
-| Exclusion range | | **Exclusion range** |
-| IPv4 reservation | sys4 **Host Reservation** | **Reservation settings** (type) |
-| DHCPv6 reservation | sys4 **Host Reservation** | **Reservation settings** (IAID) |
-| Option definition | sys4 **Option Definition** (server-scoped) | **Option definition settings** (Windows type and default) |
-| Option value | sys4 **Option** (on the server, a subnet or a reservation) | **Option qualifier** (user class or policy) |
-| User or vendor class | | **User and vendor classes** (`WindowsClass`) |
-| Vendor class option definition | | **Vendor option definition** |
-| Vendor class option value | | **Vendor option value** |
-| Policy | | **Policy** |
-| Failover relationship | | **Failover relationship** |
-| MAC filter | | **MAC filter** |
-| Allow and deny list switches | | **MAC filter lists** |
-| Lease | not stored | read live on the subnet's [Leases tab](leases.md) |
+| DHCP server | **Windows server** (name, connection settings, optional device or virtual machine) | |
+| IPv4 scope | **Scope** | **Prefix** (scope ID and mask), **IP Range** (start and end) |
+| DHCPv6 scope | **Scope** | **Prefix** (a /64) |
+| Superscope | **Superscope** | |
+| Exclusion range | **Exclusion range** (on a scope) | |
+| IPv4 reservation | **Reservation** | **IP Address**, **MAC Address** (or a client ID) |
+| DHCPv6 reservation | **Reservation** (DUID and IAID) | **IP Address** |
+| User or vendor class | **Class** | |
+| Option definition (standard or of a vendor class) | **Option definition** | |
+| Option value (server, scope or reservation; for a user class, vendor class or policy) | **Option value** | |
+| Policy | **Policy** | |
+| Failover relationship | **Failover relationship** | |
+| MAC filter | **MAC filter** | |
+| Allow and deny list switches | **MAC filter lists** | |
+| Lease | not stored | read live on the scope's [Leases tab](leases.md) |
 
-sys4 needs some NetBox core objects too. An import creates them, or reuses the ones it finds, in the Windows
-server's **import VRF** (global when empty): the **Prefix** of each scope, the **IP Range** of its pool, the **IP
-Address** of each reservation and the **MAC Address** of each IPv4 reservation.
+An import creates the core objects, or reuses the ones it finds, in the Windows server's **import VRF** (global when
+empty): the **Prefix** of each scope, the **IP Range** of each IPv4 scope, the **IP Address** of each reservation
+and the **MAC Address** of each IPv4 reservation identified by one. Failover partners share one IP range per scope
+this way. A prefix, IP range, IP address or MAC address that a scope or reservation points at cannot be deleted
+while it does.
 
 ## Names
 
-sys4 names are unique per model across all servers, and two Windows servers can both have a scope called "LAN". So
-imported objects get names built from the server and the scope:
-
-| Object | Name | Example |
-|---|---|---|
-| Subnet | `subnet_name_template`, default `{server}/{scope_id}` | `dhcp01/10.1.0.0` |
-| Host reservation | `reservation_name_template`, default `{server}/{scope_id}/{ip_address}` | `dhcp01/10.1.0.0/10.1.0.20` |
-| Shared network | `<server>/<superscope>` | `dhcp01/Campus` |
-
-The Windows **name** of a scope or reservation goes in the sys4 object's **description**, and the Windows
-**description** goes in its **comments**. Edit those fields to rename or describe the object on Windows.
-
-!!! note "Comments in the sys4 edit forms"
-    netbox-plugin-dhcp 0.2.0 shows a **Comments** field in its add and edit forms but does not save it
-    ([sys4/netbox-plugin-dhcp#68](https://github.com/sys4/netbox-plugin-dhcp/issues/68)). Until that is fixed, set
-    comments through the REST API, a CSV import or an import from Windows; the plugin reads and pushes them normally.
+Objects keep their Windows names. A scope's or a reservation's **name** is its Windows name, and its
+**description** is the Windows description. Two Windows servers can both have a scope called "LAN": names only need
+to be unique within one server where Windows wants that too (classes, policies, superscopes, failover
+relationships, compared without case as on Windows). In lists, a scope with a prefix shows as
+`<server>/<scope id>`, for example `dhcp01/10.1.0.0`, so scopes of different servers are easy to tell apart.
 
 ## Scopes (IPv4)
 
-| Windows | NetBox |
+| Windows | Scope field |
 |---|---|
-| Scope ID and subnet mask | The subnet's prefix |
-| Start and end of the range | The pool's IP range |
-| Name, description | Subnet description, comments |
-| Lease duration | Subnet valid lifetime (seconds). Empty keeps the Windows value |
-| State (Active, Inactive) | Scope settings: state |
-| Type (DHCP, BOOTP, Both) | Scope settings: type |
-| Delay, max BOOTP clients, activate policies | Scope settings. "No BOOTP limit" (4294967295 on Windows) is empty in NetBox |
-| Option 3, 6, 15 ... | sys4 options on the subnet |
+| Scope ID and subnet mask | Prefix |
+| Start and end of the range | IP range (inside the prefix) |
+| Name, description | Name, description |
+| Lease duration | Lease duration (seconds). Empty keeps the Windows value |
+| State (Active, Inactive) | State |
+| Type (DHCP, BOOTP, Both) | Type |
+| Delay, max BOOTP clients, activate policies | Delay (ms), max BOOTP clients, activate policies. "No BOOTP limit" (4294967295 on Windows) is empty in NetBox |
+| Superscope | Superscope |
+| Option 3, 6, 15 ... | Option values on the scope |
 
-A subnet without scope settings is pushed as active, type DHCP, no delay, policies on.
+A server has one scope per prefix. A new scope defaults to active, type DHCP, no delay, policies on.
 
-Options 1 (subnet mask) and 51 (lease time) are never options in NetBox: the prefix and the valid lifetime hold
-them. A NetBox option with one of those codes is reported and not pushed.
+Options 1 (subnet mask) and 51 (lease time) are never option values in NetBox: the prefix and the lease duration
+hold them. An option value with one of those codes is reported and not pushed.
 
 A subnet mask cannot be changed in place on Windows (only by removing the scope with everything in it), so a push
 refuses a changed prefix length.
 
 ## Superscopes
 
-A superscope is a sys4 shared network named `<server>/<superscope>`, with the Windows name in its description.
-Member scopes are its subnets. sys4 wants a prefix covering all of them, so the import uses (or creates, in the
-import VRF) the smallest supernet of the member scopes, at most a /8.
-
-On Windows, removing a superscope keeps its scopes; the import moves the subnets back under the server before
-deleting the shared network. Deleting a shared network by hand in NetBox deletes its subnets (sys4 behaviour), and the
-next push then removes those scopes from Windows.
+A **Superscope** belongs to a server and has the Windows superscope name. Member scopes name it in their
+**Superscope** field. On Windows, removing a superscope keeps its scopes, and so does deleting one in NetBox: its
+scopes simply leave it. Windows has no DHCPv6 superscopes.
 
 ## Exclusion ranges
 
-An **Exclusion range** belongs to a subnet, with a start and an end address. Windows has no way to change one, so a
-changed range is pushed as a remove and an add.
+An **Exclusion range** belongs to a scope, with a start and an end address inside the scope's prefix. Windows has no
+way to change one, so a changed range is pushed as a remove and an add.
 
 ## Reservations (IPv4)
 
-| Windows | NetBox |
+| Windows | Reservation field |
 |---|---|
-| IP address | The reservation's IPv4 address |
-| Client ID (MAC address) | The reservation's MAC address (or its client ID when it is not a MAC address) |
-| Name, description | Description, comments |
-| Type (DHCP, BOOTP, Both) | Reservation settings: type (Both when there are none) |
+| IP address | IP address (an IPAM IP address inside the scope's prefix) |
+| Client ID | MAC address (an IPAM MAC address), or **client ID** when the client is identified by something else |
+| Name, description | Name, description |
+| Type (DHCP, BOOTP, Both) | Reservation type (Both by default) |
 
-A reservation without a name gets its IP address as its name, as Windows does.
+A scope has one reservation per IP address. A reservation without a name gets its IP address as its name, as
+Windows does. See [Reservations](reservations.md) for a walkthrough.
 
 ## Option definitions and values
 
-Windows definitions of codes sys4 already defines (its standard DHCPv4 definitions) are left to sys4. Other codes
-become server-scoped sys4 option definitions, with the exact Windows type (`Byte`, `Word`, `DWord`, `DWordDword`,
-`IPv4Address`, `String`, `BinaryData`, `EncapsulatedData`, ...) and default value kept in **Option definition
-settings**. The type and the array flag of a definition cannot be changed in place on Windows, so a push refuses
-those changes.
+An **Option definition** belongs to a server and an address family, and optionally to a vendor class. It holds the
+code, name, exact Windows type (`Byte`, `Word`, `DWord`, `DWordDword`, `IPv4Address`, `String`, `BinaryData`,
+`EncapsulatedData`, ...), the multi-valued flag and the default value. Windows' own definitions of the standard
+options (codes RFC 2132 and its successors assign) are not imported: Windows ships them, and a push never touches
+them. The type and the array flag of a definition cannot be changed in place on Windows, so a push refuses those
+changes.
 
-Option values are sys4 options on the DHCP server (server level), a subnet (scope level) or a host reservation.
-An **Option qualifier** restricts a value to a user class, or to a policy, as Windows allows.
+An **Option value** belongs to a server and an address family, and is set on the server, a scope or a reservation
+(its **level**): leave scope and reservation empty for a server value, set a scope for a scope value, set a
+reservation for a reservation value (its scope is filled in from the reservation). It names the option by its
+**code**, so standard options need no definition in NetBox; the plugin knows their names (`3` routers, `6`
+domain-name-servers, `15` domain-name, ...) and shows them next to the code. A value can be restricted, as Windows
+allows, to:
 
-sys4 stores a list of values as one comma-separated string. A comma inside one value is stored as `\,` (Kea's
-escape). Numbers compare equal in hex and decimal (`0x1` and `1`); text compares exactly.
+- a **vendor class**, for an option that vendor class defines;
+- a **user class**: only clients of that class get the value;
+- a **policy**: only clients matching the policy get the value (IPv4 only; not on reservations, and not together
+  with a user class).
+
+The **value** is a list of strings, one per Windows value, for example `["10.1.0.1"]` or
+`["10.1.0.53", "10.1.0.54"]`. Commas and leading or trailing spaces inside a value are kept as they are. Numbers
+compare equal in hex and decimal (`0x1` and `1`); text compares exactly. A server holds one value per level, code,
+class and policy.
 
 ## Classes
 
-**User and vendor classes** hold the class name, type (user or vendor), the ASCII data the client sends, and the
-address family (IPv4 or IPv6). Names compare without case, as on Windows.
-
-A vendor class's own options are **Vendor option definitions** (code, name, Windows type, multi-valued, default)
-and **Vendor option values** (on the server, a scope or a reservation, optionally for a user class or a policy, with
-the value kept as a list). They are separate models because sys4 allows one definition per code and server, and
-Windows ships several vendor classes that define the same codes.
+A **Class** holds the class name, type (user or vendor), the ASCII data the client sends, and the address family
+(IPv4 or IPv6). Names compare without case, as on Windows. A vendor class's own options are option definitions and
+option values with that vendor class set: Windows ships several vendor classes that define the same codes, and
+their option codes 1 and 51 are ordinary vendor options, not the mask and lease time.
 
 ## Policies
 
-A **Policy** is server level (no subnet) or scope level (a subnet). It holds:
+A **Policy** is server level (no scope) or scope level (a scope). It holds:
 
 - the processing order, enabled flag and description;
 - the condition (AND or OR) and the **criteria**, as JSON by kind: `vendor_class`, `user_class`, `mac_address`,
@@ -130,7 +128,8 @@ A **Policy** is server level (no subnet) or scope level (a subnet). It holds:
 - the lease duration (seconds; empty keeps the Windows value);
 - for scope policies, the IP ranges, for example `[["10.1.0.10", "10.1.0.50"]]`.
 
-Option values set for a policy carry the policy in their option qualifier (or vendor option value).
+Option values set for a policy name it in their **Policy** field, at the same level as the policy (a scope policy's
+values on its scope, a server policy's values on the server).
 
 Windows takes a wildcard only at the start or the end of a condition value: `*.example.com` and `00-15-5d*` are fine,
 `host*.example.com` is refused. A policy with an FQDN condition cannot hold IP ranges or ordinary option values on
@@ -178,5 +177,5 @@ state. Windows names are not case sensitive, so keys use lowercase.
 | `filterlists` | `server` |
 | `class6`, `scope6`, `reservation6`, `option6` | `v6/user/lab`, `v6/2001:db8:1::`, `v6/2001:db8:1::/2001:db8:1::10`, `v6/server/23` |
 
-When NetBox holds more than one object for one Windows object (two subnets on one prefix, two copies of one option),
+When NetBox holds more than one object for one Windows object (two copies of a class that differ only in case, say),
 the extra ones get a `#<id>` suffix; an import proposes deleting them, and a push refuses them.

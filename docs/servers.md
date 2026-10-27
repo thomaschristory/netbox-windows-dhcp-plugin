@@ -1,10 +1,12 @@
 # Windows servers
 
-A **Windows server** says how to reach the Windows host behind one netbox-plugin-dhcp DHCP server. Each sys4 DHCP
-server has at most one. Find them under **Windows DHCP > Windows servers**.
+A **Windows server** is one Windows DHCP server and how to reach it. Every scope, class, option definition, option
+value, policy, failover relationship and MAC filter in the plugin belongs to one. Find them under **Windows DHCP >
+Windows servers**.
 
-Windows servers are bookkeeping, not DHCP configuration: with netbox-branching they always live in main and are never
-branched.
+The Windows server itself is connection settings and bookkeeping, not DHCP configuration: with netbox-branching it
+always lives in main and is never branched. The DHCP configuration under it (scopes and the rest) is branched like
+any other NetBox data.
 
 ![The Windows servers list: dhcp01 and dhcp02 with host, transport, credential profile and sync
 state](images/servers-list.webp)
@@ -13,7 +15,9 @@ state](images/servers-list.webp)
 
 | Field | Default | Meaning |
 |---|---|---|
-| DHCP server | | The netbox-plugin-dhcp server this Windows host serves (**Generic DHCP server** on the Windows server page and in the list, where the server's name itself opens the Windows server) |
+| Name | | How NetBox calls the server, unique. Sync runs, import branches (`dhcp-import/<name>/<timestamp>`) and scope names in lists use it |
+| Device | empty | The device the DHCP service runs on, for reference. The connection always uses **Host** |
+| Virtual machine | empty | The same for a virtual machine. Set a device or a virtual machine, not both |
 | Host | | Host name or IP address to connect to. A plain name or address: no port, user or path |
 | Transport | WinRM | WinRM or SSH |
 | Port | empty | Empty means 5986 (WinRM over HTTPS), 5985 (WinRM over HTTP) or 22 (SSH) |
@@ -29,7 +33,7 @@ state](images/servers-list.webp)
 | Sync enabled | on | Push NetBox changes to this server. Off stops pushes (manual and automatic), not imports or dry runs |
 | Import interval | empty | Minutes between [scheduled imports](import.md#scheduled-imports); empty or 0 means none |
 
-The form refuses a host the credential profile does not allow, Basic over HTTP or without verification, Kerberos
+The form refuses a device and a virtual machine together, a host the credential profile does not allow, Basic over HTTP or without verification, Kerberos
 without a realm, and SSH without host verification.
 
 Windows servers can be created, edited and deleted in bulk, and imported from CSV, like other NetBox objects.
@@ -101,7 +105,12 @@ The job log (**Operations > Jobs**, or the job linked from the sync run) has one
 
 ## Deleting a Windows server
 
-Deleting a Windows server deletes its sync runs, sync state and import proposals. The sys4 DHCP server and the DHCP
-objects stay, and nothing is removed from Windows. Without the sync state, a new Windows server for the same host
-manages nothing at first: the next push adopts the objects that are identical on both sides, and leaves the rest of
-Windows alone until it is imported.
+Deleting a Windows server deletes, in NetBox, everything that belongs to it: its scopes, reservations, exclusion
+ranges, classes, option definitions and values, policies, MAC filters, the failover relationships it is the primary
+of, sync runs, sync state and import proposals. A server that is the partner in a failover relationship cannot be
+deleted until that relationship is deleted: deleting it along with the partner would make the next push to the
+primary remove failover on Windows. Nothing is removed from Windows, and the prefixes, IP ranges, IP addresses and MAC addresses
+the scopes and reservations pointed at stay in IPAM. A new Windows server for the same host starts empty: import it
+to bring its configuration back. The first push after that adopts the objects that are identical on both sides.
+
+When the server's device or virtual machine is deleted, the Windows server stays, without the link.

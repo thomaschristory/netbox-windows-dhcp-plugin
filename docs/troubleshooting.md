@@ -54,7 +54,7 @@ proposes exactly the same values.
 Import again to get a fresh item.
 
 **Some Windows objects never show up.** Check the import's notes in the sync run: DHCPv6 vendor classes, DHCPv6
-exclusions, values with surrounding spaces and options of unknown DHCPv6 codes are left out on purpose. A failover
+exclusions and values of DHCPv6 codes that are not standard options are left out on purpose. A failover
 relationship imports from one partner only: the first one imported, which becomes its primary. A scope deleted on
 Windows while the server was being read counts as deleted on Windows in that run, and the notes name it.
 
@@ -62,7 +62,7 @@ Windows while the server was being read counts as deleted on Windows in that run
 
 **Nothing happens after a save.** Check, in order: **Sync enabled** on the Windows server; that the worker runs;
 with branching, that you edited main or merged the branch (edits inside a branch push nothing); that the object
-belongs to the server (a subnet's DHCP server or shared network).
+belongs to the server (through its scope, for reservations, exclusion ranges and scope option values).
 
 **"Sync is disabled for X: nothing pushed".** Turn **Sync enabled** on.
 
@@ -81,8 +81,8 @@ The usual ones:
 | Reason starts with | What to do |
 |---|---|
 | `changed on Windows since NetBox last pushed it` | Someone edited it on Windows. Import it back, or delete it on Windows by hand |
-| `NetBox holds more than one object for this Windows object` | Delete the extra subnet, reservation or option in NetBox |
-| `option 1 is the subnet mask` / `option 51 is the lease time` | Remove the option from NetBox; the prefix and the valid lifetime set them |
+| `NetBox holds more than one object for this Windows object` | Delete the extra object in NetBox (for example a class or policy whose name differs only in case) |
+| `option 1 is the subnet mask` / `option 51 is the lease time` | Remove the option value from NetBox; the scope's prefix and lease duration set them |
 
 **DHCP 20007 when deleting a scope.** The scope still has leases. The plugin never forces the delete; it succeeds on a
 later push once the leases are gone, or delete the scope on Windows by hand.
@@ -98,8 +98,7 @@ with the kind, the key and both values (without anything that identifies your ne
 
 ## Leases
 
-**There is no Leases tab.** The subnet does not belong to a Windows server (directly or through its shared network),
-or you may not view that Windows server.
+**There is no Leases tab.** You may not view the scope's Windows server.
 
 **The Load leases button is missing.** You need `change` on the Windows server, and to be in main rather than a
 branch.

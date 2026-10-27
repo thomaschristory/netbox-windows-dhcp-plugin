@@ -67,3 +67,19 @@ button is a menu of import branch, the branch you work in, or main (confirmed, p
      ready) wait for the owner's go.
    - **Fixes from testing 0.1.0rc1:** CSRF tokens on the plugin's buttons (#19); no Edit, Clone or Add buttons
      leading to "None" on read-only pages (#23).
+7. **In progress.** Standalone (0.2.0): drop netbox-plugin-dhcp.
+   - **Why:** sys4 models DHCP the way Kea does, so every Windows concept needed a side model or a workaround
+     (`<server>/<scope id>` names, comma-escaped option values, covering prefixes for superscopes, subnet ID
+     allocation across branches, upstream bugs such as sys4#68 and sys4#69).
+   - **What:** the plugin owns the data model (see [DESIGN.md](DESIGN.md#3-data-model)): `WindowsServer` with its own
+     name and an optional device or virtual machine; `Scope` (v4 and v6, on an IPAM prefix and, for IPv4, an IP
+     range), `Superscope`, `Reservation` (IPAM IP address plus MAC address or client ID; DHCPv6 DUID and IAID),
+     `ExclusionRange`, `WindowsClass`, `OptionDefinition` (optional vendor class), `OptionValue` (server, scope or
+     reservation level, optional vendor class, user class or policy, value as a list), `WindowsPolicy`,
+     `FailoverRelationship`, `MacFilter`, `MacFilterLists`. Standard options come from `standard_options.py`. The
+     record kinds, keys and fields are unchanged, so the Windows layer, diff, push and writer are untouched.
+   - **Upgrade:** no data migration. The new migrations drop the 0.1.x tables; users merge or delete open import
+     branches, upgrade, remove `netbox_dhcp` from `PLUGINS` if unused, migrate, run `remove_stale_contenttypes`,
+     recreate the Windows servers and import them again.
+   - **Still to do:** regenerate migrations and query-count baselines, retake the screenshots that show
+     netbox-plugin-dhcp pages, and a lab run of 0.2.0.

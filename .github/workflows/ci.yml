@@ -127,14 +127,14 @@ jobs:
 
           from netbox_branching.utilities import DynamicSchemaDict
 
-          PLUGINS = ["netbox_dhcp", "netbox_windows_dhcp_plugin", "netbox_change_control", "netbox_branching"]
+          PLUGINS = ["netbox_windows_dhcp_plugin", "netbox_change_control", "netbox_branching"]
           DATABASES = DynamicSchemaDict(DATABASES)
           DATABASE_ROUTERS = ["netbox_branching.database.BranchAwareRouter"]
           EOF
           else
             cat >> netbox/netbox/netbox/configuration.py <<'EOF'
 
-          PLUGINS = ["netbox_dhcp", "netbox_windows_dhcp_plugin"]
+          PLUGINS = ["netbox_windows_dhcp_plugin"]
           EOF
           fi
       - name: System check

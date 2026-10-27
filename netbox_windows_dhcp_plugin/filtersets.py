@@ -1,19 +1,25 @@
+import contextlib
+import ipaddress
+
 import django_filters
+from dcim.models import Device, MACAddress
 from django.db.models import Q
 from django.utils.translation import gettext_lazy as _
+from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netbox.filtersets import NetBoxModelFilterSet, PrimaryModelFilterSet
-from netbox_dhcp.models import DHCPServer, HostReservation, Option, OptionDefinition, Subnet
-from utilities.filters import ContentTypeFilter
 from utilities.filtersets import register_filterset
+from virtualization.models import VirtualMachine
 
 from .choices import (
     ClassTypeChoices,
     FailoverModeChoices,
+    FamilyChoices,
     ImportDestinationChoices,
     MacFilterListChoices,
     ProposalItemActionChoices,
     ProposalItemStatusChoices,
     ProposalStatusChoices,
+    ReservationTypeChoices,
     ScopeStateChoices,
     ScopeTypeChoices,
     SyncKindChoices,
@@ -28,16 +34,15 @@ from .models import (
     ImportProposalItem,
     MacFilter,
     MacFilterLists,
+    OptionDefinition,
+    OptionValue,
+    Reservation,
+    Scope,
+    Superscope,
     SyncRun,
     WindowsClass,
-    WindowsOptionDefinition,
-    WindowsOptionQualifier,
     WindowsPolicy,
-    WindowsReservation,
-    WindowsScope,
     WindowsServer,
-    WindowsVendorOption,
-    WindowsVendorOptionDefinition,
 )
 
 __all__ = (
@@ -47,34 +52,62 @@ __all__ = (
     "ImportProposalItemFilterSet",
     "MacFilterFilterSet",
     "MacFilterListsFilterSet",
+    "OptionDefinitionFilterSet",
+    "OptionValueFilterSet",
+    "ReservationFilterSet",
+    "ScopeFilterSet",
+    "SuperscopeFilterSet",
     "SyncRunFilterSet",
     "WindowsClassFilterSet",
-    "WindowsOptionDefinitionFilterSet",
-    "WindowsOptionQualifierFilterSet",
     "WindowsPolicyFilterSet",
-    "WindowsReservationFilterSet",
-    "WindowsScopeFilterSet",
     "WindowsServerFilterSet",
-    "WindowsVendorOptionDefinitionFilterSet",
-    "WindowsVendorOptionFilterSet",
 )
 
-
-def _model_filter(field_name, queryset, label):
-    return django_filters.ModelMultipleChoiceFilter(field_name=field_name, queryset=queryset, label=label)
-
-
-def _server_filter(field_name="dhcp_server"):
-    return _model_filter(field_name, DHCPServer.objects.all(), _("DHCP server (ID)"))
+# Where an option value sits. A reservation's value also names its scope, so "scope" means "on the scope itself".
+OPTION_LEVELS = (("server", _("Server")), ("scope", _("Scope")), ("reservation", _("Reservation")))
 
 
-def _subnet_filter(field_name="subnet"):
-    return _model_filter(field_name, Subnet.objects.all(), _("Subnet (ID)"))
+def _model_filter(field_name, queryset, label, **kwargs):
+    return django_filters.ModelMultipleChoiceFilter(field_name=field_name, queryset=queryset, label=label, **kwargs)
+
+
+def _server_id_filter(field_name="server", label=None):
+    return _model_filter(field_name, WindowsServer.objects.all(), label or _("Windows server (ID)"))
+
+
+def _server_name_filter(field_name="server", label=None):
+    return _model_filter(
+        f"{field_name}__name", WindowsServer.objects.all(), label or _("Windows server (name)"), to_field_name="name"
+    )
+
+
+def _scope_filter(field_name="scope"):
+    return _model_filter(field_name, Scope.objects.all(), _("Scope (ID)"))
+
+
+def _family_filter(field_name):
+    # The address family of a scope is the one of its prefix.
+    return django_filters.NumberFilter(field_name=field_name, lookup_expr="family", label=_("Address family"))
+
+
+def _network_q(field_name, value):
+    """Match a scope's prefix against an address or network typed in the search box, if it is one."""
+    try:
+        network = ipaddress.ip_network(value.strip(), strict=False)
+    except ValueError:
+        return Q()
+    return Q(**{f"{field_name}__net_contains_or_equals": str(network)})
 
 
 @register_filterset
 class WindowsServerFilterSet(PrimaryModelFilterSet):
-    dhcp_server_id = _server_filter()
+    device_id = _model_filter("device", Device.objects.all(), _("Device (ID)"))
+    device = _model_filter("device__name", Device.objects.all(), _("Device (name)"), to_field_name="name")
+    virtual_machine_id = _model_filter("virtual_machine", VirtualMachine.objects.all(), _("Virtual machine (ID)"))
+    virtual_machine = _model_filter(
+        "virtual_machine__name", VirtualMachine.objects.all(), _("Virtual machine (name)"), to_field_name="name"
+    )
+    import_vrf_id = _model_filter("import_vrf", VRF.objects.all(), _("Import VRF (ID)"))
     transport = django_filters.MultipleChoiceFilter(choices=TransportChoices)
     winrm_auth = django_filters.MultipleChoiceFilter(choices=WinRMAuthChoices)
 
@@ -82,6 +115,7 @@ class WindowsServerFilterSet(PrimaryModelFilterSet):
         model = WindowsServer
         fields = (
             "id",
+            "name",
             "host",
             "port",
             "credential_profile",
@@ -97,44 +131,96 @@ class WindowsServerFilterSet(PrimaryModelFilterSet):
         if not value.strip():
             return queryset
         return queryset.filter(
-            Q(host__icontains=value) | Q(dhcp_server__name__icontains=value) | Q(computer_name__icontains=value)
+            Q(name__icontains=value)
+            | Q(host__icontains=value)
+            | Q(computer_name__icontains=value)
+            | Q(description__icontains=value)
         )
 
 
 @register_filterset
-class WindowsScopeFilterSet(NetBoxModelFilterSet):
-    subnet_id = _subnet_filter()
+class SuperscopeFilterSet(NetBoxModelFilterSet):
+    server_id = _server_id_filter()
+    server = _server_name_filter()
+
+    class Meta:
+        model = Superscope
+        fields = ("id", "name", "description")
+
+    def search(self, queryset, name, value):
+        if not value.strip():
+            return queryset
+        return queryset.filter(Q(name__icontains=value) | Q(description__icontains=value))
+
+
+@register_filterset
+class ScopeFilterSet(NetBoxModelFilterSet):
+    server_id = _server_id_filter()
+    server = _server_name_filter()
+    prefix_id = _model_filter("prefix", Prefix.objects.all(), _("Prefix (ID)"))
+    ip_range_id = _model_filter("ip_range", IPRange.objects.all(), _("IP range (ID)"))
+    superscope_id = _model_filter("superscope", Superscope.objects.all(), _("Superscope (ID)"))
+    family = _family_filter("prefix__prefix")
     state = django_filters.MultipleChoiceFilter(choices=ScopeStateChoices)
     scope_type = django_filters.MultipleChoiceFilter(choices=ScopeTypeChoices)
 
     class Meta:
-        model = WindowsScope
-        fields = ("id", "delay_ms", "max_bootp_clients", "activate_policies", "preference")
+        model = Scope
+        fields = (
+            "id",
+            "name",
+            "lease_duration",
+            "delay_ms",
+            "max_bootp_clients",
+            "activate_policies",
+            "preference",
+            "preferred_lifetime",
+            "valid_lifetime",
+            "renew_timer",
+            "rebind_timer",
+        )
 
     def search(self, queryset, name, value):
         if not value.strip():
             return queryset
-        return queryset.filter(subnet__name__icontains=value)
+        return queryset.filter(
+            Q(name__icontains=value) | Q(description__icontains=value) | _network_q("prefix__prefix", value)
+        )
 
 
 @register_filterset
-class WindowsReservationFilterSet(NetBoxModelFilterSet):
-    host_reservation_id = _model_filter("host_reservation", HostReservation.objects.all(), _("Host reservation (ID)"))
-    reservation_type = django_filters.MultipleChoiceFilter(choices=ScopeTypeChoices)
+class ReservationFilterSet(NetBoxModelFilterSet):
+    server_id = _server_id_filter("scope__server")
+    server = _server_name_filter("scope__server")
+    scope_id = _scope_filter()
+    ip_address_id = _model_filter("ip_address", IPAddress.objects.all(), _("IP address (ID)"))
+    mac_address_id = _model_filter("mac_address", MACAddress.objects.all(), _("MAC address (ID)"))
+    family = _family_filter("scope__prefix__prefix")
+    reservation_type = django_filters.MultipleChoiceFilter(choices=ReservationTypeChoices)
 
     class Meta:
-        model = WindowsReservation
-        fields = ("id", "iaid")
+        model = Reservation
+        fields = ("id", "name", "client_id", "duid", "iaid")
 
     def search(self, queryset, name, value):
         if not value.strip():
             return queryset
-        return queryset.filter(host_reservation__name__icontains=value)
+        q = (
+            Q(name__icontains=value)
+            | Q(description__icontains=value)
+            | Q(client_id__icontains=value)
+            | Q(duid__icontains=value)
+        )
+        with contextlib.suppress(ValueError):
+            q |= Q(ip_address__address__net_host=str(ipaddress.ip_address(value.strip())))
+        return queryset.filter(q)
 
 
 @register_filterset
-class ExclusionRangeFilterSet(PrimaryModelFilterSet):
-    subnet_id = _subnet_filter()
+class ExclusionRangeFilterSet(NetBoxModelFilterSet):
+    server_id = _server_id_filter("scope__server")
+    server = _server_name_filter("scope__server")
+    scope_id = _scope_filter()
 
     class Meta:
         model = ExclusionRange
@@ -144,45 +230,62 @@ class ExclusionRangeFilterSet(PrimaryModelFilterSet):
         if not value.strip():
             return queryset
         return queryset.filter(
-            Q(start_address__icontains=value) | Q(end_address__icontains=value) | Q(subnet__name__icontains=value)
+            Q(start_address__icontains=value) | Q(end_address__icontains=value) | Q(description__icontains=value)
         )
 
 
 @register_filterset
 class WindowsClassFilterSet(PrimaryModelFilterSet):
-    dhcp_server_id = _server_filter()
+    server_id = _server_id_filter()
+    server = _server_name_filter()
     class_type = django_filters.MultipleChoiceFilter(choices=ClassTypeChoices)
+    family = django_filters.MultipleChoiceFilter(choices=FamilyChoices)
 
     class Meta:
         model = WindowsClass
-        fields = ("id", "name", "data", "family", "description")
+        fields = ("id", "name", "data", "description")
 
     def search(self, queryset, name, value):
         if not value.strip():
             return queryset
-        return queryset.filter(Q(name__icontains=value) | Q(data__icontains=value))
+        return queryset.filter(Q(name__icontains=value) | Q(data__icontains=value) | Q(description__icontains=value))
 
 
 @register_filterset
-class WindowsOptionDefinitionFilterSet(NetBoxModelFilterSet):
-    option_definition_id = _model_filter(
-        "option_definition", OptionDefinition.objects.all(), _("Option definition (ID)")
+class OptionDefinitionFilterSet(NetBoxModelFilterSet):
+    server_id = _server_id_filter()
+    server = _server_name_filter()
+    family = django_filters.MultipleChoiceFilter(choices=FamilyChoices)
+    vendor_class_id = _model_filter(
+        "vendor_class", WindowsClass.objects.filter(class_type=ClassTypeChoices.VENDOR), _("Vendor class (ID)")
+    )
+    # Definitions every client can get, as opposed to those of a vendor class.
+    has_vendor_class = django_filters.BooleanFilter(
+        field_name="vendor_class", lookup_expr="isnull", exclude=True, label=_("Has a vendor class")
     )
 
     class Meta:
-        model = WindowsOptionDefinition
-        fields = ("id",)
+        model = OptionDefinition
+        fields = ("id", "code", "name", "windows_type", "multi_valued", "description")
 
     def search(self, queryset, name, value):
         if not value.strip():
             return queryset
-        return queryset.filter(option_definition__name__icontains=value)
+        q = Q(name__icontains=value) | Q(description__icontains=value) | Q(vendor_class__name__icontains=value)
+        if value.strip().isdigit():
+            q |= Q(code=int(value.strip()))
+        return queryset.filter(q)
 
 
 @register_filterset
 class WindowsPolicyFilterSet(PrimaryModelFilterSet):
-    dhcp_server_id = _server_filter()
-    subnet_id = _subnet_filter()
+    server_id = _server_id_filter()
+    server = _server_name_filter()
+    scope_id = _scope_filter()
+    # Server-level policies have no scope.
+    has_scope = django_filters.BooleanFilter(
+        field_name="scope", lookup_expr="isnull", exclude=True, label=_("Scope-level")
+    )
 
     class Meta:
         model = WindowsPolicy
@@ -191,45 +294,86 @@ class WindowsPolicyFilterSet(PrimaryModelFilterSet):
     def search(self, queryset, name, value):
         if not value.strip():
             return queryset
-        return queryset.filter(name__icontains=value)
+        return queryset.filter(Q(name__icontains=value) | Q(description__icontains=value))
 
 
 @register_filterset
-class WindowsOptionQualifierFilterSet(NetBoxModelFilterSet):
-    option_id = _model_filter("option", Option.objects.all(), _("Option (ID)"))
-    user_class_id = _model_filter("user_class", WindowsClass.objects.all(), _("User class (ID)"))
+class OptionValueFilterSet(NetBoxModelFilterSet):
+    server_id = _server_id_filter()
+    server = _server_name_filter()
+    scope_id = _scope_filter()
+    reservation_id = _model_filter("reservation", Reservation.objects.all(), _("Reservation (ID)"))
+    level = django_filters.MultipleChoiceFilter(choices=OPTION_LEVELS, method="filter_level", label=_("Level"))
+    family = django_filters.MultipleChoiceFilter(choices=FamilyChoices)
+    vendor_class_id = _model_filter(
+        "vendor_class", WindowsClass.objects.filter(class_type=ClassTypeChoices.VENDOR), _("Vendor class (ID)")
+    )
+    user_class_id = _model_filter(
+        "user_class", WindowsClass.objects.filter(class_type=ClassTypeChoices.USER), _("User class (ID)")
+    )
     policy_id = _model_filter("policy", WindowsPolicy.objects.all(), _("Policy (ID)"))
 
     class Meta:
-        model = WindowsOptionQualifier
-        fields = ("id",)
+        model = OptionValue
+        fields = ("id", "code")
+
+    def filter_level(self, queryset, name, value):
+        if not value:
+            return queryset
+        levels = {
+            "server": Q(scope__isnull=True, reservation__isnull=True),
+            "scope": Q(scope__isnull=False, reservation__isnull=True),
+            "reservation": Q(reservation__isnull=False),
+        }
+        q = Q()
+        for level in value:
+            q |= levels[level]
+        return queryset.filter(q)
 
     def search(self, queryset, name, value):
         if not value.strip():
             return queryset
-        return queryset.filter(Q(user_class__name__icontains=value) | Q(policy__name__icontains=value))
+        q = (
+            Q(value__icontains=value)
+            | Q(vendor_class__name__icontains=value)
+            | Q(user_class__name__icontains=value)
+            | Q(policy__name__icontains=value)
+        )
+        if value.strip().isdigit():
+            q |= Q(code=int(value.strip()))
+        return queryset.filter(q)
 
 
 @register_filterset
 class FailoverRelationshipFilterSet(PrimaryModelFilterSet):
-    primary_server_id = _server_filter("primary_server")
-    partner_server_id = _server_filter("partner_server")
-    subnet_id = _subnet_filter("subnets")
+    primary_server_id = _server_id_filter("primary_server", _("Primary server (ID)"))
+    partner_server_id = _server_id_filter("partner_server", _("Partner server (ID)"))
+    # Either side of the relationship, for the server page.
+    server_id = django_filters.ModelMultipleChoiceFilter(
+        queryset=WindowsServer.objects.all(), method="filter_server", label=_("Windows server (ID), either side")
+    )
+    scope_id = _scope_filter("scopes")
     mode = django_filters.MultipleChoiceFilter(choices=FailoverModeChoices)
 
     class Meta:
         model = FailoverRelationship
         fields = ("id", "name", "max_client_lead_time", "server_role", "description")
 
+    def filter_server(self, queryset, name, value):
+        if not value:
+            return queryset
+        return queryset.filter(Q(primary_server__in=value) | Q(partner_server__in=value))
+
     def search(self, queryset, name, value):
         if not value.strip():
             return queryset
-        return queryset.filter(name__icontains=value)
+        return queryset.filter(Q(name__icontains=value) | Q(description__icontains=value))
 
 
 @register_filterset
 class MacFilterFilterSet(PrimaryModelFilterSet):
-    dhcp_server_id = _server_filter()
+    server_id = _server_id_filter()
+    server = _server_name_filter()
     list = django_filters.MultipleChoiceFilter(choices=MacFilterListChoices)
 
     class Meta:
@@ -244,7 +388,8 @@ class MacFilterFilterSet(PrimaryModelFilterSet):
 
 @register_filterset
 class MacFilterListsFilterSet(NetBoxModelFilterSet):
-    dhcp_server_id = _server_filter()
+    server_id = _server_id_filter()
+    server = _server_name_filter()
 
     class Meta:
         model = MacFilterLists
@@ -253,48 +398,7 @@ class MacFilterListsFilterSet(NetBoxModelFilterSet):
     def search(self, queryset, name, value):
         if not value.strip():
             return queryset
-        return queryset.filter(dhcp_server__name__icontains=value)
-
-
-@register_filterset
-class WindowsVendorOptionDefinitionFilterSet(PrimaryModelFilterSet):
-    dhcp_server_id = _server_filter("vendor_class__dhcp_server")
-    vendor_class_id = _model_filter("vendor_class", WindowsClass.objects.all(), _("Vendor class (ID)"))
-
-    class Meta:
-        model = WindowsVendorOptionDefinition
-        fields = ("id", "code", "name", "windows_type", "multi_valued", "description")
-
-    def search(self, queryset, name, value):
-        if not value.strip():
-            return queryset
-        return queryset.filter(
-            Q(name__icontains=value) | Q(vendor_class__name__icontains=value) | Q(description__icontains=value)
-        )
-
-
-@register_filterset
-class WindowsVendorOptionFilterSet(NetBoxModelFilterSet):
-    dhcp_server_id = _server_filter("definition__vendor_class__dhcp_server")
-    vendor_class_id = _model_filter("definition__vendor_class", WindowsClass.objects.all(), _("Vendor class (ID)"))
-    definition_id = _model_filter(
-        "definition", WindowsVendorOptionDefinition.objects.all(), _("Vendor option definition (ID)")
-    )
-    code = django_filters.NumberFilter(field_name="definition__code", label=_("Code"))
-    assigned_object_type = ContentTypeFilter()
-    user_class_id = _model_filter("user_class", WindowsClass.objects.all(), _("User class (ID)"))
-    policy_id = _model_filter("policy", WindowsPolicy.objects.all(), _("Policy (ID)"))
-
-    class Meta:
-        model = WindowsVendorOption
-        fields = ("id", "assigned_object_id")
-
-    def search(self, queryset, name, value):
-        if not value.strip():
-            return queryset
-        return queryset.filter(
-            Q(definition__name__icontains=value) | Q(definition__vendor_class__name__icontains=value)
-        )
+        return queryset.filter(server__name__icontains=value)
 
 
 @register_filterset
@@ -329,7 +433,7 @@ class ImportProposalFilterSet(NetBoxModelFilterSet):
     def search(self, queryset, name, value):
         if not value.strip():
             return queryset
-        return queryset.filter(windows_server__dhcp_server__name__icontains=value)
+        return queryset.filter(windows_server__name__icontains=value)
 
 
 @register_filterset

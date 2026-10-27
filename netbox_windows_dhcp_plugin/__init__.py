@@ -11,7 +11,7 @@ if PluginConfig is not None:
     class WindowsDHCPConfig(PluginConfig):
         name = "netbox_windows_dhcp_plugin"
         verbose_name = "Windows DHCP"
-        description = "Sync netbox-plugin-dhcp data with Microsoft Windows DHCP servers"
+        description = "Manage Microsoft Windows DHCP servers from NetBox, kept in sync in both directions"
         version = __version__
         author = "Thomas Christory"
         author_email = "9317624+thomaschristory@users.noreply.github.com"
@@ -28,7 +28,6 @@ if PluginConfig is not None:
             from . import (
                 jobs,  # noqa: F401 - registers the import scheduler system job
                 signals,
-                views,  # noqa: F401 - the Leases tab on subnets, registered before netbox-plugin-dhcp builds its URLs
             )
             from .conf import profiles_without_allowed_hosts
             from .integrations import branching

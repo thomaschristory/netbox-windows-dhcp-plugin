@@ -1,57 +1,61 @@
-import json
-from pathlib import Path
-
-import netbox_dhcp
-from ipam.models import Prefix
-from netbox_dhcp.models import DHCPServer, OptionDefinition, Subnet
+from ipam.models import IPAddress, IPRange, Prefix
+from netaddr import IPNetwork
 
 from netbox_windows_dhcp_plugin.choices import ClassTypeChoices
-from netbox_windows_dhcp_plugin.models import WindowsClass, WindowsServer
+from netbox_windows_dhcp_plugin.models import Reservation, Scope, WindowsClass, WindowsServer
 
 PLUGIN = "netbox_windows_dhcp_plugin"
 
 
-def dhcp_servers(count=3, start=1):
-    return [DHCPServer.objects.create(name=f"dhcp{i}") for i in range(start, start + count)]
+def windows_server(name="dhcp1", **kwargs):
+    kwargs.setdefault("host", f"{name}.example.com")
+    kwargs.setdefault("credential_profile", "lab")
+    return WindowsServer.objects.create(name=name, **kwargs)
 
 
-def subnets(server, count=3):
-    result = []
-    for i in range(1, count + 1):
-        prefix = Prefix.objects.create(prefix=f"10.{i}.0.0/24")
-        result.append(Subnet.objects.create(name=f"{server.name}/10.{i}.0.0", dhcp_server=server, prefix=prefix))
-    return result
+def windows_servers(count=3, start=1, **kwargs):
+    return [windows_server(f"dhcp{i}", **kwargs) for i in range(start, start + count)]
 
 
-def ensure_standard_option_definitions():
-    """
-    Recreate netbox-plugin-dhcp's standard option definitions when a test database lost them.
+def prefix(value, vrf=None):
+    return Prefix.objects.create(prefix=IPNetwork(value), vrf=vrf)
 
-    A data migration creates them, and a TransactionTestCase flushes every table when it ends, so a database kept
-    with --keepdb no longer has them on the next run.
-    """
-    if OptionDefinition.objects.filter(standard=True).exists():
-        return
-    path = Path(netbox_dhcp.__file__).parent / "migrations" / "initial_data" / "option_definitions.json"
-    # bulk_create, like the migration: sys4's save() rejects one of its own seeds (code 121 has type "internal").
-    OptionDefinition.objects.bulk_create(
-        OptionDefinition(standard=True, **definition) for definition in json.loads(path.read_text())
-    )
+
+def ip_range(start, end, vrf=None):
+    return IPRange.objects.create(start_address=IPNetwork(start), end_address=IPNetwork(end), vrf=vrf)
+
+
+def ip_address(value, vrf=None):
+    return IPAddress.objects.create(address=IPNetwork(value), vrf=vrf)
+
+
+def scope(server, network="10.1.0.0/24", start=None, end=None, **kwargs):
+    """An IPv4 scope (with an IP range from .10 to .200 unless given) or, for an IPv6 network, a DHCPv6 scope."""
+    net = IPNetwork(network)
+    if net.version == 4 and "ip_range" not in kwargs:
+        length = net.prefixlen
+        start = start or f"{net.network + 10}/{length}"
+        end = end or f"{net.network + 200}/{length}"
+        kwargs["ip_range"] = ip_range(start, end)
+    kwargs.setdefault("name", str(net.network))
+    return Scope.objects.create(server=server, prefix=prefix(network), **kwargs)
+
+
+def scopes(server, count=3):
+    return [scope(server, f"10.{i}.0.0/24") for i in range(1, count + 1)]
+
+
+def reservation(scope_, address, **kwargs):
+    return Reservation.objects.create(scope=scope_, ip_address=ip_address(address), **kwargs)
 
 
 def vendor_classes(server, count=1):
     return [
         WindowsClass.objects.create(
-            dhcp_server=server, name=f"vendor{i}", class_type=ClassTypeChoices.VENDOR, data=f"VENDOR{i}"
+            server=server, name=f"vendor{i}", class_type=ClassTypeChoices.VENDOR, data=f"VENDOR{i}"
         )
         for i in range(1, count + 1)
     ]
-
-
-def windows_server(dhcp_server, **kwargs):
-    return WindowsServer.objects.create(
-        dhcp_server=dhcp_server, host=f"{dhcp_server.name}.example.com", credential_profile="lab", **kwargs
-    )
 
 
 class PluginViewMixin:

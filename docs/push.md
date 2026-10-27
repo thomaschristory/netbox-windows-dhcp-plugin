@@ -17,9 +17,9 @@ within the [safety rules](#what-a-push-will-not-do).
 Nothing is pushed while **Sync enabled** is off on the Windows server. Turning it on does not push the changes made in the
 meantime by itself: run a dry run to see them, then **Sync now**.
 
-A change affects a server when it touches one of its sys4 subnets, pools, reservations, options or option
-definitions, one of the plugin's objects for it, or a prefix, IP range, IP address or MAC address one of those points
-at. Moving a subnet from one server to another pushes both. Applying import proposal items does not push.
+A change affects a server when it touches one of its DHCP objects (scopes, reservations, option values and the
+rest), or a prefix, IP range, IP address or MAC address one of its scopes or reservations points at. Moving a scope
+from one server to another pushes both. Applying import proposal items does not push.
 
 A push queued while another for the same server is still waiting to start is not queued twice: the waiting one reads
 the latest NetBox data anyway.
@@ -41,34 +41,32 @@ reason). It works with sync disabled, so it is the way to check a server before 
 
 ## Example: a new scope from NetBox
 
-A Windows scope is a sys4 subnet with a pool, as [How objects map](mapping.md#scopes-ipv4) describes. To add one to
-`dhcp01`:
+A Windows scope is a plugin **Scope** pointing at a prefix and, for IPv4, an IP range, as
+[How objects map](mapping.md#scopes-ipv4) describes. To add one to `dhcp01`:
 
-1. **IPAM**: the prefix (`198.18.40.0/24`) and the IP range of the pool (`198.18.40.100` to `198.18.40.200`) exist.
-2. **DHCP > Subnets > Add**: name, DHCP server, prefix. The **description** becomes the Windows scope name, the
-   **comments** its description (set them through the API for now, see
-   [How objects map](mapping.md#names)), and the **valid lifetime** its lease duration.
+1. **IPAM**: the prefix (`198.18.40.0/24`) and the IP range the scope hands out (`198.18.40.100` to
+   `198.18.40.200`) exist.
+2. **Windows DHCP > Scopes > Add**: the server, the prefix and the IP range. The **name** is the Windows scope name
+   (`VLAN40-Office`), the **description** its Windows description, and the **lease duration** (seconds) its lease
+   duration; state, type and the other settings default to what Windows gives a new scope.
 
     ![A new sys4 subnet for dhcp01: name, description VLAN40-Office, DHCP server, prefix](images/scope-1-subnet-form.webp)
 
-3. **Add Object > Pool** on the subnet, with the IP range: the scope's start and end.
-
-    ![A new pool on the subnet, with the IP range 198.18.40.100-200](images/scope-2-pool-form.webp)
-
-4. **Add Object > Option** for scope options, for example the router (option 3).
+3. **Windows DHCP > Option values > Add** for scope options: the server, the scope, the code and the value, for
+   example the router (code 3, value `198.18.40.1`).
 
     ![A new option on the subnet: dhcp4 routers (3), value 198.18.40.1](images/scope-3-option-form.webp)
 
-5. **Add Object > Host Reservation** for reservations: the IP address and MAC address objects, and the
-   **description**, which becomes the Windows reservation name.
+4. **Windows DHCP > Reservations > Add** for reservations: the scope, the IP address and MAC address objects, and
+   the **name**, which is the Windows reservation name.
 
     ![A new host reservation: hardware address, IPv4 address 198.18.40.20, description printer01](images/scope-4-reservation-form.webp)
 
-6. **Windows DHCP > Exclusion ranges > Add** for what Windows should not hand out.
+5. **Windows DHCP > Exclusion ranges > Add** for what Windows should not hand out.
 
     ![A new exclusion range in the subnet: 198.18.40.150 to 198.18.40.159](images/scope-5-exclusion-form.webp)
 
-7. **Dry run** on the Windows server shows what the push will create; then **Sync now** (or, with sync enabled, just
+6. **Dry run** on the Windows server shows what the push will create; then **Sync now** (or, with sync enabled, just
    wait: each save queues a push).
 
     ![The dry run: the scope, the exclusion range, the reservation and two options to create](images/scope-6-dry-run.webp)
@@ -147,11 +145,11 @@ the Windows object is kept as it is.
 
 **NetBox data Windows cannot hold:**
 
-- a scope (IPv4 subnet) without a pool, or a DHCPv6 subnet that is not a /64;
+- an IPv4 scope without an IP range, or a DHCPv6 scope whose prefix is not a /64;
 - a reservation without a MAC address or client ID, or a DHCPv6 reservation without an address, a DUID or an IAID;
-- an option without a value, options 1 and 51 (they come from the prefix and the valid lifetime), values of codes
-  Windows has no definition for, and a definition of a code Windows defines itself;
-- two NetBox objects for one Windows object (two subnets on one prefix, two copies of an option);
+- options 1 and 51 (they come from the prefix and the scope's lease duration), values of codes Windows has no
+  definition for, and a definition of a code Windows defines itself;
+- two NetBox objects for one Windows object (two classes or policies whose names differ only in case);
 - a policy without criteria, two policies with the same processing order, a policy whose processing order would
   leave a gap at its level (order 3 where Windows would only hold two policies, counting those made by hand), the
   other policies of that level when the policy is already on Windows (see above), or a policy option value whose

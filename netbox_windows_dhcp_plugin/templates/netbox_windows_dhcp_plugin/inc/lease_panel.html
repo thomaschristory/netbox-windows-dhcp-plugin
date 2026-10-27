@@ -16,10 +16,10 @@
   </h2>
   <div class="card-body">
     {% if can_load and in_branch %}
-      <p class="text-muted">{% trans "Leases are loaded for subnets as they are in main: switch to main to load them." %}</p>
+      <p class="text-muted">{% trans "Leases are loaded for scopes as they are in main: switch to main to load them." %}</p>
     {% endif %}
     {% if not windows_server %}
-      <span class="text-muted">{% trans "This subnet does not belong to a Windows server you can view." %}</span>
+      <span class="text-muted">{% trans "You cannot view the Windows server of this scope." %}</span>
     {% elif running %}
       <div class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></div>
       {% blocktrans with server=windows_server %}Reading leases from {{ server }}...{% endblocktrans %}
@@ -34,7 +34,7 @@
       </div>
     {% elif job and result.leases is not None %}
       <p class="text-muted mb-0">
-        {% blocktrans count total=result.total with server=result.server scope=result.scope when=job.completed|date:"SHORT_DATETIME_FORMAT" %}{{ total }} lease in scope {{ scope }} on {{ server }} (read {{ when }}){% plural %}{{ total }} leases in scope {{ scope }} on {{ server }} (read {{ when }}){% endblocktrans %}
+        {% blocktrans count total=result.total with server=result.server scope=result.scope_id when=job.completed|date:"SHORT_DATETIME_FORMAT" %}{{ total }} lease in scope {{ scope }} on {{ server }} (read {{ when }}){% plural %}{{ total }} leases in scope {{ scope }} on {{ server }} (read {{ when }}){% endblocktrans %}
         {% if result.truncated %}
           {% blocktrans with shown=result.leases|length %}Only the first {{ shown }} are shown.{% endblocktrans %}
         {% endif %}

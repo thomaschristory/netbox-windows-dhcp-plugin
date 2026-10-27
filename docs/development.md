@@ -16,7 +16,7 @@ uv sync
 | `make lint` | `ruff check` and `ruff format --check` (line length 120) |
 | `make format` | Fix what ruff can and format |
 | `make test` | Unit tests (`tests/`): the Windows layer, the diff engine, the docs. No NetBox needed |
-| `make dev` | Start the dev stack: NetBox 4.7 with netbox-plugin-dhcp, netbox-branching and netbox-change-control, at http://localhost:8000 |
+| `make dev` | Start the dev stack: NetBox 4.7 with netbox-branching and netbox-change-control, at http://localhost:8000 |
 | `make test-netbox` | NetBox integration tests (`tests_netbox/`) inside the dev stack |
 | `make restart` | Restart NetBox and the worker after Python changes (the source is mounted into the containers) |
 | `make logs` | Follow the NetBox log |

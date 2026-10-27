@@ -274,7 +274,7 @@ def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] 
     if DUPLICATE in f:
         return CONFLICT
     if record.kind == "scope" and not (f.get("start_range") and f.get("end_range")):
-        return "the subnet has no pool (IP range) to use as the scope range; add one in NetBox"
+        return "the scope has no IP range to hand out; add one in NetBox"
     if record.kind == "reservation" and not f.get("client_id"):
         return "the reservation has neither a MAC address nor a client ID; add one in NetBox"
     if record.kind == "optiondef" and f["option_id"] in skipped_option_ids and not f.get("vendor_class"):
@@ -289,7 +289,7 @@ def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] 
         if f["mode"] == "hotstandby" and not f.get("server_role"):
             return "a hot standby relationship needs the primary server's role (active or standby); set it in NetBox"
     if record.kind == "scope6" and f.get("prefix_length") != V6_PREFIX_LENGTH:
-        return f"Windows DHCPv6 scopes are /{V6_PREFIX_LENGTH} prefixes; this subnet is /{f.get('prefix_length')}"
+        return f"Windows DHCPv6 scopes are /{V6_PREFIX_LENGTH} prefixes; this scope is /{f.get('prefix_length')}"
     if record.kind == "reservation6":
         if not f.get("ip_address"):
             return "the reservation has no IPv6 address; add one in NetBox"
@@ -307,7 +307,7 @@ def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] 
         code = f["option_id"]
         vendor = f.get("vendor_class", "")
         if code in skipped_option_ids and not vendor:
-            what, source = ("subnet mask", "prefix length") if code == 1 else ("lease time", "subnet's valid lifetime")
+            what, source = ("subnet mask", "prefix length") if code == 1 else ("lease time", "scope's lease duration")
             return LEASE_OR_MASK.format(code=code, what=what, source=source)
         if not f.get("value"):
             return "the option has no value; set one or remove the option in NetBox"

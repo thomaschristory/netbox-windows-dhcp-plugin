@@ -12,15 +12,14 @@ The examples use a NetBox v2 API token (`Authorization: Bearer nbt_...`); a v1 t
 | Endpoint | Model |
 |---|---|
 | `windows-servers/` | Windows servers |
-| `windows-scopes/` | Scope settings |
-| `windows-reservations/` | Reservation settings |
+| `scopes/` | Scopes (IPv4 and DHCPv6) |
+| `superscopes/` | Superscopes |
+| `reservations/` | Reservations |
 | `exclusion-ranges/` | Exclusion ranges |
 | `windows-classes/` | User and vendor classes |
-| `windows-option-definitions/` | Option definition settings |
-| `windows-option-qualifiers/` | Option qualifiers |
+| `option-definitions/` | Option definitions |
+| `option-values/` | Option values (server, scope and reservation level) |
 | `windows-policies/` | Policies |
-| `vendor-option-definitions/` | Vendor class option definitions |
-| `vendor-options/` | Vendor class option values |
 | `failover-relationships/` | Failover relationships |
 | `mac-filters/` | MAC filters |
 | `mac-filter-lists/` | MAC filter list switches |
@@ -28,19 +27,21 @@ The examples use a NetBox v2 API token (`Authorization: Bearer nbt_...`); a v1 t
 | `import-proposals/` | Import proposals (read only, plus actions) |
 | `import-proposal-items/` | Import proposal items (read only, plus actions) |
 
-sys4 objects (DHCP servers, subnets, pools, reservations, options) stay at netbox-plugin-dhcp's own endpoints under
-`/api/plugins/netbox-dhcp/`. [Reservations through the API](reservations-api.md) creates a reservation end to end,
-from the IP and MAC address objects to the push.
+Prefixes, IP ranges, IP addresses and MAC addresses stay at NetBox's own endpoints (`/api/ipam/...`,
+`/api/dcim/mac-addresses/`); scopes and reservations refer to them by ID. Option values hold their value as a list of
+strings (`"value": ["10.1.0.53", "10.1.0.54"]`). [Reservations through the API](reservations-api.md) creates a
+reservation and an option value on it end to end, from the IP and MAC address objects to the push.
 
 ## Creating a Windows server
 
 ```bash
 curl -s -X POST https://netbox.example/api/plugins/windows-dhcp/windows-servers/ \
   -H "Authorization: Bearer $NETBOX_TOKEN" -H "Content-Type: application/json" \
-  -d '{"dhcp_server": 3, "host": "dhcp01.corp.example", "credential_profile": "dhcp-admin", "sync_enabled": false}'
+  -d '{"name": "dhcp01", "host": "dhcp01.corp.example", "credential_profile": "dhcp-admin", "sync_enabled": false}'
 ```
 
-The same validation as the form applies: the profile's `allowed_hosts` must cover the host.
+The same validation as the form applies: the profile's `allowed_hosts` must cover the host. Add `"device": <id>` or
+`"virtual_machine": <id>` to link the machine the DHCP service runs on.
 
 ## Actions on a Windows server
 
@@ -86,20 +87,20 @@ has its `action`, `kind`, `key`, `before` and `after` values, and the NetBox obj
 ## GraphQL
 
 Each model has a single-object and a list query, prefixed with `windows_dhcp_`: `windows_dhcp_server`,
-`windows_dhcp_server_list`, `windows_dhcp_scope_list`, `windows_dhcp_reservation_list`,
-`windows_dhcp_exclusion_range_list`, `windows_dhcp_class_list`, `windows_dhcp_option_definition_list`,
-`windows_dhcp_policy_list`, `windows_dhcp_option_qualifier_list`, `windows_dhcp_failover_relationship_list`,
-`windows_dhcp_mac_filter_list`, `windows_dhcp_mac_filter_lists_list`, `windows_dhcp_vendor_option_definition_list`,
-`windows_dhcp_vendor_option_list`, `windows_dhcp_sync_run_list`, `windows_dhcp_import_proposal_list` and
-`windows_dhcp_import_proposal_item_list`.
+`windows_dhcp_server_list`, `windows_dhcp_scope_list`, `windows_dhcp_superscope_list`,
+`windows_dhcp_reservation_list`, `windows_dhcp_exclusion_range_list`, `windows_dhcp_class_list`,
+`windows_dhcp_option_definition_list`, `windows_dhcp_option_value_list`, `windows_dhcp_policy_list`,
+`windows_dhcp_failover_relationship_list`, `windows_dhcp_mac_filter_list`, `windows_dhcp_mac_filter_lists_list`,
+`windows_dhcp_sync_run_list`, `windows_dhcp_import_proposal_list` and `windows_dhcp_import_proposal_item_list`.
 
 ```graphql
 {
-  windows_dhcp_server_list {
+  windows_dhcp_scope_list {
     id
-    host
-    sync_enabled
-    dhcp_server { name }
+    name
+    state
+    server { name }
+    prefix { prefix }
   }
 }
 ```

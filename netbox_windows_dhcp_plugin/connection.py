@@ -75,13 +75,6 @@ def build_client(server, runner=None):
     return DhcpClient(limit(runner, get_setting("max_concurrency")), computer_name=server.computer_name)
 
 
-def _windows_hosts(dhcp_server):
-    from .models import WindowsServer
-
-    ws = WindowsServer.objects.filter(dhcp_server=dhcp_server).first()
-    return (ws.host, ws.computer_name) if ws else ()
-
-
 def failover_secret_lookup(server):
     """
     A function returning the shared secret of one of the server's failover relationships, by name, for the push
@@ -92,17 +85,15 @@ def failover_secret_lookup(server):
 
     def lookup(name):
         relationship = (
-            FailoverRelationship.objects.filter(primary_server=server.dhcp_server, name__iexact=name)
+            FailoverRelationship.objects.filter(primary_server=server, name__iexact=name)
             .select_related("partner_server")
             .first()
         )
         if relationship is None or not relationship.shared_secret_profile:
             return ""
         profile = relationship.shared_secret_profile
-        partner_hosts = _windows_hosts(relationship.partner_server)
-        if not partner_hosts:
-            # Without the partner's host there is nothing to check the profile's allowed_hosts against.
-            raise ValueError(f"failover {name}: the partner server has no Windows server in NetBox; add one")
+        partner = relationship.partner_server
+        partner_hosts = (partner.host, partner.computer_name)
         try:
             check_host_allowed(profile, server.host, server.computer_name, *partner_hosts)
             return get_credentials(profile).secret

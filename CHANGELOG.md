@@ -5,8 +5,31 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- The plugin is standalone: it no longer depends on netbox-plugin-dhcp (sys4) and holds the whole Windows DHCP
+  configuration in its own models. A Windows server has its own name; scopes (IPv4 and DHCPv6), superscopes,
+  reservations, exclusion ranges, classes, option definitions, option values, policies, failover relationships, MAC
+  filters and the list switches are plugin models. Scopes and reservations still point at core NetBox objects
+  (prefix, IP range, IP address, MAC address), which imports create or reuse in the server's import VRF as before.
+- Imported objects keep their Windows names: the `subnet_name_template` and `reservation_name_template` settings and
+  the `<server>/<scope id>` naming are gone.
+- Option values are lists, so values containing commas or leading and trailing spaces are imported and pushed like
+  any other; the `\,` escape is gone. Standard options are named by their code.
+- The Leases tab moved to the plugin's scope page.
+- The REST endpoints and GraphQL queries follow the new models; the old ones (scope and reservation settings, option
+  definition settings, option qualifiers, vendor option definitions and values) are gone.
+- **No upgrade path from 0.1.x: 0.2.0 is a fresh start.** Its migrations drop the plugin's 0.1.x tables, so the
+  Windows servers' connection settings, sync state, sync runs and import proposals are lost. Data in
+  netbox-plugin-dhcp is left untouched. Before upgrading, merge or delete open import branches; after it, recreate
+  the Windows servers and import each one again. See [Installation](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-01x).
+
 ### Added
 
+- A Windows server can be linked to the device or virtual machine it runs on.
+- Option values on reservations through the REST API (netbox-plugin-dhcp could not do it,
+  [sys4/netbox-plugin-dhcp#69](https://github.com/sys4/netbox-plugin-dhcp/issues/69)).
+- Option values keep commas and leading or trailing spaces, in NetBox and on the way to and from Windows.
 - Documentation: a Reservations page (create, type, options, change, delete) and a step-by-step failover
   walkthrough, each with screenshots of NetBox and of the Windows DHCP console and PowerShell output, taken on two
   Windows Server 2025 servers.

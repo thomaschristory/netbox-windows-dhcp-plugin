@@ -239,7 +239,7 @@ def for_run(run, user, job=None, now=None):
         proposal = (
             ImportProposal.objects.restrict(user, "view")
             .filter(sync_run=run)
-            .select_related("windows_server__dhcp_server")
+            .select_related("windows_server")
             .order_by("-pk")
             .first()
         )
@@ -278,7 +278,7 @@ def for_server(server, user, now=None):
     runs = (
         SyncRun.objects.restrict(user, "view")
         .filter(windows_server=server, kind=SyncKindChoices.IMPORT)
-        .select_related("job", "windows_server__dhcp_server")
+        .select_related("job", "windows_server")
         .order_by("-created")
     )
     run = runs.first()

@@ -1,44 +1,38 @@
 """
-Write sync changes into NetBox: netbox-plugin-dhcp objects, the core IPAM objects they need, and our own models.
+Write sync changes into NetBox: the plugin's DHCP models and the core IPAM objects scopes and reservations point at
+(prefix, IP range, IP address, MAC address).
 
-Every write goes through ``save()`` one object at a time (sys4 validates in save and numbers subnets as it goes), and
-``snapshot()`` is taken before each update or delete so the change log, and a branch's conflict detection, know the
-previous state.
+Every write goes through ``full_clean()`` and ``save()`` one object at a time, and ``snapshot()`` is taken before each
+update or delete so the change log, and a branch's conflict detection, know the previous state.
 """
 
 import ipaddress
 import re
 
 from dcim.models import MACAddress
-from django.contrib.contenttypes.models import ContentType
 from ipam.models import IPAddress, IPRange, Prefix
-from netbox_dhcp.models import HostReservation, Option, OptionDefinition, Pool, SharedNetwork, Subnet
 
-from ..conf import get_setting
 from ..models import (
     ExclusionRange,
     FailoverRelationship,
     MacFilter,
     MacFilterLists,
+    OptionDefinition,
+    OptionValue,
+    Reservation,
+    Scope,
+    Superscope,
     WindowsClass,
-    WindowsOptionDefinition,
-    WindowsOptionQualifier,
     WindowsPolicy,
-    WindowsReservation,
-    WindowsScope,
     WindowsServer,
-    WindowsVendorOption,
-    WindowsVendorOptionDefinition,
 )
+from ..standard_options import STANDARD_V4, STANDARD_V6
 from ..windows import normalize
 from . import netbox_state, windows_state
 from .diff import CREATE, DELETE
 from .push import DUPLICATE
 
 __all__ = ("ApplyError", "Writer")
-
-# The widest prefix import creates to cover a superscope's scopes.
-MIN_SHARED_PREFIX_LENGTH = 8
 
 # PrimaryModel.description is limited to 200 characters.
 DESCRIPTION_LENGTH = 200
@@ -57,18 +51,19 @@ def _duplicate_pk(key):
     return int(match.group(1)) if match else None
 
 
+def _name(obj):
+    return obj.name if obj is not None else ""
+
+
 class Writer:
     """Applies changes for one Windows server. Under activate_branch every read and write goes to the branch."""
 
-    def __init__(self, windows_server, user=None, subnet_ids=None):
+    def __init__(self, windows_server, user=None):
         self.server = windows_server
-        self.dhcp = windows_server.dhcp_server
         self.vrf = windows_server.import_vrf
         # When set (a reviewer applying proposal items), every object written is checked against this user's
         # permissions, constraints included, like NetBox's own edit views do. Imports run by a job leave it unset.
         self.user = user
-        # Subnet IDs to give new subnets (branch imports), instead of letting sys4 count from the current schema.
-        self.subnet_ids = subnet_ids
 
     # -- writes ------------------------------------------------------------------------------------------------------
 
@@ -104,22 +99,14 @@ class Writer:
             obj.snapshot()
             obj.delete()
 
-    # -- naming ------------------------------------------------------------------------------------------------------
-
-    def _names(self, scope_id, ip_address=""):
-        values = {"server": self.dhcp.name, "scope_id": scope_id, "ip_address": ip_address}
-        return (
-            get_setting("subnet_name_template").format(**values),
-            get_setting("reservation_name_template").format(**values),
-        )
-
     # -- lookups -----------------------------------------------------------------------------------------------------
 
-    def subnet(self, scope_id, required=True):
-        """This server's subnet for a scope ID, or for a ``<scope ID>#<pk>`` key naming one of several."""
+    def scope(self, scope_id, required=True):
+        """This server's IPv4 scope for a scope ID, or for a ``<scope ID>#<pk>`` key naming one of several."""
+        scopes = netbox_state.server_scopes(self.server)
         if (pk := _duplicate_pk(scope_id)) is not None:
-            return netbox_state.server_subnets(self.dhcp).filter(pk=pk).first()
-        for s in netbox_state.server_subnets(self.dhcp).filter(prefix__prefix__net_contains_or_equals=scope_id):
+            return scopes.filter(pk=pk).first()
+        for s in scopes.filter(prefix__prefix__net_contains_or_equals=scope_id):
             if netbox_state.scope_id_of(s) == scope_id:
                 return s
         if required:
@@ -128,93 +115,82 @@ class Writer:
 
     def reservation(self, scope_id, ip_address, required=True):
         """A reservation in this server's scope, or the one a ``<ip>#<pk>`` key names among several."""
-        subnet = self.subnet(scope_id, required=required)
+        scope = self.scope(scope_id, required=required)
+        return self._find_reservation(scope, ip_address, required, "reservation")
+
+    @staticmethod
+    def _find_reservation(scope, ip_address, required, label):
         found = None
-        if subnet is not None and (pk := _duplicate_pk(ip_address)) is not None:
-            found = HostReservation.objects.filter(subnet=subnet, pk=pk).first()
-        elif subnet is not None and ip_address:
+        if scope is not None and (pk := _duplicate_pk(ip_address)) is not None:
+            found = Reservation.objects.filter(scope=scope, pk=pk).first()
+        elif scope is not None and ip_address:
             found = (
-                HostReservation.objects.filter(subnet=subnet, ipv4_address__address__net_host=ip_address)
-                .order_by("pk")
-                .first()
+                Reservation.objects.filter(scope=scope, ip_address__address__net_host=ip_address).order_by("pk").first()
             )
         if found is None and required:
-            raise ApplyError(f"reservation {ip_address} is not in NetBox yet: apply it first")
+            raise ApplyError(f"{label} {ip_address} is not in NetBox yet: apply it first")
         return found
 
     def windows_class(self, class_type, name, required=True):
         # Windows class names are not case sensitive.
         found = WindowsClass.objects.filter(
-            dhcp_server=self.dhcp, family=4, class_type=class_type, name__iexact=name
+            server=self.server, family=4, class_type=class_type, name__iexact=name
         ).first()
         if found is None and required:
             raise ApplyError(f"{class_type} class {name!r} is not in NetBox yet: apply it first")
         return found
 
     def definition(self, option_id, vendor_class="", required=True):
-        """
-        The definition an option value uses: for a vendor class, its WindowsVendorOptionDefinition; otherwise the
-        server's own netbox-plugin-dhcp definition of the code, else sys4's standard one.
-        """
+        """This server's IPv4 definition of an option code, for a vendor class or (``""``) for every client."""
+        qs = OptionDefinition.objects.filter(server=self.server, family=4, code=option_id)
         if vendor_class:
-            found = WindowsVendorOptionDefinition.objects.filter(
-                vendor_class__dhcp_server=self.dhcp,
-                vendor_class__family=4,
-                vendor_class__name__iexact=vendor_class,
-                code=option_id,
-            ).first()
+            found = qs.filter(vendor_class__name__iexact=vendor_class).first()
         else:
-            qs = OptionDefinition.objects.filter(code=option_id, family=4)
-            found = (
-                qs.filter(dhcp_server=self.dhcp, standard=False).first()
-                or qs.filter(standard=True, space="dhcp4").first()
-            )
+            found = qs.filter(vendor_class__isnull=True).first()
         if found is None and required:
             label = f"{vendor_class}/{option_id}" if vendor_class else str(option_id)
             raise ApplyError(f"option definition {label} is not in NetBox yet: apply it first")
         return found
 
-    def _parent(self, parent, required=True):
+    def _target(self, parent, required=True):
+        """
+        Where an IPv4 option value lives: (scope, reservation), (None, None) at server level, or None when its scope
+        or reservation is not in NetBox.
+        """
         if parent == "server":
-            return self.dhcp
+            return None, None
         if "/" in parent:
-            return self.reservation(*parent.split("/", 1), required=required)
-        return self.subnet(parent, required=required)
+            reservation = self.reservation(*parent.split("/", 1), required=required)
+            return (reservation.scope, reservation) if reservation is not None else None
+        scope = self.scope(parent, required=required)
+        return (scope, None) if scope is not None else None
 
-    def option(self, key, fields):
-        """The Option for a record, or the extra copy a duplicate's ``<key>#<pk>`` key names."""
-        # Keys contain Windows class names, which may themselves contain "#". A key only names a duplicate when it
-        # is exactly the record's own key plus "#<pk>", and that pk must be an option of the same parent and code.
-        vendor, user, policy = fields["vendor_class"], fields["user_class"], fields.get("policy", "")
-        base = windows_state.option_key(fields["parent"], fields["option_id"], vendor, user, policy)
-        duplicate = re.fullmatch(rf"{re.escape(base)}#(\d+)", key)
-        parent = self._parent(fields["parent"], required=False)
-        if parent is None:
+    def _find_option(self, key, base, family, target, fields, vendor, user, policy):
+        """
+        The OptionValue for a record, or the extra copy a duplicate's ``<base key>#<pk>`` key names. Keys contain
+        Windows class names, which may themselves contain "#": a key only names a duplicate when it is exactly the
+        record's own key plus "#<pk>", and that pk must be a value of the same parent and code.
+        """
+        if target is None:
             return None
-        where = {"assigned_object_type": ContentType.objects.get_for_model(parent), "assigned_object_id": parent.pk}
-        if vendor:
-            candidates = WindowsVendorOption.objects.filter(
-                **where, definition__code=fields["option_id"], definition__vendor_class__name__iexact=vendor
-            ).select_related("user_class", "policy")
-            qualifiers = ((o, o) for o in candidates.order_by("pk"))
-        else:
-            candidates = Option.objects.filter(
-                **where, definition__code=fields["option_id"], definition__family=4
-            ).select_related(
-                "netbox_windows_dhcp_plugin_windows_qualifier__user_class",
-                "netbox_windows_dhcp_plugin_windows_qualifier__policy",
-            )
-            qualifiers = (
-                (o, getattr(o, "netbox_windows_dhcp_plugin_windows_qualifier", None)) for o in candidates.order_by("pk")
-            )
-        if duplicate:
+        scope, reservation = target
+        candidates = OptionValue.objects.filter(
+            server=self.server, family=family, scope=scope, reservation=reservation, code=fields["option_id"]
+        ).select_related("vendor_class", "user_class", "policy")
+        if duplicate := re.fullmatch(rf"{re.escape(base)}#(\d+)", key):
             return candidates.filter(pk=int(duplicate.group(1))).first()
-        for o, q in qualifiers:
-            found_user = q.user_class.name if q and q.user_class_id else ""
-            found_policy = q.policy.name if q and q.policy_id else ""
-            if (found_user.lower(), found_policy.lower()) == (user.lower(), policy.lower()):
+        wanted = (vendor.lower(), user.lower(), policy.lower())
+        for o in candidates.order_by("pk"):
+            if (_name(o.vendor_class).lower(), _name(o.user_class).lower(), _name(o.policy).lower()) == wanted:
                 return o
         return None
+
+    def option(self, key, fields):
+        """The IPv4 OptionValue for a record, or the extra copy a duplicate's ``<key>#<pk>`` key names."""
+        vendor, user, policy = fields["vendor_class"], fields["user_class"], fields.get("policy", "")
+        base = windows_state.option_key(fields["parent"], fields["option_id"], vendor, user, policy)
+        target = self._target(fields["parent"], required=False)
+        return self._find_option(key, base, 4, target, fields, vendor, user, policy)
 
     # -- core IPAM objects -------------------------------------------------------------------------------------------
 
@@ -222,16 +198,19 @@ class Writer:
         found = Prefix.objects.filter(prefix=str(network), vrf=self.vrf).first()
         return found or self._save(Prefix(prefix=str(network), vrf=self.vrf, description="Windows DHCP scope"))
 
-    def _ip_range(self, start, end, network, current=None):
+    def _ip_range(self, start, end, network, scope=None):
+        """
+        The IP range a scope hands out. ``scope`` is the scope being updated, whose current range is moved when no
+        other scope needs it where it is.
+        """
+        current = scope.ip_range if scope is not None else None
         vrf = current.vrf if current is not None else self.vrf
         found = IPRange.objects.filter(start_address__net_host=start, end_address__net_host=end, vrf=vrf).first()
         if found:
             return found
         prefixlen = network.prefixlen
-        if current is not None and all(
-            str(pool.subnet.prefix.prefix) == str(network)
-            for pool in current.netbox_dhcp_pools.select_related("subnet__prefix")
-        ):
+        others = current.netbox_windows_dhcp_plugin_scopes.exclude(pk=scope.pk) if current is not None else None
+        if current is not None and all(str(s.prefix.prefix) == str(network) for s in others.select_related("prefix")):
             # The range only serves this scope (on this server, or also on its failover partner, which holds the same
             # scope): move it. A second range would overlap it, which NetBox refuses.
             return self._update(current, start_address=f"{start}/{prefixlen}", end_address=f"{end}/{prefixlen}")
@@ -272,44 +251,13 @@ class Writer:
         if obj is None:
             return self._save(
                 WindowsClass(
-                    dhcp_server=self.dhcp, family=4, class_type=fields["class_type"], name=fields["name"], **values
+                    server=self.server, family=4, class_type=fields["class_type"], name=fields["name"], **values
                 )
             )
         return self._update(obj, **values)
 
     def _apply_optiondef(self, change):
         fields = change.after or change.before
-        if fields["vendor_class"]:
-            return self._apply_vendor_optiondef(change, fields)
-        obj = self.definition(fields["option_id"], required=False)
-        if obj is not None and obj.standard:
-            obj = None  # never touch netbox-plugin-dhcp's own definitions
-        if change.action == DELETE:
-            return self._delete(obj)
-        values = {
-            "name": fields["name"],
-            "type": netbox_state.SYS4_TYPE.get(fields["type"], "binary"),
-            "array": bool(fields["multi_valued"]),
-            "description": fields["description"][:DESCRIPTION_LENGTH],
-        }
-        if obj is None:
-            obj = self._save(
-                OptionDefinition(dhcp_server=self.dhcp, family=4, space="dhcp4", code=fields["option_id"], **values)
-            )
-        else:
-            obj = self._update(obj, **values)
-        side = getattr(obj, "netbox_windows_dhcp_plugin_windows_option_definition", None)
-        side_values = {
-            "windows_type": fields["type"],
-            "default_value": list(fields["default_value"]),
-        }
-        if side is None:
-            self._save(WindowsOptionDefinition(option_definition=obj, **side_values))
-        else:
-            self._update(side, **side_values)
-        return obj
-
-    def _apply_vendor_optiondef(self, change, fields):
         obj = self.definition(fields["option_id"], fields["vendor_class"], required=False)
         if change.action == DELETE:
             return self._delete(obj)
@@ -318,63 +266,46 @@ class Writer:
             "windows_type": fields["type"],
             "multi_valued": bool(fields["multi_valued"]),
             "default_value": list(fields["default_value"]),
-            "description": fields["description"][:DESCRIPTION_LENGTH],
+            "description": fields["description"],
         }
         if obj is None:
-            vendor = self.windows_class("vendor", fields["vendor_class"])
-            return self._save(WindowsVendorOptionDefinition(vendor_class=vendor, code=fields["option_id"], **values))
+            vendor = self.windows_class("vendor", fields["vendor_class"]) if fields["vendor_class"] else None
+            return self._save(
+                OptionDefinition(server=self.server, family=4, vendor_class=vendor, code=fields["option_id"], **values)
+            )
         return self._update(obj, **values)
 
     def _apply_scope(self, change):
         fields = change.after or change.before
-        subnet = self.subnet(change.key, required=False)
+        scope = self.scope(change.key, required=False)
         if change.action == DELETE:
-            return self._delete(subnet)
+            return self._delete(scope)
         prefixlen = normalize.parse_mask(fields["subnet_mask"])
         network = ipaddress.IPv4Network(f"{change.key}/{prefixlen}")
-        # Keep the prefix the subnet already has (it may sit in another VRF) unless the mask changed.
-        keep = subnet is not None and str(subnet.prefix.prefix) == str(network)
-        prefix = subnet.prefix if keep else self._prefix(network)
-        name, _ = self._names(change.key)
+        # Keep the prefix the scope already has (it may sit in another VRF) unless the mask changed.
+        keep = scope is not None and str(scope.prefix.prefix) == str(network)
         values = {
-            "prefix": prefix,
-            "description": fields["name"][:DESCRIPTION_LENGTH],
-            "comments": fields["description"],
-            "valid_lifetime": fields["lease_seconds"],
-        }
-        if subnet is None:
-            if self.subnet_ids is not None:
-                values["subnet_id"] = next(self.subnet_ids)
-            subnet = self._save(Subnet(name=name, dhcp_server=self.dhcp, **values))
-            pool = None
-        else:
-            subnet = self._update(subnet, **values)
-            pool = subnet.child_pools.order_by("pk").first()
-        ip_range = self._ip_range(fields["start_range"], fields["end_range"], network, pool.ip_range if pool else None)
-        if pool is None:
-            self._save(Pool(name=name, subnet=subnet, ip_range=ip_range))
-        else:
-            self._update(pool, ip_range=ip_range)
-        scope_values = {
+            "prefix": scope.prefix if keep else self._prefix(network),
+            "ip_range": self._ip_range(fields["start_range"], fields["end_range"], network, scope),
+            "name": fields["name"],
+            "description": fields["description"],
             "state": fields["state"],
             "scope_type": fields["scope_type"],
+            "lease_duration": fields["lease_seconds"],
             "delay_ms": fields["delay_ms"],
             "max_bootp_clients": fields["max_bootp_clients"],
             "activate_policies": fields["activate_policies"],
         }
-        ws = WindowsScope.objects.filter(subnet=subnet).first()
-        if ws is None:
-            self._save(WindowsScope(subnet=subnet, **scope_values))
-        else:
-            self._update(ws, **scope_values)
-        return subnet
+        if scope is None:
+            return self._save(Scope(server=self.server, **values))
+        return self._update(scope, **values)
 
     def _apply_exclusion(self, change):
         fields = change.after or change.before
-        subnet = self.subnet(fields["scope_id"], required=change.action == CREATE)
+        scope = self.scope(fields["scope_id"], required=change.action == CREATE)
         if change.action == DELETE:
-            if subnet is not None:
-                matches = ExclusionRange.objects.filter(subnet=subnet)
+            if scope is not None:
+                matches = ExclusionRange.objects.filter(scope=scope)
                 if (pk := _duplicate_pk(change.key)) is not None:
                     matches = matches.filter(pk=pk)
                 else:
@@ -383,7 +314,7 @@ class Writer:
             return None
         # The key holds every field, so an exclusion is only ever created or deleted.
         return self._save(
-            ExclusionRange(subnet=subnet, start_address=fields["start_range"], end_address=fields["end_range"])
+            ExclusionRange(scope=scope, start_address=fields["start_range"], end_address=fields["end_range"])
         )
 
     def _apply_reservation(self, change):
@@ -392,30 +323,19 @@ class Writer:
         obj = self.reservation(*change.key.split("/", 1), required=False)
         if change.action == DELETE:
             return self._delete(obj)
-        subnet = self.subnet(fields["scope_id"])
-        prefixlen = subnet.prefix.prefix.prefixlen
         mac = self._mac(fields["client_id"])
         values = {
-            "description": fields["name"][:DESCRIPTION_LENGTH],
-            "comments": fields["description"],
-            "hw_address": mac,
-            "client_id": None if mac else fields["client_id"],
+            "name": fields["name"],
+            "description": fields["description"],
+            "mac_address": mac,
+            "client_id": "" if mac else fields["client_id"],
+            "reservation_type": fields["reservation_type"],
         }
         if obj is None:
-            _, name = self._names(fields["scope_id"], fields["ip_address"])
-            obj = self._save(
-                HostReservation(
-                    name=name, subnet=subnet, ipv4_address=self._ip_address(fields["ip_address"], prefixlen), **values
-                )
-            )
-        else:
-            obj = self._update(obj, **values)
-        side = WindowsReservation.objects.filter(host_reservation=obj).first()
-        if side is None:
-            self._save(WindowsReservation(host_reservation=obj, reservation_type=fields["reservation_type"]))
-        else:
-            self._update(side, reservation_type=fields["reservation_type"])
-        return obj
+            scope = self.scope(fields["scope_id"])
+            address = self._ip_address(fields["ip_address"], scope.prefix.prefix.prefixlen)
+            return self._save(Reservation(scope=scope, ip_address=address, **values))
+        return self._update(obj, **values)
 
     def _policy(self, fields):
         """The policy an option value is for, at the level of its parent (server or scope)."""
@@ -423,40 +343,34 @@ class Writer:
         if not name:
             return None
         scope_id = fields["parent"].split("/", 1)[0] if fields["parent"] != "server" else ""
-        policy = self.windows_policy(scope_id, name, required=True)
-        return policy
+        return self.windows_policy(scope_id, name, required=True)
 
     def _apply_option(self, change):
         fields = change.after or change.before
         obj = self.option(change.key, fields)
         if change.action == DELETE:
             return self._delete(obj)
+        value = list(fields["value"])
+        if obj is not None:
+            return self._update(obj, value=value)
+        scope, reservation = self._target(fields["parent"])
         vendor = fields["vendor_class"]
-        if vendor:
-            if obj is not None:
-                return self._update(obj, value=list(fields["value"]))
-        else:
-            data = windows_state.join_values(fields["value"])
-            if obj is not None:
-                return self._update(obj, data=data)
-        parent = self._parent(fields["parent"])
-        user = self.windows_class("user", fields["user_class"]) if fields["user_class"] else None
-        policy = self._policy(fields)
-        definition = self.definition(fields["option_id"], vendor)
-        if vendor:
-            return self._save(
-                WindowsVendorOption(
-                    definition=definition,
-                    assigned_object=parent,
-                    user_class=user,
-                    policy=policy,
-                    value=list(fields["value"]),
-                )
+        # A value of a code Windows does not define could not be written back: the definition comes first.
+        if vendor or fields["option_id"] not in STANDARD_V4:
+            self.definition(fields["option_id"], vendor)
+        return self._save(
+            OptionValue(
+                server=self.server,
+                family=4,
+                scope=scope,
+                reservation=reservation,
+                code=fields["option_id"],
+                vendor_class=self.windows_class("vendor", vendor) if vendor else None,
+                user_class=self.windows_class("user", fields["user_class"]) if fields["user_class"] else None,
+                policy=self._policy(fields),
+                value=value,
             )
-        obj = self._save(Option(definition=definition, assigned_object=parent, data=data))
-        if user or policy:
-            self._save(WindowsOptionQualifier(option=obj, user_class=user, policy=policy))
-        return obj
+        )
 
     # -- policies, superscopes, failover, MAC filters ----------------------------------------------------------------
 
@@ -470,17 +384,17 @@ class Writer:
         return queryset.filter(pk=pk).first() if pk is not None else None
 
     def windows_policy(self, scope_id, name, required=True):
-        subnet = self.subnet(scope_id, required=required) if scope_id else None
-        if scope_id and subnet is None:
+        scope = self.scope(scope_id, required=required) if scope_id else None
+        if scope_id and scope is None:
             return None
-        found = WindowsPolicy.objects.filter(dhcp_server=self.dhcp, subnet=subnet, name__iexact=name).first()
+        found = WindowsPolicy.objects.filter(server=self.server, scope=scope, name__iexact=name).first()
         if found is None and required:
             raise ApplyError(f"policy {name!r} is not in NetBox yet: apply it first")
         return found
 
     def _apply_policy(self, change):
         fields = change.after or change.before
-        obj = self._marked(change, WindowsPolicy.objects.filter(dhcp_server=self.dhcp)) or self.windows_policy(
+        obj = self._marked(change, WindowsPolicy.objects.filter(server=self.server)) or self.windows_policy(
             fields["scope_id"], fields["name"], required=False
         )
         if change.action == DELETE:
@@ -496,87 +410,53 @@ class Writer:
             "ip_ranges": fields["ip_ranges"],
         }
         if obj is None:
-            subnet = self.subnet(fields["scope_id"]) if fields["scope_id"] else None
-            return self._save(WindowsPolicy(dhcp_server=self.dhcp, subnet=subnet, **values))
+            scope = self.scope(fields["scope_id"]) if fields["scope_id"] else None
+            return self._save(WindowsPolicy(server=self.server, scope=scope, **values))
         return self._update(obj, **values)
 
-    def shared_network(self, name):
-        """This server's shared network for a Windows superscope (matched on its description, then its name)."""
-        networks = SharedNetwork.objects.filter(dhcp_server=self.dhcp)
-        return (
-            networks.filter(description__iexact=name).order_by("pk").first()
-            or networks.filter(name__iexact=name).order_by("pk").first()
-        )
+    def superscope(self, name):
+        """This server's superscope of that Windows name (not case sensitive, as on Windows)."""
+        return Superscope.objects.filter(server=self.server, name__iexact=name).order_by("pk").first()
 
-    def _covering_prefix(self, network, subnets):
-        """A prefix covering every member scope: netbox-plugin-dhcp requires one on a shared network."""
-        nets = [ipaddress.ip_network(str(s.prefix.prefix)) for s in subnets]
-        if network is not None and all(n.subnet_of(ipaddress.ip_network(str(network.prefix.prefix))) for n in nets):
-            return network.prefix
-        supernet = nets[0]
-        while not all(n.subnet_of(supernet) for n in nets):
-            supernet = supernet.supernet()
-        if supernet.prefixlen < MIN_SHARED_PREFIX_LENGTH:
-            # Superscopes often group unrelated subnets; a prefix as wide as 0.0.0.0/0 would only pollute IPAM.
-            raise ApplyError(
-                f"the scopes of this superscope are too far apart for one prefix (it would be {supernet}); "
-                "netbox-plugin-dhcp needs a prefix covering a shared network's subnets"
-            )
-        return self._prefix(supernet)
-
-    def _move_subnet(self, subnet, shared_network):
-        """Put a subnet in a shared network, or (None) back directly under the server: a subnet has one parent."""
-        if subnet.shared_network_id == (shared_network.pk if shared_network else None):
+    def _move_scope(self, scope, superscope):
+        """Put a scope in a superscope, or (None) take it out."""
+        if scope.superscope_id == (superscope.pk if superscope else None):
             return
-        self._check(subnet, "change")
-        subnet.snapshot()
-        subnet.shared_network = shared_network
-        subnet.dhcp_server = None if shared_network else self.dhcp
-        self._save(subnet)
+        self._check(scope, "change")
+        scope.snapshot()
+        scope.superscope = superscope
+        self._save(scope)
 
     def _apply_superscope(self, change):
         fields = change.after or change.before
-        network = self._marked(change, SharedNetwork.objects.filter(dhcp_server=self.dhcp)) or self.shared_network(
+        superscope = self._marked(change, Superscope.objects.filter(server=self.server)) or self.superscope(
             fields["name"]
         )
         if change.action == DELETE:
-            if network is not None:
-                # netbox-plugin-dhcp deletes a shared network's subnets with it; on Windows the scopes stay, so they
-                # move back under the server first.
-                for subnet in Subnet.objects.filter(shared_network=network):
-                    self._move_subnet(subnet, None)
-                self._delete(network)
-            return None
-        members = [self.subnet(sid) for sid in fields["scope_ids"]]
-        prefix = self._covering_prefix(network, members)
-        if network is None:
-            network = self._save(
-                SharedNetwork(
-                    name=f"{self.dhcp.name}/{fields['name']}",
-                    description=fields["name"][:DESCRIPTION_LENGTH],
-                    dhcp_server=self.dhcp,
-                    prefix=prefix,
-                )
-            )
+            # Its scopes stay, outside any superscope, as on Windows.
+            return self._delete(superscope)
+        members = [self.scope(sid) for sid in fields["scope_ids"]]
+        if superscope is None:
+            superscope = self._save(Superscope(server=self.server, name=fields["name"]))
         else:
-            network = self._update(network, prefix=prefix, description=fields["name"][:DESCRIPTION_LENGTH])
-        for subnet in Subnet.objects.filter(shared_network=network).exclude(pk__in=[s.pk for s in members]):
-            self._move_subnet(subnet, None)
-        for subnet in members:
-            self._move_subnet(subnet, network)
-        return network
+            superscope = self._update(superscope, name=fields["name"])
+        for scope in Scope.objects.filter(superscope=superscope).exclude(pk__in=[s.pk for s in members]):
+            self._move_scope(scope, None)
+        for scope in members:
+            self._move_scope(scope, superscope)
+        return superscope
 
     def _partner(self, host):
         """
-        The DHCP server a Windows partner name points at, through its Windows server (the DHCP server itself, so
-        computer_name when it connects through a management host). Only a Windows server will do: the push needs its
-        host to check where the failover secret may go.
+        The Windows server a Windows partner name points at (the DHCP server itself, so computer_name when it
+        connects through a management host). Only a Windows server will do: the push needs its host to check where
+        the failover secret may go.
         """
-        servers = list(WindowsServer.objects.exclude(dhcp_server=self.dhcp).select_related("dhcp_server"))
+        servers = list(WindowsServer.objects.exclude(pk=self.server.pk))
         hosts = windows_state.partner_matches(host, [(ws.dhcp_host, ws.reported_names) for ws in servers])
         found = [ws for ws in servers if windows_state.host_name(ws.dhcp_host) in hosts]
         if len(found) == 1:
-            return found[0].dhcp_server
+            return found[0]
         if found:
             raise ApplyError(
                 f"failover partner {host!r} matches more than one Windows server in NetBox "
@@ -590,11 +470,11 @@ class Writer:
         )
 
     def failover(self, name):
-        return FailoverRelationship.objects.filter(primary_server=self.dhcp, name__iexact=name).first()
+        return FailoverRelationship.objects.filter(primary_server=self.server, name__iexact=name).first()
 
     def _apply_failover(self, change):
         fields = change.after or change.before
-        obj = self._marked(change, FailoverRelationship.objects.filter(primary_server=self.dhcp)) or self.failover(
+        obj = self._marked(change, FailoverRelationship.objects.filter(primary_server=self.server)) or self.failover(
             fields["name"]
         )
         if change.action == DELETE:
@@ -611,10 +491,10 @@ class Writer:
         }
         # Message authentication (fields["auth"]) needs a credential profile with the secret: Windows never reveals
         # it. Without a profile NetBox leaves authentication as Windows has it; set shared_secret_profile to manage it.
-        subnets = [self.subnet(sid) for sid in fields["scope_ids"]]
+        scopes = [self.scope(sid) for sid in fields["scope_ids"]]
         if obj is None:
             reverse = FailoverRelationship.objects.filter(
-                primary_server=values["partner_server"], partner_server=self.dhcp, name__iexact=fields["name"]
+                primary_server=values["partner_server"], partner_server=self.server, name__iexact=fields["name"]
             )
             if reverse.exists():
                 # Both partners imported before either was applied: keep the first, synced from its primary.
@@ -622,44 +502,52 @@ class Writer:
                     f"failover relationship {fields['name']} is already in NetBox with {values['partner_server']} as "
                     "its primary; it is synced from that server"
                 )
-            obj = self._save(FailoverRelationship(primary_server=self.dhcp, **values))
+            obj = self._save(FailoverRelationship(primary_server=self.server, **values))
         else:
             obj = self._update(obj, **values)
-        if {s.pk for s in obj.subnets.all()} != {s.pk for s in subnets}:
+        if {s.pk for s in obj.scopes.all()} != {s.pk for s in scopes}:
             self._check(obj, "change")
             obj.snapshot()
-            obj.subnets.set(subnets)
+            obj.scopes.set(scopes)
         return obj
+
+    def mac_filter(self, mac_address):
+        return MacFilter.objects.filter(server=self.server, mac_address__iexact=mac_address).first()
 
     def _apply_macfilter(self, change):
         fields = change.after or change.before
-        filters = MacFilter.objects.filter(dhcp_server=self.dhcp)
-        obj = self._marked(change, filters) or filters.filter(mac_address__iexact=fields["mac_address"]).first()
+        obj = self._marked(change, MacFilter.objects.filter(server=self.server)) or self.mac_filter(
+            fields["mac_address"]
+        )
         if change.action == DELETE:
             return self._delete(obj)
         values = {"list": fields["list"], "description": fields["description"][:DESCRIPTION_LENGTH]}
         if obj is None:
-            return self._save(MacFilter(dhcp_server=self.dhcp, mac_address=fields["mac_address"], **values))
+            return self._save(MacFilter(server=self.server, mac_address=fields["mac_address"], **values))
         return self._update(obj, **values)
 
+    def filter_lists(self):
+        return MacFilterLists.objects.filter(server=self.server).first()
+
     def _apply_filterlists(self, change):
-        obj = MacFilterLists.objects.filter(dhcp_server=self.dhcp).first()
+        obj = self.filter_lists()
         if change.action == DELETE:
             return self._delete(obj)
         fields = change.after
         values = {"allow_list_enabled": fields["allow"], "deny_list_enabled": fields["deny"]}
         if obj is None:
-            return self._save(MacFilterLists(dhcp_server=self.dhcp, **values))
+            return self._save(MacFilterLists(server=self.server, **values))
         return self._update(obj, **values)
 
     # -- DHCPv6 ------------------------------------------------------------------------------------------------------
 
-    def subnet6(self, prefix, required=True):
-        """This server's IPv6 subnet for a scope prefix, or for a ``<prefix>#<pk>`` key naming one of several."""
+    def scope6(self, prefix, required=True):
+        """This server's DHCPv6 scope for a scope prefix, or for a ``<prefix>#<pk>`` key naming one of several."""
+        scopes = netbox_state.server_scopes6(self.server)
         if (pk := _duplicate_pk(prefix)) is not None:
-            return netbox_state.server_subnets6(self.dhcp).filter(pk=pk).first()
+            return scopes.filter(pk=pk).first()
         prefix = windows_state.ipv6(prefix)
-        for s in netbox_state.server_subnets6(self.dhcp).filter(prefix__prefix__net_contains_or_equals=prefix):
+        for s in scopes.filter(prefix__prefix__net_contains_or_equals=prefix):
             if netbox_state.prefix_of(s) == prefix:
                 return s
         if required:
@@ -667,59 +555,33 @@ class Writer:
         return None
 
     def reservation6(self, prefix, ip_address, required=True):
-        """A reservation in this server's IPv6 scope, or the one a ``<ip>#<pk>`` key names among several."""
-        subnet = self.subnet6(prefix, required=required)
-        found = None
-        if subnet is not None and (pk := _duplicate_pk(ip_address)) is not None:
-            found = HostReservation.objects.filter(subnet=subnet, pk=pk).first()
-        elif subnet is not None and ip_address:
-            found = (
-                HostReservation.objects.filter(subnet=subnet, ipv6_addresses__address__net_host=ip_address)
-                .order_by("pk")
-                .first()
-            )
-        if found is None and required:
-            raise ApplyError(f"DHCPv6 reservation {ip_address} is not in NetBox yet: apply it first")
-        return found
+        """A reservation in this server's DHCPv6 scope, or the one a ``<ip>#<pk>`` key names among several."""
+        scope = self.scope6(prefix, required=required)
+        return self._find_reservation(scope, ip_address, required, "DHCPv6 reservation")
 
     def windows_class6(self, name, required=True):
-        found = WindowsClass.objects.filter(
-            dhcp_server=self.dhcp, family=6, class_type="user", name__iexact=name
-        ).first()
+        found = WindowsClass.objects.filter(server=self.server, family=6, class_type="user", name__iexact=name).first()
         if found is None and required:
             raise ApplyError(f"DHCPv6 user class {name!r} is not in NetBox yet: apply it first")
         return found
 
-    def _parent6(self, parent, required=True):
+    def _target6(self, parent, required=True):
+        """As ``_target``, for a DHCPv6 option value."""
         if parent == "server":
-            return self.dhcp
+            return None, None
         prefix, ip = windows_state.option6_target(parent)
         if ip:
-            return self.reservation6(prefix, ip, required=required)
-        return self.subnet6(prefix, required=required)
+            reservation = self.reservation6(prefix, ip, required=required)
+            return (reservation.scope, reservation) if reservation is not None else None
+        scope = self.scope6(prefix, required=required)
+        return (scope, None) if scope is not None else None
 
     def option6(self, key, fields):
-        """The DHCPv6 Option for a record, or the extra copy a duplicate's ``<key>#<pk>`` key names."""
+        """The DHCPv6 OptionValue for a record, or the extra copy a duplicate's ``<key>#<pk>`` key names."""
         user = fields["user_class"]
         base = windows_state.option6_key(fields["parent"], fields["option_id"], user)
-        duplicate = re.fullmatch(rf"{re.escape(base)}#(\d+)", key)
-        parent = self._parent6(fields["parent"], required=False)
-        if parent is None:
-            return None
-        candidates = Option.objects.filter(
-            assigned_object_type=ContentType.objects.get_for_model(parent),
-            assigned_object_id=parent.pk,
-            definition__code=fields["option_id"],
-            definition__family=6,
-        ).select_related("netbox_windows_dhcp_plugin_windows_qualifier__user_class")
-        if duplicate:
-            return candidates.filter(pk=int(duplicate.group(1))).first()
-        for o in candidates.order_by("pk"):
-            q = getattr(o, "netbox_windows_dhcp_plugin_windows_qualifier", None)
-            found_user = q.user_class.name if q and q.user_class_id else ""
-            if found_user.lower() == user.lower():
-                return o
-        return None
+        target = self._target6(fields["parent"], required=False)
+        return self._find_option(key, base, 6, target, fields, "", user, fields.get("policy", ""))
 
     def _apply_class6(self, change):
         fields = change.after or change.before
@@ -729,42 +591,31 @@ class Writer:
         values = {"data": fields["data"], "description": fields["description"][:DESCRIPTION_LENGTH]}
         if obj is None:
             return self._save(
-                WindowsClass(dhcp_server=self.dhcp, family=6, class_type="user", name=fields["name"], **values)
+                WindowsClass(server=self.server, family=6, class_type="user", name=fields["name"], **values)
             )
         return self._update(obj, **values)
 
     def _apply_scope6(self, change):
         fields = change.after or change.before
-        key = change.key.removeprefix("v6/")
-        subnet = self.subnet6(key, required=False)
+        scope = self.scope6(change.key.removeprefix("v6/"), required=False)
         if change.action == DELETE:
-            return self._delete(subnet)
+            return self._delete(scope)
         network = ipaddress.IPv6Network(f"{fields['prefix']}/{fields['prefix_length']}")
-        keep = subnet is not None and str(subnet.prefix.prefix) == str(network)
-        prefix = subnet.prefix if keep else self._prefix(network)
-        name, _ = self._names(fields["prefix"])
+        keep = scope is not None and str(scope.prefix.prefix) == str(network)
         values = {
-            "prefix": prefix,
-            "description": fields["name"][:DESCRIPTION_LENGTH],
-            "comments": fields["description"],
+            "prefix": scope.prefix if keep else self._prefix(network),
+            "name": fields["name"],
+            "description": fields["description"],
+            "state": fields["state"],
+            "preference": fields["preference"],
             "preferred_lifetime": fields["preferred_lifetime"],
             "valid_lifetime": fields["valid_lifetime"],
             "renew_timer": fields["t1"],
             "rebind_timer": fields["t2"],
         }
-        if subnet is None:
-            if self.subnet_ids is not None:
-                values["subnet_id"] = next(self.subnet_ids)
-            subnet = self._save(Subnet(name=name, dhcp_server=self.dhcp, **values))
-        else:
-            subnet = self._update(subnet, **values)
-        scope_values = {"state": fields["state"], "preference": fields["preference"]}
-        ws = WindowsScope.objects.filter(subnet=subnet).first()
-        if ws is None:
-            self._save(WindowsScope(subnet=subnet, **scope_values))
-        else:
-            self._update(ws, **scope_values)
-        return subnet
+        if scope is None:
+            return self._save(Scope(server=self.server, **values))
+        return self._update(scope, **values)
 
     def _apply_reservation6(self, change):
         fields = change.after or change.before
@@ -773,40 +624,38 @@ class Writer:
         obj = self.reservation6(prefix, ip, required=False)
         if change.action == DELETE:
             return self._delete(obj)
-        subnet = self.subnet6(fields["prefix"])
         values = {
-            "description": fields["name"][:DESCRIPTION_LENGTH],
-            "comments": fields["description"],
+            "name": fields["name"],
+            "description": fields["description"],
             "duid": fields["client_duid"],
+            "iaid": fields["iaid"],
         }
         if obj is None:
-            _, name = self._names(fields["prefix"], fields["ip_address"])
-            obj = self._save(HostReservation(name=name, subnet=subnet, **values))
-            address = self._ip_address(fields["ip_address"], subnet.prefix.prefix.prefixlen)
-            obj.ipv6_addresses.add(address)
-        else:
-            obj = self._update(obj, **values)
-        side = WindowsReservation.objects.filter(host_reservation=obj).first()
-        if side is None:
-            self._save(WindowsReservation(host_reservation=obj, iaid=fields["iaid"]))
-        else:
-            self._update(side, iaid=fields["iaid"])
-        return obj
+            scope = self.scope6(fields["prefix"])
+            address = self._ip_address(fields["ip_address"], scope.prefix.prefix.prefixlen)
+            return self._save(Reservation(scope=scope, ip_address=address, **values))
+        return self._update(obj, **values)
 
     def _apply_option6(self, change):
         fields = change.after or change.before
         obj = self.option6(change.key, fields)
         if change.action == DELETE:
             return self._delete(obj)
-        data = windows_state.join_values(fields["value"])
+        value = list(fields["value"])
         if obj is not None:
-            return self._update(obj, data=data)
-        parent = self._parent6(fields["parent"])
-        user = self.windows_class6(fields["user_class"]) if fields["user_class"] else None
-        definition = OptionDefinition.objects.filter(code=fields["option_id"], family=6, standard=True).first()
-        if definition is None:
-            raise ApplyError(f"netbox-plugin-dhcp has no standard DHCPv6 definition for option {fields['option_id']}")
-        obj = self._save(Option(definition=definition, assigned_object=parent, data=data))
-        if user:
-            self._save(WindowsOptionQualifier(option=obj, user_class=user))
-        return obj
+            return self._update(obj, value=value)
+        if fields["option_id"] not in STANDARD_V6:
+            # DHCPv6 option definitions are not synced: only standard codes have a known meaning on both sides.
+            raise ApplyError(f"option {fields['option_id']} has no standard DHCPv6 definition")
+        scope, reservation = self._target6(fields["parent"])
+        return self._save(
+            OptionValue(
+                server=self.server,
+                family=6,
+                scope=scope,
+                reservation=reservation,
+                code=fields["option_id"],
+                user_class=self.windows_class6(fields["user_class"]) if fields["user_class"] else None,
+                value=value,
+            )
+        )

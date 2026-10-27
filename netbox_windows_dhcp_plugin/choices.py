@@ -6,6 +6,7 @@ __all__ = (
     "ClassTypeChoices",
     "FailoverModeChoices",
     "FailoverServerRoleChoices",
+    "FamilyChoices",
     "MacFilterListChoices",
     "PolicyConditionChoices",
     "ProposalItemActionChoices",
@@ -42,6 +43,16 @@ class WinRMAuthChoices(ChoiceSet):
         (BASIC, _("Basic")),
         (KERBEROS, _("Kerberos")),
         (CREDSSP, _("CredSSP")),
+    ]
+
+
+class FamilyChoices(ChoiceSet):
+    IPV4 = 4
+    IPV6 = 6
+
+    CHOICES = [
+        (IPV4, _("IPv4")),
+        (IPV6, _("IPv6")),
     ]
 
 

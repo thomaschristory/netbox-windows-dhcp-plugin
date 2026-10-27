@@ -27,8 +27,7 @@ reservations, user classes and option values for DHCPv6 (see [DHCPv6](dhcpv6.md)
   written yet (sync disabled, or a failed push): dismiss those.
 
 Some Windows data is left out and noted in the sync run instead: DHCPv6 vendor classes and their values, DHCPv6
-exclusion ranges, DHCPv6 values of codes sys4 has no standard definition for, and option values with leading or
-trailing spaces (sys4's comma-separated storage would lose the spaces). A failover relationship is imported from
+exclusion ranges, and DHCPv6 values of codes that are not standard DHCPv6 options. A failover relationship is imported from
 one partner only: the first one imported becomes its primary (the server the plugin writes to), and the other
 partner's imports leave it alone. Import the server you want to write to first.
 
@@ -59,9 +58,7 @@ reason; it never falls back to another one. Scheduled imports always use an impo
 
 Imports into main or into your own branch write as you: every object is checked against your permissions as it is
 saved, and a change you may not make (or that change control refuses) is rolled back and listed in the sync run,
-while the others stay. Event rules and webhooks only hear about the changes that stayed. New subnets get subnet IDs
-above those in main, in open import branches and in branches an import wrote into by choice, so merging any of
-them later does not collide. Your branch is checked again just before the import writes into it: if it has started
+while the others stay. Event rules and webhooks only hear about the changes that stayed. Your branch is checked again just before the import writes into it: if it has started
 merging (or is otherwise no longer ready) by then, nothing is written. An import into main queues no push (NetBox then matches Windows) and records the objects it
 wrote as managed, as applying a proposal does.
 
@@ -178,12 +175,11 @@ hand every day builds up one branch to review rather than one per run.
 
 ## What an import creates in NetBox
 
-- sys4 subnets, pools, shared networks, host reservations, option definitions and options, named as described in
-  [How objects map](mapping.md#names);
-- the plugin's own objects (scope and reservation settings, exclusion ranges, classes, policies, failover
-  relationships, MAC filters, vendor options);
-- the prefixes, IP ranges, IP addresses and MAC addresses sys4 needs, in the server's import VRF. Existing ones are
-  reused, so failover partners share one IP range per scope.
+- the server's scopes, superscopes, exclusion ranges, reservations, classes, option definitions, option values,
+  policies, failover relationships, MAC filters and list switches, with their Windows names (see
+  [How objects map](mapping.md#names));
+- the prefixes, IP ranges, IP addresses and MAC addresses the scopes and reservations point at, in the server's
+  import VRF. Existing ones are reused, so failover partners share one IP range per scope.
 
 ![The sys4 subnets after an import, named after the server and the scope](images/import-subnets.webp)
 
@@ -192,8 +188,5 @@ lifetime (the lease duration), the Windows description in the comments, and the 
 
 ![Scope settings: the Windows state, type and other settings sys4 has no field for](images/import-windows-scopes.webp)
 
-Text going into a 200-character description field is cut to 200 characters on both sides, so a long Windows name
-does not show as a difference on every run.
-
-New sys4 subnets get subnet IDs higher than any in main and in every open import branch, so two import branches never
-merge the same ID.
+Text going into a length-limited field is cut to that length on both sides, so a long Windows name does not show as
+a difference on every run.

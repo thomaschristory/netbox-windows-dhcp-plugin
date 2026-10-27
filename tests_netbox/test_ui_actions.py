@@ -122,6 +122,16 @@ class CsrfTokenTest(UIActionsTestBase):
         # The bulk buttons submit the list's own form, which must hold the token.
         self.assert_tokens(reverse(f"plugins:{PLUGIN}:importproposalitem_list"), {"apply", "dismiss"})
 
+    def test_lease_button_carries_a_token(self):
+        from .fixtures import scope
+
+        lan = scope(self.server, "10.5.0.0/24")
+        url = reverse(f"plugins:{PLUGIN}:scope_leases", kwargs={"pk": lan.pk})
+        form = self.page(url).form_for(f"/scopes/{lan.pk}/leases/")
+        self.assertEqual(form["method"], "post")
+        token = form["inputs"].get("csrfmiddlewaretoken")
+        self.assertTrue(token and token != "NOTPROVIDED")
+
     def test_browser_post_with_the_rendered_token_is_accepted(self):
         client = Client(enforce_csrf_checks=True)
         client.force_login(self.user)
@@ -175,6 +185,16 @@ class ActionLinksTest(UIActionsTestBase):
 
     def test_server_detail_page(self):
         self.assert_links_resolve(self.server.get_absolute_url())
+
+    def test_scope_pages(self):
+        from .fixtures import reservation, scope
+
+        lan = scope(self.server, "10.5.0.0/24")
+        reservation(lan, "10.5.0.50/24", client_id="aa")
+        page = self.assert_links_resolve(lan.get_absolute_url())
+        # The Leases tab moved here from the netbox-plugin-dhcp subnet page.
+        self.assertIn(reverse(f"plugins:{PLUGIN}:scope_leases", kwargs={"pk": lan.pk}), page.urls)
+        self.assert_links_resolve(reverse(f"plugins:{PLUGIN}:scope_leases", kwargs={"pk": lan.pk}))
 
     def test_every_list_page(self):
         for model_name, views in registry["views"][PLUGIN].items():

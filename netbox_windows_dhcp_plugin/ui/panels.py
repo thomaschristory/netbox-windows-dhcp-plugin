@@ -3,15 +3,21 @@ from netbox.ui import attrs, panels
 
 
 class WindowsServerPanel(panels.ObjectAttributesPanel):
+    title = _("Windows server")
+    name = attrs.TextAttr("name")
+    device = attrs.RelatedObjectAttr("device", linkify=True)
+    virtual_machine = attrs.RelatedObjectAttr("virtual_machine", linkify=True, label=_("Virtual machine"))
+    description = attrs.TextAttr("description")
+
+
+class WindowsServerConnectionPanel(panels.ObjectAttributesPanel):
     title = _("Connection")
-    dhcp_server = attrs.RelatedObjectAttr("dhcp_server", linkify=True, label=_("Generic DHCP server"))
     host = attrs.TextAttr("host", style="font-monospace", copy_button=True)
     transport = attrs.ChoiceAttr("transport")
     effective_port = attrs.NumericAttr("effective_port", label=_("Port"))
     credential_profile = attrs.TextAttr("credential_profile", style="font-monospace")
     computer_name = attrs.TextAttr("computer_name", label=_("Remote DHCP server"))
     reported_names = attrs.TextAttr("reported_names_display", label=_("Reported names"))
-    description = attrs.TextAttr("description")
 
 
 class WindowsServerSecurityPanel(panels.ObjectAttributesPanel):
@@ -31,27 +37,74 @@ class WindowsServerSyncPanel(panels.ObjectAttributesPanel):
     import_vrf = attrs.RelatedObjectAttr("import_vrf", linkify=True, label=_("Import VRF"))
 
 
-class WindowsScopePanel(panels.ObjectAttributesPanel):
-    title = _("Windows scope")
-    subnet = attrs.RelatedObjectAttr("subnet", linkify=True)
+class SuperscopePanel(panels.ObjectAttributesPanel):
+    title = _("Superscope")
+    server = attrs.RelatedObjectAttr("server", linkify=True)
+    name = attrs.TextAttr("name")
+    description = attrs.TextAttr("description")
+
+
+class ScopePanel(panels.ObjectAttributesPanel):
+    title = _("Scope")
+    server = attrs.RelatedObjectAttr("server", linkify=True)
+    name = attrs.TextAttr("name")
+    scope_id = attrs.TextAttr("scope_id", label=_("Scope ID"), style="font-monospace", copy_button=True)
+    prefix = attrs.RelatedObjectAttr("prefix", linkify=True, grouped_by="vrf")
+    ip_range = attrs.RelatedObjectAttr("ip_range", linkify=True, label=_("IP range"))
+    superscope = attrs.RelatedObjectAttr("superscope", linkify=True)
     state = attrs.ChoiceAttr("state")
+    description = attrs.TextAttr("description")
+
+
+class _FamilyPanel(panels.ObjectAttributesPanel):
+    """Settings that only apply to one address family: the panel shows on scopes of that family only."""
+
+    family = None
+
+    def should_render(self, context):
+        return getattr(context["object"], "family", None) == self.family
+
+
+class ScopeIPv4Panel(_FamilyPanel):
+    title = _("IPv4 settings")
+    family = 4
     scope_type = attrs.ChoiceAttr("scope_type", label=_("Type"))
+    lease_duration = attrs.NumericAttr("lease_duration", label=_("Lease duration (s)"))
     delay_ms = attrs.NumericAttr("delay_ms", label=_("Offer delay (ms)"))
     max_bootp_clients = attrs.NumericAttr("max_bootp_clients", label=_("Max BOOTP clients"))
     activate_policies = attrs.BooleanAttr("activate_policies")
+
+
+class ScopeIPv6Panel(_FamilyPanel):
+    title = _("DHCPv6 settings")
+    family = 6
     preference = attrs.NumericAttr("preference")
+    preferred_lifetime = attrs.NumericAttr("preferred_lifetime", label=_("Preferred lifetime (s)"))
+    valid_lifetime = attrs.NumericAttr("valid_lifetime", label=_("Valid lifetime (s)"))
+    renew_timer = attrs.NumericAttr("renew_timer", label=_("T1 (s)"))
+    rebind_timer = attrs.NumericAttr("rebind_timer", label=_("T2 (s)"))
 
 
-class WindowsReservationPanel(panels.ObjectAttributesPanel):
-    title = _("Windows reservation")
-    host_reservation = attrs.RelatedObjectAttr("host_reservation", linkify=True)
+class ReservationPanel(panels.ObjectAttributesPanel):
+    title = _("Reservation")
+    scope = attrs.RelatedObjectAttr("scope", linkify=True, grouped_by="server")
+    ip_address = attrs.RelatedObjectAttr("ip_address", linkify=True, label=_("IP address"))
+    name = attrs.TextAttr("name")
+    description = attrs.TextAttr("description")
+
+
+class ReservationClientPanel(panels.ObjectAttributesPanel):
+    title = _("Client")
+    mac_address = attrs.RelatedObjectAttr("mac_address", linkify=True, label=_("MAC address"))
+    client_id = attrs.TextAttr("client_id", label=_("Client ID"), style="font-monospace")
     reservation_type = attrs.ChoiceAttr("reservation_type", label=_("Type"))
+    duid = attrs.TextAttr("duid", label=_("DUID"), style="font-monospace")
     iaid = attrs.NumericAttr("iaid", label=_("IAID"))
 
 
 class ExclusionRangePanel(panels.ObjectAttributesPanel):
     title = _("Exclusion range")
-    subnet = attrs.RelatedObjectAttr("subnet", linkify=True)
+    scope = attrs.RelatedObjectAttr("scope", linkify=True, grouped_by="server")
     start_address = attrs.TextAttr("start_address", style="font-monospace")
     end_address = attrs.TextAttr("end_address", style="font-monospace")
     description = attrs.TextAttr("description")
@@ -59,7 +112,7 @@ class ExclusionRangePanel(panels.ObjectAttributesPanel):
 
 class WindowsClassPanel(panels.ObjectAttributesPanel):
     title = _("Windows class")
-    dhcp_server = attrs.RelatedObjectAttr("dhcp_server", linkify=True, label=_("DHCP server"))
+    server = attrs.RelatedObjectAttr("server", linkify=True)
     name = attrs.TextAttr("name")
     class_type = attrs.ChoiceAttr("class_type", label=_("Type"))
     family = attrs.ChoiceAttr("family", label=_("Address family"))
@@ -67,16 +120,23 @@ class WindowsClassPanel(panels.ObjectAttributesPanel):
     description = attrs.TextAttr("description")
 
 
-class WindowsOptionDefinitionPanel(panels.ObjectAttributesPanel):
-    title = _("Windows option definition")
-    option_definition = attrs.RelatedObjectAttr("option_definition", linkify=True)
+class OptionDefinitionPanel(panels.ObjectAttributesPanel):
+    title = _("Option definition")
+    server = attrs.RelatedObjectAttr("server", linkify=True)
+    family = attrs.ChoiceAttr("family", label=_("Address family"))
+    vendor_class = attrs.RelatedObjectAttr("vendor_class", linkify=True)
+    code = attrs.NumericAttr("code")
+    name = attrs.TextAttr("name")
     windows_type = attrs.TextAttr("windows_type", label=_("Windows type"))
+    multi_valued = attrs.BooleanAttr("multi_valued", label=_("Multi-valued"))
+    default_value = attrs.ArrayAttr("default_value", label=_("Default value"), style="font-monospace")
+    description = attrs.TextAttr("description")
 
 
 class WindowsPolicyPanel(panels.ObjectAttributesPanel):
     title = _("Policy")
-    dhcp_server = attrs.RelatedObjectAttr("dhcp_server", linkify=True, label=_("DHCP server"))
-    subnet = attrs.RelatedObjectAttr("subnet", linkify=True)
+    server = attrs.RelatedObjectAttr("server", linkify=True)
+    scope = attrs.RelatedObjectAttr("scope", linkify=True)
     name = attrs.TextAttr("name")
     processing_order = attrs.NumericAttr("processing_order")
     enabled = attrs.BooleanAttr("enabled")
@@ -85,9 +145,30 @@ class WindowsPolicyPanel(panels.ObjectAttributesPanel):
     description = attrs.TextAttr("description")
 
 
-class WindowsOptionQualifierPanel(panels.ObjectAttributesPanel):
-    title = _("Option qualifier")
-    option = attrs.RelatedObjectAttr("option", linkify=True)
+class OptionNameAttr(attrs.TextAttr):
+    """The option's name, from the server's definition or the standard option list."""
+
+    def get_value(self, obj):
+        from .options import option_name
+
+        return option_name(obj)
+
+
+class OptionValuePanel(panels.ObjectAttributesPanel):
+    title = _("Option value")
+    server = attrs.RelatedObjectAttr("server", linkify=True)
+    scope = attrs.RelatedObjectAttr("scope", linkify=True)
+    reservation = attrs.RelatedObjectAttr("reservation", linkify=True)
+    family = attrs.ChoiceAttr("family", label=_("Address family"))
+    code = attrs.NumericAttr("code")
+    option = OptionNameAttr("code", label=_("Option"))
+    definition = attrs.RelatedObjectAttr("definition", linkify=True)
+    value = attrs.ArrayAttr("value", style="font-monospace", copy_button=True)
+
+
+class OptionQualifiersPanel(panels.ObjectAttributesPanel):
+    title = _("Qualifiers")
+    vendor_class = attrs.RelatedObjectAttr("vendor_class", linkify=True)
     user_class = attrs.RelatedObjectAttr("user_class", linkify=True)
     policy = attrs.RelatedObjectAttr("policy", linkify=True)
 
@@ -104,13 +185,13 @@ class FailoverRelationshipPanel(panels.ObjectAttributesPanel):
     server_role = attrs.ChoiceAttr("server_role", label=_("Primary server role"))
     state_switch_interval = attrs.NumericAttr("state_switch_interval", label=_("State switchover interval (s)"))
     shared_secret_profile = attrs.TextAttr("shared_secret_profile", style="font-monospace")
-    subnets = attrs.RelatedObjectListAttr("subnets", linkify=True)
+    scopes = attrs.RelatedObjectListAttr("scopes", linkify=True)
     description = attrs.TextAttr("description")
 
 
 class MacFilterPanel(panels.ObjectAttributesPanel):
     title = _("MAC filter")
-    dhcp_server = attrs.RelatedObjectAttr("dhcp_server", linkify=True, label=_("DHCP server"))
+    server = attrs.RelatedObjectAttr("server", linkify=True)
     mac_address = attrs.TextAttr("mac_address", style="font-monospace", label=_("MAC address"))
     list = attrs.ChoiceAttr("list")
     description = attrs.TextAttr("description")
@@ -118,27 +199,9 @@ class MacFilterPanel(panels.ObjectAttributesPanel):
 
 class MacFilterListsPanel(panels.ObjectAttributesPanel):
     title = _("MAC filter lists")
-    dhcp_server = attrs.RelatedObjectAttr("dhcp_server", linkify=True, label=_("DHCP server"))
+    server = attrs.RelatedObjectAttr("server", linkify=True)
     allow_list_enabled = attrs.BooleanAttr("allow_list_enabled", label=_("Allow list enabled"))
     deny_list_enabled = attrs.BooleanAttr("deny_list_enabled", label=_("Deny list enabled"))
-
-
-class WindowsVendorOptionDefinitionPanel(panels.ObjectAttributesPanel):
-    title = _("Vendor option definition")
-    vendor_class = attrs.RelatedObjectAttr("vendor_class", linkify=True)
-    code = attrs.NumericAttr("code")
-    name = attrs.TextAttr("name")
-    windows_type = attrs.TextAttr("windows_type", label=_("Windows type"))
-    multi_valued = attrs.BooleanAttr("multi_valued", label=_("Multi-valued"))
-    description = attrs.TextAttr("description")
-
-
-class WindowsVendorOptionPanel(panels.ObjectAttributesPanel):
-    title = _("Vendor option value")
-    definition = attrs.RelatedObjectAttr("definition", linkify=True)
-    assigned_object = attrs.GenericForeignKeyAttr("assigned_object", linkify=True, label=_("Set on"))
-    user_class = attrs.RelatedObjectAttr("user_class", linkify=True)
-    policy = attrs.RelatedObjectAttr("policy", linkify=True)
 
 
 class SyncRunPanel(panels.ObjectAttributesPanel):

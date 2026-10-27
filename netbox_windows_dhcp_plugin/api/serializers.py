@@ -1,23 +1,18 @@
 from core.api.serializers_.jobs import JobSerializer
-from django.contrib.contenttypes.models import ContentType
+from dcim.api.serializers import DeviceSerializer, MACAddressSerializer
+from django.utils.translation import gettext as _
 from drf_spectacular.utils import extend_schema_field
-from ipam.api.serializers import VRFSerializer
-from netbox.api.fields import ChoiceField, ContentTypeField
+from ipam.api.serializers import IPAddressSerializer, IPRangeSerializer, PrefixSerializer, VRFSerializer
+from netbox.api.fields import ChoiceField, ContentTypeField, SerializedPKRelatedField
 from netbox.api.serializers import NetBoxModelSerializer, PrimaryModelSerializer
-from netbox_dhcp.api.serializers import (
-    DHCPServerSerializer,
-    HostReservationSerializer,
-    OptionDefinitionSerializer,
-    OptionSerializer,
-    SubnetSerializer,
-)
 from rest_framework import serializers
-from utilities.api import get_serializer_for_model
+from virtualization.api.serializers import VirtualMachineSerializer
 
 from ..choices import (
     ClassTypeChoices,
     FailoverModeChoices,
     FailoverServerRoleChoices,
+    FamilyChoices,
     ImportDestinationChoices,
     MacFilterListChoices,
     PolicyConditionChoices,
@@ -39,18 +34,17 @@ from ..models import (
     ImportProposalItem,
     MacFilter,
     MacFilterLists,
+    OptionDefinition,
+    OptionValue,
+    Reservation,
+    Scope,
+    Superscope,
     SyncRun,
     WindowsClass,
-    WindowsOptionDefinition,
-    WindowsOptionQualifier,
     WindowsPolicy,
-    WindowsReservation,
-    WindowsScope,
     WindowsServer,
-    WindowsVendorOption,
-    WindowsVendorOptionDefinition,
 )
-from ..models.dhcp import VENDOR_OPTION_PARENTS
+from ..ui.options import OptionNames
 
 API = "plugins-api:netbox_windows_dhcp_plugin-api"
 COMMON = ("id", "url", "display_url", "display")
@@ -64,7 +58,8 @@ def _url(model_name):
 
 class WindowsServerSerializer(PrimaryModelSerializer):
     url = _url("windowsserver")
-    dhcp_server = DHCPServerSerializer(nested=True)
+    device = DeviceSerializer(nested=True, required=False, allow_null=True)
+    virtual_machine = VirtualMachineSerializer(nested=True, required=False, allow_null=True)
     transport = ChoiceField(choices=TransportChoices, required=False)
     winrm_auth = ChoiceField(choices=WinRMAuthChoices, required=False)
     import_vrf = VRFSerializer(nested=True, required=False, allow_null=True)
@@ -73,7 +68,9 @@ class WindowsServerSerializer(PrimaryModelSerializer):
         model = WindowsServer
         fields = (
             *COMMON,
-            "dhcp_server",
+            "name",
+            "device",
+            "virtual_machine",
             "host",
             "transport",
             "port",
@@ -91,85 +88,144 @@ class WindowsServerSerializer(PrimaryModelSerializer):
             "import_interval",
             *PRIMARY_TAIL,
         )
-        brief_fields = ("id", "url", "display", "host", "description")
+        brief_fields = ("id", "url", "display", "name", "description")
 
 
-class WindowsScopeSerializer(NetBoxModelSerializer):
-    url = _url("windowsscope")
-    subnet = SubnetSerializer(nested=True)
-    state = ChoiceField(choices=ScopeStateChoices, required=False)
-    scope_type = ChoiceField(choices=ScopeTypeChoices, required=False)
+class SuperscopeSerializer(NetBoxModelSerializer):
+    url = _url("superscope")
+    server = WindowsServerSerializer(nested=True)
 
     class Meta:
-        model = WindowsScope
+        model = Superscope
+        fields = (*COMMON, "server", "name", "description", "comments", *TAIL)
+        brief_fields = ("id", "url", "display", "name", "description")
+
+
+class ScopeSerializer(NetBoxModelSerializer):
+    url = _url("scope")
+    server = WindowsServerSerializer(nested=True)
+    prefix = PrefixSerializer(nested=True)
+    ip_range = IPRangeSerializer(nested=True, required=False, allow_null=True)
+    superscope = SuperscopeSerializer(nested=True, required=False, allow_null=True)
+    state = ChoiceField(choices=ScopeStateChoices, required=False)
+    scope_type = ChoiceField(choices=ScopeTypeChoices, required=False)
+    # How Windows names the scope (its network address), and its address family: both follow from the prefix.
+    scope_id = serializers.CharField(read_only=True)
+    family = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = Scope
         fields = (
             *COMMON,
-            "subnet",
+            "server",
+            "prefix",
+            "ip_range",
+            "superscope",
+            "scope_id",
+            "family",
+            "name",
+            "description",
             "state",
             "scope_type",
+            "lease_duration",
             "delay_ms",
             "max_bootp_clients",
             "activate_policies",
             "preference",
+            "preferred_lifetime",
+            "valid_lifetime",
+            "renew_timer",
+            "rebind_timer",
+            "comments",
             *TAIL,
         )
-        brief_fields = ("id", "url", "display", "state")
+        brief_fields = ("id", "url", "display", "name", "scope_id", "state")
 
 
-class WindowsReservationSerializer(NetBoxModelSerializer):
-    url = _url("windowsreservation")
-    host_reservation = HostReservationSerializer(nested=True)
+class ReservationSerializer(NetBoxModelSerializer):
+    url = _url("reservation")
+    scope = ScopeSerializer(nested=True)
+    ip_address = IPAddressSerializer(nested=True)
+    mac_address = MACAddressSerializer(nested=True, required=False, allow_null=True)
     reservation_type = ChoiceField(choices=ReservationTypeChoices, required=False)
 
     class Meta:
-        model = WindowsReservation
-        fields = (*COMMON, "host_reservation", "reservation_type", "iaid", *TAIL)
-        brief_fields = ("id", "url", "display", "reservation_type")
+        model = Reservation
+        fields = (
+            *COMMON,
+            "scope",
+            "ip_address",
+            "mac_address",
+            "client_id",
+            "duid",
+            "iaid",
+            "name",
+            "description",
+            "reservation_type",
+            "comments",
+            *TAIL,
+        )
+        brief_fields = ("id", "url", "display", "name", "ip_address")
 
 
-class ExclusionRangeSerializer(PrimaryModelSerializer):
+class ExclusionRangeSerializer(NetBoxModelSerializer):
     url = _url("exclusionrange")
-    subnet = SubnetSerializer(nested=True)
+    scope = ScopeSerializer(nested=True)
 
     class Meta:
         model = ExclusionRange
-        fields = (*COMMON, "subnet", "start_address", "end_address", *PRIMARY_TAIL)
+        fields = (*COMMON, "scope", "start_address", "end_address", "description", "comments", *TAIL)
         brief_fields = ("id", "url", "display", "start_address", "end_address", "description")
 
 
 class WindowsClassSerializer(PrimaryModelSerializer):
     url = _url("windowsclass")
-    dhcp_server = DHCPServerSerializer(nested=True)
+    server = WindowsServerSerializer(nested=True)
     class_type = ChoiceField(choices=ClassTypeChoices)
+    family = ChoiceField(choices=FamilyChoices, required=False)
 
     class Meta:
         model = WindowsClass
-        fields = (*COMMON, "dhcp_server", "name", "class_type", "family", "data", *PRIMARY_TAIL)
+        fields = (*COMMON, "server", "name", "class_type", "family", "data", *PRIMARY_TAIL)
         brief_fields = ("id", "url", "display", "name", "class_type", "description")
 
 
-class WindowsOptionDefinitionSerializer(NetBoxModelSerializer):
-    url = _url("windowsoptiondefinition")
-    option_definition = OptionDefinitionSerializer(nested=True)
+class OptionDefinitionSerializer(NetBoxModelSerializer):
+    url = _url("optiondefinition")
+    server = WindowsServerSerializer(nested=True)
+    family = ChoiceField(choices=FamilyChoices, required=False)
+    vendor_class = WindowsClassSerializer(nested=True, required=False, allow_null=True)
 
     class Meta:
-        model = WindowsOptionDefinition
-        fields = (*COMMON, "option_definition", "windows_type", "default_value", *TAIL)
-        brief_fields = ("id", "url", "display")
+        model = OptionDefinition
+        fields = (
+            *COMMON,
+            "server",
+            "family",
+            "vendor_class",
+            "code",
+            "name",
+            "windows_type",
+            "multi_valued",
+            "default_value",
+            "description",
+            *TAIL,
+        )
+        brief_fields = ("id", "url", "display", "code", "name")
 
 
 class WindowsPolicySerializer(PrimaryModelSerializer):
     url = _url("windowspolicy")
-    dhcp_server = DHCPServerSerializer(nested=True)
-    subnet = SubnetSerializer(nested=True, required=False, allow_null=True)
+    server = WindowsServerSerializer(nested=True)
+    scope = ScopeSerializer(nested=True, required=False, allow_null=True)
     condition = ChoiceField(choices=PolicyConditionChoices, required=False)
 
     class Meta:
         model = WindowsPolicy
         fields = (
             *COMMON,
-            "dhcp_server",
-            "subnet",
+            "server",
+            "scope",
             "name",
             "processing_order",
             "enabled",
@@ -182,25 +238,63 @@ class WindowsPolicySerializer(PrimaryModelSerializer):
         brief_fields = ("id", "url", "display", "name", "description")
 
 
-class WindowsOptionQualifierSerializer(NetBoxModelSerializer):
-    url = _url("windowsoptionqualifier")
-    option = OptionSerializer(nested=True)
+class OptionValueSerializer(NetBoxModelSerializer):
+    url = _url("optionvalue")
+    server = WindowsServerSerializer(nested=True)
+    scope = ScopeSerializer(nested=True, required=False, allow_null=True)
+    reservation = ReservationSerializer(nested=True, required=False, allow_null=True)
+    family = ChoiceField(choices=FamilyChoices, required=False)
+    vendor_class = WindowsClassSerializer(nested=True, required=False, allow_null=True)
     user_class = WindowsClassSerializer(nested=True, required=False, allow_null=True)
     policy = WindowsPolicySerializer(nested=True, required=False, allow_null=True)
+    level = serializers.CharField(read_only=True)
+    option_name = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
-        model = WindowsOptionQualifier
-        fields = (*COMMON, "option", "user_class", "policy", *TAIL)
-        brief_fields = ("id", "url", "display")
+        model = OptionValue
+        fields = (
+            *COMMON,
+            "server",
+            "scope",
+            "reservation",
+            "level",
+            "family",
+            "code",
+            "option_name",
+            "vendor_class",
+            "user_class",
+            "policy",
+            "value",
+            *TAIL,
+        )
+        brief_fields = ("id", "url", "display", "code", "value")
+
+    def validate(self, data):
+        # A reservation's value belongs to its scope too (OptionValue.clean() says so). The model is validated on a
+        # copy here, so set the scope on what gets saved as well, or filters by scope miss the value.
+        reservation = data.get("reservation")
+        if reservation is not None and data.get("scope") is None:
+            data["scope"] = reservation.scope
+        return super().validate(data)
+
+    @extend_schema_field(serializers.CharField())
+    def get_option_name(self, instance):
+        """The option's name: from the server's definition, else the standard name (empty when unknown)."""
+        # Shared by every row of a list response, so definitions are read once per server, family and vendor class.
+        names = self.context.setdefault("_option_names", OptionNames())
+        return names.name(instance)
 
 
 class FailoverRelationshipSerializer(PrimaryModelSerializer):
     url = _url("failoverrelationship")
-    primary_server = DHCPServerSerializer(nested=True)
-    partner_server = DHCPServerSerializer(nested=True)
+    primary_server = WindowsServerSerializer(nested=True)
+    partner_server = WindowsServerSerializer(nested=True)
     mode = ChoiceField(choices=FailoverModeChoices, required=False)
     server_role = ChoiceField(choices=FailoverServerRoleChoices, required=False, allow_blank=True)
-    subnets = SubnetSerializer(nested=True, many=True, required=False)
+    # Written as a list of scope IDs, read back as nested scopes (a nested serializer cannot be written).
+    scopes = SerializedPKRelatedField(
+        queryset=Scope.objects.all(), serializer=ScopeSerializer, nested=True, required=False, many=True
+    )
 
     class Meta:
         model = FailoverRelationship
@@ -216,83 +310,46 @@ class FailoverRelationshipSerializer(PrimaryModelSerializer):
             "server_role",
             "state_switch_interval",
             "shared_secret_profile",
-            "subnets",
+            "scopes",
             *PRIMARY_TAIL,
         )
         brief_fields = ("id", "url", "display", "name", "mode", "description")
 
+    def validate(self, data):
+        # The model cannot check a many-to-many field. A scope of another server (or a DHCPv6 scope) would be left out
+        # of the relationship by the sync, and the next push would take it out of the relationship on Windows.
+        primary = data.get("primary_server", getattr(self.instance, "primary_server", None))
+        for scope in data.get("scopes", []):
+            if primary is not None and scope.server_id != primary.pk:
+                raise serializers.ValidationError(
+                    {"scopes": _("Scope {scope} is not on the primary server.").format(scope=scope)}
+                )
+            if scope.family != 4:
+                raise serializers.ValidationError(
+                    {"scopes": _("Windows has no DHCPv6 failover: {scope}.").format(scope=scope)}
+                )
+        return super().validate(data)
+
 
 class MacFilterSerializer(PrimaryModelSerializer):
     url = _url("macfilter")
-    dhcp_server = DHCPServerSerializer(nested=True)
+    server = WindowsServerSerializer(nested=True)
     list = ChoiceField(choices=MacFilterListChoices)
 
     class Meta:
         model = MacFilter
-        fields = (*COMMON, "dhcp_server", "mac_address", "list", *PRIMARY_TAIL)
+        fields = (*COMMON, "server", "mac_address", "list", *PRIMARY_TAIL)
         brief_fields = ("id", "url", "display", "mac_address", "list", "description")
 
 
 class MacFilterListsSerializer(NetBoxModelSerializer):
     url = _url("macfilterlists")
-    dhcp_server = DHCPServerSerializer(nested=True)
+    server = WindowsServerSerializer(nested=True)
 
     class Meta:
         model = MacFilterLists
-        fields = (*COMMON, "dhcp_server", "allow_list_enabled", "deny_list_enabled", *TAIL)
+        fields = (*COMMON, "server", "allow_list_enabled", "deny_list_enabled", *TAIL)
         brief_fields = ("id", "url", "display", "allow_list_enabled", "deny_list_enabled")
-
-
-class WindowsVendorOptionDefinitionSerializer(PrimaryModelSerializer):
-    url = _url("windowsvendoroptiondefinition")
-    vendor_class = WindowsClassSerializer(nested=True)
-
-    class Meta:
-        model = WindowsVendorOptionDefinition
-        fields = (
-            *COMMON,
-            "vendor_class",
-            "code",
-            "name",
-            "windows_type",
-            "multi_valued",
-            "default_value",
-            *PRIMARY_TAIL,
-        )
-        brief_fields = ("id", "url", "display", "code", "name", "description")
-
-
-class WindowsVendorOptionSerializer(NetBoxModelSerializer):
-    url = _url("windowsvendoroption")
-    definition = WindowsVendorOptionDefinitionSerializer(nested=True)
-    # Written as "app_label.model" plus assigned_object_id, read back with the parent nested, like netbox-plugin-dhcp
-    # options.
-    assigned_object_type = ContentTypeField(queryset=ContentType.objects.filter(VENDOR_OPTION_PARENTS))
-    assigned_object = serializers.SerializerMethodField(read_only=True)
-    user_class = WindowsClassSerializer(nested=True, required=False, allow_null=True)
-    policy = WindowsPolicySerializer(nested=True, required=False, allow_null=True)
-
-    class Meta:
-        model = WindowsVendorOption
-        fields = (
-            *COMMON,
-            "definition",
-            "assigned_object_type",
-            "assigned_object_id",
-            "assigned_object",
-            "user_class",
-            "policy",
-            "value",
-            *TAIL,
-        )
-        brief_fields = ("id", "url", "display", "value")
-
-    @extend_schema_field(serializers.JSONField(allow_null=True))
-    def get_assigned_object(self, instance):
-        if instance.assigned_object is None:
-            return None
-        serializer = get_serializer_for_model(instance.assigned_object)
-        return serializer(instance.assigned_object, nested=True, context={"request": self.context["request"]}).data
 
 
 class SyncRunSerializer(NetBoxModelSerializer):

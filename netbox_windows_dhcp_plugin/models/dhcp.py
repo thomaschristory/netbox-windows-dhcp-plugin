@@ -1,16 +1,16 @@
 """
-Windows DHCP concepts that netbox-plugin-dhcp (built around Kea) does not model.
+The DHCP configuration of a Windows server, as Windows holds it.
 
-Every model here is DHCP configuration and therefore branchable: it is reviewed, merged and pushed together with the
-netbox-plugin-dhcp objects it extends.
+Every model here is branchable: it is reviewed, merged and pushed like any other NetBox data. Scopes and reservations
+point at core NetBox objects (prefix, IP range, IP address, MAC address), so the addresses show up in IPAM too.
 """
 
 import ipaddress
 
-from django.contrib.contenttypes.fields import GenericForeignKey
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models.functions import Lower
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 from netbox.models import NetBoxModel, PrimaryModel
@@ -20,6 +20,7 @@ from ..choices import (
     ClassTypeChoices,
     FailoverModeChoices,
     FailoverServerRoleChoices,
+    FamilyChoices,
     MacFilterListChoices,
     PolicyConditionChoices,
     ReservationTypeChoices,
@@ -32,30 +33,93 @@ __all__ = (
     "FailoverRelationship",
     "MacFilter",
     "MacFilterLists",
+    "OptionDefinition",
+    "OptionValue",
+    "Reservation",
+    "Scope",
+    "Superscope",
     "WindowsClass",
-    "WindowsOptionDefinition",
-    "WindowsOptionQualifier",
     "WindowsPolicy",
-    "WindowsReservation",
-    "WindowsScope",
-    "WindowsVendorOption",
-    "WindowsVendorOptionDefinition",
 )
+
+SERVER = "netbox_windows_dhcp_plugin.WindowsServer"
 
 
 def _url(model_name, pk):
     return reverse(f"plugins:netbox_windows_dhcp_plugin:{model_name}", args=[pk])
 
 
-class WindowsScope(NetBoxModel):
-    """Windows-only scope settings for a netbox-plugin-dhcp Subnet (the scope itself)."""
-
-    subnet = models.OneToOneField(
-        to="netbox_dhcp.Subnet",
+def _server_fk(related_name, **kwargs):
+    return models.ForeignKey(
+        to=SERVER,
         on_delete=models.CASCADE,
-        related_name="%(app_label)s_windows_scope",
-        verbose_name=_("subnet"),
+        related_name=related_name,
+        verbose_name=_("server"),
+        **kwargs,
     )
+
+
+class Superscope(NetBoxModel):
+    """A Windows superscope: IPv4 scopes of one server served together on the same network segment."""
+
+    server = _server_fk("superscopes")
+    name = models.CharField(verbose_name=_("name"), max_length=255)
+    description = models.CharField(verbose_name=_("description"), max_length=200, blank=True)
+    comments = models.TextField(verbose_name=_("comments"), blank=True)
+
+    class Meta:
+        ordering = ("server", "name")
+        verbose_name = _("superscope")
+        verbose_name_plural = _("superscopes")
+        constraints = (
+            models.UniqueConstraint(
+                fields=("server", "name"),
+                name="%(app_label)s_%(class)s_unique_name",
+            ),
+        )
+
+    def __str__(self):
+        return self.name
+
+    def get_absolute_url(self):
+        return _url("superscope", self.pk)
+
+
+class Scope(NetBoxModel):
+    """
+    A Windows DHCP scope, IPv4 or DHCPv6 (the prefix decides). An IPv4 scope hands out its IP range; a DHCPv6 scope
+    is a /64 and has no range.
+    """
+
+    server = _server_fk("scopes")
+    prefix = models.ForeignKey(
+        to="ipam.Prefix",
+        # Deleting the prefix in IPAM must not silently delete the scope (and with it the scope on Windows).
+        on_delete=models.PROTECT,
+        related_name="%(app_label)s_scopes",
+        verbose_name=_("prefix"),
+    )
+    ip_range = models.ForeignKey(
+        to="ipam.IPRange",
+        on_delete=models.PROTECT,
+        related_name="%(app_label)s_scopes",
+        blank=True,
+        null=True,
+        verbose_name=_("IP range"),
+        help_text=_("IPv4 scopes: the addresses the scope hands out (start and end of the scope)"),
+    )
+    superscope = models.ForeignKey(
+        to="netbox_windows_dhcp_plugin.Superscope",
+        # On Windows, removing a superscope keeps its scopes.
+        on_delete=models.SET_NULL,
+        related_name="scopes",
+        blank=True,
+        null=True,
+        verbose_name=_("superscope"),
+    )
+    name = models.CharField(verbose_name=_("name"), max_length=255)
+    # Windows descriptions have no practical length limit, unlike NetBox's usual 200-character description.
+    description = models.TextField(verbose_name=_("description"), blank=True)
     state = models.CharField(
         verbose_name=_("state"),
         max_length=10,
@@ -67,19 +131,29 @@ class WindowsScope(NetBoxModel):
         max_length=10,
         choices=ScopeTypeChoices,
         default=ScopeTypeChoices.DHCP,
+        help_text=_("IPv4 scopes only"),
+    )
+    lease_duration = models.PositiveIntegerField(
+        verbose_name=_("lease duration (s)"),
+        blank=True,
+        null=True,
+        help_text=_("IPv4 scopes only. Empty keeps what Windows has"),
     )
     delay_ms = models.PositiveIntegerField(
         verbose_name=_("offer delay (ms)"),
         default=0,
+        help_text=_("IPv4 scopes only"),
     )
     max_bootp_clients = models.PositiveIntegerField(
         verbose_name=_("max BOOTP clients"),
         blank=True,
         null=True,
+        help_text=_("IPv4 scopes only. Empty means no limit"),
     )
     activate_policies = models.BooleanField(
         verbose_name=_("activate policies"),
         default=True,
+        help_text=_("IPv4 scopes only"),
     )
     preference = models.PositiveSmallIntegerField(
         verbose_name=_("preference"),
@@ -87,76 +161,233 @@ class WindowsScope(NetBoxModel):
         null=True,
         help_text=_("DHCPv6 scopes only"),
     )
+    preferred_lifetime = models.PositiveIntegerField(
+        verbose_name=_("preferred lifetime (s)"),
+        blank=True,
+        null=True,
+        help_text=_("DHCPv6 scopes only. Empty keeps what Windows has"),
+    )
+    valid_lifetime = models.PositiveIntegerField(
+        verbose_name=_("valid lifetime (s)"),
+        blank=True,
+        null=True,
+        help_text=_("DHCPv6 scopes only. Empty keeps what Windows has"),
+    )
+    renew_timer = models.PositiveIntegerField(
+        verbose_name=_("T1 (s)"),
+        blank=True,
+        null=True,
+        help_text=_("DHCPv6 scopes only: renewal time. Empty follows the preferred lifetime"),
+    )
+    rebind_timer = models.PositiveIntegerField(
+        verbose_name=_("T2 (s)"),
+        blank=True,
+        null=True,
+        help_text=_("DHCPv6 scopes only: rebinding time. Empty follows the preferred lifetime"),
+    )
+    comments = models.TextField(verbose_name=_("comments"), blank=True)
+
+    clone_fields = (
+        "server",
+        "superscope",
+        "state",
+        "scope_type",
+        "lease_duration",
+        "delay_ms",
+        "max_bootp_clients",
+        "activate_policies",
+        "preference",
+        "preferred_lifetime",
+        "valid_lifetime",
+        "renew_timer",
+        "rebind_timer",
+    )
 
     class Meta:
-        ordering = ("subnet",)
-        verbose_name = _("Windows scope")
-        verbose_name_plural = _("Windows scopes")
+        ordering = ("server", "prefix")
+        verbose_name = _("scope")
+        verbose_name_plural = _("scopes")
+        constraints = (
+            models.UniqueConstraint(
+                fields=("server", "prefix"),
+                name="%(app_label)s_%(class)s_unique_prefix",
+            ),
+        )
 
     def __str__(self):
-        return str(self.subnet)
+        return f"{self.server}/{self.scope_id}" if self.prefix_id else self.name
 
     def get_absolute_url(self):
-        return _url("windowsscope", self.pk)
+        return _url("scope", self.pk)
 
     def get_state_color(self):
         return ScopeStateChoices.colors.get(self.state)
 
+    @property
+    def network(self):
+        return ipaddress.ip_network(str(self.prefix.prefix)) if self.prefix_id else None
 
-class WindowsReservation(NetBoxModel):
-    """Windows-only settings for a netbox-plugin-dhcp HostReservation."""
+    @property
+    def family(self):
+        return self.network.version if self.prefix_id else None
 
-    host_reservation = models.OneToOneField(
-        to="netbox_dhcp.HostReservation",
+    @property
+    def scope_id(self):
+        """How Windows names the scope: its network address (IPv4 scope ID, DHCPv6 prefix)."""
+        return str(self.network.network_address) if self.prefix_id else ""
+
+    def clean(self):
+        super().clean()
+        if not self.prefix_id:
+            return
+        network = self.network
+        if network.version == 6:
+            if self.ip_range_id is not None:
+                raise ValidationError({"ip_range": _("DHCPv6 scopes have no IP range.")})
+            if self.superscope_id is not None:
+                raise ValidationError({"superscope": _("Windows has no DHCPv6 superscopes.")})
+        if self.ip_range_id is not None:
+            # NetBox holds netaddr objects; compare in the standard library's types.
+            start = ipaddress.ip_address(str(self.ip_range.start_address.ip))
+            end = ipaddress.ip_address(str(self.ip_range.end_address.ip))
+            if start not in network or end not in network:
+                raise ValidationError(
+                    {"ip_range": _("The range must be inside the prefix {prefix}.").format(prefix=network)}
+                )
+        if self.superscope_id is not None and self.server_id and self.superscope.server_id != self.server_id:
+            raise ValidationError({"superscope": _("The superscope belongs to another server.")})
+
+
+class Reservation(NetBoxModel):
+    """
+    A reserved address in a scope. IPv4: for a MAC address (or another client ID). DHCPv6: for a DUID and IAID.
+    """
+
+    scope = models.ForeignKey(
+        to="netbox_windows_dhcp_plugin.Scope",
         on_delete=models.CASCADE,
-        related_name="%(app_label)s_windows_reservation",
-        verbose_name=_("host reservation"),
+        related_name="reservations",
+        verbose_name=_("scope"),
     )
-    reservation_type = models.CharField(
-        verbose_name=_("type"),
-        max_length=10,
-        choices=ReservationTypeChoices,
-        default=ReservationTypeChoices.BOTH,
+    ip_address = models.ForeignKey(
+        to="ipam.IPAddress",
+        on_delete=models.PROTECT,
+        related_name="%(app_label)s_reservations",
+        verbose_name=_("IP address"),
+    )
+    mac_address = models.ForeignKey(
+        to="dcim.MACAddress",
+        on_delete=models.PROTECT,
+        related_name="%(app_label)s_reservations",
+        blank=True,
+        null=True,
+        verbose_name=_("MAC address"),
+        help_text=_("IPv4 reservations: the client's MAC address"),
+    )
+    client_id = models.CharField(
+        verbose_name=_("client ID"),
+        max_length=255,
+        blank=True,
+        help_text=_("IPv4 reservations of clients identified by something else than a MAC address"),
+    )
+    duid = models.CharField(
+        verbose_name=_("DUID"),
+        max_length=255,
+        blank=True,
+        help_text=_("DHCPv6 reservations: the client's DUID, for example 00-01-00-01-2a-..."),
     )
     iaid = models.PositiveBigIntegerField(
         verbose_name=_("IAID"),
         blank=True,
         null=True,
         validators=[MaxValueValidator(0xFFFFFFFF)],
-        help_text=_("DHCPv6 reservations only: the identity association ID the client sends with its DUID"),
+        help_text=_("DHCPv6 reservations: the identity association ID the client sends with its DUID"),
     )
+    name = models.CharField(verbose_name=_("name"), max_length=255, blank=True)
+    description = models.TextField(verbose_name=_("description"), blank=True)
+    reservation_type = models.CharField(
+        verbose_name=_("type"),
+        max_length=10,
+        choices=ReservationTypeChoices,
+        default=ReservationTypeChoices.BOTH,
+        help_text=_("IPv4 reservations only"),
+    )
+    comments = models.TextField(verbose_name=_("comments"), blank=True)
+
+    clone_fields = ("scope", "reservation_type")
 
     class Meta:
-        ordering = ("host_reservation",)
-        verbose_name = _("Windows reservation")
-        verbose_name_plural = _("Windows reservations")
+        ordering = ("scope", "ip_address")
+        verbose_name = _("reservation")
+        verbose_name_plural = _("reservations")
+        constraints = (
+            models.UniqueConstraint(
+                fields=("scope", "ip_address"),
+                name="%(app_label)s_%(class)s_unique_address",
+            ),
+        )
 
     def __str__(self):
-        return str(self.host_reservation)
+        if self.ip_address_id:
+            return str(self.ip_address.address.ip)
+        return self.name or super().__str__()
 
     def get_absolute_url(self):
-        return _url("windowsreservation", self.pk)
+        return _url("reservation", self.pk)
+
+    @property
+    def server(self):
+        return self.scope.server if self.scope_id else None
+
+    @property
+    def client(self):
+        """The client identity Windows matches: MAC address or client ID (IPv4), DUID (DHCPv6)."""
+        if self.mac_address_id:
+            return str(self.mac_address.mac_address)
+        return self.client_id or self.duid
+
+    def clean(self):
+        super().clean()
+        if not (self.scope_id and self.ip_address_id):
+            return
+        network = self.scope.network
+        ip = ipaddress.ip_address(str(self.ip_address.address.ip))
+        if ip not in network:
+            raise ValidationError(
+                {"ip_address": _("The address must be inside the scope {prefix}.").format(prefix=network)}
+            )
+        if network.version == 4:
+            if self.duid or self.iaid is not None:
+                raise ValidationError(_("DUID and IAID are for DHCPv6 reservations."))
+            if self.mac_address_id and self.client_id:
+                raise ValidationError({"client_id": _("Set a MAC address or a client ID, not both.")})
+        elif self.mac_address_id or self.client_id:
+            raise ValidationError(
+                _("DHCPv6 reservations are matched on DUID and IAID, not a MAC address or client ID.")
+            )
 
 
-class ExclusionRange(PrimaryModel):
+class ExclusionRange(NetBoxModel):
     """An address range inside a scope that the server never hands out."""
 
-    subnet = models.ForeignKey(
-        to="netbox_dhcp.Subnet",
+    scope = models.ForeignKey(
+        to="netbox_windows_dhcp_plugin.Scope",
         on_delete=models.CASCADE,
-        related_name="%(app_label)s_windows_exclusion_ranges",
-        verbose_name=_("subnet"),
+        related_name="exclusion_ranges",
+        verbose_name=_("scope"),
     )
     start_address = models.GenericIPAddressField(verbose_name=_("start address"))
     end_address = models.GenericIPAddressField(verbose_name=_("end address"))
+    description = models.CharField(verbose_name=_("description"), max_length=200, blank=True)
+    comments = models.TextField(verbose_name=_("comments"), blank=True)
 
     class Meta:
-        ordering = ("subnet", "start_address")
+        ordering = ("scope", "start_address")
         verbose_name = _("exclusion range")
         verbose_name_plural = _("exclusion ranges")
         constraints = (
             models.UniqueConstraint(
-                fields=("subnet", "start_address", "end_address"),
+                fields=("scope", "start_address", "end_address"),
                 name="%(app_label)s_%(class)s_unique_range",
             ),
         )
@@ -177,23 +408,18 @@ class ExclusionRange(PrimaryModel):
             raise ValidationError(_("Start and end addresses must be of the same family."))
         if start > end:
             raise ValidationError({"end_address": _("The end address must not be lower than the start address.")})
-        if self.subnet_id is not None:
-            network = ipaddress.ip_network(str(self.subnet.prefix.prefix))
+        if self.scope_id is not None:
+            network = self.scope.network
+            if network.version == 6:
+                raise ValidationError({"scope": _("DHCPv6 exclusion ranges are not synced: add them on Windows.")})
             if start not in network or end not in network:
-                raise ValidationError(
-                    _("The range must be inside the subnet's prefix {prefix}.").format(prefix=network)
-                )
+                raise ValidationError(_("The range must be inside the scope {prefix}.").format(prefix=network))
 
 
 class WindowsClass(PrimaryModel):
     """A Windows user or vendor class, matched on the class data the client sends."""
 
-    dhcp_server = models.ForeignKey(
-        to="netbox_dhcp.DHCPServer",
-        on_delete=models.CASCADE,
-        related_name="%(app_label)s_windows_classes",
-        verbose_name=_("DHCP server"),
-    )
+    server = _server_fk("classes")
     name = models.CharField(verbose_name=_("name"), max_length=255)
     class_type = models.CharField(
         verbose_name=_("type"),
@@ -207,18 +433,23 @@ class WindowsClass(PrimaryModel):
     )
     family = models.PositiveSmallIntegerField(
         verbose_name=_("address family"),
-        choices=((4, "IPv4"), (6, "IPv6")),
-        default=4,
+        choices=FamilyChoices,
+        default=FamilyChoices.IPV4,
     )
 
     class Meta:
-        ordering = ("dhcp_server", "class_type", "name")
-        verbose_name = _("Windows class")
-        verbose_name_plural = _("Windows classes")
+        ordering = ("server", "family", "class_type", "name")
+        verbose_name = _("class")
+        verbose_name_plural = _("classes")
         constraints = (
+            # Windows class names are not case sensitive: "Phones" and "phones" are the same class.
             models.UniqueConstraint(
-                fields=("dhcp_server", "family", "class_type", "name"),
+                "server",
+                "family",
+                "class_type",
+                Lower("name"),
                 name="%(app_label)s_%(class)s_unique_name",
+                violation_error_message=_("This server already has a class of that type with this name."),
             ),
         )
 
@@ -232,58 +463,92 @@ class WindowsClass(PrimaryModel):
         return ClassTypeChoices.colors.get(self.class_type)
 
 
-class WindowsOptionDefinition(NetBoxModel):
-    """Windows-only settings for a server-scoped netbox-plugin-dhcp OptionDefinition."""
+class OptionDefinition(NetBoxModel):
+    """
+    An option a server defines, either for every client or (with a vendor class) for one vendor class. Standard
+    options (router, DNS servers...) need no definition here: their values name the code directly.
+    """
 
-    option_definition = models.OneToOneField(
-        to="netbox_dhcp.OptionDefinition",
+    server = _server_fk("option_definitions")
+    family = models.PositiveSmallIntegerField(
+        verbose_name=_("address family"),
+        choices=FamilyChoices,
+        default=FamilyChoices.IPV4,
+    )
+    vendor_class = models.ForeignKey(
+        to="netbox_windows_dhcp_plugin.WindowsClass",
         on_delete=models.CASCADE,
-        related_name="%(app_label)s_windows_option_definition",
-        verbose_name=_("option definition"),
-    )
-    # netbox-plugin-dhcp has fewer data types than Windows (BinaryData and EncapsulatedData are both "binary"), so
-    # keep the Windows type to push back exactly what was imported.
-    windows_type = models.CharField(
-        verbose_name=_("Windows type"),
-        max_length=50,
+        related_name="option_definitions",
         blank=True,
-        help_text=_("Windows data type, for example DWord or EncapsulatedData"),
+        null=True,
+        limit_choices_to={"class_type": ClassTypeChoices.VENDOR},
+        verbose_name=_("vendor class"),
+        help_text=_("Leave empty for an option every client can get"),
     )
+    code = models.PositiveSmallIntegerField(
+        verbose_name=_("code"),
+        validators=[MinValueValidator(1), MaxValueValidator(65535)],
+    )
+    name = models.CharField(verbose_name=_("name"), max_length=255)
+    windows_type = models.CharField(
+        verbose_name=_("type"),
+        max_length=50,
+        default="String",
+        help_text=_("Windows data type, for example Byte, Word, DWord, IPv4Address, String or BinaryData"),
+    )
+    multi_valued = models.BooleanField(verbose_name=_("multi-valued"), default=False)
     default_value = models.JSONField(
         verbose_name=_("default value"),
         default=list,
         blank=True,
         help_text=_("Default value list, as Windows stores it"),
     )
+    description = models.TextField(verbose_name=_("description"), blank=True)
 
     class Meta:
-        ordering = ("option_definition",)
-        verbose_name = _("Windows option definition")
-        verbose_name_plural = _("Windows option definitions")
+        ordering = ("server", "family", "vendor_class", "code")
+        verbose_name = _("option definition")
+        verbose_name_plural = _("option definitions")
+        constraints = (
+            models.UniqueConstraint(
+                fields=("server", "family", "vendor_class", "code"),
+                name="%(app_label)s_%(class)s_unique_code",
+                nulls_distinct=False,
+            ),
+        )
 
     def __str__(self):
-        return str(self.option_definition)
+        prefix = f"{self.vendor_class} " if self.vendor_class_id else ""
+        return f"{prefix}{self.code} ({self.name})"
 
     def get_absolute_url(self):
-        return _url("windowsoptiondefinition", self.pk)
+        return _url("optiondefinition", self.pk)
+
+    def clean(self):
+        super().clean()
+        if not _is_string_list(self.default_value):
+            raise ValidationError({"default_value": _("Must be a list of strings.")})
+        if self.vendor_class_id is None:
+            return
+        if self.vendor_class.class_type != ClassTypeChoices.VENDOR:
+            raise ValidationError({"vendor_class": _("Must be a vendor class.")})
+        if self.server_id and self.vendor_class.server_id != self.server_id:
+            raise ValidationError({"vendor_class": _("The vendor class belongs to another server.")})
+        if self.vendor_class.family != self.family:
+            raise ValidationError({"vendor_class": _("The vendor class is of another address family.")})
 
 
 class WindowsPolicy(PrimaryModel):
-    """A Windows DHCP policy, at server level or (with a subnet) at scope level."""
+    """A Windows DHCP policy, at server level or (with a scope) at scope level. IPv4 only."""
 
-    dhcp_server = models.ForeignKey(
-        to="netbox_dhcp.DHCPServer",
+    server = _server_fk("policies")
+    scope = models.ForeignKey(
+        to="netbox_windows_dhcp_plugin.Scope",
         on_delete=models.CASCADE,
-        related_name="%(app_label)s_windows_policies",
-        verbose_name=_("DHCP server"),
-    )
-    subnet = models.ForeignKey(
-        to="netbox_dhcp.Subnet",
-        on_delete=models.CASCADE,
-        related_name="%(app_label)s_windows_policies",
+        related_name="policies",
         blank=True,
         null=True,
-        verbose_name=_("subnet"),
+        verbose_name=_("scope"),
         help_text=_("Leave empty for a server-level policy"),
     )
     name = models.CharField(verbose_name=_("name"), max_length=255)
@@ -316,12 +581,12 @@ class WindowsPolicy(PrimaryModel):
     )
 
     class Meta:
-        ordering = ("dhcp_server", "subnet", "processing_order", "name")
-        verbose_name = _("Windows policy")
-        verbose_name_plural = _("Windows policies")
+        ordering = ("server", "scope", "processing_order", "name")
+        verbose_name = _("policy")
+        verbose_name_plural = _("policies")
         constraints = (
             models.UniqueConstraint(
-                fields=("dhcp_server", "subnet", "name"),
+                fields=("server", "scope", "name"),
                 name="%(app_label)s_%(class)s_unique_name",
                 nulls_distinct=False,
             ),
@@ -335,11 +600,14 @@ class WindowsPolicy(PrimaryModel):
 
     def clean(self):
         super().clean()
-        if self.ip_ranges and self.subnet_id is None:
+        if self.ip_ranges and self.scope_id is None:
             raise ValidationError({"ip_ranges": _("Only scope-level policies can have IP ranges.")})
-        # dhcp_server is required; when it is missing the form reports that, so skip the comparison here.
-        if self.subnet_id is not None and self.dhcp_server_id and self.subnet.parent_dhcp_server != self.dhcp_server:
-            raise ValidationError({"subnet": _("The subnet belongs to another DHCP server.")})
+        if self.scope_id is not None:
+            # server is required; when it is missing the form reports that, so skip the comparison here.
+            if self.server_id and self.scope.server_id != self.server_id:
+                raise ValidationError({"scope": _("The scope belongs to another server.")})
+            if self.scope.family == 6:
+                raise ValidationError({"scope": _("Windows has no DHCPv6 policies.")})
         self._clean_criteria()
         if not isinstance(self.ip_ranges, list):
             raise ValidationError({"ip_ranges": _("Must be a list of [start, end] pairs.")})
@@ -371,76 +639,154 @@ class WindowsPolicy(PrimaryModel):
                 raise ValidationError({"criteria": error})
 
 
-class WindowsOptionQualifier(NetBoxModel):
+class OptionValue(NetBoxModel):
     """
-    Restricts a netbox-plugin-dhcp Option value to a user class or a policy, as Windows allows. Vendor class values
-    are WindowsVendorOption objects: their definitions cannot be netbox-plugin-dhcp ones.
+    An option value at server level, on a scope, or on a reservation, optionally for a vendor class, a user class or
+    a policy, as Windows allows. The value is a list, as Windows holds it, so commas and spaces survive.
     """
 
-    option = models.OneToOneField(
-        to="netbox_dhcp.Option",
+    server = _server_fk("option_values")
+    scope = models.ForeignKey(
+        to="netbox_windows_dhcp_plugin.Scope",
         on_delete=models.CASCADE,
-        related_name="%(app_label)s_windows_qualifier",
-        verbose_name=_("option"),
+        related_name="option_values",
+        blank=True,
+        null=True,
+        verbose_name=_("scope"),
+        help_text=_("Leave empty (with no reservation) for a server-level value"),
+    )
+    reservation = models.ForeignKey(
+        to="netbox_windows_dhcp_plugin.Reservation",
+        on_delete=models.CASCADE,
+        related_name="option_values",
+        blank=True,
+        null=True,
+        verbose_name=_("reservation"),
+    )
+    family = models.PositiveSmallIntegerField(
+        verbose_name=_("address family"),
+        choices=FamilyChoices,
+        default=FamilyChoices.IPV4,
+    )
+    code = models.PositiveSmallIntegerField(
+        verbose_name=_("code"),
+        validators=[MinValueValidator(1), MaxValueValidator(65535)],
+    )
+    vendor_class = models.ForeignKey(
+        to="netbox_windows_dhcp_plugin.WindowsClass",
+        on_delete=models.PROTECT,
+        related_name="vendor_class_option_values",
+        blank=True,
+        null=True,
+        limit_choices_to={"class_type": ClassTypeChoices.VENDOR},
+        verbose_name=_("vendor class"),
+        help_text=_("For an option the vendor class defines"),
     )
     user_class = models.ForeignKey(
         to="netbox_windows_dhcp_plugin.WindowsClass",
         on_delete=models.PROTECT,
-        related_name="user_class_options",
+        related_name="user_class_option_values",
         blank=True,
         null=True,
         limit_choices_to={"class_type": ClassTypeChoices.USER},
         verbose_name=_("user class"),
+        help_text=_("Only clients of this user class get the value"),
     )
     policy = models.ForeignKey(
         to="netbox_windows_dhcp_plugin.WindowsPolicy",
         on_delete=models.CASCADE,
-        related_name="options",
+        related_name="option_values",
         blank=True,
         null=True,
         verbose_name=_("policy"),
+        help_text=_("Only clients matching this policy get the value"),
     )
+    value = models.JSONField(verbose_name=_("value"), default=list, help_text=_('For example ["10.0.0.1"]'))
 
     class Meta:
-        ordering = ("option",)
-        verbose_name = _("Windows option qualifier")
-        verbose_name_plural = _("Windows option qualifiers")
+        ordering = ("server", "family", "scope", "reservation", "code")
+        verbose_name = _("option value")
+        verbose_name_plural = _("option values")
+        constraints = (
+            models.UniqueConstraint(
+                fields=("server", "family", "scope", "reservation", "code", "vendor_class", "user_class", "policy"),
+                name="%(app_label)s_%(class)s_unique_value",
+                nulls_distinct=False,
+            ),
+        )
 
     def __str__(self):
-        return str(self.option)
+        value = ", ".join(self.value) if _is_string_list(self.value) else self.value
+        return f"{self.code} = {value}"
 
     def get_absolute_url(self):
-        return _url("windowsoptionqualifier", self.pk)
+        return _url("optionvalue", self.pk)
+
+    @property
+    def level(self):
+        if self.reservation_id:
+            return "reservation"
+        return "scope" if self.scope_id else "server"
+
+    @property
+    def definition(self):
+        """This server's definition of the option, if it has one (standard options have none)."""
+        return (
+            OptionDefinition.objects.filter(
+                server_id=self.server_id, family=self.family, vendor_class_id=self.vendor_class_id, code=self.code
+            ).first()
+            if self.server_id
+            else None
+        )
 
     def clean(self):
         super().clean()
-        # Set-DhcpServerv4OptionValue accepts -PolicyName with -VendorClass, but not with -UserClass.
-        if self.policy_id is not None and self.user_class_id is not None:
-            raise ValidationError({"user_class": _("A policy option cannot also have a user class.")})
-        if self.option_id is None:
+        if not _is_string_list(self.value) or not self.value:
+            raise ValidationError({"value": _("Must be a non-empty list of strings.")})
+        if self.reservation_id is not None:
+            # A reservation's value belongs to its scope too, so filters by scope find it.
+            if self.scope_id is not None and self.scope_id != self.reservation.scope_id:
+                raise ValidationError({"scope": _("The reservation is in another scope.")})
+            self.scope_id = self.reservation.scope_id
+        if self.scope_id is not None:
+            if self.server_id and self.scope.server_id != self.server_id:
+                raise ValidationError({"scope": _("The scope belongs to another server.")})
+            if self.scope.family != self.family:
+                raise ValidationError({"family": _("The scope is IPv{family}.").format(family=self.scope.family)})
+        self._clean_classes()
+        self._clean_policy()
+
+    def _clean_classes(self):
+        for field, class_type in (("vendor_class", ClassTypeChoices.VENDOR), ("user_class", ClassTypeChoices.USER)):
+            cls = getattr(self, field) if getattr(self, f"{field}_id") else None
+            if cls is None:
+                continue
+            if cls.class_type != class_type:
+                raise ValidationError({field: _("Must be a {type} class.").format(type=class_type)})
+            if self.server_id and cls.server_id != self.server_id:
+                raise ValidationError({field: _("The class belongs to another server.")})
+            if cls.family != self.family:
+                # Windows keeps IPv4 and DHCPv6 classes apart.
+                raise ValidationError(
+                    {field: _("This is an IPv{family} value: use an IPv{family} class.").format(family=self.family)}
+                )
+
+    def _clean_policy(self):
+        if self.policy_id is None:
             return
-        option = self.option
-        server = _parent_server(option.assigned_object)
-        if self.user_class_id is not None and server is not None and self.user_class.dhcp_server_id != server.pk:
-            raise ValidationError({"user_class": _("The user class belongs to another DHCP server.")})
-        family = option.definition.family
-        if self.user_class_id is not None and self.user_class.family != family:
-            # Windows keeps IPv4 and DHCPv6 classes apart.
-            raise ValidationError(
-                {"user_class": _("This is an IPv{family} option: use an IPv{family} user class.").format(family=family)}
-            )
-        if self.policy_id is not None and family == 6:
+        # Set-DhcpServerv4OptionValue accepts -PolicyName with -VendorClass, but not with -UserClass.
+        if self.user_class_id is not None:
+            raise ValidationError({"user_class": _("A policy value cannot also have a user class.")})
+        if self.family == 6:
             raise ValidationError({"policy": _("Windows has no DHCPv6 policies.")})
-        if self.policy_id is not None:
-            # A policy value names the policy only by name on Windows: it must be this server's policy, at the
-            # option's own level (a scope policy on its scope, a server policy on the server).
-            model = option.assigned_object_type.model
-            if model == "hostreservation":
-                raise ValidationError({"policy": _("Windows has no policy values on reservations.")})
-            if server is None or self.policy.dhcp_server_id != server.pk:
-                raise ValidationError({"policy": _("The policy belongs to another DHCP server.")})
-            if self.policy.subnet_id != (option.assigned_object_id if model == "subnet" else None):
-                raise ValidationError({"policy": _("The policy belongs to another scope (or level) than the option.")})
+        if self.reservation_id is not None:
+            raise ValidationError({"policy": _("Windows has no policy values on reservations.")})
+        if self.server_id and self.policy.server_id != self.server_id:
+            raise ValidationError({"policy": _("The policy belongs to another server.")})
+        # Windows names the policy of a value by name only: a scope policy's values live on its scope, a server
+        # policy's on the server.
+        if self.policy.scope_id != self.scope_id:
+            raise ValidationError({"policy": _("The policy belongs to another scope (or level) than the value.")})
 
 
 class FailoverRelationship(PrimaryModel):
@@ -448,16 +794,17 @@ class FailoverRelationship(PrimaryModel):
 
     name = models.CharField(verbose_name=_("name"), max_length=126)
     primary_server = models.ForeignKey(
-        to="netbox_dhcp.DHCPServer",
+        to=SERVER,
         on_delete=models.CASCADE,
-        related_name="%(app_label)s_windows_failover_primary",
+        related_name="failover_primary",
         verbose_name=_("primary server"),
         help_text=_("Changes are written here, then replicated to the partner"),
     )
     partner_server = models.ForeignKey(
-        to="netbox_dhcp.DHCPServer",
-        on_delete=models.CASCADE,
-        related_name="%(app_label)s_windows_failover_partner",
+        to=SERVER,
+        # Deleting the partner must not delete the relationship: the next push would remove failover on Windows.
+        on_delete=models.PROTECT,
+        related_name="failover_partner",
         verbose_name=_("partner server"),
     )
     mode = models.CharField(
@@ -501,11 +848,12 @@ class FailoverRelationship(PrimaryModel):
         blank=True,
         help_text=_("Credential profile holding the message authentication secret; the secret is never stored"),
     )
-    subnets = models.ManyToManyField(
-        to="netbox_dhcp.Subnet",
-        related_name="%(app_label)s_windows_failover_relationships",
+    scopes = models.ManyToManyField(
+        to="netbox_windows_dhcp_plugin.Scope",
+        related_name="failover_relationships",
         blank=True,
-        verbose_name=_("subnets"),
+        verbose_name=_("scopes"),
+        help_text=_("IPv4 scopes of the primary server"),
     )
 
     class Meta:
@@ -550,17 +898,13 @@ class FailoverRelationship(PrimaryModel):
         if not self.shared_secret_profile:
             return
         from ..conf import CredentialError, check_host_allowed
-        from .servers import WindowsServer
 
         hosts = []
-        for server_id in (self.primary_server_id, self.partner_server_id):
-            ws = WindowsServer.objects.filter(dhcp_server_id=server_id).first() if server_id else None
-            if server_id and ws is None:
-                raise ValidationError(
-                    {"shared_secret_profile": _("Both servers need a Windows server, so their hosts can be checked.")}
-                )
-            if ws is not None:
-                hosts += [ws.host, ws.computer_name]
+        # Read the ids first: a missing server is reported as a field error, not a crash.
+        for field in ("primary_server", "partner_server"):
+            if getattr(self, f"{field}_id") is not None:
+                server = getattr(self, field)
+                hosts += [server.host, server.computer_name]
         try:
             check_host_allowed(self.shared_secret_profile, *hosts)
         except CredentialError as exc:
@@ -570,12 +914,7 @@ class FailoverRelationship(PrimaryModel):
 class MacFilter(PrimaryModel):
     """A server-wide allow or deny entry, matched on the client MAC address (wildcards allowed)."""
 
-    dhcp_server = models.ForeignKey(
-        to="netbox_dhcp.DHCPServer",
-        on_delete=models.CASCADE,
-        related_name="%(app_label)s_windows_mac_filters",
-        verbose_name=_("DHCP server"),
-    )
+    server = _server_fk("mac_filters")
     mac_address = models.CharField(
         verbose_name=_("MAC address"),
         max_length=32,
@@ -588,12 +927,12 @@ class MacFilter(PrimaryModel):
     )
 
     class Meta:
-        ordering = ("dhcp_server", "list", "mac_address")
+        ordering = ("server", "list", "mac_address")
         verbose_name = _("MAC filter")
         verbose_name_plural = _("MAC filters")
         constraints = (
             models.UniqueConstraint(
-                fields=("dhcp_server", "mac_address"),
+                fields=("server", "mac_address"),
                 name="%(app_label)s_%(class)s_unique_mac",
             ),
         )
@@ -615,15 +954,20 @@ class MacFilter(PrimaryModel):
             raise ValidationError({"mac_address": _("Use pairs of hex digits separated by '-' or ':', or '*'.")})
         self.mac_address = mac
 
+    def save(self, *args, **kwargs):
+        # The REST API saves without running clean() on this instance; keep the one spelling the sync looks up.
+        self.mac_address = self.mac_address.strip().lower().replace(":", "-")
+        super().save(*args, **kwargs)
+
 
 class MacFilterLists(NetBoxModel):
     """Whether a server applies its allow and deny lists. Without this object a push leaves the switches alone."""
 
-    dhcp_server = models.OneToOneField(
-        to="netbox_dhcp.DHCPServer",
+    server = models.OneToOneField(
+        to=SERVER,
         on_delete=models.CASCADE,
-        related_name="%(app_label)s_mac_filter_lists",
-        verbose_name=_("DHCP server"),
+        related_name="mac_filter_lists",
+        verbose_name=_("server"),
     )
     allow_list_enabled = models.BooleanField(
         verbose_name=_("allow list enabled"),
@@ -637,176 +981,15 @@ class MacFilterLists(NetBoxModel):
     )
 
     class Meta:
-        ordering = ("dhcp_server",)
+        ordering = ("server",)
         verbose_name = _("MAC filter lists")
         verbose_name_plural = _("MAC filter lists")
 
     def __str__(self):
-        return str(self.dhcp_server)
+        return str(self.server)
 
     def get_absolute_url(self):
         return _url("macfilterlists", self.pk)
-
-
-class WindowsVendorOptionDefinition(PrimaryModel):
-    """
-    An option a Windows vendor class defines. netbox-plugin-dhcp allows one definition per option code and server,
-    and Windows ships several vendor classes defining the same codes, so these live here instead.
-    """
-
-    vendor_class = models.ForeignKey(
-        to="netbox_windows_dhcp_plugin.WindowsClass",
-        on_delete=models.CASCADE,
-        related_name="vendor_option_definitions",
-        limit_choices_to={"class_type": ClassTypeChoices.VENDOR},
-        verbose_name=_("vendor class"),
-    )
-    code = models.PositiveSmallIntegerField(
-        verbose_name=_("code"),
-        validators=[MinValueValidator(1), MaxValueValidator(255)],
-    )
-    name = models.CharField(verbose_name=_("name"), max_length=255)
-    windows_type = models.CharField(
-        verbose_name=_("Windows type"),
-        max_length=50,
-        default="String",
-        help_text=_("Windows data type, for example Byte, Word, DWord, IPv4Address, String or BinaryData"),
-    )
-    multi_valued = models.BooleanField(verbose_name=_("multi-valued"), default=False)
-    default_value = models.JSONField(
-        verbose_name=_("default value"),
-        default=list,
-        blank=True,
-        help_text=_("Default value list, as Windows stores it"),
-    )
-
-    class Meta:
-        ordering = ("vendor_class", "code")
-        verbose_name = _("vendor option definition")
-        verbose_name_plural = _("vendor option definitions")
-        constraints = (
-            models.UniqueConstraint(
-                fields=("vendor_class", "code"),
-                name="%(app_label)s_%(class)s_unique_code",
-            ),
-        )
-
-    def __str__(self):
-        return f"{self.vendor_class} {self.code} ({self.name})"
-
-    def get_absolute_url(self):
-        return _url("windowsvendoroptiondefinition", self.pk)
-
-    def clean(self):
-        super().clean()
-        if self.vendor_class_id is not None and self.vendor_class.class_type != ClassTypeChoices.VENDOR:
-            raise ValidationError({"vendor_class": _("Must be a vendor class.")})
-        if not _is_string_list(self.default_value):
-            raise ValidationError({"default_value": _("Must be a list of strings.")})
-
-
-# What a vendor class option value can be set on, as on Windows: the server, a scope or a reservation.
-VENDOR_OPTION_PARENTS = models.Q(app_label="netbox_dhcp", model__in=("dhcpserver", "subnet", "hostreservation"))
-
-
-class WindowsVendorOption(NetBoxModel):
-    """A vendor class option value at server, scope or reservation level, optionally for a user class or policy."""
-
-    definition = models.ForeignKey(
-        to="netbox_windows_dhcp_plugin.WindowsVendorOptionDefinition",
-        on_delete=models.CASCADE,
-        related_name="values",
-        verbose_name=_("definition"),
-    )
-    assigned_object_type = models.ForeignKey(
-        to="contenttypes.ContentType",
-        on_delete=models.CASCADE,
-        limit_choices_to=VENDOR_OPTION_PARENTS,
-        related_name="+",
-        verbose_name=_("assigned object type"),
-    )
-    assigned_object_id = models.PositiveBigIntegerField(verbose_name=_("assigned object ID"))
-    assigned_object = GenericForeignKey(ct_field="assigned_object_type", fk_field="assigned_object_id")
-    user_class = models.ForeignKey(
-        to="netbox_windows_dhcp_plugin.WindowsClass",
-        on_delete=models.PROTECT,
-        related_name="user_class_vendor_options",
-        blank=True,
-        null=True,
-        limit_choices_to={"class_type": ClassTypeChoices.USER},
-        verbose_name=_("user class"),
-    )
-    policy = models.ForeignKey(
-        to="netbox_windows_dhcp_plugin.WindowsPolicy",
-        on_delete=models.CASCADE,
-        related_name="vendor_options",
-        blank=True,
-        null=True,
-        verbose_name=_("policy"),
-    )
-    # A real list, unlike netbox-plugin-dhcp's comma-separated string: Windows values may contain commas or spaces.
-    value = models.JSONField(verbose_name=_("value"), default=list, help_text=_('For example ["0x1"]'))
-
-    class Meta:
-        ordering = ("definition", "assigned_object_type", "assigned_object_id")
-        verbose_name = _("vendor option value")
-        verbose_name_plural = _("vendor option values")
-        indexes = (models.Index(fields=("assigned_object_type", "assigned_object_id")),)
-        constraints = (
-            models.UniqueConstraint(
-                fields=("definition", "assigned_object_type", "assigned_object_id", "user_class", "policy"),
-                name="%(app_label)s_%(class)s_unique_value",
-                nulls_distinct=False,
-            ),
-        )
-
-    def __str__(self):
-        return f"{self.definition} = {', '.join(self.value) if _is_string_list(self.value) else self.value}"
-
-    def get_absolute_url(self):
-        return _url("windowsvendoroption", self.pk)
-
-    @property
-    def dhcp_server(self):
-        """The server the value is set on, through its parent."""
-        return _parent_server(self.assigned_object)
-
-    def clean(self):
-        super().clean()
-        if not _is_string_list(self.value) or not self.value:
-            raise ValidationError({"value": _("Must be a non-empty list of strings.")})
-        if self.policy_id is not None and self.user_class_id is not None:
-            raise ValidationError({"user_class": _("A policy option cannot also have a user class.")})
-        if self.assigned_object_type_id is None or self.definition_id is None:
-            return
-        if self.assigned_object is None:
-            raise ValidationError({"assigned_object_id": _("The assigned object does not exist.")})
-        server_id = self.definition.vendor_class.dhcp_server_id
-        server = self.dhcp_server
-        if server is None or server.pk != server_id:
-            raise ValidationError(_("The value and its vendor class belong to different DHCP servers."))
-        if self.user_class_id is not None and self.user_class.dhcp_server_id != server_id:
-            raise ValidationError({"user_class": _("The user class belongs to another DHCP server.")})
-        if self.policy_id is not None:
-            if self.policy.dhcp_server_id != server_id:
-                raise ValidationError({"policy": _("The policy belongs to another DHCP server.")})
-            model = self.assigned_object_type.model
-            if model == "hostreservation":
-                raise ValidationError({"policy": _("Windows has no policy values on reservations.")})
-            # A scope policy's values live on its scope, a server policy's on the server.
-            if self.policy.subnet_id != (self.assigned_object_id if model == "subnet" else None):
-                raise ValidationError({"policy": _("The policy belongs to another scope (or level) than the value.")})
-
-
-def _parent_server(parent):
-    """The DHCP server of an option's parent: the server itself, a subnet's, or a reservation's (subnet or server)."""
-    if parent is None:
-        return None
-    if hasattr(parent, "parent_dhcp_server"):
-        return parent.parent_dhcp_server
-    if hasattr(parent, "subnet"):
-        return parent.subnet.parent_dhcp_server if parent.subnet_id else parent.dhcp_server
-    return parent
 
 
 def _is_string_list(value):

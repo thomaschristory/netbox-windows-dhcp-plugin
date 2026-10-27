@@ -45,7 +45,6 @@ __all__ = (
     "class_key",
     "equal",
     "hidden_records",
-    "join_values",
     "mac_key",
     "option6_key",
     "optiondef_key",
@@ -57,28 +56,24 @@ __all__ = (
     "resolve_partner",
     "same_host",
     "scope6_key",
-    "split_values",
     "to_records",
+    "text_field",
 )
 
-# Windows keeps the subnet mask (1) and the lease time (51) as options too. NetBox holds them on the prefix and on
-# Subnet.valid_lifetime, so importing them as options would store the same setting twice.
+# Windows keeps the subnet mask (1) and the lease time (51) as options too. NetBox holds them on the scope's prefix and
+# lease duration, so importing them as options would store the same setting twice.
 SKIPPED_OPTION_IDS = frozenset({1, 51})
 
 # PrimaryModel.description holds 200 characters.
 DESCRIPTION_LENGTH = 200
 
 # Reasons a Windows object is not imported, as they appear in the job log.
-UNSTORABLE_VALUES = (
-    "option value(s) starting or ending with a space, or ending with a backslash: netbox-plugin-dhcp stores option "
-    "values as one comma-separated string, which cannot keep them"
-)
 PARTNER_FAILOVERS = "failover relationship(s) whose primary is another server: they are synced from that server"
 V6_VENDOR_CLASSES = "DHCPv6 vendor class(es): the plugin syncs DHCPv6 user classes only"
 V6_VENDOR_VALUES = "DHCPv6 vendor class option value(s): the plugin syncs DHCPv6 standard and user class values only"
 V6_UNDEFINED = (
-    "DHCPv6 option value(s) of codes netbox-plugin-dhcp has no standard definition for: DHCPv6 custom option "
-    "definitions are not synced"
+    "DHCPv6 option value(s) of codes without a standard DHCPv6 definition: DHCPv6 custom option definitions are not "
+    "synced"
 )
 V6_EXCLUSIONS = "DHCPv6 exclusion range(s): they are not synced, and a push leaves them alone"
 
@@ -351,46 +346,6 @@ def mac_key(mac: str) -> str:
     return mac.strip().lower().replace(":", "-")
 
 
-# -- option values in netbox-plugin-dhcp -----------------------------------------------------------------------------
-
-
-def join_values(values: Iterable[str]) -> str:
-    """
-    netbox-plugin-dhcp keeps a list of option values as one comma-separated string, like Kea's option data. A comma
-    inside a value is written ``\\,``, Kea's own escape, so it survives the round trip. Other backslashes stay as they
-    are (boot file paths have them), which also keeps strings stored before commas were escaped readable.
-    """
-    return ", ".join(v.replace(",", "\\,") for v in values)
-
-
-def split_values(data: str) -> list[str]:
-    """The reverse of ``join_values``: split on commas not preceded by a backslash, and trim spaces around values."""
-    if not data.strip():
-        return []
-    out, current, i = [], [], 0
-    while i < len(data):
-        if data[i] == "\\" and data[i + 1 : i + 2] == ",":
-            current.append(",")
-            i += 2
-            continue
-        if data[i] == ",":
-            out.append("".join(current).strip())
-            current = []
-        else:
-            current.append(data[i])
-        i += 1
-    out.append("".join(current).strip())
-    return out
-
-
-def _storable(values: list[str]) -> bool:
-    """
-    A value with spaces around it would come back trimmed, and one ending in a backslash would swallow the comma
-    after it, so either would be proposed again on every import.
-    """
-    return all(v == v.strip() and not v.endswith("\\") for v in values)
-
-
 # -- records -------------------------------------------------------------------------------------------------------
 
 
@@ -410,7 +365,7 @@ def _scope(s: Scope) -> Record:
         "scope",
         s.scope_id,
         {
-            "name": _text(s.name),
+            "name": text_field(s.name),
             "description": s.description or "",
             "start_range": s.start_range,
             "end_range": s.end_range,
@@ -432,7 +387,7 @@ def _client_id(value: str) -> str:
         return value
 
 
-def _text(value: str | None) -> str:
+def text_field(value: str | None) -> str:
     """Text that NetBox keeps in a 200-character description field, cut the same way on both sides."""
     return (value or "")[:DESCRIPTION_LENGTH]
 
@@ -480,7 +435,7 @@ def policy_record(p: Policy, ranges: list[list[str]]) -> Record:
         {
             "name": p.name,
             "scope_id": p.scope_id,
-            "description": _text(p.description),
+            "description": text_field(p.description),
             "enabled": bool(p.enabled),
             "processing_order": p.processing_order,
             "condition": (p.condition or "OR").lower(),
@@ -539,7 +494,7 @@ def scope6_record(s: ScopeV6) -> Record:
         {
             "prefix": prefix,
             "prefix_length": V6_PREFIX_LENGTH,
-            "name": _text(s.name),
+            "name": text_field(s.name),
             "description": s.description or "",
             "state": s.state.lower(),
             "preference": int(s.preference or 0),
@@ -562,7 +517,7 @@ def reservation6_record(r: ReservationV6) -> Record:
             "ip_address": ip,
             "client_duid": _client_id(r.client_duid),
             "iaid": int(r.iaid),
-            "name": _text(r.name),
+            "name": text_field(r.name),
             "description": r.description or "",
         },
     )
@@ -604,8 +559,6 @@ def _v6_option_skip(o: OptionValueV6, standard6: set[int] | None) -> str | None:
         return V6_VENDOR_VALUES
     if standard6 is not None and o.option_id not in standard6:
         return V6_UNDEFINED
-    if not _storable([str(v) for v in o.value]):
-        return UNSTORABLE_VALUES
     return None
 
 
@@ -619,7 +572,7 @@ def _v6_records(state: WindowsState, standard6: set[int] | None, skip) -> list[R
             Record(
                 "class6",
                 class6_key(c.name),
-                {"name": c.name, "class_type": "user", "data": c.data, "description": _text(c.description)},
+                {"name": c.name, "class_type": "user", "data": c.data, "description": text_field(c.description)},
             )
         )
     records.extend(scope6_record(s) for s in state.v6_scopes)
@@ -646,12 +599,12 @@ def to_records(
     """
     Turn a WindowsState into records, and return notes about what was left out.
 
-    ``standard_codes`` are the DHCPv4 option codes netbox-plugin-dhcp already defines: their Windows definitions are
-    not imported (values still are, against the standard definition). ``partner_failovers`` are the (lowercase)
-    names of failover relationships NetBox syncs from the other server. ``standard_codes6`` are the DHCPv6 codes
-    netbox-plugin-dhcp defines: DHCPv6 definitions are not synced, so values of other codes are left out (None keeps
-    them all). ``partner_servers`` are the other Windows servers as ``partner_matches`` takes them: a failover partner
-    Windows names by a computer name one of them reported is written as that server's host, as NetBox holds it.
+    ``standard_codes`` are the standard DHCPv4 option codes (``standard_options.STANDARD_V4``): Windows ships their
+    definitions, so they are not imported (values still are, by code). ``partner_failovers`` are the (lowercase)
+    names of failover relationships NetBox syncs from the other server. ``standard_codes6`` are the standard DHCPv6
+    codes: DHCPv6 definitions are not synced, so values of other codes are left out (None keeps them all).
+    ``partner_servers`` are the other Windows servers as ``partner_matches`` takes them: a failover partner Windows
+    names by a computer name one of them reported is written as that server's host, as NetBox holds it.
     """
     standard = set(standard_codes)
     partner_servers = list(partner_servers)
@@ -670,7 +623,7 @@ def to_records(
             Record(
                 "class",
                 class_key(kind, c.name),
-                {"name": c.name, "class_type": kind, "data": c.data, "description": _text(c.description)},
+                {"name": c.name, "class_type": kind, "data": c.data, "description": text_field(c.description)},
             )
         )
 
@@ -687,7 +640,7 @@ def to_records(
                     "type": d.type,
                     "multi_valued": bool(d.multi_valued),
                     "default_value": list(d.default_value),
-                    "description": _text(d.description),
+                    "description": text_field(d.description),
                     "vendor_class": d.vendor_class,
                 },
             )
@@ -718,7 +671,7 @@ def to_records(
                     "scope_id": r.scope_id,
                     "ip_address": r.ip_address,
                     "client_id": _client_id(r.client_id),
-                    "name": _text(r.name),
+                    "name": text_field(r.name),
                     "description": r.description or "",
                     "reservation_type": r.type.lower(),
                 },
@@ -733,10 +686,6 @@ def to_records(
     for o in state.options:
         if o.option_id in skipped and not o.vendor_class:
             continue
-        # Vendor class values are stored as a list (WindowsVendorOption), not in netbox-plugin-dhcp's string.
-        if not o.vendor_class and not _storable([str(v) for v in o.value]):
-            skip(UNSTORABLE_VALUES)
-            continue
         records.append(option_record(o))
 
     for f in state.failovers:
@@ -750,7 +699,11 @@ def to_records(
             Record(
                 "macfilter",
                 mac_key(m.mac_address),
-                {"mac_address": mac_key(m.mac_address), "list": m.list.lower(), "description": _text(m.description)},
+                {
+                    "mac_address": mac_key(m.mac_address),
+                    "list": m.list.lower(),
+                    "description": text_field(m.description),
+                },
             )
         )
 
@@ -836,19 +789,13 @@ def hidden_records(
     standard_codes6: Iterable[int] | None = None,
 ) -> list[Record]:
     """
-    Windows objects ``to_records`` leaves out (values with surrounding spaces, relationships synced from the partner),
-    as records whose parents can be worked out. A push never touches them, but removing their parent on Windows
-    would remove them too, so they stop the parent from being deleted. Options 1 and 51 are not here: every scope has
-    them, and they mean nothing without it.
+    Windows objects ``to_records`` leaves out (relationships synced from the partner, DHCPv6 values and exclusions it
+    does not sync), as records whose parents can be worked out. A push never touches them, but removing their parent
+    on Windows would remove them too, so they stop the parent from being deleted. Options 1 and 51 are not here
+    (``skipped_option_ids`` is kept for callers): every scope has them, and they mean nothing without it.
     """
-    skipped = set(skipped_option_ids)
     partners = {n.lower() for n in partner_failovers}
-    out = []
-    for o in state.options:
-        if o.vendor_class or o.option_id in skipped or _storable([str(v) for v in o.value]):
-            continue
-        out.append(option_record(o))
-    out.extend(failover_record(f) for f in state.failovers if f.name.lower() in partners)
+    out = [failover_record(f) for f in state.failovers if f.name.lower() in partners]
     standard6 = None if standard_codes6 is None else set(standard_codes6)
     out.extend(option6_record(o) for o in state.v6_options if _v6_option_skip(o, standard6))
     out.extend(exclusion6_record(e) for e in state.v6_exclusions)

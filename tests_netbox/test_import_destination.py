@@ -16,16 +16,15 @@ from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.test import TransactionTestCase, override_settings
 from django.urls import reverse
-from netbox_dhcp.models import HostReservation, Subnet
 from utilities.testing import APITestCase, TestCase
 
 from netbox_windows_dhcp_plugin import import_status
 from netbox_windows_dhcp_plugin.choices import ImportDestinationChoices, SyncKindChoices, SyncStatusChoices
 from netbox_windows_dhcp_plugin.integrations import branching
 from netbox_windows_dhcp_plugin.jobs import ImportJob, ImportRefused, enqueue_import, import_refusal
-from netbox_windows_dhcp_plugin.models import ImportProposal, SyncRun, SyncState
+from netbox_windows_dhcp_plugin.models import ImportProposal, Reservation, Scope, SyncRun, SyncState
 
-from .fixtures import PLUGIN, PluginAPIMixin, dhcp_servers, ensure_standard_option_definitions, windows_server
+from .fixtures import PLUGIN, PluginAPIMixin, windows_server
 from .test_import import seed
 from .test_import_status import panel
 from .test_jobs import CREDENTIALS
@@ -118,12 +117,12 @@ class DestinationRulesTest(TestCase):
     def test_protect_main_scope_decides(self):
         cases = [
             ([], True),
-            (["netbox_dhcp.*"], True),
-            (["netbox_dhcp.subnet"], True),
+            (["netbox_windows_dhcp_plugin.*"], True),
+            (["netbox_windows_dhcp_plugin.scope"], True),
+            (["netbox_windows_dhcp_plugin.reservation"], True),
             (["ipam.*"], True),
             (["IPAM.Prefix"], True),
             (["dcim.macaddress"], True),
-            (["netbox_windows_dhcp_plugin.windowsscope"], True),
             (["dcim.site", "circuits.*"], False),
             (["dcim.*"], True),
         ]
@@ -153,7 +152,7 @@ class EnqueueTest(TestCase):
         super().setUp()
         patch(self, BRANCHING, True)
         patch(self, CHANGE_CONTROL, False)
-        self.server = windows_server(dhcp_servers(1)[0])
+        self.server = windows_server()
 
     def test_destination_travels_with_the_job(self):
         with mock.patch.object(ImportJob, "enqueue", wraps=ImportJob.enqueue) as enqueue:
@@ -194,7 +193,7 @@ class ImportViewTest(TestCase):
         patch(self, BRANCHING, True)
         patch(self, CHANGE_CONTROL, False)
         patch(self, MISSING, [])
-        self.server = windows_server(dhcp_servers(1)[0])
+        self.server = windows_server()
         self.url = reverse(f"plugins:{PLUGIN}:windowsserver_import", args=[self.server.pk])
 
     def post(self, data):
@@ -336,7 +335,7 @@ class ImportActionAPITest(PluginAPIMixin, APITestCase):
         super().setUp()
         patch(self, BRANCHING, True)
         patch(self, CHANGE_CONTROL, False)
-        self.server = windows_server(dhcp_servers(1)[0])
+        self.server = windows_server()
         self.url = f"/api/plugins/windows-dhcp/windows-servers/{self.server.pk}/import/"
         self.add_permissions(f"{PLUGIN}.view_windowsserver", f"{PLUGIN}.change_windowsserver")
 
@@ -386,7 +385,7 @@ class StandaloneImportActionAPITest(PluginAPIMixin, APITestCase):
     def setUp(self):
         super().setUp()
         patch(self, BRANCHING, False)
-        self.server = windows_server(dhcp_servers(1)[0])
+        self.server = windows_server()
         self.url = f"/api/plugins/windows-dhcp/windows-servers/{self.server.pk}/import/"
         self.add_permissions(f"{PLUGIN}.view_windowsserver", f"{PLUGIN}.change_windowsserver")
 
@@ -405,7 +404,7 @@ class DirectImportStatusTest(TestCase):
         self.user.save()
         patch(self, BRANCHING, True)
         patch(self, CHANGE_CONTROL, False)
-        self.server = windows_server(dhcp_servers(1)[0])
+        self.server = windows_server()
 
     def job(self, status, destination=None):
         return Job.objects.create(
@@ -535,8 +534,7 @@ class DirectImportTest(TransactionTestCase):
     def setUp(self):
         from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 
-        ensure_standard_option_definitions()
-        self.server = windows_server(dhcp_servers(1)[0])
+        self.server = windows_server()
         self.fake = FakeDhcpServer()
         seed(self.fake)
         self.user = get_user_model().objects.create_user(username=f"direct-{uuid.uuid4().hex[:6]}", is_superuser=True)
@@ -589,14 +587,14 @@ class DirectImportTest(TransactionTestCase):
         self.assertEqual(run.summary["applied"], run.summary["changes"])
         # Only proposal imports count dismissals (issue #43).
         self.assertNotIn("review", run.summary)
-        self.assertEqual(Subnet.objects.get().name, "dhcp1/10.1.0.0")
-        self.assertEqual(HostReservation.objects.count(), 1)
+        self.assertEqual(Scope.objects.get().name, "LAN")
+        self.assertEqual(Reservation.objects.count(), 1)
         self.assertFalse(Branch.objects.exists())
         self.assertFalse(ImportProposal.objects.exists())
         pushes.assert_not_called()
         # The objects are managed from now on, and the change log says who imported them.
         self.assertTrue(SyncState.objects.filter(windows_server=self.server, kind="scope", key="10.1.0.0").exists())
-        self.assertTrue(ObjectChange.objects.filter(user=self.user, changed_object_type__model="subnet").exists())
+        self.assertTrue(ObjectChange.objects.filter(user=self.user, changed_object_type__model="scope").exists())
         # Nothing left to import.
         again = self._run(MAIN)
         self.assertEqual(again.summary["changes"], 0)
@@ -611,16 +609,16 @@ class DirectImportTest(TransactionTestCase):
         with activate_branch(branch):
             run = self._run(MAIN)
         self.assertEqual(run.status, SyncStatusChoices.COMPLETED)
-        self.assertEqual(Subnet.objects.count(), 1)  # in main
+        self.assertEqual(Scope.objects.count(), 1)  # in main
         with activate_branch(branch):
-            self.assertFalse(Subnet.objects.exists())  # not in the branch
+            self.assertFalse(Scope.objects.exists())  # not in the branch
         self.assertEqual(Branch.objects.count(), 1)
 
     def test_branch_import_still_leaves_main_alone(self):
         run = self._run(BRANCH)
         self.assertEqual((run.status, run.destination), (SyncStatusChoices.COMPLETED, BRANCH))
         self.assertTrue(run.branch_name)
-        self.assertFalse(Subnet.objects.exists())
+        self.assertFalse(Scope.objects.exists())
 
     def test_import_into_the_users_branch_creates_no_other(self):
         from django.db import connections
@@ -634,9 +632,9 @@ class DirectImportTest(TransactionTestCase):
         self.assertFalse(run.summary["branch_created"])
         self.assertNotIn("review", run.summary)
         self.assertEqual(list(Branch.objects.values_list("name", flat=True)), ["feature-x"])
-        self.assertFalse(Subnet.objects.exists())  # main is untouched
+        self.assertFalse(Scope.objects.exists())  # main is untouched
         with activate_branch(branch):
-            self.assertEqual(Subnet.objects.get().name, "dhcp1/10.1.0.0")
+            self.assertEqual(Scope.objects.get().name, "LAN")
         connections[branch.connection_name].close()
         if apps.is_installed("netbox_change_control"):
             from netbox_change_control.models import ChangeRequest
@@ -660,7 +658,7 @@ class DirectImportTest(TransactionTestCase):
         self.assertEqual(run.status, SyncStatusChoices.FAILED)
         self.assertIn("permission", run.error)
         with activate_branch(branch):
-            self.assertFalse(Subnet.objects.exists())
+            self.assertFalse(Scope.objects.exists())
         connections[branch.connection_name].close()
 
     def test_import_into_a_missing_branch_fails(self):
@@ -674,7 +672,7 @@ class DirectImportTest(TransactionTestCase):
         self.assertEqual(run.status, SyncStatusChoices.FAILED)
         self.assertEqual(run.summary["applied"], 0)
         self.assertIn("permission", run.error)
-        self.assertFalse(Subnet.objects.exists())
+        self.assertFalse(Scope.objects.exists())
         self.assertFalse(SyncState.objects.exists())
 
     def test_refused_direct_import_says_nothing_was_written(self):
@@ -692,20 +690,6 @@ class DirectImportTest(TransactionTestCase):
         sent = [event for call in flush.call_args_list for event in call.args[0]]
         self.assertEqual(sent, [])
 
-    def test_subnet_ids_count_branches_imported_into_by_choice(self):
-        from django.db import connections
-        from netbox_branching.utilities import activate_branch
-
-        branch = self._user_branch()
-        self.assertEqual(self._run(CURRENT, branch="feature-x").status, SyncStatusChoices.COMPLETED)
-        with activate_branch(branch):
-            in_branch = Subnet.objects.get().subnet_id
-        connections[branch.connection_name].close()
-        # Another server imported straight into main afterwards must not reuse that ID.
-        self.server = windows_server(dhcp_servers(1, start=2)[0])
-        self.assertEqual(self._run(MAIN).status, SyncStatusChoices.COMPLETED)
-        self.assertGreater(Subnet.objects.get().subnet_id, in_branch)
-
     def test_protect_main_refuses_at_run_time(self):
         config = plugins_config(protect_main=(True, []))
         with (
@@ -716,7 +700,7 @@ class DirectImportTest(TransactionTestCase):
             run = self._run(MAIN, user=user)
         self.assertEqual(run.status, SyncStatusChoices.FAILED)
         self.assertIn("protect_main", run.error)
-        self.assertFalse(Subnet.objects.exists())
+        self.assertFalse(Scope.objects.exists())
 
     @skipUnless(apps.is_installed("netbox_change_control"), "netbox-change-control is not installed")
     def test_protect_main_receiver_refuses_each_save(self):
@@ -732,4 +716,4 @@ class DirectImportTest(TransactionTestCase):
             run = self._run(MAIN, user=user)
         self.assertEqual(run.status, SyncStatusChoices.FAILED)
         self.assertIn("Direct changes to main are disabled", run.error)
-        self.assertFalse(Subnet.objects.exists())
+        self.assertFalse(Scope.objects.exists())

@@ -151,7 +151,7 @@ class WindowsWriter:
     def _scope(self, scope_id: str, f: dict[str, Any], current_lease: int | None, create: bool) -> Scope:
         lease = f["lease_seconds"]
         if lease is None:
-            # NetBox has no lease time (Subnet.valid_lifetime is empty): keep what Windows has, or its 8 day default.
+            # NetBox has no lease time (the scope has no lease duration): keep what Windows has, or its 8 day default.
             lease = current_lease
         # Without one, a new scope gets Windows' default; an existing one whose lease could not be read (unlimited)
         # keeps it.

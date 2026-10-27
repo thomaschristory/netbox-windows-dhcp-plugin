@@ -19,12 +19,11 @@ from netbox.ui import layout
 from netbox.ui.panels import CommentsPanel, JSONPanel, ObjectsTablePanel, RelatedObjectsPanel
 from netbox.views import generic
 from netbox.views.generic.base import BaseObjectView
-from netbox_dhcp.models import Subnet
 from utilities.htmx import htmx_partial
 from utilities.views import GetRelatedModelsMixin, GetReturnURLMixin, ViewTab, register_model_view
 
-from . import filtersets, forms, leases, review, tables
-from .choices import ImportDestinationChoices
+from . import filtersets, forms, review, tables
+from .choices import ClassTypeChoices, ImportDestinationChoices
 from .integrations import branching
 from .jobs import (
     ImportRefused,
@@ -43,16 +42,15 @@ from .models import (
     ImportProposalItem,
     MacFilter,
     MacFilterLists,
+    OptionDefinition,
+    OptionValue,
+    Reservation,
+    Scope,
+    Superscope,
     SyncRun,
     WindowsClass,
-    WindowsOptionDefinition,
-    WindowsOptionQualifier,
     WindowsPolicy,
-    WindowsReservation,
-    WindowsScope,
     WindowsServer,
-    WindowsVendorOption,
-    WindowsVendorOptionDefinition,
 )
 from .object_actions import (
     ApplyItem,
@@ -146,8 +144,29 @@ def _simple_layout(*left, right=(), bottom=(), comments=False):
     )
 
 
-def _pk_filter(name):
-    return {name: lambda ctx: ctx["object"].pk}
+def _pk_filter(name, **extra):
+    return {name: lambda ctx: ctx["object"].pk, **extra}
+
+
+def _table(model_name, filter_name, *, exclude=(), title=None, **extra):
+    """A table of this plugin's objects related to the page's object, loaded by HTMX like NetBox's own."""
+    return ObjectsTablePanel(
+        model=f"netbox_windows_dhcp_plugin.{model_name}",
+        filters=_pk_filter(filter_name, **extra),
+        exclude_columns=list(exclude),
+        title=title,
+    )
+
+
+class _ClassValuesPanel(ObjectsTablePanel):
+    """Option values of a class: vendor class values for a vendor class, user class values for a user class."""
+
+    def __init__(self, class_type, **kwargs):
+        super().__init__(**kwargs)
+        self.class_type = class_type
+
+    def should_render(self, context):
+        return context["object"].class_type == self.class_type and super().should_render(context)
 
 
 #
@@ -156,11 +175,17 @@ def _pk_filter(name):
 
 
 class WindowsServerView(GetRelatedModelsMixin, generic.ObjectView):
-    queryset = WindowsServer.objects.all()
+    queryset = WindowsServer.objects.select_related("device", "virtual_machine", "import_vrf")
     template_name = "generic/object.html"
     actions = (PushNow, DryRun, ImportNow, TestConnection, CloneObject, EditObject, DeleteObject)
     layout = layout.SimpleLayout(
-        left_panels=[panels.WindowsServerPanel(), panels.WindowsServerSyncPanel(), TagsPanel(), CommentsPanel()],
+        left_panels=[
+            panels.WindowsServerPanel(),
+            panels.WindowsServerConnectionPanel(),
+            panels.WindowsServerSyncPanel(),
+            TagsPanel(),
+            CommentsPanel(),
+        ],
         right_panels=[
             panels.ImportStatusPanel(),
             panels.WindowsServerSecurityPanel(),
@@ -168,11 +193,21 @@ class WindowsServerView(GetRelatedModelsMixin, generic.ObjectView):
             CustomFieldsPanel(),
         ],
         bottom_panels=[
-            ObjectsTablePanel(
-                model="netbox_windows_dhcp_plugin.SyncRun",
-                filters=_pk_filter("windows_server_id"),
-                exclude_columns=["windows_server"],
+            _table("Scope", "server_id", exclude=["server"]),
+            _table("Superscope", "server_id", exclude=["server"]),
+            _table("WindowsClass", "server_id", exclude=["server"]),
+            _table("WindowsPolicy", "server_id", exclude=["server"]),
+            _table("OptionDefinition", "server_id", exclude=["server"]),
+            _table(
+                "OptionValue",
+                "server_id",
+                exclude=["server", "level", "scope", "reservation"],
+                title=_("Server option values"),
+                level="server",
             ),
+            _table("MacFilter", "server_id", exclude=["server"]),
+            _table("FailoverRelationship", "server_id"),
+            _table("SyncRun", "windows_server_id", exclude=["windows_server"]),
         ],
     )
 
@@ -182,7 +217,7 @@ class WindowsServerView(GetRelatedModelsMixin, generic.ObjectView):
 
 _register(
     WindowsServer,
-    WindowsServer.objects.select_related("dhcp_server", "import_vrf"),
+    WindowsServer.objects.select_related("device", "virtual_machine", "import_vrf"),
     table=tables.WindowsServerTable,
     filterset=filtersets.WindowsServerFilterSet,
     filterset_form=forms.WindowsServerFilterForm,
@@ -353,36 +388,82 @@ class WindowsServerDryRunView(WindowsServerPushView):
 
 
 #
-# Scope and reservation settings
+# Superscopes, scopes, reservations and exclusion ranges
 #
 
 _register(
-    WindowsScope,
-    WindowsScope.objects.select_related("subnet__prefix"),
-    table=tables.WindowsScopeTable,
-    filterset=filtersets.WindowsScopeFilterSet,
-    filterset_form=forms.WindowsScopeFilterForm,
-    form=forms.WindowsScopeForm,
-    import_form=forms.WindowsScopeImportForm,
-    bulk_edit_form=forms.WindowsScopeBulkEditForm,
-    layout=_simple_layout(panels.WindowsScopePanel()),
+    Superscope,
+    # Ordered explicitly: Django leaves Meta.ordering out of queries with an aggregate.
+    Superscope.objects.select_related("server").annotate(scope_count=Count("scopes")).order_by("server__name", "name"),
+    table=tables.SuperscopeTable,
+    filterset=filtersets.SuperscopeFilterSet,
+    filterset_form=forms.SuperscopeFilterForm,
+    form=forms.SuperscopeForm,
+    import_form=forms.SuperscopeImportForm,
+    bulk_edit_form=forms.SuperscopeBulkEditForm,
+    layout=_simple_layout(
+        panels.SuperscopePanel(),
+        bottom=(_table("Scope", "superscope_id", exclude=["server", "superscope"]),),
+        comments=True,
+    ),
 )
 
 _register(
-    WindowsReservation,
-    WindowsReservation.objects.select_related("host_reservation"),
-    table=tables.WindowsReservationTable,
-    filterset=filtersets.WindowsReservationFilterSet,
-    filterset_form=forms.WindowsReservationFilterForm,
-    form=forms.WindowsReservationForm,
-    import_form=forms.WindowsReservationImportForm,
-    bulk_edit_form=forms.WindowsReservationBulkEditForm,
-    layout=_simple_layout(panels.WindowsReservationPanel()),
+    Scope,
+    Scope.objects.select_related("server", "prefix__vrf", "ip_range", "superscope"),
+    table=tables.ScopeTable,
+    filterset=filtersets.ScopeFilterSet,
+    filterset_form=forms.ScopeFilterForm,
+    form=forms.ScopeForm,
+    import_form=forms.ScopeImportForm,
+    bulk_edit_form=forms.ScopeBulkEditForm,
+    layout=_simple_layout(
+        panels.ScopePanel(),
+        right=(panels.ScopeIPv4Panel(), panels.ScopeIPv6Panel()),
+        bottom=(
+            _table("Reservation", "scope_id", exclude=["scope", "server"]),
+            _table("ExclusionRange", "scope_id", exclude=["scope", "server"]),
+            _table(
+                "OptionValue",
+                "scope_id",
+                exclude=["server", "level", "scope", "reservation"],
+                title=_("Scope option values"),
+                level="scope",
+            ),
+            _table("WindowsPolicy", "scope_id", exclude=["server", "scope"]),
+            _table("FailoverRelationship", "scope_id"),
+        ),
+        comments=True,
+    ),
+)
+
+_register(
+    Reservation,
+    Reservation.objects.select_related("scope__server", "scope__prefix", "ip_address", "mac_address"),
+    table=tables.ReservationTable,
+    filterset=filtersets.ReservationFilterSet,
+    filterset_form=forms.ReservationFilterForm,
+    form=forms.ReservationForm,
+    import_form=forms.ReservationImportForm,
+    bulk_edit_form=forms.ReservationBulkEditForm,
+    layout=_simple_layout(
+        panels.ReservationPanel(),
+        right=(panels.ReservationClientPanel(),),
+        bottom=(
+            _table(
+                "OptionValue",
+                "reservation_id",
+                exclude=["server", "level", "scope", "reservation", "policy"],
+                title=_("Reservation option values"),
+            ),
+        ),
+        comments=True,
+    ),
 )
 
 _register(
     ExclusionRange,
-    ExclusionRange.objects.select_related("subnet"),
+    ExclusionRange.objects.select_related("scope__server", "scope__prefix"),
     table=tables.ExclusionRangeTable,
     filterset=filtersets.ExclusionRangeFilterSet,
     filterset_form=forms.ExclusionRangeFilterForm,
@@ -394,12 +475,12 @@ _register(
 
 
 #
-# Classes, option definitions, policies, option qualifiers and vendor class options
+# Classes, option definitions, policies and option values
 #
 
 _register(
     WindowsClass,
-    WindowsClass.objects.select_related("dhcp_server"),
+    WindowsClass.objects.select_related("server"),
     table=tables.WindowsClassTable,
     filterset=filtersets.WindowsClassFilterSet,
     filterset_form=forms.WindowsClassFilterForm,
@@ -410,10 +491,24 @@ _register(
         panels.WindowsClassPanel(),
         bottom=(
             ObjectsTablePanel(
-                model="netbox_windows_dhcp_plugin.WindowsVendorOptionDefinition",
+                model="netbox_windows_dhcp_plugin.OptionDefinition",
                 filters=_pk_filter("vendor_class_id"),
-                exclude_columns=["vendor_class"],
-                title="Vendor option definitions",
+                exclude_columns=["server", "vendor_class"],
+                title=_("Vendor option definitions"),
+            ),
+            _ClassValuesPanel(
+                ClassTypeChoices.VENDOR,
+                model="netbox_windows_dhcp_plugin.OptionValue",
+                filters=_pk_filter("vendor_class_id"),
+                exclude_columns=["server", "vendor_class"],
+                title=_("Vendor option values"),
+            ),
+            _ClassValuesPanel(
+                ClassTypeChoices.USER,
+                model="netbox_windows_dhcp_plugin.OptionValue",
+                filters=_pk_filter("user_class_id"),
+                exclude_columns=["server", "user_class"],
+                title=_("Option values for this user class"),
             ),
         ),
         comments=True,
@@ -421,18 +516,20 @@ _register(
 )
 
 _register(
-    WindowsOptionDefinition,
-    WindowsOptionDefinition.objects.select_related("option_definition"),
-    table=tables.WindowsOptionDefinitionTable,
-    filterset=filtersets.WindowsOptionDefinitionFilterSet,
-    filterset_form=forms.WindowsOptionDefinitionFilterForm,
-    form=forms.WindowsOptionDefinitionForm,
-    layout=_simple_layout(panels.WindowsOptionDefinitionPanel()),
+    OptionDefinition,
+    OptionDefinition.objects.select_related("server", "vendor_class"),
+    table=tables.OptionDefinitionTable,
+    filterset=filtersets.OptionDefinitionFilterSet,
+    filterset_form=forms.OptionDefinitionFilterForm,
+    form=forms.OptionDefinitionForm,
+    import_form=forms.OptionDefinitionImportForm,
+    bulk_edit_form=forms.OptionDefinitionBulkEditForm,
+    layout=_simple_layout(panels.OptionDefinitionPanel()),
 )
 
 _register(
     WindowsPolicy,
-    WindowsPolicy.objects.select_related("dhcp_server", "subnet"),
+    WindowsPolicy.objects.select_related("server", "scope"),
     table=tables.WindowsPolicyTable,
     filterset=filtersets.WindowsPolicyFilterSet,
     filterset_form=forms.WindowsPolicyFilterForm,
@@ -441,62 +538,23 @@ _register(
     layout=_simple_layout(
         panels.WindowsPolicyPanel(),
         right=(JSONPanel("criteria", title="Criteria"), JSONPanel("ip_ranges", title="IP ranges")),
-        bottom=(
-            ObjectsTablePanel(
-                model="netbox_windows_dhcp_plugin.WindowsOptionQualifier",
-                filters=_pk_filter("policy_id"),
-                exclude_columns=["policy"],
-                title="Options",
-            ),
-        ),
+        bottom=(_table("OptionValue", "policy_id", exclude=["server", "policy"], title=_("Option values")),),
         comments=True,
     ),
 )
 
 _register(
-    WindowsOptionQualifier,
-    WindowsOptionQualifier.objects.select_related("option", "user_class", "policy"),
-    table=tables.WindowsOptionQualifierTable,
-    filterset=filtersets.WindowsOptionQualifierFilterSet,
-    filterset_form=forms.WindowsOptionQualifierFilterForm,
-    form=forms.WindowsOptionQualifierForm,
-    layout=_simple_layout(panels.WindowsOptionQualifierPanel()),
-)
-
-_register(
-    WindowsVendorOptionDefinition,
-    WindowsVendorOptionDefinition.objects.select_related("vendor_class"),
-    table=tables.WindowsVendorOptionDefinitionTable,
-    filterset=filtersets.WindowsVendorOptionDefinitionFilterSet,
-    filterset_form=forms.WindowsVendorOptionDefinitionFilterForm,
-    form=forms.WindowsVendorOptionDefinitionForm,
-    import_form=forms.WindowsVendorOptionDefinitionImportForm,
-    bulk_edit_form=forms.WindowsVendorOptionDefinitionBulkEditForm,
-    layout=_simple_layout(
-        panels.WindowsVendorOptionDefinitionPanel(),
-        right=(JSONPanel("default_value", title="Default value"),),
-        bottom=(
-            ObjectsTablePanel(
-                model="netbox_windows_dhcp_plugin.WindowsVendorOption",
-                filters=_pk_filter("definition_id"),
-                exclude_columns=["definition"],
-                title="Values",
-            ),
-        ),
-        comments=True,
+    OptionValue,
+    OptionValue.objects.select_related(
+        "server", "scope", "reservation__ip_address", "vendor_class", "user_class", "policy"
     ),
-)
-
-_register(
-    WindowsVendorOption,
-    WindowsVendorOption.objects.select_related(
-        "definition__vendor_class", "assigned_object_type", "user_class", "policy"
-    ).prefetch_related("assigned_object"),
-    table=tables.WindowsVendorOptionTable,
-    filterset=filtersets.WindowsVendorOptionFilterSet,
-    filterset_form=forms.WindowsVendorOptionFilterForm,
-    form=forms.WindowsVendorOptionForm,
-    layout=_simple_layout(panels.WindowsVendorOptionPanel(), right=(JSONPanel("value", title="Value"),)),
+    table=tables.OptionValueTable,
+    filterset=filtersets.OptionValueFilterSet,
+    filterset_form=forms.OptionValueFilterForm,
+    form=forms.OptionValueForm,
+    import_form=forms.OptionValueImportForm,
+    bulk_edit_form=forms.OptionValueBulkEditForm,
+    layout=_simple_layout(panels.OptionValuePanel(), right=(panels.OptionQualifiersPanel(),)),
 )
 
 
@@ -506,7 +564,7 @@ _register(
 
 _register(
     FailoverRelationship,
-    FailoverRelationship.objects.select_related("primary_server", "partner_server").prefetch_related("subnets"),
+    FailoverRelationship.objects.select_related("primary_server", "partner_server").prefetch_related("scopes"),
     table=tables.FailoverRelationshipTable,
     filterset=filtersets.FailoverRelationshipFilterSet,
     filterset_form=forms.FailoverRelationshipFilterForm,
@@ -517,7 +575,7 @@ _register(
 
 _register(
     MacFilter,
-    MacFilter.objects.select_related("dhcp_server"),
+    MacFilter.objects.select_related("server"),
     table=tables.MacFilterTable,
     filterset=filtersets.MacFilterFilterSet,
     filterset_form=forms.MacFilterFilterForm,
@@ -529,7 +587,7 @@ _register(
 
 _register(
     MacFilterLists,
-    MacFilterLists.objects.select_related("dhcp_server"),
+    MacFilterLists.objects.select_related("server"),
     table=tables.MacFilterListsTable,
     filterset=filtersets.MacFilterListsFilterSet,
     filterset_form=forms.MacFilterListsFilterForm,
@@ -545,7 +603,7 @@ _register(
 
 _register(
     SyncRun,
-    SyncRun.objects.select_related("windows_server__dhcp_server", "job"),
+    SyncRun.objects.select_related("windows_server", "job"),
     table=tables.SyncRunTable,
     filterset=filtersets.SyncRunFilterSet,
     filterset_form=forms.SyncRunFilterForm,
@@ -565,9 +623,7 @@ _register(
 
 _register(
     ImportProposal,
-    ImportProposal.objects.select_related("windows_server__dhcp_server", "sync_run").annotate(
-        item_count=Count("items")
-    ),
+    ImportProposal.objects.select_related("windows_server", "sync_run").annotate(item_count=Count("items")),
     table=tables.ImportProposalTable,
     filterset=filtersets.ImportProposalFilterSet,
     filterset_form=forms.ImportProposalFilterForm,
@@ -668,39 +724,31 @@ for _dismiss, _verb in ((False, "apply"), (True, "dismiss")):
 
 
 #
-# Live leases, as a tab on netbox-plugin-dhcp's subnet page
+# Live leases, as a tab on the scope page
 #
 
 
-def _lease_tab_visible(subnet):
-    return leases.windows_server_for(subnet) is not None
-
-
-@register_model_view(Subnet, "windows_leases", path="windows-leases")
-class SubnetLeasesView(generic.ObjectView):
+@register_model_view(Scope, "leases", path="leases")
+class ScopeLeasesView(generic.ObjectView):
     """
-    The last lease read of a Windows scope, and a button to read again. The read runs in a job (LeaseJob); while it
-    runs, the panel asks the server for itself again every few seconds (HTMX) until the job is done.
+    The last lease read of a scope, and a button to read again. The read runs in a job (LeaseJob); while it runs, the
+    panel asks the server for itself again every few seconds (HTMX) until the job is done.
     """
 
-    queryset = Subnet.objects.select_related("prefix", "dhcp_server", "shared_network__dhcp_server")
-    template_name = "netbox_windows_dhcp_plugin/subnet_leases.html"
-    # Viewing the subnet is not enough: the leases come from its Windows server, which the user must be able to see.
+    queryset = Scope.objects.select_related("server", "prefix")
+    template_name = "netbox_windows_dhcp_plugin/scope_leases.html"
+    # Viewing the scope is not enough: the leases come from its Windows server, which the user must be able to see.
     additional_permissions = ["netbox_windows_dhcp_plugin.view_windowsserver"]
     tab = ViewTab(
         label=_("Leases"),
-        visible=_lease_tab_visible,
         permission="netbox_windows_dhcp_plugin.view_windowsserver",
         weight=3000,
     )
 
     @staticmethod
-    def _server(request, subnet, action="view"):
-        """The subnet's Windows server, if this user may see it (or, with ``action="change"``, change it)."""
-        server = leases.windows_server_for(subnet)
-        if server is None or not WindowsServer.objects.restrict(request.user, action).filter(pk=server.pk).exists():
-            return None
-        return server
+    def _server(request, scope, action="view"):
+        """The scope's Windows server, if this user may see it (or, with ``action="change"``, change it)."""
+        return WindowsServer.objects.restrict(request.user, action).filter(pk=scope.server_id).first()
 
     def get_extra_context(self, request, instance):
         from core.choices import JobStatusChoices
@@ -728,14 +776,14 @@ class SubnetLeasesView(generic.ObjectView):
         return super().get(request, *args, **kwargs)
 
     def post(self, request, *args, **kwargs):
-        subnet = self.get_object(**kwargs)
+        scope = self.get_object(**kwargs)
         # The server must be visible to the user as well as changeable, as on the page the button is on.
-        server = self._server(request, subnet) and self._server(request, subnet, "change")
+        server = self._server(request, scope) and self._server(request, scope, "change")
         if server is None:
-            messages.error(request, _("Loading leases needs permission to change this subnet's Windows server"))
+            messages.error(request, _("Loading leases needs permission to change this scope's Windows server"))
         elif branching.in_branch():
-            # The job runs against main, where this subnet may differ or not exist.
-            messages.error(request, _("Leases are read for subnets as they are in main: switch to main to load them"))
-        elif enqueue_leases(subnet, request.user) is None:
-            messages.warning(request, _("Leases of {subnet} are already being read").format(subnet=subnet))
-        return redirect(reverse("plugins:netbox_dhcp:subnet_windows_leases", kwargs={"pk": subnet.pk}))
+            # The job runs against main, where this scope may differ or not exist.
+            messages.error(request, _("Leases are read for scopes as they are in main: switch to main to load them"))
+        elif enqueue_leases(scope, request.user) is None:
+            messages.warning(request, _("Leases of {scope} are already being read").format(scope=scope))
+        return redirect(reverse("plugins:netbox_windows_dhcp_plugin:scope_leases", kwargs={"pk": scope.pk}))

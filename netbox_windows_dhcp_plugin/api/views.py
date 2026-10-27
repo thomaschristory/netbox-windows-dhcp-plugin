@@ -23,7 +23,11 @@ def _viewset(model, queryset, base=NetBoxModelViewSet):
     )
 
 
-class WindowsServerViewSet(_viewset(models.WindowsServer, models.WindowsServer.objects.select_related("dhcp_server"))):
+class WindowsServerViewSet(
+    _viewset(
+        models.WindowsServer, models.WindowsServer.objects.select_related("device", "virtual_machine", "import_vrf")
+    )
+):
     def get_permissions(self):
         # NetBox maps POST to the "add" permission. A connection test needs "change" on the server instead,
         # enforced below; here only check that the token may write (as NetBox does for render-config).
@@ -104,29 +108,27 @@ class WindowsServerViewSet(_viewset(models.WindowsServer, models.WindowsServer.o
         return self._push(request, dry_run=True)
 
 
-WindowsScopeViewSet = _viewset(models.WindowsScope, models.WindowsScope.objects.select_related("subnet"))
-WindowsReservationViewSet = _viewset(
-    models.WindowsReservation, models.WindowsReservation.objects.select_related("host_reservation")
+SuperscopeViewSet = _viewset(models.Superscope, models.Superscope.objects.select_related("server"))
+ScopeViewSet = _viewset(models.Scope, models.Scope.objects.select_related("server", "prefix", "ip_range", "superscope"))
+ReservationViewSet = _viewset(
+    models.Reservation, models.Reservation.objects.select_related("scope__server", "ip_address", "mac_address")
 )
-ExclusionRangeViewSet = _viewset(models.ExclusionRange, models.ExclusionRange.objects.select_related("subnet"))
-WindowsClassViewSet = _viewset(models.WindowsClass, models.WindowsClass.objects.select_related("dhcp_server"))
-WindowsOptionDefinitionViewSet = _viewset(models.WindowsOptionDefinition, models.WindowsOptionDefinition.objects.all())
-WindowsPolicyViewSet = _viewset(models.WindowsPolicy, models.WindowsPolicy.objects.select_related("dhcp_server"))
-WindowsOptionQualifierViewSet = _viewset(models.WindowsOptionQualifier, models.WindowsOptionQualifier.objects.all())
+ExclusionRangeViewSet = _viewset(models.ExclusionRange, models.ExclusionRange.objects.select_related("scope"))
+WindowsClassViewSet = _viewset(models.WindowsClass, models.WindowsClass.objects.select_related("server"))
+OptionDefinitionViewSet = _viewset(
+    models.OptionDefinition, models.OptionDefinition.objects.select_related("server", "vendor_class")
+)
+WindowsPolicyViewSet = _viewset(models.WindowsPolicy, models.WindowsPolicy.objects.select_related("server", "scope"))
+OptionValueViewSet = _viewset(
+    models.OptionValue,
+    models.OptionValue.objects.select_related("server", "scope", "reservation", "vendor_class", "user_class", "policy"),
+)
 FailoverRelationshipViewSet = _viewset(
-    models.FailoverRelationship, models.FailoverRelationship.objects.prefetch_related("subnets")
+    models.FailoverRelationship,
+    models.FailoverRelationship.objects.select_related("primary_server", "partner_server").prefetch_related("scopes"),
 )
-MacFilterViewSet = _viewset(models.MacFilter, models.MacFilter.objects.select_related("dhcp_server"))
-MacFilterListsViewSet = _viewset(models.MacFilterLists, models.MacFilterLists.objects.select_related("dhcp_server"))
-WindowsVendorOptionDefinitionViewSet = _viewset(
-    models.WindowsVendorOptionDefinition, models.WindowsVendorOptionDefinition.objects.select_related("vendor_class")
-)
-WindowsVendorOptionViewSet = _viewset(
-    models.WindowsVendorOption,
-    models.WindowsVendorOption.objects.select_related(
-        "definition__vendor_class", "assigned_object_type", "user_class", "policy"
-    ).prefetch_related("assigned_object"),
-)
+MacFilterViewSet = _viewset(models.MacFilter, models.MacFilter.objects.select_related("server"))
+MacFilterListsViewSet = _viewset(models.MacFilterLists, models.MacFilterLists.objects.select_related("server"))
 SyncRunViewSet = _viewset(models.SyncRun, models.SyncRun.objects.all(), base=NetBoxReadOnlyModelViewSet)
 
 

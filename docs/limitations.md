@@ -3,7 +3,8 @@
 ## Checked on a real server
 
 Every feature is tested against an in-memory fake Windows server and against the real PowerShell scripts run with
-stub cmdlets. The lab tests (see [Development](development.md#lab-tests)) have also run in full against two Windows
+stub cmdlets. The checks below were made with 0.1.0, whose Windows side (scripts, transports, sync rules) 0.2.0
+keeps; 0.2.0 changed the NetBox models around it, and its own lab run is still to come. The lab tests (see [Development](development.md#lab-tests)) have also run in full against two Windows
 Server 2022 DHCP servers in a workgroup: every cmdlet the plugin uses, a full import, push of creates, updates and
 deletes, the Leases tab, and a failover relationship created, replicated and removed through a push (see
 [Failover](failover.md#connecting-to-the-servers)). Testers of the release candidates ran Windows Server 2025. What
@@ -34,9 +35,12 @@ Try the plugin on a lab server before a production one, and use **Dry run** befo
 - **No authorization in Active Directory.** The plugin does not authorize DHCP servers.
 - **Leases are read only and not stored.** No lease history, no IP address updates from leases, at most 5000 leases
   shown per read. Windows reports no state for DHCPv6 leases, so their state shows as n/a.
-- **DHCPv6** is limited to scopes, reservations, user classes and values of sys4's standard DHCPv6 definitions. DHCPv6
+- **DHCPv6** is limited to scopes, reservations, user classes and values of standard DHCPv6 options. DHCPv6
   vendor classes, custom option definitions and exclusion ranges are left alone. See [DHCPv6](dhcpv6.md).
 - **Failover** is IPv4 only, as on Windows.
+- **No data migration from 0.1.x.** 0.2.0 starts empty: recreate the Windows servers and import them again (see
+  [Upgrading from 0.1.x](installation.md#upgrading-from-01x)). Data in netbox-plugin-dhcp is neither read nor
+  changed.
 
 ## Windows rules the plugin will not work around
 
@@ -49,20 +53,9 @@ Windows also refuses some policies outright: a condition value with a wildcard i
 put it at the start or the end), and IP ranges or ordinary option values on a policy with an FQDN condition (errors
 DHCP 20135 and 20136). A push of such a policy fails the same way, so fix it in NetBox.
 
-## netbox-plugin-dhcp
-
-- netbox-plugin-dhcp is beta, so the plugin pins `>=0.2,<0.3` and follows its releases.
-- Its names are unique across servers, hence the `<server>/<scope id>` naming of imported objects.
-- It stores option values as one comma-separated string: commas inside a value are escaped as `\,`, which sys4 only
-  accepts in string options, and values with leading or trailing spaces cannot be stored (they are skipped).
-- A shared network needs a covering prefix; superscopes wider than a /8 are refused.
-- Deleting a shared network in NetBox deletes its subnets, and so, on the next push, their scopes on Windows.
-
 ## NetBox and branching
 
 - NetBox 4.7 only (the plugin declares `max_version = 4.7.99`).
-- netbox-branching creates merged objects with a raw save, so sys4's own `save()` side effects are not replayed on
-  merge. Imports avoid depending on them.
 - An empty merge sends no signal, so it queues no push.
 - Edits made directly in main push without approval, even with change control.
 

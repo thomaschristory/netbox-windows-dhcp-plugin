@@ -9,17 +9,17 @@ from .models import (
     ImportProposalItem,
     MacFilter,
     MacFilterLists,
+    OptionDefinition,
+    OptionValue,
+    Reservation,
+    Scope,
+    Superscope,
     SyncRun,
     WindowsClass,
-    WindowsOptionDefinition,
-    WindowsOptionQualifier,
     WindowsPolicy,
-    WindowsReservation,
-    WindowsScope,
     WindowsServer,
-    WindowsVendorOption,
-    WindowsVendorOptionDefinition,
 )
+from .ui.options import OptionNames
 
 __all__ = (
     "ExclusionRangeTable",
@@ -28,49 +28,46 @@ __all__ = (
     "ImportProposalTable",
     "MacFilterListsTable",
     "MacFilterTable",
+    "OptionDefinitionTable",
+    "OptionValueTable",
+    "ReservationTable",
+    "ScopeTable",
+    "SuperscopeTable",
     "SyncRunTable",
     "WindowsClassTable",
-    "WindowsOptionDefinitionTable",
-    "WindowsOptionQualifierTable",
     "WindowsPolicyTable",
-    "WindowsReservationTable",
-    "WindowsScopeTable",
     "WindowsServerTable",
-    "WindowsVendorOptionDefinitionTable",
-    "WindowsVendorOptionTable",
 )
 
 
+def _tags(model_name):
+    return columns.TagColumn(url_name=f"plugins:netbox_windows_dhcp_plugin:{model_name}_list")
+
+
+def _server_column(accessor="server", verbose_name=None):
+    return tables.Column(verbose_name=verbose_name or _("Server"), accessor=accessor, linkify=True)
+
+
 class WindowsServerTable(PrimaryModelTable):
-    # The server's name opens this Windows server, as everywhere else in the plugin (#38). The column keeps its
-    # name so table layouts users saved before still show it, now with the right link. The generic
-    # netbox-plugin-dhcp server page has a column of its own.
-    dhcp_server = tables.Column(
-        verbose_name=_("Windows server"),
-        order_by=("dhcp_server__name",),
-        linkify=lambda record: record.get_absolute_url(),
-    )
-    generic_dhcp_server = tables.Column(
-        verbose_name=_("Generic DHCP server"),
-        accessor="dhcp_server",
-        order_by=("dhcp_server__name",),
-        linkify=True,
-    )
+    name = tables.Column(verbose_name=_("Name"), linkify=True)
+    device = tables.Column(verbose_name=_("Device"), linkify=True)
+    virtual_machine = tables.Column(verbose_name=_("Virtual machine"), linkify=True)
     transport = columns.ChoiceFieldColumn(verbose_name=_("Transport"))
     winrm_auth = columns.ChoiceFieldColumn(verbose_name=_("WinRM authentication"))
     winrm_https = columns.BooleanColumn(verbose_name=_("HTTPS"))
     verify_tls = columns.BooleanColumn(verbose_name=_("Verify host"))
     sync_enabled = columns.BooleanColumn(verbose_name=_("Sync"))
     import_vrf = tables.Column(verbose_name=_("Import VRF"), linkify=True)
-    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowsserver_list")
+    tags = _tags("windowsserver")
 
     class Meta(PrimaryModelTable.Meta):
         model = WindowsServer
         fields = (
             "pk",
             "id",
-            "dhcp_server",
-            "generic_dhcp_server",
+            "name",
+            "device",
+            "virtual_machine",
             "host",
             "transport",
             "port",
@@ -83,85 +80,144 @@ class WindowsServerTable(PrimaryModelTable):
             "import_interval",
             "import_vrf",
             "description",
+            "comments",
             "tags",
             "created",
             "last_updated",
         )
-        default_columns = (
-            "dhcp_server",
-            "host",
-            "transport",
-            "winrm_auth",
-            "credential_profile",
-            "sync_enabled",
-            "generic_dhcp_server",
-        )
+        default_columns = ("name", "host", "transport", "winrm_auth", "credential_profile", "sync_enabled", "device")
 
 
-class WindowsScopeTable(NetBoxTable):
-    subnet = tables.Column(verbose_name=_("Subnet"), linkify=True)
-    # The scope's network next to its name, as on the netbox-plugin-dhcp subnet list (#47): names alone can be
-    # generic or repeat across servers.
-    prefix = tables.Column(
-        verbose_name=_("Prefix"), accessor="subnet__prefix", linkify=True, order_by=("subnet__prefix__prefix",)
+class SuperscopeTable(NetBoxTable):
+    name = tables.Column(verbose_name=_("Name"), linkify=True)
+    server = _server_column()
+    scopes = columns.LinkedCountColumn(
+        viewname="plugins:netbox_windows_dhcp_plugin:scope_list",
+        url_params={"superscope_id": "pk"},
+        verbose_name=_("Scopes"),
+        accessor="scope_count",
     )
+    comments = columns.MarkdownColumn(verbose_name=_("Comments"))
+    tags = _tags("superscope")
+
+    class Meta(NetBoxTable.Meta):
+        model = Superscope
+        fields = ("pk", "id", "name", "server", "scopes", "description", "comments", "tags", "created", "last_updated")
+        default_columns = ("name", "server", "scopes", "description")
+
+
+class ScopeTable(NetBoxTable):
+    name = tables.Column(verbose_name=_("Name"), linkify=True)
+    server = _server_column()
+    # The scope's network next to its name (#47): names alone can be generic or repeat across servers.
+    prefix = tables.Column(verbose_name=_("Prefix"), linkify=True, order_by=("prefix__prefix",))
+    ip_range = tables.Column(verbose_name=_("IP range"), linkify=True)
+    superscope = tables.Column(verbose_name=_("Superscope"), linkify=True)
     state = columns.ChoiceFieldColumn(verbose_name=_("State"))
     scope_type = columns.ChoiceFieldColumn(verbose_name=_("Type"))
     activate_policies = columns.BooleanColumn(verbose_name=_("Policies"))
-    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowsscope_list")
+    description = tables.Column(verbose_name=_("Description"))
+    comments = columns.MarkdownColumn(verbose_name=_("Comments"))
+    tags = _tags("scope")
 
     class Meta(NetBoxTable.Meta):
-        model = WindowsScope
+        model = Scope
         fields = (
             "pk",
             "id",
-            "subnet",
+            "name",
+            "server",
             "prefix",
+            "ip_range",
+            "superscope",
             "state",
             "scope_type",
+            "lease_duration",
             "delay_ms",
             "max_bootp_clients",
             "activate_policies",
             "preference",
+            "preferred_lifetime",
+            "valid_lifetime",
+            "renew_timer",
+            "rebind_timer",
+            "description",
+            "comments",
             "tags",
             "created",
             "last_updated",
         )
-        default_columns = ("subnet", "prefix", "state", "scope_type", "delay_ms", "activate_policies")
+        default_columns = ("name", "server", "prefix", "ip_range", "state", "superscope", "description")
 
 
-class WindowsReservationTable(NetBoxTable):
-    host_reservation = tables.Column(verbose_name=_("Host reservation"), linkify=True)
-    reservation_type = columns.ChoiceFieldColumn(verbose_name=_("Type"))
+class ReservationTable(NetBoxTable):
+    ip_address = tables.Column(
+        verbose_name=_("IP address"),
+        linkify=lambda record: record.get_absolute_url(),
+        order_by=("ip_address__address",),
+    )
+    name = tables.Column(verbose_name=_("Name"))
+    scope = tables.Column(verbose_name=_("Scope"), linkify=True)
+    server = _server_column("scope__server")
+    mac_address = tables.Column(verbose_name=_("MAC address"), linkify=True)
+    client_id = tables.Column(verbose_name=_("Client ID"))
+    duid = tables.Column(verbose_name=_("DUID"))
     iaid = tables.Column(verbose_name=_("IAID"))
-    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowsreservation_list")
+    reservation_type = columns.ChoiceFieldColumn(verbose_name=_("Type"))
+    description = tables.Column(verbose_name=_("Description"))
+    comments = columns.MarkdownColumn(verbose_name=_("Comments"))
+    tags = _tags("reservation")
 
     class Meta(NetBoxTable.Meta):
-        model = WindowsReservation
-        fields = ("pk", "id", "host_reservation", "reservation_type", "iaid", "tags", "created", "last_updated")
-        default_columns = ("host_reservation", "reservation_type")
+        model = Reservation
+        fields = (
+            "pk",
+            "id",
+            "ip_address",
+            "name",
+            "scope",
+            "server",
+            "mac_address",
+            "client_id",
+            "duid",
+            "iaid",
+            "reservation_type",
+            "description",
+            "comments",
+            "tags",
+            "created",
+            "last_updated",
+        )
+        default_columns = ("ip_address", "name", "scope", "mac_address", "duid", "reservation_type")
+
+    def render_ip_address(self, value):
+        return str(value.address.ip)
 
 
-class ExclusionRangeTable(PrimaryModelTable):
+class ExclusionRangeTable(NetBoxTable):
     range = tables.Column(verbose_name=_("Range"), linkify=True, accessor="pk", order_by=("start_address",))
-    subnet = tables.Column(verbose_name=_("Subnet"), linkify=True)
-    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:exclusionrange_list")
+    scope = tables.Column(verbose_name=_("Scope"), linkify=True)
+    server = _server_column("scope__server")
+    comments = columns.MarkdownColumn(verbose_name=_("Comments"))
+    tags = _tags("exclusionrange")
 
-    class Meta(PrimaryModelTable.Meta):
+    class Meta(NetBoxTable.Meta):
         model = ExclusionRange
         fields = (
             "pk",
             "id",
             "range",
-            "subnet",
+            "scope",
+            "server",
             "start_address",
             "end_address",
             "description",
+            "comments",
             "tags",
             "created",
             "last_updated",
         )
-        default_columns = ("range", "subnet", "description")
+        default_columns = ("range", "scope", "description")
 
     def render_range(self, record):
         return str(record)
@@ -169,9 +225,10 @@ class ExclusionRangeTable(PrimaryModelTable):
 
 class WindowsClassTable(PrimaryModelTable):
     name = tables.Column(verbose_name=_("Name"), linkify=True)
-    dhcp_server = tables.Column(verbose_name=_("DHCP server"), linkify=True)
+    server = _server_column()
     class_type = columns.ChoiceFieldColumn(verbose_name=_("Type"))
-    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowsclass_list")
+    family = columns.ChoiceFieldColumn(verbose_name=_("Family"))
+    tags = _tags("windowsclass")
 
     class Meta(PrimaryModelTable.Meta):
         model = WindowsClass
@@ -179,35 +236,57 @@ class WindowsClassTable(PrimaryModelTable):
             "pk",
             "id",
             "name",
-            "dhcp_server",
+            "server",
             "class_type",
             "family",
             "data",
+            "description",
+            "comments",
+            "tags",
+            "created",
+            "last_updated",
+        )
+        default_columns = ("name", "server", "class_type", "family", "data")
+
+
+class OptionDefinitionTable(NetBoxTable):
+    code = tables.Column(verbose_name=_("Code"), linkify=True)
+    name = tables.Column(verbose_name=_("Name"), linkify=True)
+    server = _server_column()
+    family = columns.ChoiceFieldColumn(verbose_name=_("Family"))
+    vendor_class = tables.Column(verbose_name=_("Vendor class"), linkify=True)
+    multi_valued = columns.BooleanColumn(verbose_name=_("Multi-valued"))
+    default_value = columns.ArrayColumn(verbose_name=_("Default value"), orderable=False)
+    tags = _tags("optiondefinition")
+
+    class Meta(NetBoxTable.Meta):
+        model = OptionDefinition
+        fields = (
+            "pk",
+            "id",
+            "code",
+            "name",
+            "server",
+            "family",
+            "vendor_class",
+            "windows_type",
+            "multi_valued",
+            "default_value",
             "description",
             "tags",
             "created",
             "last_updated",
         )
-        default_columns = ("name", "dhcp_server", "class_type", "family", "data")
-
-
-class WindowsOptionDefinitionTable(NetBoxTable):
-    option_definition = tables.Column(verbose_name=_("Option definition"), linkify=True)
-    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowsoptiondefinition_list")
-
-    class Meta(NetBoxTable.Meta):
-        model = WindowsOptionDefinition
-        fields = ("pk", "id", "option_definition", "windows_type", "tags", "created", "last_updated")
-        default_columns = ("option_definition", "windows_type")
+        default_columns = ("code", "name", "server", "family", "vendor_class", "windows_type", "multi_valued")
 
 
 class WindowsPolicyTable(PrimaryModelTable):
     name = tables.Column(verbose_name=_("Name"), linkify=True)
-    dhcp_server = tables.Column(verbose_name=_("DHCP server"), linkify=True)
-    subnet = tables.Column(verbose_name=_("Subnet"), linkify=True)
+    server = _server_column()
+    scope = tables.Column(verbose_name=_("Scope"), linkify=True)
     enabled = columns.BooleanColumn(verbose_name=_("Enabled"))
     condition = columns.ChoiceFieldColumn(verbose_name=_("Condition"))
-    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowspolicy_list")
+    tags = _tags("windowspolicy")
 
     class Meta(PrimaryModelTable.Meta):
         model = WindowsPolicy
@@ -215,30 +294,65 @@ class WindowsPolicyTable(PrimaryModelTable):
             "pk",
             "id",
             "name",
-            "dhcp_server",
-            "subnet",
+            "server",
+            "scope",
             "processing_order",
             "enabled",
             "condition",
             "lease_duration",
             "description",
+            "comments",
             "tags",
             "created",
             "last_updated",
         )
-        default_columns = ("name", "dhcp_server", "subnet", "processing_order", "enabled")
+        default_columns = ("name", "server", "scope", "processing_order", "enabled")
 
 
-class WindowsOptionQualifierTable(NetBoxTable):
-    option = tables.Column(verbose_name=_("Option"), linkify=True)
+class OptionValueTable(NetBoxTable):
+    code = tables.Column(verbose_name=_("Code"), linkify=True)
+    # From the server's definition, or the standard option list when there is none.
+    option = tables.Column(verbose_name=_("Option"), empty_values=(), orderable=False)
+    value = columns.ArrayColumn(verbose_name=_("Value"), orderable=False)
+    level = tables.Column(verbose_name=_("Level"), empty_values=(), orderable=False)
+    server = _server_column()
+    scope = tables.Column(verbose_name=_("Scope"), linkify=True)
+    reservation = tables.Column(verbose_name=_("Reservation"), linkify=True)
+    family = columns.ChoiceFieldColumn(verbose_name=_("Family"))
+    vendor_class = tables.Column(verbose_name=_("Vendor class"), linkify=True)
     user_class = tables.Column(verbose_name=_("User class"), linkify=True)
     policy = tables.Column(verbose_name=_("Policy"), linkify=True)
-    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowsoptionqualifier_list")
+    tags = _tags("optionvalue")
 
     class Meta(NetBoxTable.Meta):
-        model = WindowsOptionQualifier
-        fields = ("pk", "id", "option", "user_class", "policy", "tags", "created", "last_updated")
-        default_columns = ("option", "user_class", "policy")
+        model = OptionValue
+        fields = (
+            "pk",
+            "id",
+            "code",
+            "option",
+            "value",
+            "level",
+            "server",
+            "scope",
+            "reservation",
+            "family",
+            "vendor_class",
+            "user_class",
+            "policy",
+            "tags",
+            "created",
+            "last_updated",
+        )
+        default_columns = ("code", "option", "value", "level", "scope", "reservation", "vendor_class", "policy")
+
+    def render_option(self, record):
+        if not hasattr(self, "_option_names"):
+            self._option_names = OptionNames()
+        return self._option_names.name(record)
+
+    def render_level(self, record):
+        return record.level.capitalize()
 
 
 class FailoverRelationshipTable(PrimaryModelTable):
@@ -247,8 +361,8 @@ class FailoverRelationshipTable(PrimaryModelTable):
     partner_server = tables.Column(verbose_name=_("Partner server"), linkify=True)
     mode = columns.ChoiceFieldColumn(verbose_name=_("Mode"))
     server_role = columns.ChoiceFieldColumn(verbose_name=_("Role"))
-    subnets = columns.ManyToManyColumn(verbose_name=_("Subnets"), linkify_item=True)
-    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:failoverrelationship_list")
+    scopes = columns.ManyToManyColumn(verbose_name=_("Scopes"), linkify_item=True)
+    tags = _tags("failoverrelationship")
 
     class Meta(PrimaryModelTable.Meta):
         model = FailoverRelationship
@@ -264,8 +378,9 @@ class FailoverRelationshipTable(PrimaryModelTable):
             "reserve_percent",
             "server_role",
             "state_switch_interval",
-            "subnets",
+            "scopes",
             "description",
+            "comments",
             "tags",
             "created",
             "last_updated",
@@ -275,87 +390,38 @@ class FailoverRelationshipTable(PrimaryModelTable):
 
 class MacFilterTable(PrimaryModelTable):
     mac_address = tables.Column(verbose_name=_("MAC address"), linkify=True)
-    dhcp_server = tables.Column(verbose_name=_("DHCP server"), linkify=True)
+    server = _server_column()
     list = columns.ChoiceFieldColumn(verbose_name=_("List"))
-    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:macfilter_list")
+    tags = _tags("macfilter")
 
     class Meta(PrimaryModelTable.Meta):
         model = MacFilter
-        fields = ("pk", "id", "mac_address", "dhcp_server", "list", "description", "tags", "created", "last_updated")
-        default_columns = ("mac_address", "dhcp_server", "list", "description")
+        fields = (
+            "pk",
+            "id",
+            "mac_address",
+            "server",
+            "list",
+            "description",
+            "comments",
+            "tags",
+            "created",
+            "last_updated",
+        )
+        default_columns = ("mac_address", "server", "list", "description")
 
 
 class MacFilterListsTable(NetBoxTable):
-    dhcp_server = tables.Column(verbose_name=_("DHCP server"), linkify=True)
+    id = tables.Column(verbose_name=_("ID"), linkify=True)
+    server = _server_column()
     allow_list_enabled = columns.BooleanColumn(verbose_name=_("Allow list"))
     deny_list_enabled = columns.BooleanColumn(verbose_name=_("Deny list"))
-    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:macfilterlists_list")
+    tags = _tags("macfilterlists")
 
     class Meta(NetBoxTable.Meta):
         model = MacFilterLists
-        fields = (
-            "pk",
-            "id",
-            "dhcp_server",
-            "allow_list_enabled",
-            "deny_list_enabled",
-            "tags",
-            "created",
-            "last_updated",
-        )
-        default_columns = ("id", "dhcp_server", "allow_list_enabled", "deny_list_enabled")
-
-
-class WindowsVendorOptionDefinitionTable(PrimaryModelTable):
-    name = tables.Column(verbose_name=_("Name"), linkify=True)
-    vendor_class = tables.Column(verbose_name=_("Vendor class"), linkify=True)
-    multi_valued = columns.BooleanColumn(verbose_name=_("Multi-valued"))
-    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowsvendoroptiondefinition_list")
-
-    class Meta(PrimaryModelTable.Meta):
-        model = WindowsVendorOptionDefinition
-        fields = (
-            "pk",
-            "id",
-            "name",
-            "vendor_class",
-            "code",
-            "windows_type",
-            "multi_valued",
-            "description",
-            "tags",
-            "created",
-            "last_updated",
-        )
-        default_columns = ("name", "vendor_class", "code", "windows_type", "multi_valued")
-
-
-class WindowsVendorOptionTable(NetBoxTable):
-    definition = tables.Column(verbose_name=_("Definition"), linkify=True)
-    assigned_object = tables.Column(verbose_name=_("Set on"), linkify=True, orderable=False)
-    user_class = tables.Column(verbose_name=_("User class"), linkify=True)
-    policy = tables.Column(verbose_name=_("Policy"), linkify=True)
-    value = tables.Column(verbose_name=_("Value"), orderable=False)
-    tags = columns.TagColumn(url_name="plugins:netbox_windows_dhcp_plugin:windowsvendoroption_list")
-
-    class Meta(NetBoxTable.Meta):
-        model = WindowsVendorOption
-        fields = (
-            "pk",
-            "id",
-            "definition",
-            "assigned_object",
-            "user_class",
-            "policy",
-            "value",
-            "tags",
-            "created",
-            "last_updated",
-        )
-        default_columns = ("id", "definition", "assigned_object", "user_class", "policy", "value")
-
-    def render_value(self, value):
-        return ", ".join(str(v) for v in value) if isinstance(value, list) else value
+        fields = ("pk", "id", "server", "allow_list_enabled", "deny_list_enabled", "tags", "created", "last_updated")
+        default_columns = ("id", "server", "allow_list_enabled", "deny_list_enabled")
 
 
 class SyncRunTable(NetBoxTable):

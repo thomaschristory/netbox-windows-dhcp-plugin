@@ -114,7 +114,7 @@ def test_class_and_definition_records(client):
     assert kinds["optiondef"]["msft/1"]["vendor_class"] == "MSFT"
 
 
-def test_standard_definitions_are_left_to_sys4(client):
+def test_standard_definitions_are_not_imported(client):
     records, _ = ws.to_records(ws.read(client), standard_codes={6, 200})
     keys = set(by_kind(records)["optiondef"])
     assert "6" not in keys and "200" not in keys
@@ -148,33 +148,25 @@ def test_policy_option_records():
     assert record.fields["policy"] == "Printers"
 
 
-def test_values_netbox_cannot_store_are_skipped():
+def test_values_with_spaces_commas_and_backslashes_are_kept():
+    # NetBox stores option values as a list, as Windows does, so nothing needs leaving out.
     state = ws.WindowsState(
         options=[
             ws.OptionValue(option_id=15, value=["a,b"]),
             ws.OptionValue(option_id=15, value=[" x"], scope_id="s"),
-            # Vendor class values keep their list, so surrounding spaces are fine there.
+            ws.OptionValue(option_id=67, value=["boot\\"], scope_id="t"),
             ws.OptionValue(option_id=2, value=[" y"], vendor_class="MSFT"),
         ]
     )
     records, notes = ws.to_records(state)
-    assert [r.key for r in records] == ["server/15", "server/2;vendor=msft"]
-    assert notes == [f"skipped 1 {ws.UNSTORABLE_VALUES}"]
-    assert [r.key for r in ws.hidden_records(state)] == ["s/15"]
-
-
-@pytest.mark.parametrize(
-    "values",
-    [[], ["a"], ["a", "b"], ["a,b", "c"], ["back\\slash", "x,"], ["10.0.0.1", "10.0.0.2"]],
-)
-def test_values_survive_the_netbox_string(values):
-    assert ws.split_values(ws.join_values(values)) == values
-
-
-def test_netbox_strings_are_split_like_before():
-    assert ws.split_values("10.0.0.1, 10.0.0.2") == ["10.0.0.1", "10.0.0.2"]
-    assert ws.split_values("  ") == []
-    assert ws.join_values(["a,b", "c"]) == "a\\,b, c"
+    assert {r.key: r.fields["value"] for r in records} == {
+        "server/15": ["a,b"],
+        "s/15": [" x"],
+        "t/67": ["boot\\"],
+        "server/2;vendor=msft": [" y"],
+    }
+    assert notes == []
+    assert ws.hidden_records(state) == []
 
 
 def test_long_names_are_cut_like_netbox_cuts_them(client):
@@ -322,17 +314,6 @@ def test_failover_records_name_the_partner_by_its_netbox_host(client):
     client.add_failover(FailoverRelationship(name="HA", partner_server="DHCP-A", scope_ids=["10.1.0.0"]))
     records, _ = ws.to_records(ws.read(client), partner_servers=SERVERS)
     assert by_kind(records)["failover"]["ha"]["partner_server"] == "192.0.2.10"
-
-
-def test_backslashes_are_kept():
-    # A PXE boot path, stored before or after commas were escaped.
-    assert ws.split_values("boot\\x64\\wdsnbp.com") == ["boot\\x64\\wdsnbp.com"]
-    assert ws.split_values(ws.join_values(["\\\\srv\\share", "a\\,b"])) == ["\\\\srv\\share", "a\\,b"]
-
-
-def test_values_ending_in_a_backslash_are_not_stored():
-    state = ws.WindowsState(options=[ws.OptionValue(option_id=67, value=["boot\\"])])
-    assert ws.to_records(state)[0] == []
 
 
 @pytest.mark.parametrize("value", ["10675199.02:48:05", ""])
