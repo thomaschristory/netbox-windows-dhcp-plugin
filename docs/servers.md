@@ -79,6 +79,7 @@ The summary of a **push** or **dry run** holds:
 - `planned`: the planned changes (the first 1000), each with its kind, Windows key and values;
 - `not_pushed`: changes the push refused, each with the reason (see [what a push will not do](push.md#what-a-push-will-not-do));
 - `unmanaged`: how many Windows objects NetBox does not manage and the push left alone;
+- `notes`: what the read of Windows left out (for example a scope deleted on Windows during the read);
 - for a push, `applied`, `failed` and `skipped` counts, and `errors` and `not_attempted` lists.
 
 The summary of an **import** holds the number of differences by action and `notes` about what was left out. With

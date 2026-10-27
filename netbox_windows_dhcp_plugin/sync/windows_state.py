@@ -109,6 +109,11 @@ class WindowsState:
     v6_reservations: list[ReservationV6] = field(default_factory=list)
     # Every DHCPv6 option value, with prefix and reserved_ip filled in for scope and reservation values.
     v6_options: list[OptionValueV6] = field(default_factory=list)
+    # What the read left out and why, for the job log and the run summary (see to_records).
+    notes: list[str] = field(default_factory=list)
+
+
+GONE_MID_READ = "{kind} {key} left out: deleted on Windows while it was read"
 
 
 def _scope_options(client: DhcpClient, scope_id: str, reserved_ip: str = "", policy_name: str = "") -> list:
@@ -139,17 +144,20 @@ def read(client: DhcpClient) -> WindowsState:
     state.scopes = [
         scope
         for scope in state.scopes
-        if _gone_or_read(lambda sid=scope.scope_id: _read_scope(client, state, sid), client.get_scope, scope.scope_id)
+        if _gone_or_read(
+            lambda sid=scope.scope_id: _read_scope(client, state, sid), client.get_scope, scope.scope_id, state, "scope"
+        )
     ]
     _read_v6(client, state)
     return state
 
 
-def _gone_or_read(read_scope: Any, get_scope: Any, key: str) -> bool:
+def _gone_or_read(read_scope: Any, get_scope: Any, key: str, state: WindowsState, kind: str) -> bool:
     """
-    Run ``read_scope``; False when the scope itself turns out to be gone. Not found can also mean something inside it
-    went away mid-read (a reservation, a policy), so the scope is checked, and read once more if it is still there. A
-    second failure is raised: dropping a scope that exists would make an import delete it from NetBox.
+    Run ``read_scope``; False, with a note on ``state``, when the scope itself turns out to be gone. Not found can
+    also mean something inside it went away mid-read (a reservation, a policy), so the scope is checked, and read once
+    more if it is still there. A second failure is raised: dropping a scope that exists would make an import delete it
+    from NetBox.
     """
     for attempt in (1, 2):
         try:
@@ -159,6 +167,8 @@ def _gone_or_read(read_scope: Any, get_scope: Any, key: str) -> bool:
             try:
                 get_scope(key)
             except NotFound:
+                # Without the note this is silent: an import or push simply would not see the scope.
+                state.notes.append(GONE_MID_READ.format(kind=kind, key=key))
                 return False
             if attempt == 2:
                 raise
@@ -193,7 +203,13 @@ def _read_v6(client: DhcpClient, state: WindowsState) -> None:
     state.v6_scopes = [
         scope
         for scope in state.v6_scopes
-        if _gone_or_read(lambda px=scope.prefix: _read_v6_scope(client, state, px), client.get_v6_scope, scope.prefix)
+        if _gone_or_read(
+            lambda px=scope.prefix: _read_v6_scope(client, state, px),
+            client.get_v6_scope,
+            scope.prefix,
+            state,
+            "DHCPv6 scope",
+        )
     ]
 
 
@@ -712,7 +728,7 @@ def to_records(
 
     records.extend(_v6_records(state, standard6, skip))
 
-    notes = [f"skipped {count} {reason}" for reason, count in skips.items()]
+    notes = [*state.notes, *(f"skipped {count} {reason}" for reason, count in skips.items())]
     return records, notes
 
 
