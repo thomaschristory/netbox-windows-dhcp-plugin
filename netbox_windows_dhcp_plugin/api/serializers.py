@@ -1,6 +1,5 @@
 from core.api.serializers_.jobs import JobSerializer
 from dcim.api.serializers import DeviceSerializer, MACAddressSerializer
-from django.utils.translation import gettext as _
 from drf_spectacular.utils import extend_schema_field
 from ipam.api.serializers import IPAddressSerializer, IPRangeSerializer, PrefixSerializer, VRFSerializer
 from netbox.api.fields import ChoiceField, ContentTypeField, SerializedPKRelatedField
@@ -316,18 +315,12 @@ class FailoverRelationshipSerializer(PrimaryModelSerializer):
         brief_fields = ("id", "url", "display", "name", "mode", "description")
 
     def validate(self, data):
-        # The model cannot check a many-to-many field. A scope of another server (or a DHCPv6 scope) would be left out
-        # of the relationship by the sync, and the next push would take it out of the relationship on Windows.
         primary = data.get("primary_server", getattr(self.instance, "primary_server", None))
-        for scope in data.get("scopes", []):
-            if primary is not None and scope.server_id != primary.pk:
-                raise serializers.ValidationError(
-                    {"scopes": _("Scope {scope} is not on the primary server.").format(scope=scope)}
-                )
-            if scope.family != 4:
-                raise serializers.ValidationError(
-                    {"scopes": _("Windows has no DHCPv6 failover: {scope}.").format(scope=scope)}
-                )
+        # Without scopes in the request, the ones the relationship already has must still suit a new primary.
+        existing = self.instance.scopes.all() if self.instance is not None else []
+        scopes = data.get("scopes", existing)
+        if error := FailoverRelationship.scope_error(primary, scopes):
+            raise serializers.ValidationError({"scopes": error})
         return super().validate(data)
 
 

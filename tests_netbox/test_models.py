@@ -158,6 +158,27 @@ class FailoverCleanTest(TestCase):
         self.assertIn("partner_server", ctx.exception.message_dict)
 
 
+class FailoverFormTest(TestCase):
+    def test_posted_scope_of_another_server_is_refused(self):
+        # The form's scope picker only filters what it offers; a crafted POST may still name any scope.
+        from netbox_windows_dhcp_plugin.forms import FailoverRelationshipForm
+
+        primary, partner = windows_servers(2)
+        foreign = scope(partner, "10.70.0.0/24")
+        form = FailoverRelationshipForm(
+            data={
+                "name": "ha",
+                "primary_server": primary.pk,
+                "partner_server": partner.pk,
+                "mode": "loadbalance",
+                "max_client_lead_time": 3600,
+                "scopes": [foreign.pk],
+            }
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("scopes", form.errors)
+
+
 class OptionDefinitionCleanTest(TestCase):
     @classmethod
     def setUpTestData(cls):

@@ -958,6 +958,14 @@ class FailoverRelationshipForm(PrimaryModelForm):
             "tags",
         )
 
+    def clean(self):
+        super().clean()
+        # The scope picker only filters what it offers; a posted form may still name any scope.
+        primary = self.cleaned_data.get("primary_server")
+        if error := FailoverRelationship.scope_error(primary, self.cleaned_data.get("scopes") or []):
+            raise forms.ValidationError({"scopes": error})
+        return self.cleaned_data
+
 
 class FailoverRelationshipBulkEditForm(PrimaryModelBulkEditForm):
     model = FailoverRelationship

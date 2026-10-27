@@ -876,6 +876,20 @@ class FailoverRelationship(PrimaryModel):
     def get_mode_color(self):
         return FailoverModeChoices.colors.get(self.mode)
 
+    @staticmethod
+    def scope_error(primary_server, scopes):
+        """
+        Why these scopes cannot be in a relationship of this primary server, or None. clean() cannot check a
+        many-to-many field, so forms and the API call this: a scope of another server (or a DHCPv6 scope) would be
+        left out of the relationship by the sync, and the next push would take it out of the relationship on Windows.
+        """
+        for scope in scopes:
+            if primary_server is not None and scope.server_id != primary_server.pk:
+                return _("Scope {scope} is not on the primary server.").format(scope=scope)
+            if scope.family != 4:
+                return _("Windows has no DHCPv6 failover: {scope}.").format(scope=scope)
+        return None
+
     def clean(self):
         super().clean()
         if self.primary_server_id and self.primary_server_id == self.partner_server_id:

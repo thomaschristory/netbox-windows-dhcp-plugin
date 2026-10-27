@@ -384,6 +384,19 @@ class FailoverRelationshipAPITest(*STANDARD):
                 self.assertEqual(response.status_code, 400)
                 self.assertIn("scopes", response.data)
 
+    def test_new_primary_must_hold_the_existing_scopes(self):
+        self.add_permissions("netbox_windows_dhcp_plugin.change_failoverrelationship")
+        relationship = FailoverRelationship.objects.first()
+        relationship.scopes.add(scope(relationship.primary_server, "10.60.0.0/24"))
+        response = self.client.patch(
+            self._get_detail_url(relationship),
+            {"primary_server": relationship.partner_server_id, "partner_server": relationship.primary_server_id},
+            format="json",
+            **self.header,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("scopes", response.data)
+
 
 class MacFilterAPITest(*STANDARD):
     user_permissions = SERVER_VIEW
