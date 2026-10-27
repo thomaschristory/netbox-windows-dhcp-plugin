@@ -23,7 +23,7 @@ NAME = "netbox_windows_dhcp_plugin"  # normalized distribution name
 PACKAGE = "netbox_windows_dhcp_plugin"
 PACKAGE_FILE = re.compile(rf"^{PACKAGE}/(?:[a-z_]+/)*[a-z0-9_]+\.(?:py|html)$")
 REQUIRED = {
-    f"{PACKAGE}/migrations/0001_initial.py",
+    f"{PACKAGE}/migrations/0001_standalone.py",
     f"{PACKAGE}/templates/{PACKAGE}/buttons/post.html",
     f"{PACKAGE}/windows/client.py",
 }
