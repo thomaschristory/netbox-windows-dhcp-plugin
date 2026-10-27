@@ -72,6 +72,13 @@ DATABASE_ROUTERS = ["netbox_branching.database.BranchAwareRouter"]
 The plugin detects branching and change control when NetBox starts. It works the same way without them, with
 an [import proposal](import.md#without-branching-import-proposals) queue instead of branches and a push after each save.
 
+!!! warning "Change control needs a policy"
+    netbox-change-control approves a change request only through its **policies**. Without one, a request (an import's
+    included) stays in **Needs review** whatever its reviews say, and its branch can never be merged. Before the first
+    import, create at least one policy under **Change Control > Policies**, with a rule naming who approves, for
+    example one review from the network team. A policy with no object types applies to every branch. A request
+    opened before the policy existed picks it up when it is returned to draft and submitted again.
+
 Then add at least one credential profile, as described in [Configuration](configuration.md).
 
 ## Migrate and restart

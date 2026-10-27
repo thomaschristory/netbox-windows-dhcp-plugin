@@ -99,6 +99,9 @@ Documentation
 - Screenshots from a lab run on real Windows servers: the first-sync walkthrough step by step, import proposals and
   import branches with change requests, a new scope built in NetBox and pushed, a failover relationship, the Leases
   tab and a failed push.
+- Installation: netbox-change-control needs at least one policy, or change requests (an import's included) can never be
+  approved. How objects map: netbox-plugin-dhcp 0.2.0 does not save comments from its edit forms
+  (sys4/netbox-plugin-dhcp#68).
 - `SECURITY.md`: report vulnerabilities through GitHub's private vulnerability reporting.
 
 Development

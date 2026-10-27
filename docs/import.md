@@ -78,7 +78,8 @@ When the import finds differences, it creates a branch named `dhcp-import/<serve
 tracking, so the branch's diff shows every change.
 
 - With netbox-change-control and `import_change_request` on (the default), it also opens a **change request** for
-  the branch and submits it for review.
+  the branch and submits it for review. Change control approves it only through a policy: see
+  [Installation](installation.md#enable-it).
 - If an open import branch for the server already exists, the next import writes into it instead of opening another,
   so it only adds what changed since. A branch is no longer reused once its change request is completed or
   abandoned, or once it is stale (too far behind main to sync).

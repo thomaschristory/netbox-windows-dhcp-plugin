@@ -46,7 +46,8 @@ A Windows scope is a sys4 subnet with a pool, as [How objects map](mapping.md#sc
 
 1. **IPAM**: the prefix (`198.18.40.0/24`) and the IP range of the pool (`198.18.40.100` to `198.18.40.200`) exist.
 2. **DHCP > Subnets > Add**: name, DHCP server, prefix. The **description** becomes the Windows scope name, the
-   **comments** its description, and the **valid lifetime** its lease duration.
+   **comments** its description (set them through the API for now, see
+   [How objects map](mapping.md#names)), and the **valid lifetime** its lease duration.
 
     ![A new sys4 subnet for dhcp01: name, description VLAN40-Office, DHCP server, prefix](images/scope-1-subnet-form.webp)
 
