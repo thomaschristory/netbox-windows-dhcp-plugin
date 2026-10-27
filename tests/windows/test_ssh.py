@@ -10,6 +10,7 @@ import base64
 import io
 import socket
 import threading
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -339,6 +340,33 @@ def test_stdin_is_base64_script(ssh_server) -> None:
         r.close()
     assert seen["stdin"].endswith("\r\n")
     assert base64.b64decode(seen["stdin"]).decode().endswith("# body")
+
+
+def test_silence_past_the_command_timeout_says_so(ssh_server) -> None:
+    def respond(cmd: str, stdin: str) -> tuple[bytes, bytes, int]:
+        time.sleep(2)
+        return base64.b64encode(b'{"ok":true,"data":null}'), b"", 0
+
+    srv = ssh_server(behaviour=Behaviour(respond=respond))
+    r = runner(srv, command_timeout=0.5)
+    try:
+        with pytest.raises(RunnerError, match=r"no output from PowerShell for 0\.5 s"):
+            r.run("# body", {})
+    finally:
+        r.close()
+
+
+def test_input_too_large_for_windows_openssh_fails_fast(ssh_server) -> None:
+    # Over about 70 KB of stdin, Windows OpenSSH stalls until the timeout (#56, lab, Windows Server 2022): refuse it
+    # at once, before any connection, and say what to use instead.
+    srv = ssh_server()
+    r = runner(srv)
+    try:
+        with pytest.raises(RunnerError, match="too large for SSH.*WinRM"):
+            r.run("$out = $p.v", {"v": "x" * 60_000})
+    finally:
+        r.close()
+    assert srv.connections == 0
 
 
 @pytest.mark.parametrize(

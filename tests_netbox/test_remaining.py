@@ -197,7 +197,7 @@ class ImportRemainingTest(RemainingObjectsMixin, TestCase):
         self.assertIn("Test connection", item.error)
 
     def test_a_partner_named_by_its_reported_computer_name_matches(self):
-        # #57 (lab, Windows Server 2025): on the partner's side of a relationship Windows names the other server by
+        # #57 (lab, Windows Server 2022): on the partner's side of a relationship Windows names the other server by
         # its computer name, while NetBox may know that server by IP address.
         WindowsServer.objects.filter(pk=self.partner.pk).update(reported_names=["dhcp-b"])
         DhcpClient(self.fake).add_failover(WinFailover(name="Other", partner_server="DHCP-B", scope_ids=["10.1.0.0"]))

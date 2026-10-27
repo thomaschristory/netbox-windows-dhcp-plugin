@@ -194,10 +194,12 @@ def render(script: str, params: Mapping[str, Any] | None = None) -> str:
 
 # Fixed bootstrap passed with -EncodedCommand. It reads the base64 UTF-8 script from
 # stdin, runs it, joins its output with "`n" and writes it back base64 UTF-8 encoded,
-# so the transport only ever carries ASCII.
+# so the transport only ever carries ASCII. The script is one line, so it reads one line:
+# Windows OpenSSH sometimes loses the end of stdin, and reading to the end then waited until
+# the timeout (lab, about 1 run in 15). ReadLine also returns at the end of stdin.
 BOOTSTRAP = (
     "$ProgressPreference = 'SilentlyContinue'\n"
-    "$in = [Console]::In.ReadToEnd()\n"
+    "$in = [Console]::In.ReadLine()\n"
     "$src = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($in.Trim()))\n"
     '$res = (& ([scriptblock]::Create($src))) -join "`n"\n'
     "[Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($res)))\n"

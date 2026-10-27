@@ -372,7 +372,7 @@ function Get-DhcpServerv4Failover {
 }
 
 # Add, Set and replication of failover ask for confirmation unless -Force is given (ShouldContinue, which -Confirm:$false
-# does not suppress; seen on Windows Server 2025). Over WinRM nobody can answer, so the real cmdlet fails like this.
+# does not suppress; seen on Windows Server 2022). Over WinRM nobody can answer, so the real cmdlet fails like this.
 function Assert-WdForce([bool]$Force) {
     if (-not $Force) {
         throw 'Exception calling "EndProcessing" with "0" argument(s): "Windows PowerShell is in NonInteractive mode. Read and Prompt functionality is not available."'
@@ -420,7 +420,7 @@ function Set-DhcpServerv4Failover {
         'StateSwitchInterval', 'AutoStateTransition') {
         if ($PSBoundParameters.ContainsKey($k)) { $f.$k = $PSBoundParameters[$k] }
     }
-    # Windows makes this server active when the mode becomes HotStandby (lab, Windows Server 2025).
+    # Windows makes this server active when the mode becomes HotStandby (lab, Windows Server 2022).
     if ($Mode -eq 'HotStandby' -and -not $f.ServerRole) { $f.ServerRole = 'Active' }
     if ($Mode -eq 'LoadBalance') { $f.ServerRole = '' }
 }

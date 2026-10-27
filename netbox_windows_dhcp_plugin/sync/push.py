@@ -62,7 +62,7 @@ DEFAULT_LEASE_SECONDS = 8 * 86400
 # works them out from the preferred lifetime it sends (see _prepare_scope6) rather than sending 4 and 6.4 days to a
 # scope whose addresses stop being preferred sooner than that.
 # Windows does the same for a scope created with a shorter preferred lifetime and no timers: 2 days gives T1 1 day
-# and T2 1 day 14:24 (lab, Windows Server 2025), and it refuses timers that break T1 < T2 < preferred (WIN32 87).
+# and T2 1 day 14:24 (lab, Windows Server 2022), and it refuses timers that break T1 < T2 < preferred (WIN32 87).
 V6_LIFETIME_DEFAULTS = {
     "preferred_lifetime": 8 * 86400,
     "valid_lifetime": 12 * 86400,
@@ -645,7 +645,7 @@ def _order_level(
         return sorted(level_changes, key=lambda c: ((c.after or {}).get("processing_order") or 0, c.key))
     # Deletes run first, and Windows closes the gap a removed policy leaves.
     # Remove-DhcpServerv4Policy closes the gap, and Set-DhcpServerv4Policy -ProcessingOrder moves the others down (and
-    # refuses a number past the end) the way Add does (lab, Windows Server 2025).
+    # refuses a number past the end) the way Add does (lab, Windows Server 2022).
     current = [r.key for r in windows if r.key not in deleted]
     where = f"scope {level}" if level else "the server level"
     out: list[Change] = []

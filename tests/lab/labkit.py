@@ -13,6 +13,7 @@ from typing import Any
 
 from netbox_windows_dhcp_plugin.windows import client as wc
 from netbox_windows_dhcp_plugin.windows.psscript import Script
+from netbox_windows_dhcp_plugin.windows.ssh import SSHConfig, SSHRunner
 from netbox_windows_dhcp_plugin.windows.winrm import WinRMConfig, WinRMRunner
 
 REPO = Path(__file__).resolve().parents[2]
@@ -372,6 +373,20 @@ class Lab:
 
 
 def make_runner(env: dict[str, str]) -> Any:
+    runner: Any
+    if env.get("WINDOWS_DHCP_LAB_TRANSPORT", "winrm").lower() == "ssh":
+        # Password authentication; the host key is always checked, pinned here or from ~/.ssh/known_hosts.
+        runner = SSHRunner(
+            SSHConfig(
+                host=env["WINDOWS_DHCP_LAB_HOST"],
+                username=env["WINDOWS_DHCP_USERNAME"],
+                password=env["WINDOWS_DHCP_PASSWORD"],
+                port=int(env["WINDOWS_DHCP_LAB_PORT"]) if env.get("WINDOWS_DHCP_LAB_PORT") else 22,
+                host_key=env.get("WINDOWS_DHCP_LAB_SSH_HOST_KEY", ""),
+                command_timeout=120,
+            )
+        )
+        return _recording(env, runner)
     cfg = WinRMConfig(
         host=env["WINDOWS_DHCP_LAB_HOST"],
         username=env["WINDOWS_DHCP_USERNAME"],
@@ -384,7 +399,10 @@ def make_runner(env: dict[str, str]) -> Any:
         cert_validation=env.get("WINDOWS_DHCP_LAB_INSECURE") != "1",
         timeout=120,
     )
-    runner: Any = WinRMRunner(cfg)
+    return _recording(env, WinRMRunner(cfg))
+
+
+def _recording(env: dict[str, str], runner: Any) -> Any:
     if env.get("WINDOWS_DHCP_LAB_RECORD") == "1":
         # Raw server data: kept under the gitignored .lab/ only, and scrubbed by hand before becoming a fixture.
         runner = RecordingRunner(runner, REPO / ".lab" / "record")

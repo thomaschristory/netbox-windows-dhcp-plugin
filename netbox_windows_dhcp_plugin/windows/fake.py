@@ -15,8 +15,7 @@ Modelled server behaviour:
   cascades to its reservations, exclusions, options, policies, failover and
   superscope membership; removing a reservation drops its options;
 * a reservation Set that changes the client ID or type (DHCPv6: the DUID or IAID)
-  drops the reservation's option values, as Windows does for a new client ID and IAID
-  (issue #42; the type and DUID are assumed to behave the same);
+  drops the reservation's option values, as Windows does (issues #42, #56);
   ``reservation_set_drops_options`` makes every reservation Set drop them, the worst case
   seen on Windows Server 2025 for a description change;
 * not-found errors use the same codes as the server (ObjectNotFound / DHCP 20005,
@@ -436,8 +435,8 @@ class FakeDhcpServer:
             cid = normalize.canonical_mac(_s(p, "client_id"))
         except ValueError as e:
             raise _invalid(cmd, str(e)) from None
-        # A new client ID makes Windows drop the reservation's option values (#42, lab, Windows Server 2025).
-        # unverified: that a new type alone does the same.
+        # A new client ID or a new type makes Windows drop the reservation's option values (#42, #56, lab, Windows
+        # Server 2022).
         if self.reservation_set_drops_options or cid != r["client_id"] or _s(p, "type").lower() != r["type"].lower():
             self._drop_reservation_options(ip)
         r["client_id"] = cid
@@ -746,7 +745,7 @@ class FakeDhcpServer:
         if _s(p, "mode"):
             f["mode"] = _s(p, "mode")
             # Windows makes this server active and the partner standby when the mode becomes HotStandby (lab, Windows
-            # Server 2025).
+            # Server 2022).
             if f["mode"] == "HotStandby" and not f["server_role"]:
                 f["server_role"] = "Active"
             elif f["mode"] == "LoadBalance":
@@ -775,7 +774,7 @@ class FakeDhcpServer:
         for sid in ids:
             if sid not in f["scope_ids"]:
                 raise _invalid(cmd, f"Scope {sid} is not part of failover relationship {f['name']}.", 20116)
-        # Like Windows Server 2025: the last scope can leave, and the relationship stays, empty, on both partners.
+        # Like Windows Server 2022: the last scope can leave, and the relationship stays, empty, on both partners.
         f["scope_ids"] = [s for s in f["scope_ids"] if s not in ids]
         return f
 
@@ -787,7 +786,7 @@ class FakeDhcpServer:
         if _s(p, "name"):
             self._failover(cmd, _s(p, "name"))
         # Windows refuses the whole call when one scope is in no failover relationship (DHCP 20116, lab, Windows Server
-        # 2025).
+        # 2022).
         in_failover = {sid for f in self.failovers.values() for sid in f["scope_ids"]}
         for sid in p.get("scope_ids") or []:
             if sid not in in_failover:
@@ -941,7 +940,7 @@ class FakeDhcpServer:
         fails with DHCP 20110 (seen on Windows Server 2025 for Add, with order 2 on an empty scope). No number puts a
         new policy at the end and leaves an existing one where it is.
         """
-        # Set refuses a number past the end the same way, and a removal closes the gap (lab, Windows Server 2025).
+        # Set refuses a number past the end the same way, and a removal closes the gap (lab, Windows Server 2022).
         level = self._level(k[0])
         if order is None:
             return level if k in level else [*level, k]
@@ -967,7 +966,7 @@ class FakeDhcpServer:
             if v is not None:
                 # Windows stores conditions in its own spelling (seen on Windows Server 2025): a separator before a
                 # MAC prefix wildcard, host names in lowercase. The operator is the first item.
-                # An uppercase MAC prefix is read back in lowercase (lab, Windows Server 2025).
+                # An uppercase MAC prefix is read back in lowercase (lab, Windows Server 2022).
                 items = [str(x) for x in v]
                 pol["criteria"][k] = items[:1] + [normalize.canonical_policy_criterion(k, x) for x in items[1:]]
 
@@ -1084,7 +1083,7 @@ class FakeDhcpServer:
         # The cmdlet documentation asks for T1 < T2 < preferred lifetime. Refusing anything else makes the tests
         # notice a push that would send renewal and rebinding times a real server may refuse or hand to clients.
         # Windows refuses such timers with WIN32 87 (InvalidArgument) rather than storing them (lab, Windows Server
-        # 2025).
+        # 2022).
         t1, t2, pref = (normalize.parse_duration(sc[k], allow_zero=True) for k in ("t1", "t2", "preferred_lifetime"))
         if not t1 < t2 < pref:
             raise _invalid(cmd, f"Invalid T1 or T2 for scope {sc['prefix']}: T1 < T2 < preferred lifetime expected.")
@@ -1186,8 +1185,8 @@ class FakeDhcpServer:
         if r is None:
             raise _err("Set-DhcpServerv6Reservation", 20018, "ObjectNotFound", f"Failed to get reservation {ip}")
         duid, iaid = normalize.canonical_duid(_s(p, "client_duid")), _n(p, "iaid")
-        # A new IAID makes Windows drop the reservation's option values (#42, lab, Windows Server 2025).
-        # unverified: that a new DUID alone does the same.
+        # A new IAID or a new DUID makes Windows drop the reservation's option values (#42, #56, lab, Windows Server
+        # 2022).
         if self.reservation_set_drops_options or duid != r["client_duid"] or iaid != r["iaid"]:
             self._drop_v6_reservation_options(ip)
         r["client_duid"] = duid

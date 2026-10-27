@@ -46,6 +46,9 @@ any method. Both partners must accept the account: in a workgroup, the same loca
 both. CredSSP hands the password to the DHCP server, so it needs **WinRM over HTTPS** with **Verify host** on;
 `allow_insecure_credssp` on the credential profile lifts that for a lab (see [Security](security.md#transport)).
 
+**SSH with a password** works too: Windows OpenSSH logs a password user on with credentials it can pass on, so the
+failover tests passed over SSH as over CredSSP (lab, Windows Server 2022). SSH key authentication was not tried.
+
 ## How it syncs
 
 - **Import** cannot tell which partner should be the primary: the first partner imported becomes it. **Import the

@@ -287,7 +287,7 @@ def test_failover_partner_names_match_short_and_qualified():
 
 
 # #57: Windows names the partner as it was given on one side, and by its computer name on the other (lab, Windows
-# Server 2025: created on win01 with the partner's IP address, win02 reports win01 by its computer name).
+# Server 2022: created on win01 with the partner's IP address, win02 reports win01 by its computer name).
 SERVERS = [("192.0.2.10", ["dhcp-a"]), ("dhcp2.corp.example", ["dhcp2", "dhcp2.corp.example", "192.0.2.20"])]
 
 
@@ -332,7 +332,7 @@ def test_values_ending_in_a_backslash_are_not_stored():
 @pytest.mark.parametrize("value", ["10675199.02:48:05", ""])
 def test_unlimited_lease_records_no_lease_time(value):
     # An unlimited lease reads back as TimeSpan.MaxValue, printed by client.py as 10675199.02:48:05 (lab, Windows
-    # Server 2025): too long for parse_duration, so no lease time, and a push keeps the scope's own.
+    # Server 2022): too long for parse_duration, so no lease time, and a push keeps the scope's own.
     assert ws._lease_seconds(value) is None
     assert ws._lease_seconds("8.00:00:00") == 8 * 86400
 

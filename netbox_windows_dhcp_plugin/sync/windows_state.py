@@ -136,7 +136,7 @@ def read(client: DhcpClient) -> WindowsState:
         filters=client.list_filters(),
         filter_lists=client.get_filter_lists(),
     )
-    # -All returns the values of every user and vendor class at each level (lab, Windows Server 2025).
+    # -All returns the values of every user and vendor class at each level (lab, Windows Server 2022).
     state.options.extend(client.list_option_values(all=True))
     for policy in client.list_policies():
         state.policies.append(policy)
@@ -200,7 +200,7 @@ def _read_scope(client: DhcpClient, state: WindowsState, sid: str) -> None:
 def _read_v6(client: DhcpClient, state: WindowsState) -> None:
     state.v6_classes = client.list_v6_classes()
     state.v6_scopes = client.list_v6_scopes()
-    # -All returns the values of every user class at each level, as for IPv4 (lab, Windows Server 2025).
+    # -All returns the values of every user class at each level, as for IPv4 (lab, Windows Server 2022).
     state.v6_options.extend(client.list_v6_option_values(all=True))
     state.v6_scopes = [
         scope
@@ -401,7 +401,7 @@ def _lease_seconds(value: str) -> int | None:
         return normalize.parse_duration(value)
     except ValueError:
         # An unlimited lease reads back as TimeSpan.MaxValue (10675199.02:48:05.4775807), whether it was set as that or
-        # as 0xFFFFFFFF seconds (lab, Windows Server 2025); parse_duration refuses it, so no lease time is recorded.
+        # as 0xFFFFFFFF seconds (lab, Windows Server 2022); parse_duration refuses it, so no lease time is recorded.
         return None
 
 
