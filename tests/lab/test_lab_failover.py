@@ -17,6 +17,7 @@ from collections.abc import Iterator
 
 import pytest
 
+from netbox_windows_dhcp_plugin.sync import windows_state
 from netbox_windows_dhcp_plugin.windows import client as wc
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
@@ -43,6 +44,10 @@ def partner(lab_session: Lab) -> Iterator[Lab]:
     assert not side.sweep()
     yield side
     assert not side.sweep()
+
+
+def lab_host() -> str:
+    return ENV["WINDOWS_DHCP_LAB_HOST"]
 
 
 def partner_scope_ids(partner: Lab) -> list[str]:
@@ -86,6 +91,15 @@ def test_failover_lifecycle(lab: Lab, partner: Lab, probe_out) -> None:
         (f"{base}.100", f"{base}.110")
     ]
     assert partner.client.get_option_value(wc.OptionKey(15, s.scope_id)).value == ["fo.example"]
+
+    # windows_state.py (#57): the partner names this server by a name this server reports for itself, so a server
+    # NetBox knows by IP address still matches.
+    names = lab.client.get_server_names()
+    save_probe(probe_out, "server-names", {"first": names, "partner": partner.client.get_server_names()})
+    assert names
+    assert windows_state.resolve_partner(other.partner_server, [(lab_host(), names)]) == windows_state.host_name(
+        lab_host()
+    )
 
     # pusher.py: later changes reach the partner only through replication of the listed scopes.
     lab.client.add_reservation(

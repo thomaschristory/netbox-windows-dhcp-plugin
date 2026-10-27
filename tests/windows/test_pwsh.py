@@ -128,6 +128,14 @@ foreach ($prop in $in.PSObject.Properties) {
     assert p.stdout.strip() == "", p.stdout
 
 
+def test_server_names(pw: PwshRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    # The computer name, then what DNS resolves it to; a name that does not resolve leaves only the computer name.
+    monkeypatch.setenv("COMPUTERNAME", "WD-NO-SUCH-HOST.invalid")
+    assert DhcpClient(pw).get_server_names() == ["wd-no-such-host.invalid"]
+    # Through -ComputerName, the other server's name is resolved, never this host's own.
+    assert DhcpClient(pw, computer_name="localhost").get_server_names() == ["localhost"]
+
+
 def test_scope(pw: PwshRunner) -> None:
     c = DhcpClient(pw)
     name = 'Café\'s "scope" ‘x’'

@@ -377,6 +377,21 @@ function Add-WdScopeExtras($a) {
 
 S_AVAILABLE = Script("dhcp.available", "$out = $true")
 
+# The names the DHCP server goes by, to match failover partners (#57): Windows names a partner by its computer name on
+# one side of a relationship. With -ComputerName the cmdlets run on another server, so that name is resolved instead.
+# A workgroup server reports its computer name, which its partner uses (lab, Windows Server 2025).
+# unverified: through -ComputerName, and the fully qualified name on a domain member.
+S_SERVER_NAMES = Script(
+    "server.names",
+    r"""
+$names = @()
+$target = $p.computer_name
+if (-not $target) { $target = $env:COMPUTERNAME; $names += $target }
+try { $names += [System.Net.Dns]::GetHostEntry($target).HostName } catch { }
+$out = @($names | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() } | Select-Object -Unique)
+""",
+)
+
 S_SCOPE_GET = Script(
     "scope.get",
     _SCOPE_FUNC
@@ -1625,6 +1640,16 @@ class DhcpClient:
     def check_available(self) -> None:
         """Raise unless the host is reachable and has the DhcpServer module."""
         self._do(S_AVAILABLE)
+
+    def get_server_names(self) -> list[str]:
+        """The DHCP server's computer name and DNS name, lowercase (no trailing dot): what a partner calls it."""
+        present, data = self._run(S_SERVER_NAMES)
+        if not present:
+            return []
+        if isinstance(data, str):  # one name that lost its array wrapper
+            data = [data]
+        names = (n.strip().rstrip(".").lower() for n in data if isinstance(n, str))
+        return list(dict.fromkeys(n for n in names if n))
 
     # -- IPv4 scopes ---------------------------------------------------------
 

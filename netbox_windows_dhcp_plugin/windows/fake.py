@@ -167,6 +167,8 @@ class FakeDhcpServer:
         # did for a description change sent with the client ID and type (issue #42). Tests use it to check the push
         # puts the values back.
         self.reservation_set_drops_options = False
+        # What server.names reports: the computer name, then the DNS name.
+        self.server_names: list[str] = ["fake", "fake.example.test"]
 
     # -- Runner ----------------------------------------------------------------
 
@@ -305,6 +307,9 @@ class FakeDhcpServer:
 
     def _op_dhcp_available(self, p: dict) -> Any:
         return True
+
+    def _op_server_names(self, p: dict) -> Any:
+        return list(self.server_names)
 
     def _op_scope_get(self, p: dict) -> Any:
         return self._scope("Get-DhcpServerv4Scope", _s(p, "scope_id"))

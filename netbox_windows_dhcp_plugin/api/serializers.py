@@ -85,6 +85,7 @@ class WindowsServerSerializer(PrimaryModelSerializer):
             "kerberos_spn",
             "ssh_host_key",
             "computer_name",
+            "reported_names",
             "import_vrf",
             "sync_enabled",
             "import_interval",

@@ -274,6 +274,16 @@ def test_failover_force_only_where_safe() -> None:
         assert "-Force" not in line(script), line(script)
 
 
+def test_server_names() -> None:
+    # Lowercase, without the trailing dot of a fully qualified name; one name may come without its array.
+    c, r = new_client("server_names.json")
+    assert c.get_server_names() == ["dhcp1", "dhcp1.corp.example"]
+    assert r.op == "server.names"
+    c, r = new_client("ok_null.json", computer_name="dhcp9")
+    assert c.get_server_names() == []
+    assert r.params == {"computer_name": "dhcp9"}
+
+
 def test_classes_optiondefs_superscopes_filters() -> None:
     c, r = new_client("class_list.json")
     classes = c.list_classes("vendor")

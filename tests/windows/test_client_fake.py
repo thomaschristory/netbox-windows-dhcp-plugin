@@ -48,6 +48,12 @@ def test_fake_is_a_runner(fake: FakeDhcpServer) -> None:
         fake.run("Get-DhcpServerv4Scope", {})
 
 
+def test_server_names(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    assert c.get_server_names() == ["fake", "fake.example.test"]
+    fake.server_names = ["DHCP2"]
+    assert c.get_server_names() == ["dhcp2"]
+
+
 def test_unknown_op(fake: FakeDhcpServer) -> None:
     from netbox_windows_dhcp_plugin.windows.psscript import Script
 

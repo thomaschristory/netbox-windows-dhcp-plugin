@@ -222,6 +222,8 @@ Found by the full lab run (two Windows Server 2025 servers):
 - An import or push no longer fails when a scope disappears while the server is being read (for example the partner's
   copy, when a failover relationship is removed at that moment): that scope counts as gone, the rest is read. The
   sync run's notes and the job log name each scope left out this way (#58).
-- A failover partner that matches no Windows server in NetBox now says how to fix it. Windows names the partner by its
-  computer name on one side of a relationship, so a server NetBox knows by IP address did not match, and the message
-  only said to add a server that was already there.
+- A failover partner Windows names by its computer name now matches a server NetBox knows by IP address (#57).
+  Windows names the partner by its computer name on one side of a relationship, so that side's import failed and its
+  pushes saw a partner change Windows cannot make. Test connection, imports and pushes now record the DHCP server's
+  computer and DNS names (**Reported names**, migration 0006), and partners match on them as well as on the host. A
+  name two servers report matches neither, and the error says so.

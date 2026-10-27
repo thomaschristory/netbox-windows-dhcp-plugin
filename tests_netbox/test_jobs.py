@@ -43,7 +43,19 @@ class TestConnectionJobTest(TestCase):
         )
         sync_run = self._run()
         self.assertEqual(sync_run.status, SyncStatusChoices.COMPLETED)
-        self.assertEqual(sync_run.summary, {"ipv4_scopes": 1})
+        self.assertEqual(sync_run.summary, {"ipv4_scopes": 1, "reported_names": ["fake", "fake.example.test"]})
+        # #57: kept on the server, where imports and pushes of its failover partners match on them.
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.reported_names, ["fake", "fake.example.test"])
+
+    def test_names_that_cannot_be_read_do_not_fail_the_test(self):
+        self.fake.fail = lambda op, params: (
+            PSError(message="denied", category="PermissionDenied") if op == ("server.names") else None
+        )
+        sync_run = self._run()
+        self.assertEqual(sync_run.status, SyncStatusChoices.COMPLETED)
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.reported_names, [])
 
     def test_failure_is_recorded(self):
         self.fake.fail = lambda op, params: PSError(message="Access is denied", category="PermissionDenied")

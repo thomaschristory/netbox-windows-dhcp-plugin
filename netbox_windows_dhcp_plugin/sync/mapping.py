@@ -572,14 +572,21 @@ class Writer:
         computer_name when it connects through a management host). Only a Windows server will do: the push needs its
         host to check where the failover secret may go.
         """
-        for ws in WindowsServer.objects.exclude(dhcp_server=self.dhcp).select_related("dhcp_server"):
-            if windows_state.same_host(ws.dhcp_host, host):
-                return ws.dhcp_server
+        servers = list(WindowsServer.objects.exclude(dhcp_server=self.dhcp).select_related("dhcp_server"))
+        hosts = windows_state.partner_matches(host, [(ws.dhcp_host, ws.reported_names) for ws in servers])
+        found = [ws for ws in servers if windows_state.host_name(ws.dhcp_host) in hosts]
+        if len(found) == 1:
+            return found[0].dhcp_server
+        if found:
+            raise ApplyError(
+                f"failover partner {host!r} matches more than one Windows server in NetBox "
+                f"({', '.join(str(ws) for ws in found)}): give the partner's Windows server this name as host"
+            )
         # Windows reports the partner as it was named when the relationship was created, and on the partner's side by
-        # the other server's computer name: a server NetBox knows by IP address then does not match.
+        # the other server's computer name, which a server records on each connection test, import and push.
         raise ApplyError(
-            f"failover partner {host!r} matches no Windows server in NetBox: add the partner, or give its Windows "
-            "server this name as host (or computer name), or import the relationship from the other server first"
+            f"failover partner {host!r} matches no Windows server in NetBox: add the partner, or run Test connection "
+            "on its Windows server so it records its computer name"
         )
 
     def failover(self, name):

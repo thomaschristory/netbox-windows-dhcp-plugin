@@ -1,3 +1,4 @@
+from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.urls import reverse
@@ -95,6 +96,17 @@ class WindowsServer(JobsMixin, PrimaryModel):
             "it (double hop), so connecting directly is recommended."
         ),
     )
+    # Read from Windows, never typed in: a failover partner names this server by its computer name on one side of a
+    # relationship (#57). Only matched against, never connected to, so the credential profile's allowed hosts do not
+    # apply to it.
+    reported_names = ArrayField(
+        base_field=models.CharField(max_length=255),
+        verbose_name=_("reported names"),
+        default=list,
+        blank=True,
+        editable=False,
+        help_text=_("The DHCP server's computer and DNS names, as reported on its last connection test or sync"),
+    )
     import_vrf = models.ForeignKey(
         to="ipam.VRF",
         on_delete=models.SET_NULL,
@@ -189,6 +201,10 @@ class WindowsServer(JobsMixin, PrimaryModel):
                 )
             }
         )
+
+    @property
+    def reported_names_display(self):
+        return ", ".join(self.reported_names)
 
     @property
     def dhcp_host(self):

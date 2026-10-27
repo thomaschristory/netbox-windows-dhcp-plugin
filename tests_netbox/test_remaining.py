@@ -10,6 +10,7 @@ from netbox_dhcp.models import HostReservation, Option, SharedNetwork, Subnet
 
 from netbox_windows_dhcp_plugin import signals
 from netbox_windows_dhcp_plugin.choices import POLICY_CRITERIA_KEYS, SyncStatusChoices
+from netbox_windows_dhcp_plugin.jobs import DryRunJob
 from netbox_windows_dhcp_plugin.models import (
     FailoverRelationship,
     MacFilter,
@@ -18,6 +19,7 @@ from netbox_windows_dhcp_plugin.models import (
     SyncState,
     WindowsClass,
     WindowsPolicy,
+    WindowsServer,
     WindowsVendorOption,
     WindowsVendorOptionDefinition,
 )
@@ -192,7 +194,28 @@ class ImportRemainingTest(RemainingObjectsMixin, TestCase):
         item.refresh_from_db()
         self.assertIn("matches no Windows server in NetBox", item.error)
         # Windows names the partner by its computer name on one side: say how to make it match (lab, 2026-10-26).
-        self.assertIn("host", item.error)
+        self.assertIn("Test connection", item.error)
+
+    def test_a_partner_named_by_its_reported_computer_name_matches(self):
+        # #57 (lab, Windows Server 2025): on the partner's side of a relationship Windows names the other server by
+        # its computer name, while NetBox may know that server by IP address.
+        WindowsServer.objects.filter(pk=self.partner.pk).update(reported_names=["dhcp-b"])
+        DhcpClient(self.fake).add_failover(WinFailover(name="Other", partner_server="DHCP-B", scope_ids=["10.1.0.0"]))
+        item = self.propose().proposal.items.get(kind="failover")
+        self.assertEqual(item.after["partner_server"], self.partner.host)
+        importer.apply_items([item])
+        item.refresh_from_db()
+        self.assertEqual(item.error, "")
+        self.assertEqual(FailoverRelationship.objects.get(name="Other").partner_server, self.partner_dhcp)
+
+    def test_a_computer_name_two_servers_report_matches_neither(self):
+        other = windows_server(dhcp_servers(1, start=3)[0])
+        WindowsServer.objects.filter(pk__in=[self.partner.pk, other.pk]).update(reported_names=["dhcp-b"])
+        DhcpClient(self.fake).add_failover(WinFailover(name="Other", partner_server="dhcp-b", scope_ids=["10.1.0.0"]))
+        item = self.propose().proposal.items.get(kind="failover")
+        importer.apply_items([item])
+        item.refresh_from_db()
+        self.assertIn("more than one Windows server", item.error)
 
 
 @override_settings(PLUGINS_CONFIG=SECRET_PROFILES)
@@ -215,6 +238,17 @@ class PushRemainingTest(RemainingObjectsMixin, TestCase):
         self.assertEqual(self.target.options[(224, "", "", "", "", "")]["value"], ["a,b"])
         second = self._run()
         self.assertEqual(second.summary["changes"], 0, second.summary.get("planned"))
+
+    def test_a_partner_windows_names_by_its_computer_name_is_not_drift(self):
+        # #57: without the partner's reported names, its computer name reads as another partner, which Windows
+        # cannot change: every push of the relationship would fail.
+        self._run()
+        self.fake.failovers["ha"]["partner_server"] = "DHCP-B"
+        self.assertEqual(self._run(DryRunJob).summary["changes"], 1)
+        WindowsServer.objects.filter(pk=self.partner.pk).update(reported_names=["dhcp-b", "dhcp-b.corp.example"])
+        run = self._run()
+        self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)
+        self.assertEqual(run.summary["changes"], 0, run.summary.get("planned"))
 
     def test_netbox_edits_of_new_kinds_reach_windows(self):
         self._run()

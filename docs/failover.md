@@ -24,9 +24,10 @@ A **Failover relationship** (**Windows DHCP > Failover relationships**) holds:
 "Primary" here is the plugin's word for the partner it writes to. It is not the Windows server role (active or
 standby).
 
-Give both partners a Windows server in NetBox. The partner's host is what the relationship names on Windows (its
-`computer_name` when it is reached through a management host, else its `host`; short and fully qualified names
-match).
+Give both partners a Windows server in NetBox. A partner name on Windows matches a Windows server by its host (its
+`computer_name` when it is reached through a management host, else its `host`), or by one of its **Reported names**,
+the computer and DNS names the server gave on its last connection test, import or push. Short and fully qualified
+names match.
 
 ## Connecting to the servers
 
@@ -108,8 +109,8 @@ While the partner cannot be reached, Windows refuses to remove the relationship 
 NORMAL state"), and so does the push: removing it on one side only would leave the other partner serving the scope
 on its own. Bring the partner back and push again.
 
-!!! tip "Give the Windows servers their names"
+!!! tip "Partners known by IP address"
     Windows names the partner as it was given when the relationship was created on one side, and by its computer
-    name on the other side. A failover partner is found by host name (short and fully qualified names match), so
-    give both Windows servers in NetBox their DNS names rather than IP addresses, or import the primary first as
-    above.
+    name on the other side. That name matches a server NetBox knows by IP address through the server's reported
+    names, so run **Test connection** on both Windows servers before the first import. Two servers reporting the
+    same name match neither: give one of them that name as host.
