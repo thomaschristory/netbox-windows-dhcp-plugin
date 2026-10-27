@@ -43,6 +43,11 @@ imported objects get names built from the server and the scope:
 The Windows **name** of a scope or reservation goes in the sys4 object's **description**, and the Windows
 **description** goes in its **comments**. Edit those fields to rename or describe the object on Windows.
 
+!!! note "Comments in the sys4 edit forms"
+    netbox-plugin-dhcp 0.2.0 shows a **Comments** field in its add and edit forms but does not save it
+    ([sys4/netbox-plugin-dhcp#68](https://github.com/sys4/netbox-plugin-dhcp/issues/68)). Until that is fixed, set
+    comments through the REST API, a CSV import or an import from Windows; the plugin reads and pushes them normally.
+
 ## Scopes (IPv4)
 
 | Windows | NetBox |

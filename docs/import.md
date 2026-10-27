@@ -70,12 +70,16 @@ you chose, or main. The **Destination** column of the sync run list shows it for
 
 ## With netbox-branching: import branches
 
+![The Import menu on a Windows server with netbox-branching: Import into branch, or Import directly into
+main](images/branching-import-menu.webp)
+
 When the import finds differences, it creates a branch named `dhcp-import/<server>/<timestamp>`
 (`import_branch_prefix` changes the first part), provisions it, and writes the differences into it with change
 tracking, so the branch's diff shows every change.
 
 - With netbox-change-control and `import_change_request` on (the default), it also opens a **change request** for
-  the branch and submits it for review.
+  the branch and submits it for review. Change control approves it only through a policy: see
+  [Installation](installation.md#enable-it).
 - If an open import branch for the server already exists, the next import writes into it instead of opening another,
   so it only adds what changed since. A branch is no longer reused once its change request is completed or
   abandoned, or once it is stale (too far behind main to sync).
@@ -105,6 +109,20 @@ Writing into a branch needs a NetBox user: manual imports use the user who click
 setting. Starting an import also needs permission to add a branch, and to add a change request when one will be
 opened (see [Permissions](permissions.md)).
 
+Once the job has finished, the **Import** panel on the server page links the branch, its change request and the sync
+run, and says that main has not changed:
+
+![The Import panel after an import into a branch: 39 differences, the branch, change request CR1 and the sync
+run](images/branching-import-panel.webp)
+
+The branch's **Diff** tab lists every object the import created, changed or deleted. Review it there, then merge it
+(through the change request, with netbox-change-control):
+
+![The diff of an import branch: one row per created object, the failover relationship, options, reservations,
+addresses](images/branching-diff.webp)
+
+![The change request of an import, approved by a reviewer and ready to merge](images/branching-change-request.webp)
+
 ## Without branching: import proposals
 
 The import writes an **import proposal** (**Windows DHCP > Import proposals**) with one **item** per difference
@@ -116,6 +134,9 @@ On a proposal you can:
 - **Apply all** or **Dismiss all** pending items;
 - select items in the list and **Apply selected** or **Dismiss selected**;
 - open one item and **Apply** or **Dismiss** it.
+
+![One proposal item: create reservation 198.18.10.0/198.18.10.20, with what NetBox holds (nothing yet) and what
+Windows holds](images/import-proposal-item.webp)
 
 Proposals and items are written by the import, so they cannot be added or edited by hand; they can be deleted.
 
@@ -163,6 +184,13 @@ hand every day builds up one branch to review rather than one per run.
   relationships, MAC filters, vendor options);
 - the prefixes, IP ranges, IP addresses and MAC addresses sys4 needs, in the server's import VRF. Existing ones are
   reused, so failover partners share one IP range per scope.
+
+![The sys4 subnets after an import, named after the server and the scope](images/import-subnets.webp)
+
+![An imported sys4 subnet: description (the Windows scope name), shared network (the superscope), prefix, valid
+lifetime (the lease duration), the Windows description in the comments, and the Leases tab](images/import-subnet-page.webp)
+
+![Scope settings: the Windows state, type and other settings sys4 has no field for](images/import-windows-scopes.webp)
 
 Text going into a 200-character description field is cut to 200 characters on both sides, so a long Windows name
 does not show as a difference on every run.

@@ -6,6 +6,9 @@ server has at most one. Find them under **Windows DHCP > Windows servers**.
 Windows servers are bookkeeping, not DHCP configuration: with netbox-branching they always live in main and are never
 branched.
 
+![The Windows servers list: dhcp01 and dhcp02 with host, transport, credential profile and sync
+state](images/servers-list.webp)
+
 ## Fields
 
 | Field | Default | Meaning |
@@ -64,7 +67,12 @@ run summary. A dry run works with **Sync enabled** off, so you can check a serve
 
 ## Sync runs
 
-Every test, import, push and dry run leaves a **sync run** (**Windows DHCP > Sync runs**), linked to its NetBox job:
+Every test, import, push and dry run leaves a **sync run** (**Windows DHCP > Sync runs**), linked to its NetBox job.
+The summary on the right holds what the run planned and did:
+
+![A push sync run: kind, status, job, start and end, and its summary with one planned and applied
+change](images/quickstart-6-push.webp)
+
 
 | Field | Meaning |
 |---|---|

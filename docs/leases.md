@@ -10,6 +10,9 @@ NetBox models, and NetBox IP addresses are not updated from them.
 2. Click **Load leases**. A background job connects to Windows and reads the scope's IPv4 or DHCPv6 leases.
 3. The panel refreshes itself every few seconds while the job runs, then shows the result.
 
+![The Leases tab of a subnet: four active leases and the reservation, with client ID, host name, state and
+expiry](images/leases-tab.webp)
+
 | Column | Meaning |
 |---|---|
 | IP address | The leased address |
