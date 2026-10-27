@@ -51,6 +51,9 @@ both. CredSSP hands the password to the DHCP server, so it needs **WinRM over HT
 **SSH with a password** works too: Windows OpenSSH logs a password user on with credentials it can pass on, so the
 failover tests passed over SSH as over CredSSP (lab, Windows Server 2022). SSH key authentication was not tried.
 
+![A new failover relationship: name, primary dhcp01, partner dhcp02, load balance 50 %, a shared secret profile, and
+the subnet it covers](images/failover-form.webp)
+
 ## How it syncs
 
 - **Import** cannot tell which partner should be the primary: the first partner imported becomes it. **Import the
@@ -72,6 +75,12 @@ failover tests passed over SSH as over CredSSP (lab, Windows Server 2022). SSH k
   server.
 
 So edit failover scopes as scopes of the primary server in NetBox; the partner's copies follow through replication.
+
+Saving the relationship queues a push to the primary, which creates it on both servers:
+
+![The push to the primary: the failover relationship created](images/failover-push.webp)
+
+![The failover relationship in NetBox: primary, partner, mode, settings and subnets](images/failover-relationship.webp)
 
 ## Shared secret
 

@@ -68,6 +68,14 @@ belongs to the server (a subnet's DHCP server or shared network).
 
 **A change is in `not_pushed`, or the push failed with a "cannot change on Windows" error.** The reason says why;
 see [what a push will not do](push.md#what-a-push-will-not-do).
+
+**The push failed on one change.** The sync run's **Error** names the change and the cmdlet's message, and the
+summary lists it under `errors`; the other changes were applied. Here Windows refused DNS servers that do not answer
+DNS queries (option 6 is checked by `Set-DhcpServerv4OptionValue`): fix the value in NetBox and the next push sends
+it.
+
+![A failed push: four changes applied, option 6 refused by Windows with "is not a valid DNS
+server"](images/troubleshooting-failed-push.webp)
 The usual ones:
 
 | Reason starts with | What to do |

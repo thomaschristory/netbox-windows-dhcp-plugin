@@ -24,11 +24,59 @@ at. Moving a subnet from one server to another pushes both. Applying import prop
 A push queued while another for the same server is still waiting to start is not queued twice: the waiting one reads
 the latest NetBox data anyway.
 
+With netbox-branching, edit inside a branch, then merge it (after approval, with change control). The merge queues
+the push, and its sync run names the branch:
+
+![A reservation edited inside branch rename-nas: the branch selector shows the active branch](images/branching-edit-in-branch.webp)
+
+![Merging the branch: one pending change, commit ticked](images/branching-merge.webp)
+
+![The push the merge queued: branch rename-nas, one change applied](images/branching-push-after-merge.webp)
+
 ## Dry run
 
 **Dry run** on the Windows server page plans a push without writing anything. Its sync run summary lists the
 planned changes (`planned`, with the Windows key and values of each) and the refused ones (`not_pushed`, with the
 reason). It works with sync disabled, so it is the way to check a server before turning sync on.
+
+## Example: a new scope from NetBox
+
+A Windows scope is a sys4 subnet with a pool, as [How objects map](mapping.md#scopes-ipv4) describes. To add one to
+`dhcp01`:
+
+1. **IPAM**: the prefix (`198.18.40.0/24`) and the IP range of the pool (`198.18.40.100` to `198.18.40.200`) exist.
+2. **DHCP > Subnets > Add**: name, DHCP server, prefix. The **description** becomes the Windows scope name, the
+   **comments** its description, and the **valid lifetime** its lease duration.
+
+    ![A new sys4 subnet for dhcp01: name, description VLAN40-Office, DHCP server, prefix](images/scope-1-subnet-form.webp)
+
+3. **Add Object > Pool** on the subnet, with the IP range: the scope's start and end.
+
+    ![A new pool on the subnet, with the IP range 198.18.40.100-200](images/scope-2-pool-form.webp)
+
+4. **Add Object > Option** for scope options, for example the router (option 3).
+
+    ![A new option on the subnet: dhcp4 routers (3), value 198.18.40.1](images/scope-3-option-form.webp)
+
+5. **Add Object > Host Reservation** for reservations: the IP address and MAC address objects, and the
+   **description**, which becomes the Windows reservation name.
+
+    ![A new host reservation: hardware address, IPv4 address 198.18.40.20, description printer01](images/scope-4-reservation-form.webp)
+
+6. **Windows DHCP > Exclusion ranges > Add** for what Windows should not hand out.
+
+    ![A new exclusion range in the subnet: 198.18.40.150 to 198.18.40.159](images/scope-5-exclusion-form.webp)
+
+7. **Dry run** on the Windows server shows what the push will create; then **Sync now** (or, with sync enabled, just
+   wait: each save queues a push).
+
+    ![The dry run: the scope, the exclusion range, the reservation and two options to create](images/scope-6-dry-run.webp)
+
+    Windows checks some values when they arrive: here it refused DNS servers that do not answer DNS (option 6), the
+    push applied the other four changes and named the refused one (see
+    [Troubleshooting](troubleshooting.md#push)). With the option corrected in NetBox, the next push sent it:
+
+    ![The push after correcting option 6: completed, one change applied](images/scope-7-push.webp)
 
 ## Order
 

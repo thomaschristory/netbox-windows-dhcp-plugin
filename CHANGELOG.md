@@ -96,6 +96,9 @@ Documentation
 - A documentation site (https://thomaschristory.github.io/netbox-windows-dhcp-plugin/): installation, preparing
   Windows, configuration, a first-sync walkthrough, how objects map, import, push, DHCPv6, failover, leases,
   permissions, REST API and GraphQL, security, workers and jobs, troubleshooting and limitations.
+- Screenshots from a lab run on real Windows servers: the first-sync walkthrough step by step, import proposals and
+  import branches with change requests, a new scope built in NetBox and pushed, a failover relationship, the Leases
+  tab and a failed push.
 - `SECURITY.md`: report vulnerabilities through GitHub's private vulnerability reporting.
 
 Development

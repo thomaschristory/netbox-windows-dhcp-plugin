@@ -11,6 +11,8 @@ Use a lab server the first time. The import only writes to NetBox, but the push 
 **DHCP > DHCP Servers > Add**. The name matters: imported subnets and reservations are named after it
 (`dhcp01/10.1.0.0`, `dhcp01/10.1.0.0/10.1.0.20`), so pick a short, stable one.
 
+![The netbox-plugin-dhcp form for a new DHCP server, with name dhcp01](images/quickstart-1-dhcp-server.webp)
+
 ## 2. Add the Windows server
 
 **Windows DHCP > Windows servers > Add**:
@@ -29,11 +31,23 @@ Use a lab server the first time. The import only writes to NetBox, but the push 
 
 See [Windows servers](servers.md) for every field.
 
+![The Windows server form: DHCP server dhcp01, host dhcp01.example.com, WinRM, credential profile, CredSSP over
+HTTP](images/quickstart-2-windows-server-form.webp)
+
+The screenshots on this page come from a lab: WinRM over HTTP with CredSSP, which a lab profile allows with
+`allow_insecure_credssp`. Use HTTPS in production.
+
 ## 3. Test the connection
 
 Open the Windows server and click **Test connection**. It queues a job; the **Sync runs** table at the bottom of the
 page shows the result after a few seconds. A completed run says how many IPv4 scopes the server holds. A failed run
 says why; see [Troubleshooting](troubleshooting.md#connection) for the usual causes.
+
+![The Windows server page after a connection test: connection and authentication panels, the reported names, and a
+completed connection test in the sync runs](images/quickstart-3-server-page.webp)
+
+**Reported names** are the names and addresses the server gave for itself. Failover partners are matched on them
+(see [Failover](failover.md#the-model)).
 
 ## 4. Import
 
@@ -49,6 +63,9 @@ Click **Import now** (with netbox-branching: **Import > Import into branch**).
 The sync run of the import gives the number of differences and notes on anything left out (for example DHCPv6
 vendor classes, which the plugin does not sync).
 
+![An import proposal with one pending item per class, option definition, scope, exclusion range, reservation, policy
+and option value](images/quickstart-4-import-proposal.webp)
+
 You now have netbox-plugin-dhcp subnets, pools, reservations and options for every scope, plus the
 [Windows settings](mapping.md) that sys4 cannot hold.
 
@@ -57,6 +74,8 @@ You now have netbox-plugin-dhcp subnets, pools, reservations and options for eve
 Click **Dry run** on the Windows server. Right after an import nothing should be planned: the sync run summary shows
 `changes: 0`. An import and a push must agree; if the dry run plans changes, read its `planned` and `not_pushed` lists
 and see [Troubleshooting](troubleshooting.md#a-dry-run-right-after-an-import-plans-changes).
+
+![The sync run of a dry run right after the import: changes 0](images/quickstart-5-dry-run.webp)
 
 ## 6. Turn on sync and change something
 
@@ -67,7 +86,11 @@ reservation (its Windows name):
   the reservation on Windows.
 - **With branching**, make the change in a branch and merge it. The merge queues the push.
 
-The push's sync run lists what it applied. Check on Windows:
+The push's sync run lists what it applied, with the values before and after:
+
+![The sync run of the push: one reservation updated, its Windows name from fileserver to nas01](images/quickstart-6-push.webp)
+
+Check on Windows:
 
 ```powershell
 Get-DhcpServerv4Reservation -ScopeId 10.1.0.0
