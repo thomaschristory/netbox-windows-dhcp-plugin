@@ -53,6 +53,7 @@ nav:
       - Import from Windows: import.md
       - Push to Windows: push.md
       - Reservations: reservations.md
+      - Reservations through the API: reservations-api.md
       - DHCPv6: dhcpv6.md
       - Failover: failover.md
       - Leases: leases.md

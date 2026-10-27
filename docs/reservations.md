@@ -3,7 +3,8 @@
 A DHCP reservation gives one client, known by its MAC address, the same IPv4 address every time. In NetBox it is a
 netbox-plugin-dhcp **Host reservation** in the subnet of a Windows scope; the plugin pushes it to the Windows
 server and keeps the two in step. This page walks through creating one, changing it, giving it options and deleting
-it, with what Windows shows after each push.
+it, with what Windows shows after each push. To do the same from a script, see
+[Reservations through the API](reservations-api.md).
 
 The screenshots come from a lab: NetBox without branching, two Windows Server 2025 DHCP servers known to NetBox as
 `dhcp01.example.com` and `dhcp02.example.com`, with **Sync enabled** on both, so every save queues a push. With
