@@ -21,7 +21,7 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
      definitions (v6 custom definitions, vendor classes and values, and exclusions are skipped, logged and kept);
      IAID on `WindowsReservation`; live leases on a Leases tab of the subnet page through a job and an HTMX panel,
      without a cache model.
-6. **In progress.** Lab acceptance tests against a real Windows server, then the first release.
+6. **Done (0.1.0, 2026-10-27).** Lab acceptance tests against real Windows servers, then the first release.
    - **Built:** the opt-in lab tier. `make test-lab` (`tests/lab/`) runs the real client over WinRM with one round
      trip test per `# unverified:` marker and known question; `make lab-e2e` (`dev/scripts/lab_e2e.py`) imports the
      lab server into the dev stack, pushes creates, updates and deletes back for every kind, checks that a second
