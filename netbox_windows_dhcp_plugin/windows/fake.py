@@ -167,8 +167,8 @@ class FakeDhcpServer:
         # did for a description change sent with the client ID and type (issue #42). Tests use it to check the push
         # puts the values back.
         self.reservation_set_drops_options = False
-        # What server.names reports: the computer name, then the DNS name.
-        self.server_names: list[str] = ["fake", "fake.example.test"]
+        # What server.names reports: the computer name, the DNS name, then the addresses.
+        self.server_names: list[str] = ["fake", "fake.example.test", "192.0.2.53"]
 
     # -- Runner ----------------------------------------------------------------
 

@@ -132,8 +132,8 @@ def test_server_names(pw: PwshRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     # The computer name, then what DNS resolves it to; a name that does not resolve leaves only the computer name.
     monkeypatch.setenv("COMPUTERNAME", "WD-NO-SUCH-HOST.invalid")
     assert DhcpClient(pw).get_server_names() == ["wd-no-such-host.invalid"]
-    # Through -ComputerName, the other server's name is resolved, never this host's own.
-    assert DhcpClient(pw, computer_name="localhost").get_server_names() == ["localhost"]
+    # Through -ComputerName, only the other server's name is resolved, never this host's own: nothing here.
+    assert DhcpClient(pw, computer_name="wd-other-host.invalid").get_server_names() == []
 
 
 def test_scope(pw: PwshRunner) -> None:

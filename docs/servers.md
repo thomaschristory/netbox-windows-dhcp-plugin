@@ -40,7 +40,7 @@ permission on the Windows server (see [Permissions](permissions.md)).
 ### Test connection
 
 Connects, checks that the `DhcpServer` PowerShell module is there, and counts the IPv4 scopes. Use it after every
-change to the connection settings. It also records the DHCP server's computer and DNS names (**Reported names**),
+change to the connection settings. It also records the DHCP server's computer name, DNS name and addresses (**Reported names**),
 which imports and pushes record too: its failover partners use them to match it, see
 [Failover](failover.md#how-it-syncs).
 

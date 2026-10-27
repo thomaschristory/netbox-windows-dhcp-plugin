@@ -26,7 +26,8 @@ standby).
 
 Give both partners a Windows server in NetBox. A partner name on Windows matches a Windows server by its host (its
 `computer_name` when it is reached through a management host, else its `host`), or by one of its **Reported names**,
-the computer and DNS names the server gave on its last connection test, import or push. Short and fully qualified
+the computer name, DNS name and addresses the server gave on its last connection test, import or push (changing
+the host or computer name clears them). Short and fully qualified
 names match.
 
 ## Connecting to the servers
@@ -111,6 +112,7 @@ on its own. Bring the partner back and push again.
 
 !!! tip "Partners known by IP address"
     Windows names the partner as it was given when the relationship was created on one side, and by its computer
-    name on the other side. That name matches a server NetBox knows by IP address through the server's reported
-    names, so run **Test connection** on both Windows servers before the first import. Two servers reporting the
+    name on the other side. Through the servers' reported names, a computer name matches a server NetBox knows by IP
+    address, and an address matches one it knows by name, so run **Test connection** on both Windows servers before
+    the first import. Two servers reporting the
     same name match neither: give one of them that name as host.

@@ -49,7 +49,7 @@ def test_fake_is_a_runner(fake: FakeDhcpServer) -> None:
 
 
 def test_server_names(c: DhcpClient, fake: FakeDhcpServer) -> None:
-    assert c.get_server_names() == ["fake", "fake.example.test"]
+    assert c.get_server_names() == ["fake", "fake.example.test", "192.0.2.53"]
     fake.server_names = ["DHCP2"]
     assert c.get_server_names() == ["dhcp2"]
 

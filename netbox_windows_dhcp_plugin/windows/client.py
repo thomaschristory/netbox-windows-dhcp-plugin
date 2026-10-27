@@ -377,8 +377,10 @@ function Add-WdScopeExtras($a) {
 
 S_AVAILABLE = Script("dhcp.available", "$out = $true")
 
-# The names the DHCP server goes by, to match failover partners (#57): Windows names a partner by its computer name on
-# one side of a relationship. With -ComputerName the cmdlets run on another server, so that name is resolved instead.
+# The names and addresses the DHCP server goes by, to match failover partners (#57): Windows names a partner as it was
+# given (a name or an address) on one side of a relationship, and by its computer name on the other. With
+# -ComputerName the cmdlets run on another server, so that name is resolved instead. Loopback and link-local
+# addresses are left out: every server has them.
 # A workgroup server reports its computer name, which its partner uses (lab, Windows Server 2025).
 # unverified: through -ComputerName, and the fully qualified name on a domain member.
 S_SERVER_NAMES = Script(
@@ -388,6 +390,12 @@ $names = @()
 $target = $p.computer_name
 if (-not $target) { $target = $env:COMPUTERNAME; $names += $target }
 try { $names += [System.Net.Dns]::GetHostEntry($target).HostName } catch { }
+try {
+    $names += [System.Net.Dns]::GetHostAddresses($target) |
+        Where-Object { -not [System.Net.IPAddress]::IsLoopback($_) -and -not $_.IsIPv6LinkLocal -and
+            -not "$_".StartsWith('169.254.') } |
+        ForEach-Object { "$_" }
+} catch { }
 $out = @($names | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() } | Select-Object -Unique)
 """,
 )
@@ -1642,7 +1650,7 @@ class DhcpClient:
         self._do(S_AVAILABLE)
 
     def get_server_names(self) -> list[str]:
-        """The DHCP server's computer name and DNS name, lowercase (no trailing dot): what a partner calls it."""
+        """The DHCP server's computer name, DNS name and addresses, lowercase: what a failover partner calls it."""
         present, data = self._run(S_SERVER_NAMES)
         if not present:
             return []
