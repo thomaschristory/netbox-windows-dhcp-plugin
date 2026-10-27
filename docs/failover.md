@@ -51,8 +51,129 @@ both. CredSSP hands the password to the DHCP server, so it needs **WinRM over HT
 **SSH with a password** works too: Windows OpenSSH logs a password user on with credentials it can pass on, so the
 failover tests passed over SSH as over CredSSP (lab, Windows Server 2022). SSH key authentication was not tried.
 
-![A new failover relationship: name, primary dhcp01, partner dhcp02, load balance 50 %, a shared secret profile, and
-the subnet it covers](images/failover-form.webp)
+## A working failover, step by step
+
+This walkthrough pairs two servers in load balance mode and shows the result on both. It was run on a lab: NetBox
+without branching, two Windows Server 2025 DHCP servers in a workgroup (computer names `DHCP01` and `DHCP02`),
+known to NetBox as `dhcp01.example.com` and `dhcp02.example.com`, WinRM with CredSSP, sync enabled on both. The
+reservation page follows the same lab: [Reservations](reservations.md).
+
+### 1. Prepare
+
+- Both servers have a Windows server in NetBox with **WinRM authentication: CredSSP** (or SSH with a password), and
+  **Test connection** completes on both. The test also records each server's reported names, which the plugin
+  uses to recognise the partner later.
+- The primary DHCP server resolves the partner's host as NetBox holds it. Here both servers' hosts files map
+  `dhcp01.example.com` and `dhcp02.example.com`; in a domain, DNS does it.
+- The scopes to share exist on the primary and are pushed: here `198.18.60.0/24` with the reservation `printer01`.
+  The partner does not need them; Windows copies them there when the relationship is created.
+- For message authentication, a credential profile holds the shared secret and its `allowed_hosts` cover both
+  partners (here `lab-failover`, see [Shared secret](#shared-secret)).
+
+### 2. Create the relationship in NetBox
+
+**Windows DHCP > Failover relationships > Add**: a name, the primary server (the one NetBox writes to), the partner,
+the mode and its settings.
+
+![A new failover relationship: name dhcp01-dhcp02, primary dhcp01, partner dhcp02, load balance, MCLT 3600,
+load balance 50 %, state switchover interval 3600](images/failover-form.webp)
+
+Further down, the shared secret profile and the subnets the relationship covers:
+
+![The rest of the form: shared secret profile lab-failover and the subnet dhcp01/198.18.60.0](images/failover-form-scopes.webp)
+
+### 3. The push
+
+Saving queues a push to the primary, which creates the relationship on Windows with its scope. Windows sets it up
+on the partner itself:
+
+![The push to dhcp01: one failover relationship created, partner dhcp02.example.com, load balance 50 %, scope
+198.18.60.0, authentication on](images/failover-push.webp)
+
+A push also runs for the partner, since the relationship touches it. It changes nothing there and says why:
+`skipped 1 failover relationship(s) whose primary is another server: they are synced from that server`.
+
+![The failover relationship in NetBox: primary dhcp01, partner dhcp02, load balance, settings, shared secret profile
+and subnet](images/failover-relationship.webp)
+
+### 4. Check on Windows
+
+On the primary, the scope's **Properties > Failover** tab names the relationship and the partner, and both servers
+are in state Normal:
+
+![Scope 198.18.60.0 properties on DHCP01, Failover tab: relationship dhcp01-dhcp02, partner dhcp02.example.com, load
+balance, states Normal and Normal, 50 % each](images/failover-windows-dhcp01-scope.webp)
+
+On the partner, the same scope now exists, with the same tab. The partner names the primary by its computer name,
+`DHCP01`, which is why the plugin matches partners on reported names (see the tip at the end of this page):
+
+![Scope 198.18.60.0 properties on DHCP02, Failover tab: relationship dhcp01-dhcp02, partner DHCP01, states Normal
+and Normal](images/failover-windows-dhcp02-scope.webp)
+
+![IPv4 properties on DHCP02, Failover tab: the relationship dhcp01-dhcp02, state Normal, partner DHCP01, load
+balance](images/failover-windows-dhcp02-ipv4.webp)
+
+The same in PowerShell, on each server:
+
+```text
+PS> Get-DhcpServerv4Failover | Format-List        # on DHCP01
+
+Name                : dhcp01-dhcp02
+PartnerServer       : dhcp02.example.com
+Mode                : LoadBalance
+LoadBalancePercent  : 50
+ServerRole          :
+ReservePercent      :
+MaxClientLeadTime   : 01:00:00
+StateSwitchInterval : 01:00:00
+State               : Normal
+ScopeId             : 198.18.60.0
+AutoStateTransition : True
+EnableAuth          : True
+```
+
+```text
+PS> Get-DhcpServerv4Failover | Format-List        # on DHCP02
+
+Name                : dhcp01-dhcp02
+PartnerServer       : DHCP01
+Mode                : LoadBalance
+LoadBalancePercent  : 50
+ServerRole          :
+ReservePercent      :
+MaxClientLeadTime   : 01:00:00
+StateSwitchInterval : 01:00:00
+State               : Normal
+ScopeId             : 198.18.60.0
+AutoStateTransition : True
+EnableAuth          : True
+```
+
+### 5. Changes replicate
+
+From now on, edit the scope on the primary in NetBox. A new reservation, `scanner01` at `198.18.60.22`, saved on the
+subnet `dhcp01/198.18.60.0`, was pushed to DHCP01 and the scope replicated to DHCP02 in the same job:
+
+![The push job log: Replicated 1 scope(s) to the partner of dhcp01-dhcp02; Push to dhcp01.example.com: changed 1
+object(s)](images/failover-replication-log.webp)
+
+DHCP02 has both reservations without NetBox writing to it:
+
+![The Windows DHCP console on DHCP02: Scope 198.18.60.0 VLAN60-Office, reservations printer01 and
+scanner01](images/failover-windows-dhcp02-reservations.webp)
+
+```text
+PS> Get-DhcpServerv4Reservation -ScopeId 198.18.60.0 | Select-Object IPAddress,ClientId,Name,Type   # on DHCP02
+
+IPAddress    ClientId          Name      Type
+---------    --------          ----      ----
+198.18.60.20 02-4e-42-60-00-20 printer01 Dhcp
+198.18.60.22 02-4e-42-60-00-22 scanner01 Both
+```
+
+Replication copies the whole scope, reservation option values included (`printer01` keeps option 15 on DHCP02).
+If a replication fails, the push is marked failed and the next push to the primary tries again (see
+[How it syncs](#how-it-syncs)).
 
 ## How it syncs
 
@@ -75,12 +196,6 @@ the subnet it covers](images/failover-form.webp)
   server.
 
 So edit failover scopes as scopes of the primary server in NetBox; the partner's copies follow through replication.
-
-Saving the relationship queues a push to the primary, which creates it on both servers:
-
-![The push to the primary: the failover relationship created](images/failover-push.webp)
-
-![The failover relationship in NetBox: primary, partner, mode, settings and subnets](images/failover-relationship.webp)
 
 ## Shared secret
 
