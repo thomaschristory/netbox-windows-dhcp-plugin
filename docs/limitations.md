@@ -4,17 +4,20 @@
 
 Every feature is tested against an in-memory fake Windows server and against the real PowerShell scripts run with
 stub cmdlets. The lab tests (see [Development](development.md#lab-tests)) have also run in full against two Windows
-Server 2025 DHCP servers in a workgroup, over WinRM: every cmdlet the plugin uses, a full import, push of creates,
-updates and deletes, the Leases tab, and a failover relationship created, replicated and removed through a push
-(over CredSSP, see [Failover](failover.md#connecting-to-the-servers)). What they found is fixed.
+Server 2022 DHCP servers in a workgroup: every cmdlet the plugin uses, a full import, push of creates, updates and
+deletes, the Leases tab, and a failover relationship created, replicated and removed through a push (see
+[Failover](failover.md#connecting-to-the-servers)). Testers of the release candidates ran Windows Server 2025. What
+they found is fixed.
 
-A few details have not been seen on a real server yet, and are marked `# unverified:` in the code:
+Connections checked on a real server: WinRM over HTTP with NTLM and CredSSP, WinRM over HTTPS with certificate
+verification and NTLM, CredSSP or Basic, and SSH with a password (failover included over CredSSP and SSH).
 
-- whether changing only a reservation's client type (IPv4) or DUID (DHCPv6) drops its option values, as a new client
-  ID or IAID does (#42). Either way the push puts back any reservation option value an update removed;
-- whether `Set-DhcpServerv4Policy` leaves conditions it is not given unchanged (a push sends every condition the
-  policy has in NetBox);
-- Kerberos, Basic and SSH connections, and HTTPS listeners: the lab used NTLM and CredSSP over HTTP.
+Not seen on a real server yet:
+
+- **Kerberos**: the lab is a workgroup, without a domain;
+- **SSH key authentication**;
+- running the cmdlets on another server through **`computer_name`** (`-ComputerName`), and the fully qualified name
+  a domain member reports for itself.
 
 Try the plugin on a lab server before a production one, and use **Dry run** before turning **Sync enabled** on.
 

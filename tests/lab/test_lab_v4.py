@@ -166,6 +166,41 @@ def test_reservation_update_keeps_its_option_values(lab: Lab, probe_out) -> None
     assert lab.client.get_option_value(k).value == ["host.example"]
 
 
+def test_reservation_type_change_alone(lab: Lab, probe_out) -> None:
+    """fake.py (#56): whether a new reservation type, with the same client ID, drops the reservation's option values."""
+    s = lab.scope("nbwd-test-res56")
+    base = s.scope_id.rsplit(".", 1)[0]
+    r = lab.client.add_reservation(
+        wc.Reservation(s.scope_id, f"{base}.20", MAC_PREFIX + "00-00-56", "nbwd-test-host56", "lab", "Dhcp")
+    )
+    k = wc.OptionKey(15, s.scope_id, reserved_ip=r.ip_address)
+    lab.client.set_option_value(k, ["host.example"])
+    r.type = "Both"
+    assert lab.client.set_reservation(r).type == "Both"
+    left = lab.client.list_option_values(scope_id=s.scope_id, reserved_ip=r.ip_address, all=True)
+    save_probe(probe_out, "v4-reservation-type-change-options", [x.to_dict() for x in left])
+    # Dropped, as for a new client ID (lab, Windows Server 2022); the push writer puts them back.
+    assert left == []
+
+
+def test_policy_set_without_criteria(lab: Lab, probe_out) -> None:
+    """client.py (#56): whether Set-DhcpServerv4Policy leaves the conditions it is not given unchanged."""
+    s = lab.scope("nbwd-test-polset")
+    criteria = {"mac_address": ["EQ", "02-4e-42-ad*"], "fqdn": ["EQ", "*.example.test"]}
+    p = lab.policy(wc.Policy(name="nbwd-test-polset", scope_id=s.scope_id, condition="AND", criteria=criteria))
+    lab.raw(
+        "probe.polset",
+        "Set-DhcpServerv4Policy -Name $p.n -ScopeId $p.s -Description 'changed'; $out = $true",
+        {"n": p.name, "s": s.scope_id},
+    )
+    after = lab.client.get_policy(p.name, s.scope_id)
+    save_probe(probe_out, "v4-policy-set-without-criteria", after.to_dict())
+    # Left as they were (lab, Windows Server 2022).
+    assert after.description == "changed"
+    assert after.criteria == {"mac_address": ["EQ", "02-4e-42-ad-*"], "fqdn": ["EQ", "*.example.test"]}
+    assert after.condition == "AND"
+
+
 def test_classes_and_class_data(lab: Lab, probe_out) -> None:
     """client.py: whether the ASCII class data is in .AsciiData or .Data."""
     u = lab.user_class("nbwd-test-user", "nbwd-user-data", "lab user class")

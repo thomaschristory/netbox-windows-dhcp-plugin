@@ -121,7 +121,8 @@ def test_command_encoding() -> None:
 
 def test_bootstrap_matches_go() -> None:
     assert '-join "`n"' in BOOTSTRAP
-    assert "[Console]::In.ReadToEnd()" in BOOTSTRAP
+    # One line, not to the end: Windows OpenSSH sometimes loses the end of stdin (#56).
+    assert "[Console]::In.ReadLine()" in BOOTSTRAP
 
 
 def test_decode_output() -> None:

@@ -253,7 +253,7 @@ def test_failover() -> None:
 
 
 def test_failover_load_balance_from_windows() -> None:
-    # Scrubbed from a lab run on Windows Server 2025: in load balance mode ServerRole and ReservePercent are null,
+    # Scrubbed from a lab run on Windows Server 2022: in load balance mode ServerRole and ReservePercent are null,
     # and StateSwitchInterval is null when automatic switching is off.
     c, _ = new_client("failover_get_loadbalance.json")
     f = c.get_failover("dhcp01-dhcp02")
@@ -263,7 +263,7 @@ def test_failover_load_balance_from_windows() -> None:
 
 def test_failover_force_only_where_safe() -> None:
     # Add and Set ask for confirmation without -Force, which fails over WinRM. The removes do not ask in the Normal
-    # state, and with the partner unreachable -Force would remove on this server only (lab, Windows Server 2025).
+    # state, and with the partner unreachable -Force would remove on this server only (lab, Windows Server 2022).
     def line(script):
         return next(x for x in script.body.splitlines() if "-DhcpServerv4Failover" in x and "Get-" not in x)
 

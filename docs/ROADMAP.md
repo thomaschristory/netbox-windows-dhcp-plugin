@@ -48,14 +48,18 @@ button is a menu of import branch, the branch you work in, or main (confirmed, p
      shows each scope's prefix in its own column. #44: the Import panel no longer calls a merged or deleted branch
      open; it says what became of it, reading a deleted branch's last status from the change log, and says "not
      known" rather than "merged" when there is no record.
-   - **Full lab run (2026-10-26):** two Windows Server 2025 DHCP servers in a workgroup, WinRM over HTTP. `make
+   - **Full lab run (2026-10-26):** two Windows Server 2022 DHCP servers in a workgroup, WinRM over HTTP. `make
      test-lab` (now with failover tests against a second server) and `make lab-e2e` (now with a failover phase: a
      relationship made in NetBox, pushed, replicated and deleted) pass. Findings fixed: failover writes asked for a
      confirmation (every failover write now sends `-Force`), and failover writes need CredSSP (new WinRM
      authentication choice; NTLM gets `PermissionDenied` on the double hop). The fake now keeps an empty
-     relationship when its last scope leaves, as Windows does. Every other marker is settled; three details stay
-     unverified (client type or DUID changes alone, policy Set without conditions; Kerberos, Basic, SSH and HTTPS
-     were not in the lab).
+     relationship when its last scope leaves, as Windows does. Every other marker is settled.
+   - **Lab follow-ups (#56, #57, #58):** a client type or DUID change alone drops a reservation's option values (as
+     the fake assumed); policy Set leaves conditions it is not given. WinRM over HTTPS with verification (NTLM,
+     CredSSP, Basic) and SSH with a password pass the lab tests, failover included over SSH. SSH runs hung now and
+     then (Windows OpenSSH loses the end of stdin): the script loader reads one line. Failover partners match on the
+     names and addresses each server reports for itself (#57). A scope gone mid-read is named in the notes (#58).
+     Still not tried: Kerberos (no domain in the lab), SSH keys, `-ComputerName`.
    - **Release prep:** README, DESIGN section 12 and CHANGELOG made ready for 0.1.0. A documentation site (Zensical,
      `make docs`, published to GitHub Pages from release tags) with installation, Windows preparation, configuration,
      a first-sync walkthrough, import, push, DHCPv6, failover, leases, permissions, API, security, workers,

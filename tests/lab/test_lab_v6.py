@@ -190,6 +190,21 @@ def test_v6_reservation_update_keeps_its_option_values(lab: Lab, probe_out) -> N
     assert lab.client.get_v6_option_value(k).value == ["host.example"]
 
 
+def test_v6_reservation_duid_change_alone(lab: Lab, probe_out) -> None:
+    """fake.py (#56): whether a new DUID, with the same IAID, drops the reservation's option values."""
+    lab.v6_scope("nbwd-test-v6res56")
+    ip = "2001:db8:4e42::56"
+    r = lab.client.add_v6_reservation(wc.ReservationV6(V6_PREFIX, ip, DUID, 7, "nbwd-test-v6host56", "lab"))
+    k = wc.OptionKeyV6(24, prefix=V6_PREFIX, reserved_ip=ip)
+    lab.client.set_v6_option_value(k, ["host.example"])
+    r.client_duid = DUID[:-2] + "56"
+    assert lab.client.set_v6_reservation(r).client_duid.lower() == r.client_duid.lower()
+    left = lab.client.list_v6_option_values(prefix=V6_PREFIX, reserved_ip=ip, all=True)
+    save_probe(probe_out, "v6-reservation-duid-change-options", [x.to_dict() for x in left])
+    # Dropped, as for a new IAID (lab, Windows Server 2022); the push writer puts them back.
+    assert left == []
+
+
 def test_v6_scope_refuses_timers_out_of_order(lab: Lab, probe_out) -> None:
     """fake.py: Windows refuses T1 < T2 < preferred lifetime not holding, rather than storing the timers."""
     lab.v6_scope("nbwd-test-v6timers")

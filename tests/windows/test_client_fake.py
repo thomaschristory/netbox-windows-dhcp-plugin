@@ -280,7 +280,7 @@ def test_failover(c: DhcpClient, fake: FakeDhcpServer) -> None:
     assert c.remove_failover_scopes("fo", ["10.1.20.0"]).scope_ids == ["10.1.30.0"]
     with pytest.raises(PSError, match="not part"):
         c.remove_failover_scopes("fo", ["10.1.20.0"])
-    # The last scope can leave too: Windows keeps the relationship, empty, on both partners (lab, Windows Server 2025).
+    # The last scope can leave too: Windows keeps the relationship, empty, on both partners (lab, Windows Server 2022).
     assert c.remove_failover_scopes("fo", ["10.1.30.0"]).scope_ids == []
     c.add_failover_scopes("fo", ["10.1.30.0"])
     c.replicate_failover("fo")

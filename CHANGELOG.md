@@ -13,7 +13,7 @@ fixes below from testing rc1 and a first partial lab run (the ones before "Found
 lab tests pass.
 
 First release. Every v1 feature is in place and tested against the fake server and PowerShell stubs. The lab tests
-against real Windows servers (`make test-lab`, `make lab-e2e`) ran in full on two Windows Server 2025 DHCP servers,
+against real Windows servers (`make test-lab`, `make lab-e2e`) ran in full on two Windows Server 2022 DHCP servers,
 failover included; what they found is listed under Fixed, and the few details they could not reach are listed in
 the documentation's limitations page.
 
@@ -210,7 +210,11 @@ Found by testing 0.1.0rc4:
   the partner no longer stays behind until the next change. The push's sync run lists the scopes still to replicate.
   A scope that is not yet in the relationship on Windows waits for a later push instead of blocking the others.
 
-Found by the full lab run (two Windows Server 2025 servers):
+Found by the full lab run (two Windows Server 2022 servers; earlier notes said 2025, which is what the rc testers
+ran):
+- Over SSH, about one PowerShell run in fifteen hung until the timeout: Windows OpenSSH sometimes loses the end of
+  stdin, and the script loader read stdin to its end. It now reads the one line the script is sent as. Each hung
+  run also kept its SSH session open, so after a few the server refused new ones (#56).
 - Failover relationships could not be created over WinRM: `Add-DhcpServerv4Failover` asked for a confirmation nobody
   can answer ("PowerShell is in NonInteractive mode"). Add, Set and replication now send `-Force`. The removes never
   do: they do not ask while the relationship is healthy, and with the partner unreachable `-Force` would remove the

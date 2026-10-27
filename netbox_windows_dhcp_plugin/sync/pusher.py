@@ -158,7 +158,7 @@ def _replicate(windows_server, client, applied, logger):
             continue
         try:
             # Replication of the listed scopes copies their exclusions, reservations and options (lab, Windows Server
-            # 2025).
+            # 2022).
             client.replicate_failover(name=relationship.name, scope_ids=ready)
         except (WindowsLayerError, ValueError) as exc:
             errors.append(f"failover replication {relationship.name}: {exc}")

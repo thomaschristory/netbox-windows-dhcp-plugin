@@ -105,7 +105,10 @@ changing it: `make restart` does not reload it, nor install new dependencies) or
 | `WINDOWS_DHCP_LAB_PARTNER` | Optional: a second server, as the first reaches it; runs the failover tests (with `credssp`) |
 | `WINDOWS_DHCP_LAB_FAILOVER_SECRET` | Optional shared secret for the test relationship |
 | `WINDOWS_DHCP_LAB_REALM` | Optional, Kerberos realm |
-| `WINDOWS_DHCP_LAB_INSECURE` | `1` skips the certificate check (self-signed lab certificate) |
+| `WINDOWS_DHCP_LAB_INSECURE` | `1` skips the certificate check (self-signed lab certificate); or keep the check and point `REQUESTS_CA_BUNDLE` at the certificate |
+| `WINDOWS_DHCP_LAB_TRANSPORT` | Optional: `winrm` (default) or `ssh` (OpenSSH Server on the lab server, password authentication) |
+| `WINDOWS_DHCP_LAB_SSH_HOST_KEY` | Optional with `ssh`: the server's host key (`ssh-ed25519 AAAA...`), else `~/.ssh/known_hosts` |
+| `WINDOWS_DHCP_LAB_PARTNER_SSH_HOST_KEY` | Optional with `ssh`: the same for the failover partner |
 | `WINDOWS_DHCP_LAB_RECORD` | `1` saves every raw PowerShell answer under `.lab/record/`, to turn into fixtures after scrubbing |
 
 Then:

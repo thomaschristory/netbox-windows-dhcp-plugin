@@ -332,7 +332,7 @@ def test_values_ending_in_a_backslash_are_not_stored():
 @pytest.mark.parametrize("value", ["10675199.02:48:05", ""])
 def test_unlimited_lease_records_no_lease_time(value):
     # An unlimited lease reads back as TimeSpan.MaxValue, printed by client.py as 10675199.02:48:05 (lab, Windows
-    # Server 2025): too long for parse_duration, so no lease time, and a push keeps the scope's own.
+    # Server 2022): too long for parse_duration, so no lease time, and a push keeps the scope's own.
     assert ws._lease_seconds(value) is None
     assert ws._lease_seconds("8.00:00:00") == 8 * 86400
 

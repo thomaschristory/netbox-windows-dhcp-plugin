@@ -4,6 +4,7 @@ Needs, on top of the usual lab variables (see conftest.py):
 
     WINDOWS_DHCP_LAB_PARTNER          the second server, as the first one reaches it (name or address)
     WINDOWS_DHCP_LAB_FAILOVER_SECRET  optional shared secret for the test relationship
+    WINDOWS_DHCP_LAB_PARTNER_SSH_HOST_KEY  with WINDOWS_DHCP_LAB_TRANSPORT=ssh, the partner's host key
     WINDOWS_DHCP_LAB_AUTH=credssp     failover cmdlets make the first server call its partner as us, which needs
                                       our credentials there (CredSSP); NTLM gets PermissionDenied
 
@@ -38,7 +39,9 @@ pytestmark = pytest.mark.skipif(
 @pytest.fixture(scope="module")
 def partner(lab_session: Lab) -> Iterator[Lab]:
     """The second server, read only apart from the sweep of what a failed run left there."""
-    client = wc.DhcpClient(make_runner(dict(ENV, WINDOWS_DHCP_LAB_HOST=PARTNER)))
+    env = dict(ENV, WINDOWS_DHCP_LAB_HOST=PARTNER)
+    env["WINDOWS_DHCP_LAB_SSH_HOST_KEY"] = ENV.get("WINDOWS_DHCP_LAB_PARTNER_SSH_HOST_KEY", "")
+    client = wc.DhcpClient(make_runner(env))
     side = Lab(client)
     # The first server's sweep has already removed our relationships; scopes they left on the partner go now.
     assert not side.sweep()
