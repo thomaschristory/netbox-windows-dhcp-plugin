@@ -187,7 +187,8 @@ the same reservation without NetBox writing to it (see [Failover](failover.md#5-
 !!! warning "Not through the REST API with netbox-plugin-dhcp 0.2.x"
     sys4's option endpoint (`/api/plugins/netbox-dhcp/options/`) refuses `"assigned_object_type":
     "netbox_dhcp.hostreservation"` with `Invalid content type`: its list of allowed parents misspells the host
-    reservation model (`hostresevration`). Options on servers and subnets work through the API; for a reservation,
+    reservation model (`hostresevration`,
+    [sys4/netbox-plugin-dhcp#69](https://github.com/sys4/netbox-plugin-dhcp/issues/69)). Options on servers and subnets work through the API; for a reservation,
     add the option in the web UI (**Add Object > Option** on the host reservation, see
     [Reservations](reservations.md#reservation-options)) until sys4 fixes it. The plugin pushes reservation options
     however they were created.
