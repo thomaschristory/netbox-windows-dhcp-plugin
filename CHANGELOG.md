@@ -5,6 +5,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Documentation: a Reservations page (create, type, options, change, delete) and a step-by-step failover
+  walkthrough, each with screenshots of NetBox and of the Windows DHCP console and PowerShell output, taken on two
+  Windows Server 2025 servers.
+
 ## [0.1.0] - 2026-10-27
 
 Release candidates 0.1.0rc1 to 0.1.0rc5 (2026-10-21 to 2026-10-23) went to PyPI for testing; what testing them found

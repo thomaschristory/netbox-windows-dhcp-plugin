@@ -52,6 +52,7 @@ nav:
       - How objects map: mapping.md
       - Import from Windows: import.md
       - Push to Windows: push.md
+      - Reservations: reservations.md
       - DHCPv6: dhcpv6.md
       - Failover: failover.md
       - Leases: leases.md
