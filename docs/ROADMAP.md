@@ -44,7 +44,7 @@ button is a menu of import branch, the branch you work in, or main (confirmed, p
    - **rc3 acceptance (after 0.1.0rc3, for rc4):** #42, a reservation description update dropped the reservation's
      option values on Windows Server 2025. The client sends the client ID and type (DHCPv6: DUID and IAID) only when
      they change, and the push writer puts back any reservation option value an update removed. Lab tests added for
-     both families; whether an identity change alone drops the values stays unverified. #47: the Windows scopes list
+     both families; whether an identity change alone drops the values was settled later (it does, #55 and #56). #47: the Windows scopes list
      shows each scope's prefix in its own column. #44: the Import panel no longer calls a merged or deleted branch
      open; it says what became of it, reading a deleted branch's last status from the change log, and says "not
      known" rather than "merged" when there is no record.

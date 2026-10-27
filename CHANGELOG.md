@@ -214,7 +214,9 @@ Found by the full lab run (two Windows Server 2022 servers; earlier notes said 2
 ran):
 - Over SSH, about one PowerShell run in fifteen hung until the timeout: Windows OpenSSH sometimes loses the end of
   stdin, and the script loader read stdin to its end. It now reads the one line the script is sent as. Each hung
-  run also kept its SSH session open, so after a few the server refused new ones (#56).
+  run also kept its SSH session open, so after a few the server refused new ones (#56). Windows OpenSSH also stalls
+  on more than about 70 KB of input: the SSH transport refuses a script above 64 KB at once, saying to use WinRM, and
+  a run that stays silent past the command timeout now says so instead of giving an empty error.
 - Failover relationships could not be created over WinRM: `Add-DhcpServerv4Failover` asked for a confirmation nobody
   can answer ("PowerShell is in NonInteractive mode"). Add, Set and replication now send `-Force`. The removes never
   do: they do not ask while the relationship is healthy, and with the partner unreachable `-Force` would remove the

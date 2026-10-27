@@ -19,6 +19,9 @@ Not seen on a real server yet:
 - running the cmdlets on another server through **`computer_name`** (`-ComputerName`), and the fully qualified name
   a domain member reports for itself.
 
+Over SSH, Windows OpenSSH stalls on more than about 70 KB of script input, so the plugin refuses a script above
+64 KB with an error that says to use WinRM. Its scripts send under 10 KB; only very large parameter lists come close.
+
 Try the plugin on a lab server before a production one, and use **Dry run** before turning **Sync enabled** on.
 
 ## Scope of v1

@@ -30,6 +30,11 @@ from typing import Any
 
 from .runner import ExecResult, RunnerError, execute
 
+# Windows OpenSSH stalls on more input than this, waiting until the timeout (between 70 and 90 KB in the lab, Windows
+# Server 2022, whether the script is read as one line or to the end). The plugin's scripts send under 10 KB; refuse
+# larger ones at once rather than hang.
+MAX_STDIN = 64 * 1024
+
 __all__ = ["SSHConfig", "SSHRunner", "key_algorithms"]
 
 
@@ -271,6 +276,11 @@ class SSHRunner:
             raise RunnerError(f"ssh: opening session: {e}") from e
 
     def _exec(self, argv: list[str], stdin: str) -> ExecResult:
+        if len(stdin) > MAX_STDIN:
+            raise RunnerError(
+                f"ssh: script too large for SSH ({len(stdin)} bytes, at most {MAX_STDIN}): Windows OpenSSH stalls on "
+                "larger input; use WinRM for this server"
+            )
         chan = self._open_channel()
         try:
             chan.settimeout(self.cfg.command_timeout)
@@ -293,7 +303,10 @@ class SSHRunner:
             chan.shutdown_write()
             stdout = bytearray()
             while True:
-                b = chan.recv(32768)
+                try:
+                    b = chan.recv(32768)
+                except TimeoutError:
+                    raise RunnerError(f"ssh: no output from PowerShell for {self.cfg.command_timeout:g} s") from None
                 if not b:
                     break
                 stdout.extend(b)
