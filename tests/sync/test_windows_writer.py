@@ -340,6 +340,14 @@ def test_failover_secret_comes_from_the_callback_and_is_not_in_the_change(client
     assert all("s3cret" not in repr(c.params) or c.op == "failover.add" for c in fake.calls)
 
 
+def test_failover_without_a_profile_is_created_without_authentication(client, fake):
+    # auth None: NetBox has no shared secret profile, so it does not manage authentication.
+    push(client, [r for r in wanted() if r.kind != "failover"])
+    WindowsWriter(client).apply(Change("create", "failover", "ha", after=failover(auth=None).fields))
+    assert fake.failover_secrets == {}
+    assert fake.failovers["ha"]["enable_auth"] is False
+
+
 def test_failover_without_a_secret_is_refused(client):
     push(client, [r for r in wanted() if r.kind != "failover"])
     with pytest.raises(PushRefused, match="shared secret"):

@@ -20,3 +20,6 @@ CLAUDE.md
 dev/env/lab.env
 # Lab test output (raw envelopes and property dumps): may identify the lab, never commit
 .lab/
+
+# Browser automation scratch output
+.playwright-mcp/

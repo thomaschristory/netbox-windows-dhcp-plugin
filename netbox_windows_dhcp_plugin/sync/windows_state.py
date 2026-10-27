@@ -798,6 +798,9 @@ def equal(kind: str, name: str, a: Any, b: Any) -> bool:
         return a.casefold() == b.casefold()
     if (kind, name) == ("failover", "partner_server") and isinstance(a, str) and isinstance(b, str):
         return same_host(a, b)
+    if (kind, name) == ("failover", "auth") and (a is None or b is None):
+        # None: NetBox has no shared secret profile, so it leaves authentication as Windows has it.
+        return True
     if (kind, name) == ("policy", "criteria") and isinstance(a, dict) and isinstance(b, dict):
         return canonical_criteria(a) == canonical_criteria(b)
     if name in ("value", "default_value") and isinstance(a, list) and isinstance(b, list):

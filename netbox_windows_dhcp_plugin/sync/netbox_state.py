@@ -455,7 +455,9 @@ def _failovers(windows_server, scope_ids):
                 "server_role": f.server_role if hot else "",
                 "state_switch_interval": f.state_switch_interval,
                 # Windows only says whether a secret is set; the secret itself never leaves the credential profile.
-                "auth": bool(f.shared_secret_profile),
+                # Without a profile NetBox does not manage authentication (None): an imported relationship cannot
+                # know its secret, and Windows refuses to turn authentication off anyway.
+                "auth": True if f.shared_secret_profile else None,
                 # Subnets of other servers cannot be in the relationship on this one; they are left out.
                 "scope_ids": windows_state.scope_ids(scope_ids[s.pk] for s in f.subnets.all() if s.pk in scope_ids),
             },

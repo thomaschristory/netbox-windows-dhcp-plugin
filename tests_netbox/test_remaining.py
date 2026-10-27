@@ -341,6 +341,27 @@ class PushRemainingTest(RemainingObjectsMixin, TestCase):
         self.assertNotIn("10.2.0.0", self.fake.scopes)
         self.assertEqual(self.fake.failovers["ha"]["scope_ids"], ["10.1.0.0"])
 
+    def test_authentication_without_a_profile_is_left_as_windows_has_it(self):
+        # Found while taking the documentation screenshots: Windows has message authentication on, an import cannot
+        # read the secret, so NetBox has no profile. Every push then planned "turn it off", which Windows refuses,
+        # and failed. Without a profile NetBox does not manage authentication: nothing to import, nothing to push.
+        self.fake.failovers["ha"]["enable_auth"] = True
+        changes, _ = importer.compute(self.server, windows_state.read(DhcpClient(self.fake)))
+        self.assertEqual([c for c in changes if c.kind == "failover"], [])
+        run = self._run()
+        self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)
+        self.assertEqual(run.summary["changes"], 0, run.summary.get("planned"))
+        # Other changes to the relationship still go through, and leave authentication alone.
+        relationship = FailoverRelationship.objects.get()
+        relationship.snapshot()
+        relationship.load_balance_percent = 70
+        relationship.save()
+        run = self._run()
+        self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)
+        self.assertEqual(self.fake.failovers["ha"]["load_balance_percent"], 70)
+        self.assertTrue(self.fake.failovers["ha"]["enable_auth"])
+        self.assertEqual(self.fake.failover_secrets, {})
+
     def test_shared_secret_comes_from_the_profile_and_is_never_recorded(self):
         self._run()
         relationship = FailoverRelationship.objects.get()

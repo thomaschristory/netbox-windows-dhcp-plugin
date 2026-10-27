@@ -610,7 +610,7 @@ class Writer:
             "state_switch_interval": fields["state_switch_interval"],
         }
         # Message authentication (fields["auth"]) needs a credential profile with the secret: Windows never reveals
-        # it, so a reviewer sets shared_secret_profile in NetBox; until then the difference stays visible.
+        # it. Without a profile NetBox leaves authentication as Windows has it; set shared_secret_profile to manage it.
         subnets = [self.subnet(sid) for sid in fields["scope_ids"]]
         if obj is None:
             reverse = FailoverRelationship.objects.filter(

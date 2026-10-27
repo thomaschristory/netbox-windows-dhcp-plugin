@@ -431,7 +431,7 @@ class WindowsWriter:
                 f"failover {change.key}: Windows cannot change a hot standby server's role (active or standby) in "
                 "place; delete the relationship in NetBox and push, then create it again with the new role"
             )
-        if before.get("auth") and not f["auth"]:
+        if before.get("auth") and f["auth"] is False:
             raise PushRefused(
                 f"failover {change.key}: Windows cannot turn message authentication off through this cmdlet; turn it "
                 "off by hand on Windows"
