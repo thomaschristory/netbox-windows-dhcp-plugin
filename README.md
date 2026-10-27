@@ -5,11 +5,12 @@ A NetBox plugin that keeps Microsoft Windows DHCP servers in step with the data 
 
 **Documentation: https://thomaschristory.github.io/netbox-windows-dhcp-plugin/**
 
-> **Status: pre-release.** Every v1 feature is built and tested against an in-memory fake server and PowerShell
-> stubs, and the lab tests have run in full against two Windows Server 2022 DHCP servers (import, push, leases and
-> failover, over WinRM HTTP and HTTPS and over SSH). Kerberos and SSH key authentication have not been tried on a
-> real server yet (see the [limitations](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/limitations/)).
-> Try it on a lab server first.
+> **Status: 0.1.0, the first release.** Every v1 feature is built and tested against an in-memory fake server and
+> PowerShell stubs, and the lab tests have run in full against two Windows Server 2022 DHCP servers (import, push,
+> leases and failover, over WinRM HTTP and HTTPS and over SSH). Kerberos and SSH key authentication have not been
+> tried on a real server yet (see the
+> [limitations](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/limitations/)). Try it on a lab server
+> first.
 
 ## Features
 
@@ -40,7 +41,7 @@ Windows Server 2016 or later with the DHCP Server role.
 ## Quick start
 
 ```bash
-pip install --pre netbox-windows-dhcp-plugin   # or ==0.1.0rc5; --pre is needed until 0.1.0 is out
+pip install netbox-windows-dhcp-plugin
 # extras: [kerberos] for Kerberos (needs system GSSAPI libraries), [branching] for branching and change control
 ```
 
