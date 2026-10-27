@@ -362,6 +362,19 @@ class PushRemainingTest(RemainingObjectsMixin, TestCase):
         self.assertTrue(self.fake.failovers["ha"]["enable_auth"])
         self.assertEqual(self.fake.failover_secrets, {})
 
+    def test_a_relationship_pushed_without_a_profile_can_be_deleted_later(self):
+        # Review of the change above: the fingerprint recorded after a push must hold what Windows has for
+        # authentication, not "not managed", or a later delete is skipped as changed on Windows.
+        self.target = FakeDhcpServer()
+        run = self._run()
+        self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)
+        self.assertIn("ha", self.target.failovers)
+        FailoverRelationship.objects.get().delete()
+        run = self._run()
+        self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)
+        self.assertEqual(run.summary.get("not_pushed", []), [])
+        self.assertNotIn("ha", self.target.failovers)
+
     def test_shared_secret_comes_from_the_profile_and_is_never_recorded(self):
         self._run()
         relationship = FailoverRelationship.objects.get()
