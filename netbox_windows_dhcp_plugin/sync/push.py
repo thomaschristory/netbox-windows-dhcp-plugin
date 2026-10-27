@@ -786,8 +786,20 @@ def execute(plan: Plan, writer: Any) -> Result:
             result.removals.add(key)
             result.upserts.pop(key, None)
         else:
-            result.upserts[key] = fingerprint(Record(change.kind, change.key, change.after or {}))
+            result.upserts[key] = fingerprint(Record(change.kind, change.key, _as_on_windows(change)))
     return result
+
+
+def _as_on_windows(change: Change) -> dict[str, Any]:
+    """
+    What Windows holds after ``change``, for its fingerprint. A failover relationship without a shared secret profile
+    leaves authentication as it was (``auth`` None in NetBox), so the fingerprint takes Windows' value: off for a new
+    relationship, unchanged for an update. Otherwise a later delete would look like a change made on Windows.
+    """
+    fields = dict(change.after or {})
+    if change.kind == "failover" and fields.get("auth") is None:
+        fields["auth"] = bool((change.before or {}).get("auth"))
+    return fields
 
 
 def _keep_undeleted_scopes(

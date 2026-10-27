@@ -228,6 +228,13 @@ ran):
 - An import or push no longer fails when a scope disappears while the server is being read (for example the partner's
   copy, when a failover relationship is removed at that moment): that scope counts as gone, the rest is read. The
   sync run's notes and the job log name each scope left out this way (#58).
+- A failover relationship imported with message authentication on made every later push to that server fail: the
+  import cannot read the secret, so NetBox had no shared secret profile and each push tried to turn authentication
+  off, which Windows refuses. Without a profile NetBox now leaves authentication as Windows has it; a profile still
+  turns it on with that secret. Found while taking the documentation screenshots.
+- A sync run's page listed every import proposal of every server instead of its own (the filter it used did not
+  exist).
+- The Kerberos SPN help text read "Defaults to WSMAN/": the host placeholder was dropped as an HTML tag.
 - A failover partner Windows names by its computer name now matches a server NetBox knows by IP address, and one it
   names by address matches a server NetBox knows by name (#57). Windows names the partner by its computer name on one
   side of a relationship, so that side's import failed and its pushes saw a partner change Windows cannot make. Test

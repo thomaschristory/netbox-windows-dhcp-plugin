@@ -189,6 +189,30 @@ class ImportProposalListViewTest(TestCase):
         self.assertTrue(response.context["table"].data.data.ordered)
 
 
+class SyncRunProposalsTest(TestCase):
+    """A sync run page lists the proposals of that run only (it listed every proposal of every server)."""
+
+    def test_proposals_are_filtered_by_sync_run(self):
+        from netbox_windows_dhcp_plugin.choices import SyncKindChoices
+        from netbox_windows_dhcp_plugin.filtersets import ImportProposalFilterSet
+        from netbox_windows_dhcp_plugin.models import SyncRun
+
+        server = windows_server(dhcp_servers(1)[0])
+        imported = SyncRun.objects.create(windows_server=server, kind=SyncKindChoices.IMPORT)
+        dry_run = SyncRun.objects.create(windows_server=server, kind=SyncKindChoices.DRY_RUN)
+        proposal = ImportProposal.objects.create(windows_server=server, sync_run=imported)
+        qs = ImportProposalFilterSet({"sync_run_id": [imported.pk]}, ImportProposal.objects.all()).qs
+        self.assertEqual(list(qs), [proposal])
+        self.assertFalse(ImportProposalFilterSet({"sync_run_id": [dry_run.pk]}, ImportProposal.objects.all()).qs)
+
+        self.add_permissions(
+            "netbox_windows_dhcp_plugin.view_syncrun", "netbox_windows_dhcp_plugin.view_importproposal"
+        )
+        link = f'href="{proposal.get_absolute_url()}"'
+        self.assertIn(link, self.client.get(imported.get_absolute_url()).content.decode())
+        self.assertNotIn(link, self.client.get(dry_run.get_absolute_url()).content.decode())
+
+
 class WindowsServerLinkTest(TestCase):
     """Issue #38: a Windows server's name opens the Windows server, wherever it is listed."""
 

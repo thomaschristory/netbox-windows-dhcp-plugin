@@ -317,6 +317,9 @@ class SyncRunFilterSet(NetBoxModelFilterSet):
 @register_filterset
 class ImportProposalFilterSet(NetBoxModelFilterSet):
     windows_server_id = _model_filter("windows_server", WindowsServer.objects.all(), _("Windows server (ID)"))
+    # The sync run page lists its proposals through this filter; without it the filter was ignored and the page
+    # listed every proposal.
+    sync_run_id = _model_filter("sync_run", SyncRun.objects.all(), _("Sync run (ID)"))
     status = django_filters.MultipleChoiceFilter(choices=ProposalStatusChoices)
 
     class Meta:

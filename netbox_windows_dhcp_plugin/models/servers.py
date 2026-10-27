@@ -80,7 +80,7 @@ class WindowsServer(JobsMixin, PrimaryModel):
         verbose_name=_("Kerberos SPN"),
         max_length=255,
         blank=True,
-        help_text=_("Defaults to WSMAN/<host>"),
+        help_text=_("Defaults to WSMAN/ followed by the host name"),
     )
     ssh_host_key = models.TextField(
         verbose_name=_("SSH host key"),

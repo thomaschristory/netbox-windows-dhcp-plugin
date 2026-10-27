@@ -291,6 +291,12 @@ def test_failover_partner_names_match_short_and_qualified():
 SERVERS = [("192.0.2.10", ["dhcp-a"]), ("dhcp2.corp.example", ["dhcp2", "dhcp2.corp.example", "192.0.2.20"])]
 
 
+def test_failover_auth_without_a_profile_matches_either_way():
+    # None is NetBox without a shared secret profile: it does not manage authentication.
+    assert ws.equal("failover", "auth", None, True) and ws.equal("failover", "auth", False, None)
+    assert not ws.equal("failover", "auth", True, False)
+
+
 @pytest.mark.parametrize(
     ("reported", "expected"),
     [

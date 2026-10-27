@@ -18,7 +18,7 @@ A **Failover relationship** (**Windows DHCP > Failover relationships**) holds:
 | Reserve (%) | Hot standby mode only: addresses kept for the standby |
 | Primary server role | Hot standby mode only: active or standby |
 | State switchover interval | Seconds before switching to partner-down automatically; empty disables it |
-| Shared secret profile | Credential profile holding the message authentication secret; empty means no authentication |
+| Shared secret profile | Credential profile holding the message authentication secret; empty leaves authentication as Windows has it |
 | Subnets | The scopes the relationship covers |
 
 "Primary" here is the plugin's word for the partner it writes to. It is not the Windows server role (active or
@@ -28,7 +28,9 @@ Give both partners a Windows server in NetBox. A partner name on Windows matches
 `computer_name` when it is reached through a management host, else its `host`), or by one of its **Reported names**,
 the computer name, DNS name and addresses the server gave on its last connection test, import or push (changing
 the host or computer name clears them). Short and fully qualified
-names match.
+names match. A push gives Windows the partner's host as NetBox holds it, so that name must resolve on the primary
+DHCP server too, not only on NetBox (otherwise `Add-DhcpServerv4Failover` fails with "Failed to verify if a failover
+relationship ... exists on server ...").
 
 ## Connecting to the servers
 
@@ -91,8 +93,9 @@ PLUGINS_CONFIG = {
 The secret goes to both servers, so `allowed_hosts` must cover both partners; it is checked when the relationship is
 saved and again whenever a push sends the secret. It is read from the profile only when a push needs it, goes
 straight to the cmdlet, and is never stored or logged. NetBox only records whether authentication is on, so a secret rotated on
-Windows is not noticed. An imported relationship with authentication has no profile yet: the difference stays visible
-until you set one.
+Windows is not noticed. Without a profile, NetBox does not manage authentication at all: an imported relationship
+keeps whatever Windows has (an import cannot read the secret), and pushes leave it alone. Set a profile to turn
+authentication on or to send a new secret.
 
 ## Scopes joining and leaving
 
@@ -104,7 +107,7 @@ until you set one.
   is refused before anything changes.
 - Removing a relationship removes its scopes from the partner, as Windows documents.
 
-Changing the partner, or turning authentication off, is refused: Windows only allows it by removing the
+Changing the partner is refused: Windows only allows it by removing the
 relationship.
 
 A relationship can be left with no scopes: Windows keeps it, empty, on both partners.
