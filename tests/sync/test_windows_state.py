@@ -286,6 +286,38 @@ def test_failover_partner_names_match_short_and_qualified():
     assert ws.equal("failover", "partner_server", "dhcp2", "dhcp2.corp.example")
 
 
+# #57: Windows names the partner as it was given on one side, and by its computer name on the other (lab, Windows
+# Server 2025: created on win01 with the partner's IP address, win02 reports win01 by its computer name).
+SERVERS = [("192.0.2.10", ["dhcp-a"]), ("dhcp2.corp.example", ["dhcp2", "dhcp2.corp.example", "192.0.2.20"])]
+
+
+@pytest.mark.parametrize(
+    ("reported", "expected"),
+    [
+        ("DHCP-A", "192.0.2.10"),  # a recorded computer name: the host NetBox knows the server by
+        ("dhcp-a.corp.example", "192.0.2.10"),  # short recorded name, qualified report
+        ("192.0.2.10", "192.0.2.10"),  # the host itself
+        ("dhcp2", "dhcp2"),  # matches a host already (same_host): left as Windows reports it
+        ("unknown", "unknown"),
+        ("192.0.2.20", "dhcp2.corp.example"),  # the mirror case: Windows gives the address, NetBox the name
+    ],
+)
+def test_partner_names_resolve_to_the_netbox_host(reported, expected):
+    assert ws.resolve_partner(reported, SERVERS) == expected
+
+
+def test_a_partner_name_two_servers_report_stays_as_it_is():
+    servers = [("10.0.0.1", ["win-clone"]), ("10.0.0.2", ["win-clone"])]
+    assert ws.resolve_partner("win-clone", servers) == "win-clone"
+    assert ws.partner_matches("win-clone", servers) == ["10.0.0.1", "10.0.0.2"]
+
+
+def test_failover_records_name_the_partner_by_its_netbox_host(client):
+    client.add_failover(FailoverRelationship(name="HA", partner_server="DHCP-A", scope_ids=["10.1.0.0"]))
+    records, _ = ws.to_records(ws.read(client), partner_servers=SERVERS)
+    assert by_kind(records)["failover"]["ha"]["partner_server"] == "192.0.2.10"
+
+
 def test_backslashes_are_kept():
     # A PXE boot path, stored before or after commas were escaped.
     assert ws.split_values("boot\\x64\\wdsnbp.com") == ["boot\\x64\\wdsnbp.com"]

@@ -10,6 +10,7 @@ class WindowsServerPanel(panels.ObjectAttributesPanel):
     effective_port = attrs.NumericAttr("effective_port", label=_("Port"))
     credential_profile = attrs.TextAttr("credential_profile", style="font-monospace")
     computer_name = attrs.TextAttr("computer_name", label=_("Remote DHCP server"))
+    reported_names = attrs.TextAttr("reported_names_display", label=_("Reported names"))
     description = attrs.TextAttr("description")
 
 

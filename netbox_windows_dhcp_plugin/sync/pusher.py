@@ -189,7 +189,11 @@ def run(windows_server, client, dry_run=False, logger=log):
     partners = netbox_state.partner_failovers(windows_server)
     codes6 = netbox_state.standard_codes6()
     target, notes = windows_state.to_records(
-        state, standard_codes=netbox_state.standard_codes(), partner_failovers=partners, standard_codes6=codes6
+        state,
+        standard_codes=netbox_state.standard_codes(),
+        partner_failovers=partners,
+        standard_codes6=codes6,
+        partner_servers=netbox_state.partner_servers(windows_server),
     )
     source = netbox_state.read(windows_server)
     current = managed(windows_server)

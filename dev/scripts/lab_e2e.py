@@ -29,6 +29,7 @@ never queue pushes of their own.
 """
 
 import ipaddress
+import logging
 import sys
 import time
 import traceback
@@ -41,7 +42,7 @@ from django.urls import reverse  # noqa: E402
 from netbox_dhcp.models import DHCPServer  # noqa: E402
 
 from netbox_windows_dhcp_plugin.connection import build_client  # noqa: E402
-from netbox_windows_dhcp_plugin.jobs import enqueue_leases  # noqa: E402
+from netbox_windows_dhcp_plugin.jobs import enqueue_leases, record_names  # noqa: E402
 from netbox_windows_dhcp_plugin.models import FailoverRelationship, SyncRun, WindowsServer  # noqa: E402
 from netbox_windows_dhcp_plugin.sync import importer, netbox_state, pusher, windows_state  # noqa: E402
 from netbox_windows_dhcp_plugin.sync.diff import DELETE, UPDATE, Change  # noqa: E402
@@ -56,6 +57,9 @@ DUID = "00-01-00-01-4e-42-00-00-02-4e-42-00-00-01"
 
 class Abort(Exception):
     pass
+
+
+LOG = logging.getLogger("lab_e2e")
 
 
 def log(msg):
@@ -366,6 +370,14 @@ def failover_phase(env, server, lab):
     # The partner holds its own copy of the relationship's scopes (an import of it would bring them in); a push to it
     # leaves them to the primary.
     expect_push_noop(partner, "6. partner after create")
+    # #57: the partner names the first server by its computer name, never by the host NetBox knows it by (the lab
+    # gives an IP address). Through the names the first server reports, an import from the partner's side matches it.
+    record_names(server, lab.client, LOG)
+    records, _ = windows_state.to_records(windows_state.read(pc), partner_servers=netbox_state.partner_servers(partner))
+    seen = next(r.fields["partner_server"] for r in records if r.kind == "failover" and r.key == FAILOVER.lower())
+    if seen != windows_state.host_name(server.dhcp_host):
+        raise Abort(f"6. the partner's name for the first server, {seen!r}, does not match its host")
+    log(f"6. the partner's name for the first server matches it (reported names {server.reported_names})")
 
     edit_descriptions(server)
     guarded_push(server, "6. push updates", {"update"})

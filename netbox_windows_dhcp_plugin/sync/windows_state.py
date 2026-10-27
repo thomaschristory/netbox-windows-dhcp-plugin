@@ -50,9 +50,11 @@ __all__ = (
     "option6_key",
     "optiondef_key",
     "option_key",
+    "partner_matches",
     "policy_key",
     "read",
     "reservation6_key",
+    "resolve_partner",
     "same_host",
     "scope6_key",
     "split_values",
@@ -282,6 +284,32 @@ def same_host(a: str, b: str) -> bool:
     return a.split(".", 1)[0] == b.split(".", 1)[0]
 
 
+def partner_matches(name: str, servers: Iterable[tuple[str, Iterable[str]]]) -> list[str]:
+    """
+    The hosts (``host_name`` form) of the ``servers`` a Windows partner name points at. ``servers`` holds each other
+    Windows server's host as NetBox knows it (the DHCP server itself) and the names it reported for itself. Windows
+    names a partner as it was given when the relationship was created, and on the partner's side by the other
+    server's computer name: a host match wins, the reported names are only tried when no host matches.
+    """
+    servers = [(host, list(names)) for host, names in servers]
+    hosts = sorted({host_name(h) for h, _ in servers if same_host(h, name)})
+    if hosts:
+        return hosts
+    return sorted({host_name(h) for h, names in servers if any(same_host(n, name) for n in names)})
+
+
+def resolve_partner(name: str, servers: Iterable[tuple[str, Iterable[str]]]) -> str:
+    """
+    A Windows partner name as NetBox would write it: the host of the one server that reported it as its own name,
+    otherwise the name as Windows gave it. Two servers reporting the same name match neither.
+    """
+    servers = list(servers)
+    if any(same_host(h, name) for h, _ in servers):
+        return host_name(name)
+    matches = partner_matches(name, servers)
+    return matches[0] if len(matches) == 1 else host_name(name)
+
+
 def ipv6(value: str) -> str:
     """An IPv6 address in one spelling (lowercase, compressed), whatever form either side wrote it in."""
     try:
@@ -463,14 +491,14 @@ def policy_record(p: Policy, ranges: list[list[str]]) -> Record:
     )
 
 
-def failover_record(f: FailoverRelationship) -> Record:
+def failover_record(f: FailoverRelationship, partner_servers: Iterable[tuple[str, Iterable[str]]] = ()) -> Record:
     hot = f.mode.lower() == "hotstandby"
     return Record(
         "failover",
         f.name.lower(),
         {
             "name": f.name,
-            "partner_server": host_name(f.partner_server),
+            "partner_server": resolve_partner(f.partner_server, partner_servers),
             "mode": f.mode.lower(),
             "max_client_lead_time": f.max_client_lead_time,
             "load_balance_percent": None if hot else f.load_balance_percent,
@@ -613,6 +641,7 @@ def to_records(
     skipped_option_ids: Iterable[int] = SKIPPED_OPTION_IDS,
     partner_failovers: Iterable[str] = (),
     standard_codes6: Iterable[int] | None = None,
+    partner_servers: Iterable[tuple[str, Iterable[str]]] = (),
 ) -> tuple[list[Record], list[str]]:
     """
     Turn a WindowsState into records, and return notes about what was left out.
@@ -621,9 +650,11 @@ def to_records(
     not imported (values still are, against the standard definition). ``partner_failovers`` are the (lowercase)
     names of failover relationships NetBox syncs from the other server. ``standard_codes6`` are the DHCPv6 codes
     netbox-plugin-dhcp defines: DHCPv6 definitions are not synced, so values of other codes are left out (None keeps
-    them all).
+    them all). ``partner_servers`` are the other Windows servers as ``partner_matches`` takes them: a failover partner
+    Windows names by a computer name one of them reported is written as that server's host, as NetBox holds it.
     """
     standard = set(standard_codes)
+    partner_servers = list(partner_servers)
     standard6 = None if standard_codes6 is None else set(standard_codes6)
     skipped = set(skipped_option_ids)
     partners = {n.lower() for n in partner_failovers}
@@ -712,7 +743,7 @@ def to_records(
         if f.name.lower() in partners:
             skip(PARTNER_FAILOVERS)
             continue
-        records.append(failover_record(f))
+        records.append(failover_record(f, partner_servers))
 
     for m in state.filters:
         records.append(

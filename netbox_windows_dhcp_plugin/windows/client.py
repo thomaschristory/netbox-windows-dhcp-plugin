@@ -377,6 +377,29 @@ function Add-WdScopeExtras($a) {
 
 S_AVAILABLE = Script("dhcp.available", "$out = $true")
 
+# The names and addresses the DHCP server goes by, to match failover partners (#57): Windows names a partner as it was
+# given (a name or an address) on one side of a relationship, and by its computer name on the other. With
+# -ComputerName the cmdlets run on another server, so that name is resolved instead. Loopback and link-local
+# addresses are left out: every server has them.
+# A workgroup server reports its computer name, which its partner uses (lab, Windows Server 2025).
+# unverified: through -ComputerName, and the fully qualified name on a domain member.
+S_SERVER_NAMES = Script(
+    "server.names",
+    r"""
+$names = @()
+$target = $p.computer_name
+if (-not $target) { $target = $env:COMPUTERNAME; $names += $target }
+try { $names += [System.Net.Dns]::GetHostEntry($target).HostName } catch { }
+try {
+    $names += [System.Net.Dns]::GetHostAddresses($target) |
+        Where-Object { -not [System.Net.IPAddress]::IsLoopback($_) -and -not $_.IsIPv6LinkLocal -and
+            -not "$_".StartsWith('169.254.') } |
+        ForEach-Object { "$_" }
+} catch { }
+$out = @($names | Where-Object { $_ } | ForEach-Object { $_.ToLowerInvariant() } | Select-Object -Unique)
+""",
+)
+
 S_SCOPE_GET = Script(
     "scope.get",
     _SCOPE_FUNC
@@ -1625,6 +1648,16 @@ class DhcpClient:
     def check_available(self) -> None:
         """Raise unless the host is reachable and has the DhcpServer module."""
         self._do(S_AVAILABLE)
+
+    def get_server_names(self) -> list[str]:
+        """The DHCP server's computer name, DNS name and addresses, lowercase: what a failover partner calls it."""
+        present, data = self._run(S_SERVER_NAMES)
+        if not present:
+            return []
+        if isinstance(data, str):  # one name that lost its array wrapper
+            data = [data]
+        names = (n.strip().rstrip(".").lower() for n in data if isinstance(n, str))
+        return list(dict.fromkeys(n for n in names if n))
 
     # -- IPv4 scopes ---------------------------------------------------------
 

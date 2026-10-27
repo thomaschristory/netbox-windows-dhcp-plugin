@@ -43,7 +43,33 @@ class TestConnectionJobTest(TestCase):
         )
         sync_run = self._run()
         self.assertEqual(sync_run.status, SyncStatusChoices.COMPLETED)
-        self.assertEqual(sync_run.summary, {"ipv4_scopes": 1})
+        names = ["fake", "fake.example.test", "192.0.2.53"]
+        self.assertEqual(sync_run.summary, {"ipv4_scopes": 1, "reported_names": names})
+        # #57: kept on the server, where imports and pushes of its failover partners match on them.
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.reported_names, names)
+
+    def test_pointing_the_server_elsewhere_forgets_its_names(self):
+        self._run()
+        self.server.refresh_from_db()
+        self.server.description = "edited"
+        self.server.save()
+        self.server.refresh_from_db()
+        self.assertEqual(len(self.server.reported_names), 3)
+        # Another machine: the old one's names must not match its failover partners any more (#57 review).
+        self.server.host = "dhcp9.example.com"
+        self.server.save()
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.reported_names, [])
+
+    def test_names_that_cannot_be_read_do_not_fail_the_test(self):
+        self.fake.fail = lambda op, params: (
+            PSError(message="denied", category="PermissionDenied") if op == ("server.names") else None
+        )
+        sync_run = self._run()
+        self.assertEqual(sync_run.status, SyncStatusChoices.COMPLETED)
+        self.server.refresh_from_db()
+        self.assertEqual(self.server.reported_names, [])
 
     def test_failure_is_recorded(self):
         self.fake.fail = lambda op, params: PSError(message="Access is denied", category="PermissionDenied")

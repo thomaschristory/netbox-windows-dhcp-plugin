@@ -43,6 +43,7 @@ __all__ = (
     "SYS4_TYPE",
     "WINDOWS_TYPE",
     "partner_failovers",
+    "partner_servers",
     "read",
     "scope_id_of",
     "server_subnets",
@@ -414,6 +415,15 @@ def partner_failovers(windows_server):
         "name", flat=True
     )
     return {n.lower() for n in names}
+
+
+def partner_servers(windows_server):
+    """
+    Every other Windows server as ``windows_state.partner_matches`` takes them: the host Windows knows the DHCP server
+    by (computer_name through a management host) and the names it reported for itself.
+    """
+    others = WindowsServer.objects.exclude(pk=windows_server.pk).order_by("pk")
+    return [(ws.dhcp_host, ws.reported_names) for ws in others]
 
 
 def _partner_host(dhcp_server):

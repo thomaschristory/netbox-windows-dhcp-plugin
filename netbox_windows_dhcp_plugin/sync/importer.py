@@ -150,6 +150,7 @@ def compute(windows_server, state):
         standard_codes=netbox_state.standard_codes(),
         partner_failovers=netbox_state.partner_failovers(windows_server),
         standard_codes6=netbox_state.standard_codes6(),
+        partner_servers=netbox_state.partner_servers(windows_server),
     )
     changes = diff(records, netbox_state.read(windows_server, for_import=True), equal=windows_state.equal)
     return changes, notes

@@ -12,8 +12,25 @@ from .choices import ImportDestinationChoices, SyncKindChoices, SyncStatusChoice
 from .conf import CredentialError, get_setting
 from .connection import build_client
 from .integrations.branching import job_kwargs as branching_job_kwargs
-from .models import SyncRun
+from .models import SyncRun, WindowsServer
 from .windows.psscript import WindowsLayerError
+
+
+def record_names(server, client, logger):
+    """
+    Keep the names the DHCP server reports for itself: on one side of a failover relationship Windows names the
+    partner by its computer name, and imports and pushes of its partners match on them (#57).
+    """
+    try:
+        names = client.get_server_names()
+    except WindowsLayerError as exc:
+        # Only partner matching uses the names, so this does not fail the job that is reading the server.
+        logger.warning(f"Could not read the names of {server.host}: {exc}")
+        return
+    if names and names != server.reported_names:
+        # An update, not save(): the names are read from Windows, not an edit worth a change log entry.
+        WindowsServer.objects.filter(pk=server.pk).update(reported_names=names)
+        server.reported_names = names
 
 
 class TestConnectionJob(JobRunner):
@@ -40,6 +57,7 @@ class TestConnectionJob(JobRunner):
             client = build_client(server, runner=runner)
             client.check_available()
             scopes = client.list_scopes()
+            record_names(server, client, self.logger)
         # ValueError covers settings the transports reject, such as a profile without a password or a malformed
         # SSH host key.
         except (CredentialError, WindowsLayerError, ValueError) as exc:
@@ -48,7 +66,7 @@ class TestConnectionJob(JobRunner):
             self.logger.error(f"Connection to {server.host} failed: {exc}")
         else:
             sync_run.status = SyncStatusChoices.COMPLETED
-            sync_run.summary = {"ipv4_scopes": len(scopes)}
+            sync_run.summary = {"ipv4_scopes": len(scopes), "reported_names": server.reported_names}
             self.logger.info(f"Connected to {server.host}: {len(scopes)} IPv4 scopes")
         finally:
             if sync_run.status == SyncStatusChoices.RUNNING:
@@ -230,6 +248,7 @@ class ImportJob(JobRunner):
             with server_lock(server, ImportBusy):
                 client = build_client(server, runner=runner)
                 state = windows_state.read(client)
+                record_names(server, client, self.logger)
                 client.close()
                 client = None
                 if destination in (ImportDestinationChoices.BRANCH, ImportDestinationChoices.CURRENT):
@@ -340,6 +359,7 @@ class PushJob(JobRunner):
         client = None
         try:
             client = build_client(server, runner=runner)
+            record_names(server, client, self.logger)
             outcome = pusher.run(server, client, dry_run=self.dry_run, logger=self.logger)
         except (CredentialError, WindowsLayerError, ValueError) as exc:
             sync_run.status = SyncStatusChoices.FAILED

@@ -1,3 +1,4 @@
+from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ValidationError
 from django.db import models
 from django.urls import reverse
@@ -95,6 +96,17 @@ class WindowsServer(JobsMixin, PrimaryModel):
             "it (double hop), so connecting directly is recommended."
         ),
     )
+    # Read from Windows, never typed in: a failover partner names this server by its computer name or an address on
+    # one side of a relationship (#57). Cleared when host or computer_name changes. Only matched against, never
+    # connected to, so the credential profile's allowed hosts do not apply to it.
+    reported_names = ArrayField(
+        base_field=models.CharField(max_length=255),
+        verbose_name=_("reported names"),
+        default=list,
+        blank=True,
+        editable=False,
+        help_text=_("The DHCP server's names and addresses, as reported on its last connection test or sync"),
+    )
     import_vrf = models.ForeignKey(
         to="ipam.VRF",
         on_delete=models.SET_NULL,
@@ -189,6 +201,26 @@ class WindowsServer(JobsMixin, PrimaryModel):
                 )
             }
         )
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        # What the reported names were read from, so save() can tell when the server is pointed elsewhere.
+        if "host" in instance.__dict__ and "computer_name" in instance.__dict__:  # not deferred
+            instance._reported_for = (instance.host, instance.computer_name)
+        return instance
+
+    def save(self, *args, **kwargs):
+        loaded = getattr(self, "_reported_for", None)
+        if loaded is not None and loaded != (self.host, self.computer_name) and self.reported_names:
+            # Another machine: the old one's names must not match failover partners until it reports its own.
+            self.reported_names = []
+        super().save(*args, **kwargs)
+        self._reported_for = (self.host, self.computer_name)
+
+    @property
+    def reported_names_display(self):
+        return ", ".join(self.reported_names)
 
     @property
     def dhcp_host(self):
