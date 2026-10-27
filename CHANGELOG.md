@@ -10,6 +10,8 @@ All notable changes to this project are documented here. The format follows
 - Documentation: a Reservations page (create, type, options, change, delete) and a step-by-step failover
   walkthrough, each with screenshots of NetBox and of the Windows DHCP console and PowerShell output, taken on two
   Windows Server 2025 servers.
+- Documentation: Reservations through the API, an end-to-end script that creates a reservation with the REST API,
+  waits for the push and deletes it again, with the calls, the output and the errors to expect.
 
 ## [0.1.0] - 2026-10-27
 

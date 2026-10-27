@@ -29,7 +29,8 @@ The examples use a NetBox v2 API token (`Authorization: Bearer nbt_...`); a v1 t
 | `import-proposal-items/` | Import proposal items (read only, plus actions) |
 
 sys4 objects (DHCP servers, subnets, pools, reservations, options) stay at netbox-plugin-dhcp's own endpoints under
-`/api/plugins/netbox-dhcp/`.
+`/api/plugins/netbox-dhcp/`. [Reservations through the API](reservations-api.md) creates a reservation end to end,
+from the IP and MAC address objects to the push.
 
 ## Creating a Windows server
 
