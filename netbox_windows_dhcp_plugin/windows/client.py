@@ -381,7 +381,7 @@ S_AVAILABLE = Script("dhcp.available", "$out = $true")
 # given (a name or an address) on one side of a relationship, and by its computer name on the other. With
 # -ComputerName the cmdlets run on another server, so that name is resolved instead. Loopback and link-local
 # addresses are left out: every server has them.
-# A workgroup server reports its computer name, which its partner uses (lab, Windows Server 2025).
+# A workgroup server reports its computer name, which its partner uses (lab, Windows Server 2022).
 # unverified: through -ComputerName, and the fully qualified name on a domain member.
 S_SERVER_NAMES = Script(
     "server.names",

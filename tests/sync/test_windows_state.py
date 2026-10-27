@@ -287,7 +287,7 @@ def test_failover_partner_names_match_short_and_qualified():
 
 
 # #57: Windows names the partner as it was given on one side, and by its computer name on the other (lab, Windows
-# Server 2025: created on win01 with the partner's IP address, win02 reports win01 by its computer name).
+# Server 2022: created on win01 with the partner's IP address, win02 reports win01 by its computer name).
 SERVERS = [("192.0.2.10", ["dhcp-a"]), ("dhcp2.corp.example", ["dhcp2", "dhcp2.corp.example", "192.0.2.20"])]
 
 
