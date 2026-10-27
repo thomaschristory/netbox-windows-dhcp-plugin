@@ -54,7 +54,8 @@ Import again to get a fresh item.
 
 **Some Windows objects never show up.** Check the import's notes in the sync run: DHCPv6 vendor classes, DHCPv6
 exclusions, values with surrounding spaces and options of unknown DHCPv6 codes are left out on purpose. A failover
-relationship imports from one partner only: the first one imported, which becomes its primary.
+relationship imports from one partner only: the first one imported, which becomes its primary. A scope deleted on
+Windows while the server was being read counts as deleted on Windows in that run, and the notes name it.
 
 ## Push
 

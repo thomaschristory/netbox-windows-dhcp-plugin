@@ -220,7 +220,8 @@ Found by the full lab run (two Windows Server 2025 servers):
   hands the password to the server, so it requires HTTPS with certificate verification, unless the credential
   profile sets `allow_insecure_credssp` (for labs).
 - An import or push no longer fails when a scope disappears while the server is being read (for example the partner's
-  copy, when a failover relationship is removed at that moment): that scope counts as gone, the rest is read.
+  copy, when a failover relationship is removed at that moment): that scope counts as gone, the rest is read. The
+  sync run's notes and the job log name each scope left out this way (#58).
 - A failover partner that matches no Windows server in NetBox now says how to fix it. Windows names the partner by its
   computer name on one side of a relationship, so a server NetBox knows by IP address did not match, and the message
   only said to add a server that was already there.

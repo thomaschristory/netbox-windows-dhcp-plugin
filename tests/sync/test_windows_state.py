@@ -320,6 +320,17 @@ def test_a_scope_deleted_during_the_read_is_left_out(client):
     assert [s.scope_id for s in state.scopes] == ["10.1.0.0"]
     assert state.v6_scopes == []
     assert [r.ip_address for r in state.reservations] == ["10.1.0.50"]
+    # #58: say so, through the notes the import and push jobs log and keep in the run summary.
+    gone = [
+        "scope 10.2.0.0 left out: deleted on Windows while it was read",
+        "DHCPv6 scope 2001:db8:9:: left out: deleted on Windows while it was read",
+    ]
+    assert state.notes == gone
+    assert ws.to_records(state)[1][:2] == gone
+
+
+def test_a_full_read_has_no_notes(client):
+    assert ws.read(client).notes == []
 
 
 def test_a_reservation_deleted_during_the_read_keeps_its_scope(client):
