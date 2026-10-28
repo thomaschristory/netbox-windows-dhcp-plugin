@@ -36,6 +36,11 @@ All notable changes to this project are documented here. The format follows
 - Documentation: Reservations through the API, an end-to-end script that creates a reservation with the REST API,
   waits for the push and deletes it again, with the calls, the output and the errors to expect.
 
+### Fixed
+
+- Pushing a DNS server option (6, or 23 for DHCPv6) no longer fails with "is not a valid DNS server" when the
+  Windows server cannot query that address: option values are set with `-Force`, which skips the check.
+
 ## [0.1.0] - 2026-10-27
 
 Release candidates 0.1.0rc1 to 0.1.0rc5 (2026-10-21 to 2026-10-23) went to PyPI for testing; what testing them found

@@ -375,6 +375,8 @@ def test_option(pw: PwshRunner) -> None:
     assert v.value == ["10.1.20.1"] and v.option_id == 3 and v.name == "Router" and v.scope_id == "10.1.20.0"
     st = find_call(pw.last_calls(), "Set-DhcpServerv4OptionValue")
     assert st["Value"] == ["10.1.20.1"] and st["ScopeId"] == "10.1.20.0" and "ReservedIP" not in st
+    # Without -Force Windows refuses DNS server addresses it cannot query itself.
+    assert st["Force"] is True
     v = c.set_option_value(OptionKey(6, vendor_class="Vendor A"), ["10.0.0.53", "10.0.1.53"])
     assert len(v.value) == 2 and v.vendor_class == "Vendor A"
     st = find_call(pw.last_calls(), "Set-DhcpServerv4OptionValue")
@@ -718,7 +720,8 @@ def test_v6(pw: PwshRunner) -> None:
     pw.seed = seed
     v = c.set_v6_option_value(OptionKeyV6(23, prefix="2001:db8:1::"), ["2001:db8::53"])
     assert v.value == ["2001:db8::53"] and v.prefix == "2001:db8:1::"
-    assert find_call(pw.last_calls(), "Set-DhcpServerv6OptionValue")["Prefix"] == "2001:db8:1::"
+    st = find_call(pw.last_calls(), "Set-DhcpServerv6OptionValue")
+    assert st["Prefix"] == "2001:db8:1::" and st["Force"] is True
     with pytest.raises(NotFound):
         c.get_v6_option_value(OptionKeyV6(23, prefix="2001:db8:1::"))
     c.remove_v6_option_value(OptionKeyV6(23))
