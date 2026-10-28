@@ -17,8 +17,9 @@ Windows server after each change.
 - The scope exists in NetBox and on Windows (see
   [Example: a new scope from NetBox](push.md#example-a-new-scope-from-netbox), or import an existing scope). Here
   the scope is `198.18.60.0/24`, named `VLAN60-Office` on Windows.
-- The reservation's IP address exists in **IPAM > IP Addresses** (here `198.18.60.20/24`) and its MAC address in
-  **Devices > MAC Addresses** (here `02:4E:42:60:00:20`). The reservation form selects existing objects.
+- The reservation points at an IP address (here `198.18.60.20/24`) and a MAC address (here `02:4E:42:60:00:20`).
+  Pick existing ones in the form, or create them from it: the **+** button next to each field opens NetBox's own
+  IP address or MAC address form in a pop-up and selects the new object when you save it.
 
 ## Create a reservation
 

@@ -463,9 +463,13 @@ class ReservationForm(NetBoxModelForm):
     # Only to narrow the scope list; a reservation belongs to its scope's server.
     server = _server_field(required=False)
     scope = _scope_field()
-    ip_address = DynamicModelChoiceField(queryset=IPAddress.objects.all(), label=_("IP address"), selector=True)
+    # quick_add: a "+" button that creates the IP or MAC address in a pop-up and selects it, so a new reservation does
+    # not need a trip to IPAM or Devices first.
+    ip_address = DynamicModelChoiceField(
+        queryset=IPAddress.objects.all(), label=_("IP address"), selector=True, quick_add=True
+    )
     mac_address = DynamicModelChoiceField(
-        queryset=MACAddress.objects.all(), required=False, label=_("MAC address"), selector=True
+        queryset=MACAddress.objects.all(), required=False, label=_("MAC address"), selector=True, quick_add=True
     )
     comments = CommentField()
 

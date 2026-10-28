@@ -155,6 +155,14 @@ class ReservationViewTest(PluginViewMixin, ViewTestCases.PrimaryObjectViewTestCa
         cls.csv_update_data = ("id,description", *(f"{pk},updated" for pk in _ids(Reservation)))
         cls.bulk_edit_data = {"reservation_type": "bootp"}
 
+    def test_add_form_creates_the_ip_and_mac_address_in_place(self):
+        self.add_permissions("netbox_windows_dhcp_plugin.add_reservation")
+        response = self.client.get("/plugins/windows-dhcp/reservations/add/")
+        self.assertEqual(response.status_code, 200)
+        # The quick-add buttons open NetBox's own add forms in a pop-up.
+        self.assertContains(response, "/ipam/ip-addresses/add/?_quickadd=True&target=id_ip_address")
+        self.assertContains(response, "/dcim/mac-addresses/add/?_quickadd=True&target=id_mac_address")
+
 
 class ExclusionRangeViewTest(PluginViewMixin, ViewTestCases.PrimaryObjectViewTestCase):
     model = ExclusionRange
