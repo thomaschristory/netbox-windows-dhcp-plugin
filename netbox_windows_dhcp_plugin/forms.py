@@ -334,12 +334,15 @@ SCOPE_FIELDS = (
 
 class ScopeForm(NetBoxModelForm):
     server = _server_field()
-    prefix = DynamicModelChoiceField(queryset=Prefix.objects.all(), label=_("Prefix"), selector=True)
+    # quick_add: create the prefix and the IP range from this form, as for a reservation's IP and MAC address. The
+    # pop-up cannot see the prefix chosen here, so a range outside it is caught when the scope is saved.
+    prefix = DynamicModelChoiceField(queryset=Prefix.objects.all(), label=_("Prefix"), selector=True, quick_add=True)
     ip_range = DynamicModelChoiceField(
         queryset=IPRange.objects.all(),
         required=False,
         label=_("IP range"),
         selector=True,
+        quick_add=True,
         help_text=_("IPv4 scopes: the addresses the scope hands out (start and end of the scope)"),
     )
     superscope = DynamicModelChoiceField(

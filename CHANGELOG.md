@@ -28,7 +28,8 @@ All notable changes to this project are documented here. The format follows
 
 - A Windows server can be linked to the device or virtual machine it runs on.
 - The reservation form creates its IP address and MAC address in place: a **+** button next to each field opens
-  NetBox's add form in a pop-up, so a new reservation needs no trip to IPAM or Devices first.
+  NetBox's add form in a pop-up, so a new reservation needs no trip to IPAM or Devices first. The scope form does
+  the same for its prefix and IP range.
 - Option values on reservations through the REST API (netbox-plugin-dhcp could not do it,
   [sys4/netbox-plugin-dhcp#69](https://github.com/sys4/netbox-plugin-dhcp/issues/69)).
 - Option values keep commas and leading or trailing spaces, in NetBox and on the way to and from Windows.

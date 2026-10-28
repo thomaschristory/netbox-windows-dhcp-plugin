@@ -127,6 +127,13 @@ class ScopeViewTest(PluginViewMixin, ViewTestCases.PrimaryObjectViewTestCase):
         cls.csv_update_data = ("id,description", *(f"{pk},updated" for pk in _ids(Scope)))
         cls.bulk_edit_data = {"state": "inactive"}
 
+    def test_add_form_creates_the_prefix_and_ip_range_in_place(self):
+        self.add_permissions("netbox_windows_dhcp_plugin.add_scope")
+        response = self.client.get("/plugins/windows-dhcp/scopes/add/")
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "/ipam/prefixes/add/?_quickadd=True&target=id_prefix")
+        self.assertContains(response, "/ipam/ip-ranges/add/?_quickadd=True&target=id_ip_range")
+
 
 class ReservationViewTest(PluginViewMixin, ViewTestCases.PrimaryObjectViewTestCase):
     model = Reservation

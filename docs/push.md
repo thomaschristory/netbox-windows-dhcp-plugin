@@ -45,7 +45,10 @@ A Windows scope is a plugin **Scope** pointing at a prefix and, for IPv4, an IP 
 [How objects map](mapping.md#scopes-ipv4) describes. To add one to `dhcp01`:
 
 1. **IPAM**: the prefix (`198.18.40.0/24`) and the IP range the scope hands out (`198.18.40.100` to
-   `198.18.40.200`) exist.
+   `198.18.40.200`). Create them in IPAM first, or from the scope form in the next step: the **+** button next to
+   the prefix and IP range fields opens NetBox's own form in a pop-up and selects the new object. The pop-up does
+   not know the prefix chosen in the scope form, so type the range's start and end with the prefix's mask; a range
+   outside the prefix is refused when the scope is saved.
 2. **Windows DHCP > Scopes > Add**: the server, the prefix and the IP range. The **name** is the Windows scope name
    (`VLAN40-Office`), the **description** its Windows description, and the **lease duration** (seconds) its lease
    duration; state, type and the other settings default to what Windows gives a new scope.
@@ -57,8 +60,8 @@ A Windows scope is a plugin **Scope** pointing at a prefix and, for IPv4, an IP 
 
     ![A new option on the subnet: dhcp4 routers (3), value 198.18.40.1](images/scope-3-option-form.webp)
 
-4. **Windows DHCP > Reservations > Add** for reservations: the scope, the IP address and MAC address objects, and
-   the **name**, which is the Windows reservation name.
+4. **Windows DHCP > Reservations > Add** for reservations: the scope, the IP address and MAC address objects (the
+   **+** buttons create them in place), and the **name**, which is the Windows reservation name.
 
     ![A new host reservation: hardware address, IPv4 address 198.18.40.20, description printer01](images/scope-4-reservation-form.webp)
 
