@@ -2,7 +2,7 @@ COMPOSE = docker compose -f dev/docker-compose.yml
 EXEC = $(COMPOSE) exec -T
 PY = /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py
 
-.PHONY: test test-lab lab-e2e test-netbox lint format dev down restart logs dist docs docs-serve
+.PHONY: test test-lab lab-e2e lab-seed lab-wipe test-netbox lint format dev down restart logs dist docs docs-serve
 
 test:
 	uv run pytest -v
@@ -15,6 +15,13 @@ test-lab:
 # Opt-in: Windows -> NetBox -> Windows on the dev stack against the lab server (see dev/scripts/lab_e2e.py).
 lab-e2e:
 	$(EXEC) netbox $(PY) shell -c "exec(open('/plugin/dev/scripts/lab_e2e.py').read())"
+
+# Opt-in: a realistic configuration on the two lab servers, to import into NetBox (see dev/scripts/lab_seed.py).
+lab-seed:
+	uv run python dev/scripts/lab_seed.py seed
+
+lab-wipe:
+	uv run python dev/scripts/lab_seed.py wipe
 
 BASELINE = netbox_windows_dhcp_plugin/tests/query_counts.json
 BRANCHING_BASELINE = tests_netbox/query_counts.branching.json

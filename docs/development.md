@@ -123,6 +123,27 @@ make lab-e2e         # import, push creates, updates and deletes, leases, on the
 on failure. Both leave the server as they found it. Everything under `.lab/` can identify the lab and is ignored by
 git: scrub host names and addresses before turning a recording into a fixture.
 
+### Seed data to import
+
+To try the import on a realistic configuration, `make lab-seed` fills the two lab servers (`WINDOWS_DHCP_LAB_HOST`
+and `WINDOWS_DHCP_LAB_PARTNER`, with `WINDOWS_DHCP_LAB_AUTH=credssp` and `WINDOWS_DHCP_LAB_FAILOVER_SECRET`) with
+every kind the plugin imports:
+
+| Where | What |
+|---|---|
+| First server | Server options (6, 15, 42 and custom 200) and a server policy on a user class; MAC filters (deny list on) |
+| Both servers | User classes `Printers` and `Lab-Kiosks`, vendor class `Polycom` with a vendor option definition, option definition 200 |
+| `VLAN10-Users`, `VLAN10-Users-B` | Superscope `Campus-VLAN10`, exclusion, reservations; failover `campus-lb` (load balance) |
+| `VLAN20-Voice` | Vendor class option, scope policy `Polycom-Phones` with its own range and option; failover `voice-hs` |
+| `VLAN30-Printers` | DHCP and BOOTP, user class option, reservations of each type, a reservation option; failover `voice-hs` (hot standby, first server active) |
+| `VLAN40-Guests`, `VLAN50-Servers` | An inactive scope; a scope of server reservations |
+| `v6-Users` | DHCPv6 scope `2001:db8:4e43::/64` with options and a DUID reservation |
+| Second server only | Server option 15 and scope `VLAN90-Lab` |
+
+Then add both servers in NetBox and import the first one, then the second. `make lab-wipe` removes what the seed
+created and nothing else; seeding again needs a wipe first. The seed stays out of the lab tests' ranges, so
+`make test-lab` and `make lab-e2e` can run next to it.
+
 ## Documentation
 
 These pages live in `docs/` and are built with [Zensical](https://zensical.org/) from `mkdocs.yml`:
