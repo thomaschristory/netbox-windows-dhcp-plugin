@@ -416,6 +416,11 @@ function Set-DhcpServerv4Failover {
     Record 'Set-DhcpServerv4Failover' $PSBoundParameters
     Assert-WdForce $Force
     $f = $global:Failovers[$Name]
+    # Windows Server 2025 refuses the mode the relationship already has.
+    if ($Mode -and $Mode -eq $f.Mode) {
+        Write-InvalidArgument $PSCmdlet "Failover relationship $Name is already in $Mode mode."
+        return
+    }
     foreach ($k in 'Mode', 'LoadBalancePercent', 'ReservePercent', 'MaxClientLeadTime',
         'StateSwitchInterval', 'AutoStateTransition') {
         if ($PSBoundParameters.ContainsKey($k)) { $f.$k = $PSBoundParameters[$k] }

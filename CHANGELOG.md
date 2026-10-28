@@ -17,6 +17,9 @@ All notable changes to this project are documented here. The format follows
 
 - Pushing a DNS server option (6, or 23 for DHCPv6) no longer fails with "is not a valid DNS server" when the
   Windows server cannot query that address: option values are set with `-Force`, which skips the check.
+- Adding or removing scopes in an existing failover relationship, or changing its settings, no longer fails with
+  "Failover relationship ... is already in LoadBalance mode" (Windows Server 2025): the mode is sent only when it
+  changes.
 
 ## [0.1.0] - 2026-10-27
 
