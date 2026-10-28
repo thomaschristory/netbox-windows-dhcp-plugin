@@ -9,6 +9,7 @@ take. Every call goes through ``DhcpClient``, so values only ever reach PowerShe
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from ..windows import normalize
@@ -437,7 +438,10 @@ class WindowsWriter:
                 "off by hand on Windows"
             )
         turned_on = f["auth"] and not before.get("auth")
-        got = self.client.set_failover(rel, shared_secret=self._secret(change, f["name"]) if turned_on else "")
+        # Windows refuses -Mode when it names the mode the relationship already has ("already in LoadBalance mode",
+        # lab, Windows Server 2025), so the mode goes only with a switch.
+        settings = rel if hot != was_hot else replace(rel, mode="")
+        got = self.client.set_failover(settings, shared_secret=self._secret(change, f["name"]) if turned_on else "")
         # The membership on Windows right now: deleting a scope earlier in this push already took it out.
         current = set(self.client.get_failover(f["name"]).scope_ids)
         wanted = set(f["scope_ids"])

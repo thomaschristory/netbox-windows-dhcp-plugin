@@ -743,6 +743,11 @@ class FakeDhcpServer:
         f = self._failover("Set-DhcpServerv4Failover", _s(p, "name"))
         # The script never sends a role: Set-DhcpServerv4Failover has none (issue #33).
         if _s(p, "mode"):
+            if _s(p, "mode").lower() == f["mode"].lower():
+                # Lab, Windows Server 2025: the mode is only accepted as a switch.
+                raise _invalid(
+                    "Set-DhcpServerv4Failover", f"Failover relationship {f['name']} is already in {f['mode']} mode."
+                )
             f["mode"] = _s(p, "mode")
             # Windows makes this server active and the partner standby when the mode becomes HotStandby (lab, Windows
             # Server 2022).

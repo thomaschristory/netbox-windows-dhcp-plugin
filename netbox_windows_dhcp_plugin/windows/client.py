@@ -1850,6 +1850,8 @@ class DhcpClient:
     def set_failover(self, f: FailoverRelationship, shared_secret: str = "") -> FailoverRelationship:
         """Update settings. Scope membership changes go through add/remove_failover_scopes.
 
+        Leave ``mode`` empty unless it changes: Windows refuses the mode the relationship is already in.
+
         ``server_role`` is not sent: Windows cannot change it in place (issue #33). Remove and re-add the relationship
         to change it.
         """
