@@ -5,6 +5,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-29
+
+Three fixes backported from 0.2. 0.1.x stays on netbox-plugin-dhcp and gets fixes only.
+
+### Fixed
+
+- A push that failed on some changes logged "changed N object(s)" with the number planned. The job log now gives
+  what was applied, failed and not attempted.
+- A Windows server's Import panel no longer says differences wait for review once the import proposal has been
+  applied or dismissed; it shows the proposal's status.
+- A failover relationship whose scopes Windows already holds in another relationship (made by hand, or renamed on
+  Windows) made every push fail with the cmdlet's error. It is now left out with a reason ("not pushed") and the rest
+  of the push goes ahead.
+
 ## [0.1.1] - 2026-10-29
 
 Two fixes found on Windows Server 2025. 0.1.x stays on netbox-plugin-dhcp and gets fixes only; new features go to

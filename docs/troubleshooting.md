@@ -83,6 +83,7 @@ The usual ones:
 | `changed on Windows since NetBox last pushed it` | Someone edited it on Windows. Import it back, or delete it on Windows by hand |
 | `NetBox holds more than one object for this Windows object` | Delete the extra subnet, reservation or option in NetBox |
 | `option 1 is the subnet mask` / `option 51 is the lease time` | Remove the option from NetBox; the prefix and the valid lifetime set them |
+| `scope(s) ... are already in failover relationship ... on Windows` | Windows holds those scopes in a relationship NetBox does not have (made by hand, or renamed on Windows). Import it, or remove the scopes from it on Windows |
 
 **DHCP 20007 when deleting a scope.** The scope still has leases. The plugin never forces the delete; it succeeds on a
 later push once the leases are gone, or delete the scope on Windows by hand.

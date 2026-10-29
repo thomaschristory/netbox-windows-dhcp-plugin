@@ -158,6 +158,8 @@ the Windows object is kept as it is.
   policy NetBox does not hold at the same level;
 - a superscope or failover relationship without scopes, a failover relationship whose partner has no Windows server
   in NetBox, or a hot standby relationship without the primary server's role;
+- a failover relationship that would take a scope Windows already holds in another relationship NetBox does not
+  manage (a scope is in one relationship at most): import that relationship, or remove the scope from it on Windows;
 - DHCPv6 vendor classes, and a DHCPv6 option value with a policy (Windows has no DHCPv6 policies).
 
 ### Refused while pushing

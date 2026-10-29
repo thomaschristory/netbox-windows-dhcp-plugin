@@ -5,7 +5,7 @@ A NetBox plugin that keeps Microsoft Windows DHCP servers in step with the data 
 
 **Documentation: https://thomaschristory.github.io/netbox-windows-dhcp-plugin/**
 
-> **Status: 0.1.1, a fix release of the first version (0.1.x: fixes only).** Every v1 feature is built and tested against an in-memory fake server and
+> **Status: 0.1.2, a fix release of the first version (0.1.x: fixes only).** Every v1 feature is built and tested against an in-memory fake server and
 > PowerShell stubs, and the lab tests have run in full against two Windows Server 2022 DHCP servers (import, push,
 > leases and failover, over WinRM HTTP and HTTPS and over SSH). Kerberos and SSH key authentication have not been
 > tried on a real server yet (see the
