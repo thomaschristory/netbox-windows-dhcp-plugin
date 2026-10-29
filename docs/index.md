@@ -4,8 +4,8 @@ A NetBox plugin that keeps Microsoft Windows DHCP servers and the data of
 [netbox-plugin-dhcp](https://github.com/sys4/netbox-plugin-dhcp) in step, in both directions, over WinRM or SSH.
 
 !!! note "First release"
-    0.1.1 fixes two problems found on Windows Server 2025 in 0.1.0, the first release. Every v1 feature is built and tested against an in-memory fake server and PowerShell
-    stubs, and the lab tests have run in full against two Windows Server 2022 DHCP servers, over WinRM (HTTP and
+    0.1.1 fixes two problems found on Windows Server 2025 in 0.1.0, the first release. Every v1 feature is built
+    and tested against an in-memory fake server and PowerShell stubs, and the lab tests have run in full against two Windows Server 2022 DHCP servers, over WinRM (HTTP and
     HTTPS) and SSH; release candidate testers ran Windows Server 2025. Kerberos and SSH keys have not been tried on a
     real server yet (see [Limitations](limitations.md)). Try it on a lab server before a production one.
 
