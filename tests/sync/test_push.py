@@ -321,6 +321,29 @@ def test_unmanaged_failover_keeps_its_scope(client, fake):
     assert "not managed by NetBox" in by_key(p)["scope", "10.1.0.0"]
 
 
+def test_failover_for_scopes_in_another_relationship_is_not_pushed(client, fake):
+    # Windows holds the scope in "ha"; NetBox, unaware of it, wants it in "campus". Windows would refuse the create.
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    managed.pop(("failover", "ha"))
+    source = [failover(name="campus") if r.kind == "failover" else r for r in wanted()]
+    p, result = run(client, source, managed)
+    reason = by_key(p)["failover", "campus"]
+    assert "already in failover relationship HA on Windows" in reason
+    assert not result.failed
+    assert set(fake.failovers) == {"ha"}
+
+
+def test_failover_moves_its_scopes_when_the_push_deletes_the_old_relationship(client, fake):
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    source = [failover(name="campus") if r.kind == "failover" else r for r in wanted()]
+    p, result = run(client, source, managed)
+    assert ("failover", "campus") not in by_key(p)
+    assert not result.failed, result.failed
+    assert set(fake.failovers) == {"campus"}
+
+
 def test_every_kind_is_adopted_with_the_same_fingerprint_from_both_sides(client):
     _, first = run(client, wanted())
     for record in windows_records(client):

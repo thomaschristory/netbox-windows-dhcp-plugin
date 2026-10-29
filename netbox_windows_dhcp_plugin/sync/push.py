@@ -513,6 +513,7 @@ def plan(
             deleting.discard(key)
             continue
         result.changes.append(change)
+    result.changes = _scopes_in_other_relationships(result.changes, target_index, result)
     result.changes = _membership_updates_first(result.changes, target_index)
     result.changes = _order_policies(result.changes, source_index, target_index, result)
     return result
@@ -568,6 +569,44 @@ def _protect_memberships(
         if not diff([Record(c.kind, c.key, fields)], [Record(c.kind, c.key, c.before or {})], equal=equal):
             continue  # nothing else to change
         out.append(Change(c.action, c.kind, c.key, before=c.before, after=fields))
+    return out
+
+
+def _scopes_in_other_relationships(changes: list[Change], target: Mapping[Key, Record], plan: Plan) -> list[Change]:
+    """
+    Windows puts a scope in one failover relationship at most, and refuses to add it to a second one. A relationship
+    NetBox does not know about (made by hand, or renamed on Windows) would make every push fail on it: leave such a
+    create or update out with a reason instead, unless this push deletes the other relationship first.
+    """
+    deleted = {c.key for c in changes if c.kind == "failover" and c.action == DELETE}
+    holder = {}
+    for (kind, key), record in target.items():
+        if kind == "failover" and key not in deleted:
+            for scope_id in record.fields.get("scope_ids") or []:
+                holder[scope_id] = record.fields.get("name") or key
+    out = []
+    for c in changes:
+        if c.kind != "failover" or c.action == DELETE:
+            out.append(c)
+            continue
+        before = set((c.before or {}).get("scope_ids") or [])
+        taken = [
+            s
+            for s in (c.after or {}).get("scope_ids") or []
+            if s not in before and s in holder and holder[s].lower() != c.key
+        ]
+        if not taken:
+            out.append(c)
+            continue
+        others = ", ".join(sorted({holder[s] for s in taken}))
+        plan.skipped.append(
+            Skip(
+                c,
+                f"scope(s) {', '.join(taken)} are already in failover relationship {others} on Windows, which a "
+                "scope can only be in once; import that relationship into NetBox, or remove the scopes from it on "
+                "Windows",
+            )
+        )
     return out
 
 

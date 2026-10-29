@@ -19,7 +19,7 @@ from django.utils import timezone
 from utilities.testing import TestCase
 
 from netbox_windows_dhcp_plugin import import_status
-from netbox_windows_dhcp_plugin.choices import SyncKindChoices, SyncStatusChoices
+from netbox_windows_dhcp_plugin.choices import ProposalStatusChoices, SyncKindChoices, SyncStatusChoices
 from netbox_windows_dhcp_plugin.jobs import ImportJob
 from netbox_windows_dhcp_plugin.models import ImportProposal, SyncRun
 
@@ -135,6 +135,13 @@ class StandaloneImportStatusTest(ImportStatusTestBase):
         self.assertNotIn("Main has not been changed", html)
         self.assertNotIn("hx-get", panel(html).split(">", 1)[0])
         self.assertNotIn("branch", panel(html).lower())
+
+    def test_an_applied_proposal_no_longer_waits_for_review(self):
+        run = self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED))
+        ImportProposal.objects.create(windows_server=self.server, sync_run=run, status=ProposalStatusChoices.APPLIED)
+        html = self.server_page()
+        self.assertIn("2 differences were sent for review in an import proposal, now closed.", html)
+        self.assertNotIn("wait for review", html)
 
     def test_a_newer_queued_job_keeps_the_previous_result(self):
         self.make_run(self.job(JobStatusChoices.STATUS_COMPLETED), changes=0)

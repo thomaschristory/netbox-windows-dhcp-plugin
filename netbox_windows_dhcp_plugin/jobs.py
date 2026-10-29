@@ -312,6 +312,24 @@ class ImportJob(JobRunner):
             sync_run.summary = {"applied": 0}
 
 
+def push_log_line(host, outcome, dry_run):
+    """The job log's last line: what a dry run plans, or what a push really changed (not what it planned)."""
+    planned = len(outcome.plan.changes)
+    if dry_run:
+        return f"Push to {host}: would change {planned} object(s)"
+    result = outcome.result
+    line = f"Push to {host}: changed {len(result.applied)} of {planned} object(s)" if planned else f"Push to {host}"
+    if result.failed:
+        line += f", {len(result.failed)} failed"
+    if result.skipped:
+        line += f", {len(result.skipped)} not attempted"
+    if outcome.replication_errors:
+        line += f", failover replication failed ({len(outcome.replication_errors)})"
+    if not planned and not outcome.replication_errors:
+        line += ": nothing to change"
+    return line
+
+
 class PushJob(JobRunner):
     """Make a Windows server match NetBox: create, update and delete what differs, in dependency order."""
 
@@ -377,8 +395,7 @@ class PushJob(JobRunner):
                 sync_run.error = "\n".join(outcome.errors())
             else:
                 sync_run.status = SyncStatusChoices.COMPLETED
-            verb = "would change" if self.dry_run else "changed"
-            self.logger.info(f"Push to {server.host}: {verb} {len(outcome.plan.changes)} object(s)")
+            self.logger.info(push_log_line(server.host, outcome, self.dry_run))
         finally:
             if sync_run.status == SyncStatusChoices.RUNNING:
                 sync_run.status = SyncStatusChoices.FAILED
