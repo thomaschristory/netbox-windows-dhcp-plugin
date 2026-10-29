@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-29
+
+The plugin is standalone: it no longer needs netbox-plugin-dhcp. This is a fresh start, with no data migration from
+0.1.x: read the upgrade notes before upgrading. Installs that stay on netbox-plugin-dhcp keep the 0.1.x line.
+
 ### Changed (breaking)
 
 - The plugin is standalone: it no longer depends on netbox-plugin-dhcp and holds the whole Windows DHCP
@@ -28,7 +33,8 @@ All notable changes to this project are documented here. The format follows
 - **No upgrade path from 0.1.x: 0.2.0 is a fresh start.** Its migration drops the plugin's 0.1.x tables, so the
   Windows servers' connection settings, sync state, sync runs and import proposals are lost. Data in
   netbox-plugin-dhcp is left untouched. Before upgrading, merge or delete open import branches; after it, recreate
-  the Windows servers and import each one again. See [Installation](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-01x).
+  the Windows servers and import each one again. Remove `netbox_dhcp` from `PLUGINS` if it was there only for this
+  plugin. See [Installation](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-01x).
   To stay on netbox-plugin-dhcp, pin `netbox-windows-dhcp-plugin<0.2`: the 0.1.x line (branch `release/0.1`) keeps
   getting bug fixes, but no new features.
 
@@ -45,7 +51,13 @@ All notable changes to this project are documented here. The format follows
   the same for its prefix and IP range.
 - Option values on reservations through the REST API (netbox-plugin-dhcp could not do it,
   [netbox-plugin-dhcp#69](https://github.com/sys4/netbox-plugin-dhcp/issues/69)).
-- Option values keep commas and leading or trailing spaces, in NetBox and on the way to and from Windows.
+
+### Fixed
+
+- A push that failed on some changes logged "changed N object(s)" with the number planned. The job log now gives
+  what was applied, failed and not attempted.
+- A Windows server's Import panel no longer says differences wait for review once the import proposal has been
+  applied or dismissed; it shows the proposal's status.
 
 ## [0.1.1] - 2026-10-29
 

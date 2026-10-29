@@ -72,7 +72,7 @@ netbox-plugin-dhcp (latest 0.1.1, 2026-10-29).
      ready) wait for the owner's go.
    - **Fixes from testing 0.1.0rc1:** CSRF tokens on the plugin's buttons (#19); no Edit, Clone or Add buttons
      leading to "None" on read-only pages (#23).
-7. **In progress.** Standalone (0.2.0): drop netbox-plugin-dhcp.
+7. **Done (0.2.0, 2026-10-29).** Standalone (0.2.0): drop netbox-plugin-dhcp.
    - **Why:** netbox-plugin-dhcp models DHCP the way Kea does, so every Windows concept needed a side model or a
      workaround (`<server>/<scope id>` names, comma-escaped option values, covering prefixes for superscopes, subnet
      ID allocation across branches, upstream bugs such as netbox-plugin-dhcp issues #68 and #69).
@@ -89,12 +89,13 @@ netbox-plugin-dhcp (latest 0.1.1, 2026-10-29).
    - **Upgrade:** no data migration. The new migration drops the 0.1.x tables; users merge or delete open import
      branches, upgrade, remove `netbox_dhcp` from `PLUGINS` if unused, migrate, run `remove_stale_contenttypes`,
      recreate the Windows servers and import them again.
-   - **Release lines (2026-10-29):** `main` becomes the 0.2 line when this milestone merges; `release/0.1` takes
-     backports through PRs. The first, the two fixes below, shipped as 0.1.1.
+   - **Release lines (2026-10-29):** `main` is the 0.2 line; `release/0.1` takes backports through PRs. The first, the two fixes below, shipped as 0.1.1.
    - **Lab run (2026-10-28):** the demo plan on two Windows Server 2025 servers, without branching (import into a
      proposal), passed after two fixes: option values are set with `-Force`, since Windows refuses a DNS server
      address it cannot query, and failover Set sends `-Mode` only on a switch, since Windows refuses the current
      mode. `make lab-seed` and `make lab-wipe` now fill the lab servers with a realistic configuration to import.
    - **Done:** migration and query-count baselines regenerated.
-   - **Still to do:** import the seeded lab configuration, retake the screenshots that show 0.1.x
-     (netbox-plugin-dhcp) pages, then the version bump and the 0.2.0 release.
+   - **Docs (2026-10-29):** every page checked against the code; the screenshots of netbox-plugin-dhcp forms removed,
+     the read-only ones retaken on 0.2.0.
+   - **Left after the release:** retake the remaining 0.1.x-era screenshots (walkthrough forms, failover, branching,
+     sync runs) and run `make test-lab` and `make lab-e2e` on 0.2.0.
