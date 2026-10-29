@@ -662,13 +662,15 @@ if ($p.all) { $sel['All'] = $true }
 $out = @(Get-DhcpServerv4OptionValue @cn @sel | ForEach-Object { ConvertTo-WdOption $_ })
 """,
 )
-# Set-DhcpServerv4OptionValue is create-or-overwrite, so create == update.
+# Set-DhcpServerv4OptionValue is create-or-overwrite, so create == update. -Force skips the check that each DNS
+# server address (option 6) answers DNS: without it Windows refuses any address it cannot query from where it runs
+# ("is not a valid DNS server"), which NetBox has no way to know. The DHCP console offers the same skip.
 S_OPTION_SET = Script(
     "option.set",
     _HELPERS
     + _OPTION_FUNC
     + r"""
-Set-DhcpServerv4OptionValue @cn @sel -OptionId $p.option_id -Value ([string[]]@($p.value))
+Set-DhcpServerv4OptionValue @cn @sel -OptionId $p.option_id -Value ([string[]]@($p.value)) -Force
 $out = Get-WdOption
 """,
 )
@@ -1373,7 +1375,8 @@ S_V6OPTION_SET = Script(
     _HELPERS
     + _V6OPTION_FUNC
     + r"""
-Set-DhcpServerv6OptionValue @cn @sel -OptionId $p.option_id -Value ([string[]]@($p.value))
+# -Force: no DNS server check (option 23), as for IPv4.
+Set-DhcpServerv6OptionValue @cn @sel -OptionId $p.option_id -Value ([string[]]@($p.value)) -Force
 $out = Get-WdOptionV6
 """,
 )
@@ -1846,6 +1849,8 @@ class DhcpClient:
 
     def set_failover(self, f: FailoverRelationship, shared_secret: str = "") -> FailoverRelationship:
         """Update settings. Scope membership changes go through add/remove_failover_scopes.
+
+        Leave ``mode`` empty unless it changes: Windows refuses the mode the relationship is already in.
 
         ``server_role`` is not sent: Windows cannot change it in place (issue #33). Remove and re-add the relationship
         to change it.

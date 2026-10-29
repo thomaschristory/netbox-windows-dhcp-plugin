@@ -1,10 +1,8 @@
 name: docs
 
-# Publishes the documentation site to GitHub Pages for each release tag, so the site describes the released version.
-# Run it by hand from main to publish the current docs between releases.
+# On the release/0.1 maintenance line, 0.1.x tags do not publish the site: it describes main (0.2 and later). Run it
+# by hand from main to publish the current docs.
 on:
-  push:
-    tags: ["v*"]
   workflow_dispatch:
 
 permissions: {}

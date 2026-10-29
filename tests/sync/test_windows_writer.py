@@ -368,6 +368,18 @@ def test_failover_update_adds_and_removes_scopes_and_refuses_a_new_partner(clien
         )
 
 
+def test_failover_update_sends_the_mode_only_when_it_changes(client, fake):
+    """Lab, Windows Server 2025: adding a scope failed with "already in LoadBalance mode"."""
+    push(client, wanted())
+    fake.scopes["10.2.0.0"] = {**fake.scopes["10.1.0.0"], "scope_id": "10.2.0.0"}
+    fake.calls.clear()
+    before = failover().fields
+    after = failover(scope_ids=["10.1.0.0", "10.2.0.0"]).fields
+    WindowsWriter(client).apply(Change("update", "failover", "ha", before=before, after=after))
+    assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0", "10.2.0.0"]
+    assert [c.params["mode"] for c in fake.calls if c.op == "failover.set"] == [""]
+
+
 def hot_standby(**over):
     fields = {"mode": "hotstandby", "server_role": "active", "load_balance_percent": None, "reserve_percent": 5}
     return failover(**{**fields, **over})

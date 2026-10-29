@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-29
+
+Two fixes found on Windows Server 2025. 0.1.x stays on netbox-plugin-dhcp and gets fixes only; new features go to
+0.2, which no longer needs netbox-plugin-dhcp.
+
 ### Added
 
 - Documentation: a Reservations page (create, type, options, change, delete) and a step-by-step failover
@@ -12,6 +17,14 @@ All notable changes to this project are documented here. The format follows
   Windows Server 2025 servers.
 - Documentation: Reservations through the API, an end-to-end script that creates a reservation with the REST API,
   waits for the push and deletes it again, with the calls, the output and the errors to expect.
+
+### Fixed
+
+- Pushing a DNS server option (6, or 23 for DHCPv6) no longer fails with "is not a valid DNS server" when the
+  Windows server cannot query that address: option values are set with `-Force`, which skips the check.
+- Adding or removing scopes in an existing failover relationship, or changing its settings, no longer fails with
+  "Failover relationship ... is already in LoadBalance mode" (Windows Server 2025): the mode is sent only when it
+  changes.
 
 ## [0.1.0] - 2026-10-27
 
