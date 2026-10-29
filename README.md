@@ -11,8 +11,8 @@ over WinRM or SSH.
 > feature is built and tested against an in-memory fake server and PowerShell stubs. The Windows side (scripts,
 > transports, sync rules) is that of 0.1.x, apart from option values now being lists; 0.1.0's lab tests ran in full
 > against two Windows Server 2022 DHCP servers (import, push, leases and failover, over WinRM HTTP and HTTPS and over
-> SSH). 0.2.0 has been run end to end on two Windows Server 2025 servers (import, push, failover); its lab test suite
-> run is still to come. Kerberos and SSH key authentication have not been tried on a real server yet (see the
+> SSH). 0.2.0 passed the full lab tests (`make test-lab`, `make lab-e2e`) on two Windows Server 2025 servers over WinRM
+> HTTP with CredSSP. Kerberos and SSH key authentication have not been tried on a real server yet (see the
 > [limitations](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/limitations/)). Try it on a lab server
 > first.
 

@@ -4,16 +4,15 @@
 
 Every feature is tested against an in-memory fake Windows server and against the real PowerShell scripts run with stub
 cmdlets. 0.2.0 keeps the Windows side of 0.1.x (scripts, transports, sync rules; option values are now lists) and
-changed the NetBox models around it. 0.2.0 has been run end to end on two Windows Server 2025 servers (import, push,
-failover); the lab test suite (`make test-lab`, `make lab-e2e`) has not yet been rerun on 0.2.0. With 0.1.0, the lab
-tests (see [Development](development.md#lab-tests)) ran in full against two Windows Server 2022 DHCP servers in a
-workgroup: every cmdlet the plugin uses, a full import, push of creates, updates and deletes, the Leases tab, and a
-failover relationship created, replicated and removed through a push (see
-[Failover](failover.md#connecting-to-the-servers)). Testers of the release candidates ran Windows Server 2025. What they
-found is fixed. The walkthroughs in [Reservations](reservations.md) and
-[Failover](failover.md#a-working-failover-step-by-step) were run on two Windows Server 2025 servers (2026-10-27):
-reservations created, changed, given an option and deleted, and a load balance relationship created and replicated
-through pushes over WinRM with CredSSP. The lab test suite itself has not been run on Windows Server 2025.
+changed the NetBox models around it. 0.2.0 passed the full lab tests (`make test-lab`, 31 tests, and `make lab-e2e`) on
+two Windows Server 2025 servers over WinRM HTTP with CredSSP (2026-10-29). With 0.1.0, the lab tests (see
+[Development](development.md#lab-tests)) ran in full against two Windows Server 2022 DHCP servers in a workgroup: every
+cmdlet the plugin uses, a full import, push of creates, updates and deletes, the Leases tab, and a failover relationship
+created, replicated and removed through a push (see [Failover](failover.md#connecting-to-the-servers)). Testers of the
+release candidates ran Windows Server 2025. What they found is fixed. The walkthroughs in
+[Reservations](reservations.md) and [Failover](failover.md#a-working-failover-step-by-step) were run on two Windows
+Server 2025 servers (2026-10-27): reservations created, changed, given an option and deleted, and a load balance
+relationship created and replicated through pushes over WinRM with CredSSP.
 
 Connections checked on a real server: WinRM over HTTP with NTLM and CredSSP, WinRM over HTTPS with certificate
 verification and NTLM, CredSSP or Basic, and SSH with a password (failover included over CredSSP and SSH).
