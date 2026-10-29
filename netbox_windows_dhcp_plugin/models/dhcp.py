@@ -361,10 +361,22 @@ class Reservation(NetBoxModel):
                 raise ValidationError(_("DUID and IAID are for DHCPv6 reservations."))
             if self.mac_address_id and self.client_id:
                 raise ValidationError({"client_id": _("Set a MAC address or a client ID, not both.")})
+            # Windows matches an IPv4 reservation on its client ID: without one the push cannot create it.
+            if not (self.mac_address_id or self.client_id):
+                raise ValidationError({"mac_address": _("Set the client's MAC address, or a client ID.")})
         elif self.mac_address_id or self.client_id:
             raise ValidationError(
                 _("DHCPv6 reservations are matched on DUID and IAID, not a MAC address or client ID.")
             )
+        else:
+            # Windows matches a DHCPv6 reservation on both: without them the push cannot create it.
+            missing = {}
+            if not self.duid:
+                missing["duid"] = _("A DHCPv6 reservation needs the client's DUID.")
+            if self.iaid is None:
+                missing["iaid"] = _("A DHCPv6 reservation needs the client's IAID.")
+            if missing:
+                raise ValidationError(missing)
 
 
 class ExclusionRange(NetBoxModel):

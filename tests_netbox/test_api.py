@@ -136,7 +136,12 @@ class ReservationAPITest(*STANDARD):
             reservation(lan, f"10.1.0.{i}/24", client_id=f"aa-{i}")
         cls.create_data = [
             {"scope": lan.pk, "ip_address": ip_address("10.1.0.50/24").pk, "client_id": "aa-50", "name": "a"},
-            {"scope": lan.pk, "ip_address": ip_address("10.1.0.51/24").pk, "reservation_type": "dhcp"},
+            {
+                "scope": lan.pk,
+                "ip_address": ip_address("10.1.0.51/24").pk,
+                "client_id": "aa-51",
+                "reservation_type": "dhcp",
+            },
             {"scope": v6.pk, "ip_address": ip_address("2001:db8:1::10/64").pk, "duid": "00-01-00-01", "iaid": 7},
         ]
 

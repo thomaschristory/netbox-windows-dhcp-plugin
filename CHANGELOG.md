@@ -52,6 +52,9 @@ The plugin is standalone: it no longer needs netbox-plugin-dhcp. This is a fresh
 
 ### Fixed
 
+- NetBox accepted an IPv4 reservation with neither a MAC address nor a client ID, or a DHCPv6 one without DUID or
+  IAID, which the push could then only leave out ("not pushed"). The form, the REST API and CSV import now refuse
+  them. Existing incomplete reservations are kept; editing one asks for the missing client.
 - A push that failed on some changes logged "changed N object(s)" with the number planned. The job log now gives
   what was applied, failed and not attempted.
 - A Windows server's Import panel no longer says differences wait for review once the import proposal has been

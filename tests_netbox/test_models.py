@@ -110,6 +110,17 @@ class ReservationCleanTest(TestCase):
         obj = Reservation(scope=self.scope, ip_address=ip_address("10.1.0.52/24"), mac_address=mac, client_id="x")
         self.assertIn("client_id", errors(obj))
 
+    def test_v4_reservation_needs_a_mac_or_a_client_id(self):
+        # Windows matches an IPv4 reservation on its client: one without either could never be pushed.
+        obj = Reservation(scope=self.scope, ip_address=ip_address("10.1.0.53/24"), name="printer")
+        self.assertIn("mac_address", errors(obj))
+
+    def test_v6_reservation_needs_a_duid_and_an_iaid(self):
+        obj = Reservation(scope=self.scope6, ip_address=ip_address("2001:db8:1::12/64"))
+        self.assertEqual({"duid", "iaid"}, set(errors(obj)))
+        obj = Reservation(scope=self.scope6, ip_address=ip_address("2001:db8:1::13/64"), duid="00-01-00-01")
+        self.assertEqual({"iaid"}, set(errors(obj)))
+
     def test_v6_reservation_has_no_mac(self):
         mac = MACAddress.objects.create(mac_address="00:15:5d:00:00:02")
         obj = Reservation(scope=self.scope6, ip_address=ip_address("2001:db8:1::10/64"), mac_address=mac)

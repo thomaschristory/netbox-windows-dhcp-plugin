@@ -38,6 +38,7 @@ How the fields reach Windows:
 
 - **name**: the Windows reservation **name**. **description**: the Windows description.
 - **mac_address**: the client ID. For a client identified by something else, leave it out and set **client_id**.
+  One of the two is required.
 - **ip_address**: the reserved address, inside the scope's prefix.
 - **reservation_type**: `dhcp`, `bootp` or `both`. Left out, it is `both`, the Windows default.
 - An option value names its option by **code** and holds its **value** as a list of strings, one per Windows value
@@ -317,6 +318,8 @@ records the branch name. Follow it the same way, with `created__gte` set to the 
 | Answer | Meaning |
 |---|---|
 | `400` on the reservation, `ip_address` | The address is outside the scope's prefix |
+| `400` on the reservation, `mac_address` | Neither a MAC address nor a client ID (IPv4) |
+| `400` on the reservation, `duid` or `iaid` | A DHCPv6 reservation without its DUID or IAID |
 | `400` on the reservation | The scope already has a reservation for that address, a MAC address and a client ID together, or DUID and IAID on an IPv4 reservation |
 | `400` on the option value | The value is not a non-empty list of strings, the scope, reservation or class belongs to another server, the family does not match the scope or the class, the reservation is in another scope than the one given, the policy does not fit (with a user class, on a reservation, or from another server or scope), or the server already holds a value for that code at that level (with the same classes and policy) |
 | `409` from `push/`, `already queued` | A push is waiting to run (sync enabled queued it): wait for its sync run |

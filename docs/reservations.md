@@ -37,7 +37,9 @@ Windows server after each change.
 | Type | DHCP, BOOTP or Both (the default) | the supported types |
 
 MAC address, client ID and type sit under **IPv4 client**; DUID and IAID, under **DHCPv6 client**, are for DHCPv6
-reservations (see [DHCPv6](dhcpv6.md)). A scope holds one reservation per IP address.
+reservations (see [DHCPv6](dhcpv6.md)). Windows matches a reservation on its client, so an IPv4 reservation needs a
+MAC address or a client ID (one of the two), and a DHCPv6 one a DUID and an IAID: NetBox refuses to save it without
+them. A scope holds one reservation per IP address.
 
 Saving queues a push to the Windows server. Its sync run (**Windows DHCP > Sync runs**, or the **Sync runs** table
 on the Windows server) lists what it planned and applied: one reservation created, with type `both`, the default.
