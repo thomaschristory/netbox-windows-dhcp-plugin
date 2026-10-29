@@ -52,6 +52,9 @@ The plugin is standalone: it no longer needs netbox-plugin-dhcp. This is a fresh
 
 ### Fixed
 
+- A failover relationship whose scopes Windows already holds in another relationship (made by hand, or renamed on
+  Windows) made every push fail with the cmdlet's error. It is now left out with a reason ("not pushed") and the rest
+  of the push goes ahead.
 - NetBox accepted an IPv4 reservation with neither a MAC address nor a client ID, or a DHCPv6 one without DUID or
   IAID, which the push could then only leave out ("not pushed"). The form, the REST API and CSV import now refuse
   them. Existing incomplete reservations are kept; editing one asks for the missing client.
