@@ -1,48 +1,51 @@
 # Reservations
 
 A DHCP reservation gives one client, known by its MAC address, the same IPv4 address every time. In NetBox it is a
-netbox-plugin-dhcp **Host reservation** in the subnet of a Windows scope; the plugin pushes it to the Windows
-server and keeps the two in step. This page walks through creating one, changing it, giving it options and deleting
+**Reservation** (**Windows DHCP > Reservations**) in a Windows scope; the plugin pushes it to the Windows server and
+keeps the two in step. This page walks through creating one, changing it, giving it options and deleting
 it, with what Windows shows after each push. To do the same from a script, see
 [Reservations through the API](reservations-api.md).
 
 The screenshots come from a lab: NetBox without branching, two Windows Server 2025 DHCP servers known to NetBox as
-`dhcp01.example.com` and `dhcp02.example.com`, with **Sync enabled** on both, so every save queues a push. With
-netbox-branching, make the same changes in a branch: the push runs when the branch is merged (see
-[Push to Windows](push.md#when-a-push-runs)). Without sync enabled, click **Dry run** and then **Sync now** on the
+`dhcp01` and `dhcp02` (hosts `dhcp01.example.com` and `dhcp02.example.com`), with **Sync enabled** on both, so every
+save queues a push. With netbox-branching, make the same changes in a branch: the push runs when the branch is merged
+(see [Push to Windows](push.md#when-a-push-runs)). Without sync enabled, click **Dry run** and then **Sync now** on the
 Windows server after each change.
 
 ## Before you start
 
-- The scope exists in NetBox and on Windows: a sys4 subnet with a pool, on the DHCP server of a Windows server (see
+- The scope exists in NetBox and on Windows (see
   [Example: a new scope from NetBox](push.md#example-a-new-scope-from-netbox), or import an existing scope). Here
   the scope is `198.18.60.0/24`, named `VLAN60-Office` on Windows.
-- The reservation's IP address exists in **IPAM > IP Addresses** (here `198.18.60.20/24`) and its MAC address in
-  **Devices > MAC Addresses** (here `02:4E:42:60:00:20`). The reservation form selects existing objects; its **+**
-  button next to the hardware address creates a MAC address on the spot.
+- The reservation points at an IP address (here `198.18.60.20/24`) and a MAC address (here `02:4E:42:60:00:20`).
+  Pick existing ones in the form, or create them from it: the **+** button next to each field opens NetBox's own
+  IP address or MAC address form in a pop-up and selects the new object when you save it.
 
 ## Create a reservation
 
-**DHCP > Host Reservations > Add** (or **Add Object > Host Reservation** on the subnet):
+**Windows DHCP > Reservations > Add**:
 
 | Field | Value | On Windows |
 |---|---|---|
-| Name | Unique among all reservations in NetBox. Imports use `<server>/<scope>/<ip>`, so `dhcp01/198.18.60.0/198.18.60.20` keeps them consistent | not sent |
-| Description | `printer01` | the reservation **name** |
-| Subnet (tab) | the scope's subnet | the scope |
-| Hardware Address | the MAC address | the client ID |
-| IPv4 Address | the reserved address, inside the subnet | the IP address |
+| Server | optional, only narrows the scope list | the server |
+| Scope | the scope | the scope |
+| IP address | the reserved address, inside the scope's prefix | the IP address |
+| MAC address | the MAC address | the client ID |
+| Client ID | empty (only for clients identified by something else than a MAC address) | the client ID |
+| Name | `printer01` | the reservation **name** |
+| Description | optional | the reservation **description** |
+| Type | DHCP, BOOTP or Both (the default) | the supported types |
 
-Comments become the Windows **description** (set them through the REST API for now, see
-[How objects map](mapping.md#names)). The other fields (DUID, circuit ID, flex ID, client classes, BOOTP) have no
-Windows counterpart on an IPv4 reservation.
+MAC address, client ID and type sit under **IPv4 client**; DUID and IAID, under **DHCPv6 client**, are for DHCPv6
+reservations (see [DHCPv6](dhcpv6.md)). Windows matches a reservation on its client, so an IPv4 reservation needs a
+MAC address or a client ID (one of the two), and a DHCPv6 one a DUID and an IAID: NetBox refuses to save it without
+them. A scope holds one reservation per IP address.
 
-![A new host reservation: name dhcp01/198.18.60.0/198.18.60.20, description printer01, subnet dhcp01/198.18.60.0,
-hardware address 02:4E:42:60:00:20, IPv4 address 198.18.60.20/24](images/reservation-form.webp)
+![The reservation form: server dhcp01, scope dhcp01/198.18.60.0, IP address 198.18.60.20, name printer01, MAC
+address 02:4E:42:60:00:20, type Both](images/reservation-form.webp)
 
 Saving queues a push to the Windows server. Its sync run (**Windows DHCP > Sync runs**, or the **Sync runs** table
-on the Windows server) lists what it planned and applied: one reservation created, with type `both` since no
-reservation settings say otherwise.
+on the Windows server) lists what it planned and applied: one reservation created, with type `both`, the default.
 
 ![The sync run of the push: completed, one reservation created, printer01 at 198.18.60.20 with client ID
 02-4e-42-60-00-20](images/reservation-push.webp)
@@ -57,19 +60,20 @@ printer01](images/reservation-windows-console.webp)
 
 ## Reservation type (DHCP, BOOTP or both)
 
-Windows reservations answer DHCP clients, BOOTP clients or both. sys4 has no field for that, so the plugin keeps it
-in **Windows DHCP > Reservation settings**. Without settings, a reservation is pushed as **Both**, the Windows
-default. To change it, **Add** reservation settings for the host reservation and pick the type (the IAID field is
-for DHCPv6 reservations only):
+Windows reservations answer DHCP clients, BOOTP clients or both. The reservation's **Type** says which;
+**Both** is the Windows default. To change it, edit the reservation and pick the type:
 
-![A new Windows reservation: host reservation dhcp01/198.18.60.0/198.18.60.20, type DHCP](images/reservation-windows-settings.webp)
+![The IPv4 client part of the reservation's edit form: MAC address 02:4E:42:60:00:20, no client ID, type
+DHCP](images/reservation-windows-settings.webp)
 
 ## Reservation options
 
-Option values on a reservation override the scope and server values for that one client. On the host reservation,
-**Add Object > Option**, pick the option definition and enter the value. Here option 15 (DNS domain name):
+Option values on a reservation override the scope and server values for that one client. **Windows DHCP > Option
+values > Add**: the server, the address family, the code, the value as a list of strings and, under **Set on**, the
+reservation (its scope is filled in from it). Here option 15 (DNS domain name), value `["print.example.com"]`:
 
-![A new option on the reservation: dhcp4 domain-name (15), data print.example.com](images/reservation-option-form.webp)
+![A new option value: server dhcp01, IPv4, code 15, value ["print.example.com"], set on the reservation
+198.18.60.20](images/reservation-option-form.webp)
 
 Here the two saves above went out in one push, as saves made close together do: the reservation updated from `both`
 to `dhcp`, and the option value created on it.
@@ -95,8 +99,8 @@ Type        : Dhcp
 Description :
 ```
 
-Windows also shows the reservation's options. The console also lists the values the reservation inherits from the scope (003 Router here); only
-015 belongs to the reservation:
+Windows also shows the reservation's options. The console also lists the values the reservation inherits from the
+scope (003 Router here); only 015 belongs to the reservation:
 
 ![The reservation's options in the Windows DHCP console: 015 DNS Domain Name print.example.com and the inherited
 003 Router 198.18.60.1](images/reservation-windows-options.webp)
@@ -111,22 +115,23 @@ OptionId   Name            Type       Value                VendorClass     UserC
 
 ## Change a reservation
 
-Edit the host reservation (or its MAC address, reservation settings or options) in NetBox; the next push updates
-Windows. A changed description renames the reservation on Windows. An update keeps the reservation's option
-values: the push sends the client ID and type only when they change, and puts back any option value Windows drops
-(see [Push to Windows](push.md#order)).
+Edit the reservation (or its MAC address or option values) in NetBox; the next push updates Windows. A changed
+name renames the reservation on Windows. An update keeps the reservation's option values: the push sends the client
+ID and type only when they change, and puts back any option value Windows drops (see
+[Push to Windows](push.md#order)).
 
 ## Delete a reservation
 
-Delete the host reservation in NetBox. The next push removes it from Windows, as long as NetBox manages it (the
-plugin created it, adopted it or imported it). A reservation made by hand on Windows is never deleted by a push: it
-counts as **unmanaged** and comes into NetBox with the next import.
+Delete the reservation in NetBox (its option values go with it; the IP and MAC address objects stay in NetBox). The
+next push removes it from Windows, as long as NetBox manages it (the plugin created it, adopted it or imported it).
+A reservation made by hand on Windows is never deleted by a push: it counts as **unmanaged** and comes into NetBox
+with the next import.
 
 In this example a second reservation, `camera01` at `198.18.60.21`, was created from NetBox and pushed, and a third,
 `handmade01` at `198.18.60.30`, was added on Windows with `Add-DhcpServerv4Reservation`. Deleting `camera01` in
 NetBox gave this push:
 
-![The sync run of the delete: one reservation deleted, camera01 at 198.18.60.21; 16 unmanaged objects
+![The sync run of the delete: one reservation deleted, camera01 at 198.18.60.21; one unmanaged object (handmade01)
 left alone](images/reservation-delete-push.webp)
 
 `camera01` is gone from Windows; `handmade01` stays:

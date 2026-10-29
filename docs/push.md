@@ -14,24 +14,25 @@ within the [safety rules](#what-a-push-will-not-do).
 | Without branching | Every save or delete of a DHCP object: one push per affected server, `push_debounce` seconds (10) after the change is committed, so a burst of edits becomes one push |
 | Always | **Sync now** on the Windows server page, or the REST action |
 
-Nothing is pushed while **Sync enabled** is off on the Windows server. Turning it on does not push the changes made in the
-meantime by itself: run a dry run to see them, then **Sync now**.
+Nothing is pushed while **Sync enabled** is off on the Windows server. Turning it on does not push the changes made
+in the meantime by itself: run a dry run to see them, then **Sync now**.
 
-A change affects a server when it touches one of its sys4 subnets, pools, reservations, options or option
-definitions, one of the plugin's objects for it, or a prefix, IP range, IP address or MAC address one of those points
-at. Moving a subnet from one server to another pushes both. Applying import proposal items does not push.
+A change affects a server when it touches one of its DHCP objects (scopes, reservations, option values and the
+rest), or a prefix, IP range, IP address or MAC address one of its scopes or reservations points at. Moving a scope
+from one server to another pushes both. Applying import proposal items does not push.
 
 A push queued while another for the same server is still waiting to start is not queued twice: the waiting one reads
 the latest NetBox data anyway.
 
 With netbox-branching, edit inside a branch, then merge it (after approval, with change control). The merge queues
-the push, and its sync run names the branch:
+the push, and its sync run names the branch. Here the branch `rename-nas` renames the reservation `app01` to `nas01`:
 
-![A reservation edited inside branch rename-nas: the branch selector shows the active branch](images/branching-edit-in-branch.webp)
+![Editing reservation 198.18.50.101 inside the branch rename-nas: the branch selector at the top shows the active
+branch](images/branching-edit-in-branch.webp)
 
-![Merging the branch: one pending change, commit ticked](images/branching-merge.webp)
+![Merging the branch rename-nas: one pending update, commit ticked](images/branching-merge.webp)
 
-![The push the merge queued: branch rename-nas, one change applied](images/branching-push-after-merge.webp)
+![The push the merge queued: branch rename-nas, one reservation updated](images/branching-push-after-merge.webp)
 
 ## Dry run
 
@@ -41,43 +42,47 @@ reason). It works with sync disabled, so it is the way to check a server before 
 
 ## Example: a new scope from NetBox
 
-A Windows scope is a sys4 subnet with a pool, as [How objects map](mapping.md#scopes-ipv4) describes. To add one to
-`dhcp01`:
+A Windows scope is a plugin **Scope** pointing at a prefix and, for IPv4, an IP range, as
+[How objects map](mapping.md#scopes-ipv4) describes. To add one to `dhcp01`:
 
-1. **IPAM**: the prefix (`198.18.40.0/24`) and the IP range of the pool (`198.18.40.100` to `198.18.40.200`) exist.
-2. **DHCP > Subnets > Add**: name, DHCP server, prefix. The **description** becomes the Windows scope name, the
-   **comments** its description (set them through the API for now, see
-   [How objects map](mapping.md#names)), and the **valid lifetime** its lease duration.
+1. **IPAM**: the prefix (`198.18.70.0/24`) and the IP range the scope hands out (`198.18.70.100` to
+   `198.18.70.200`). Create them in IPAM first, or from the scope form in the next step: the **+** button next to
+   the prefix and IP range fields opens NetBox's own form in a pop-up and selects the new object. The pop-up does
+   not know the prefix chosen in the scope form, so type the range's start and end with the prefix's mask; a range
+   outside the prefix is refused when the scope is saved.
+2. **Windows DHCP > Scopes > Add**: the server, the prefix and the IP range. The **name** is the Windows scope name
+   (`VLAN70-Office`), the **description** its Windows description, and the **lease duration** (seconds) its lease
+   duration; state, type and the other settings default to what Windows gives a new scope.
 
-    ![A new sys4 subnet for dhcp01: name, description VLAN40-Office, DHCP server, prefix](images/scope-1-subnet-form.webp)
+    ![A new scope for dhcp01: name VLAN70-Office, prefix 198.18.70.0/24, IP range 198.18.70.100-200, description,
+    lease duration 691200 seconds (8 days)](images/scope-1-subnet-form.webp)
 
-3. **Add Object > Pool** on the subnet, with the IP range: the scope's start and end.
+3. **Windows DHCP > Option values > Add** for scope options: the server, the scope, the code and the value, for
+   example the router (code 3, value `["198.18.70.1"]`: the value is a list).
 
-    ![A new pool on the subnet, with the IP range 198.18.40.100-200](images/scope-2-pool-form.webp)
+    ![A new option value: server dhcp01, IPv4, code 3, value ["198.18.70.1"], set on the scope
+    dhcp01/198.18.70.0](images/scope-3-option-form.webp)
 
-4. **Add Object > Option** for scope options, for example the router (option 3).
+4. **Windows DHCP > Reservations > Add** for reservations: the scope, the IP address and MAC address objects (the
+   **+** buttons create them in place), and the **name**, which is the Windows reservation name.
 
-    ![A new option on the subnet: dhcp4 routers (3), value 198.18.40.1](images/scope-3-option-form.webp)
+    ![A new reservation in the scope: IP address 198.18.70.20, name printer02, MAC address
+    02:4E:42:70:00:20](images/scope-4-reservation-form.webp)
 
-5. **Add Object > Host Reservation** for reservations: the IP address and MAC address objects, and the
-   **description**, which becomes the Windows reservation name.
+5. **Windows DHCP > Exclusion ranges > Add** for what Windows should not hand out.
 
-    ![A new host reservation: hardware address, IPv4 address 198.18.40.20, description printer01](images/scope-4-reservation-form.webp)
+    ![A new exclusion range in the scope: 198.18.70.150 to 198.18.70.159](images/scope-5-exclusion-form.webp)
 
-6. **Windows DHCP > Exclusion ranges > Add** for what Windows should not hand out.
-
-    ![A new exclusion range in the subnet: 198.18.40.150 to 198.18.40.159](images/scope-5-exclusion-form.webp)
-
-7. **Dry run** on the Windows server shows what the push will create; then **Sync now** (or, with sync enabled, just
+6. **Dry run** on the Windows server shows what the push will create; then **Sync now** (or, with sync enabled, just
    wait: each save queues a push).
 
-    ![The dry run: the scope, the exclusion range, the reservation and two options to create](images/scope-6-dry-run.webp)
+    ![The dry run: the scope, the exclusion range, the reservation and two scope options (router and DNS servers)
+    to create](images/scope-6-dry-run.webp)
 
-    Windows checks some values when they arrive: here it refused DNS servers that do not answer DNS (option 6), the
-    push applied the other four changes and named the refused one (see
-    [Troubleshooting](troubleshooting.md#push)). With the option corrected in NetBox, the next push sent it:
+    ![The push: completed, the same five changes applied](images/scope-7-push.webp)
 
-    ![The push after correcting option 6: completed, one change applied](images/scope-7-push.webp)
+    If Windows refuses a change, the push applies the others and the sync run names the refused one (see
+    [Troubleshooting](troubleshooting.md#push)); fix it in NetBox and the next push sends it.
 
 ## Order
 
@@ -147,17 +152,19 @@ the Windows object is kept as it is.
 
 **NetBox data Windows cannot hold:**
 
-- a scope (IPv4 subnet) without a pool, or a DHCPv6 subnet that is not a /64;
+- an IPv4 scope without an IP range, or a DHCPv6 scope whose prefix is not a /64;
 - a reservation without a MAC address or client ID, or a DHCPv6 reservation without an address, a DUID or an IAID;
-- an option without a value, options 1 and 51 (they come from the prefix and the valid lifetime), values of codes
-  Windows has no definition for, and a definition of a code Windows defines itself;
-- two NetBox objects for one Windows object (two subnets on one prefix, two copies of an option);
+- options 1 and 51 (they come from the prefix and the scope's lease duration), values of codes Windows has no
+  definition for, and a definition of a code Windows defines itself;
+- two NetBox objects for one Windows object (two classes or policies whose names differ only in case);
 - a policy without criteria, two policies with the same processing order, a policy whose processing order would
   leave a gap at its level (order 3 where Windows would only hold two policies, counting those made by hand), the
   other policies of that level when the policy is already on Windows (see above), or a policy option value whose
   policy NetBox does not hold at the same level;
 - a superscope or failover relationship without scopes, a failover relationship whose partner has no Windows server
   in NetBox, or a hot standby relationship without the primary server's role;
+- a failover relationship that would take a scope Windows already holds in another relationship NetBox does not
+  manage (a scope is in one relationship at most): import that relationship, or remove the scope from it on Windows;
 - DHCPv6 vendor classes, and a DHCPv6 option value with a policy (Windows has no DHCPv6 policies).
 
 ### Refused while pushing
@@ -175,14 +182,14 @@ ordinary planned updates or deletes. The push refuses the change, goes on with t
   value, and IP ranges (DHCP 20135) or ordinary option values (DHCP 20136) on a policy with an FQDN condition.
 - Turning failover message authentication on with a profile whose `allowed_hosts` does not cover both partners.
   Without a shared secret profile, a push leaves authentication as Windows has it (on or off).
-
-A scope range that moves one end out and the other in is set in two calls, since Windows refuses it in one (DHCP
-20023): first the addresses both pools share, then the new range. When the old and new pools do not overlap at all,
-the pool covers both for a moment, so exclude any static addresses between them first. If the second call fails,
-the push tries to put the old range back.
 - Deleting a scope with active leases: Windows refuses it (error DHCP 20007), and the plugin never forces it. Its
   managed reservations and values are removed first; the scope itself goes on a later push, once its leases have
   expired.
+
+A scope range that moves one end out and the other in is set in two calls, since Windows refuses it in one (DHCP
+20023): first the addresses both ranges share, then the new range. When the old and new ranges do not overlap at all,
+the scope covers both for a moment, so exclude any static addresses between them first. If the second call fails,
+the push tries to put the old range back.
 
 ## Windows spelling
 

@@ -10,8 +10,8 @@ A **Failover relationship** (**Windows DHCP > Failover relationships**) holds:
 | Field | Meaning |
 |---|---|
 | Name | The relationship name on Windows (compared without case) |
-| Primary server | The sys4 DHCP server changes are written to, then replicated from |
-| Partner server | The other sys4 DHCP server |
+| Primary server | The Windows server changes are written to, then replicated from |
+| Partner server | The other Windows server |
 | Mode | Load balance or hot standby |
 | Maximum client lead time | Seconds (MCLT) |
 | Load balance (%) | Load balance mode only: the primary's share |
@@ -19,7 +19,7 @@ A **Failover relationship** (**Windows DHCP > Failover relationships**) holds:
 | Primary server role | Hot standby mode only: active or standby |
 | State switchover interval | Seconds before switching to partner-down automatically; empty disables it |
 | Shared secret profile | Credential profile holding the message authentication secret; empty leaves authentication as Windows has it |
-| Subnets | The scopes the relationship covers |
+| Scopes | The IPv4 scopes of the primary server the relationship covers |
 
 "Primary" here is the plugin's word for the partner it writes to. It is not the Windows server role (active or
 standby).
@@ -78,9 +78,9 @@ the mode and its settings.
 ![A new failover relationship: name dhcp01-dhcp02, primary dhcp01, partner dhcp02, load balance, MCLT 3600,
 load balance 50 %, state switchover interval 3600](images/failover-form.webp)
 
-Further down, the shared secret profile and the subnets the relationship covers:
+Further down, the shared secret profile and the scopes the relationship covers:
 
-![The rest of the form: shared secret profile lab-failover and the subnet dhcp01/198.18.60.0](images/failover-form-scopes.webp)
+![The rest of the form: shared secret profile lab-failover and the scope dhcp01/198.18.60.0](images/failover-form-scopes.webp)
 
 ### 3. The push
 
@@ -94,7 +94,7 @@ A push also runs for the partner, since the relationship touches it. It changes 
 `skipped 1 failover relationship(s) whose primary is another server: they are synced from that server`.
 
 ![The failover relationship in NetBox: primary dhcp01, partner dhcp02, load balance, settings, shared secret profile
-and subnet](images/failover-relationship.webp)
+and scope](images/failover-relationship.webp)
 
 ### 4. Check on Windows
 
@@ -152,10 +152,10 @@ EnableAuth          : True
 ### 5. Changes replicate
 
 From now on, edit the scope on the primary in NetBox. A new reservation, `scanner01` at `198.18.60.22`, saved on the
-subnet `dhcp01/198.18.60.0`, was pushed to DHCP01 and the scope replicated to DHCP02 in the same job:
+scope `dhcp01/198.18.60.0`, was pushed to DHCP01 and the scope replicated to DHCP02 in the same job:
 
 ![The push job log: Replicated 1 scope(s) to the partner of dhcp01-dhcp02; Push to dhcp01.example.com: changed 1
-object(s)](images/failover-replication-log.webp)
+of 1 object(s)](images/failover-replication-log.webp)
 
 DHCP02 has both reservations without NetBox writing to it:
 
@@ -223,7 +223,7 @@ authentication on or to send a new secret.
 
 ## Scopes joining and leaving
 
-- A scope added to a managed relationship's subnets is added to it on Windows.
+- A scope added to a managed relationship's scopes is added to it on Windows.
 - A scope removed from the relationship leaves it, which removes the scope from the partner (as Windows does).
   The plugin only does that for a relationship it manages, unchanged on Windows since the last push, and never for a
   scope NetBox does not manage.

@@ -12,7 +12,6 @@ from django.db import connection
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from ipam.models import IPRange
-from netbox_dhcp.models import HostReservation, Option, Subnet
 from utilities.testing import APITestCase
 from utilities.testing import TestCase as ViewTestCase
 
@@ -20,14 +19,16 @@ from netbox_windows_dhcp_plugin import signals
 from netbox_windows_dhcp_plugin.choices import SyncKindChoices, SyncStatusChoices
 from netbox_windows_dhcp_plugin.integrations import branching
 from netbox_windows_dhcp_plugin.jobs import _LOCK_CLASS, DryRunJob, PushJob, enqueue_push
-from netbox_windows_dhcp_plugin.models import FailoverRelationship, SyncRun, SyncState, WindowsScope
+from netbox_windows_dhcp_plugin.models import ExclusionRange, FailoverRelationship, OptionValue, SyncRun, SyncState
+from netbox_windows_dhcp_plugin.models import Reservation as NetBoxReservation
+from netbox_windows_dhcp_plugin.models import Scope as NetBoxScope
 from netbox_windows_dhcp_plugin.sync import diff, netbox_state, windows_state
 from netbox_windows_dhcp_plugin.windows import DhcpClient
-from netbox_windows_dhcp_plugin.windows.client import Reservation
+from netbox_windows_dhcp_plugin.windows.client import OptionKey, Reservation
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
-from .fixtures import PluginAPIMixin, dhcp_servers, windows_server
+from .fixtures import PluginAPIMixin, windows_server
 from .test_import import ImportTestMixin
 from .test_jobs import CREDENTIALS
 
@@ -80,26 +81,36 @@ class PushJobTest(PushTestMixin, TestCase):
 
     def test_netbox_edits_reach_windows(self):
         self._run()
-        subnet = Subnet.objects.get()
-        subnet.snapshot()
-        subnet.description = "renamed in NetBox"
-        subnet.save()
-        ws = WindowsScope.objects.get(subnet=subnet)
-        ws.state = "inactive"
-        ws.save()
+        scope = NetBoxScope.objects.get()
+        scope.snapshot()
+        scope.name = "renamed in NetBox"
+        scope.state = "inactive"
+        scope.save()
         run = self._run()
         self.assertEqual(run.summary["update"], 1)
         self.assertEqual(self.fake.scopes["10.1.0.0"]["name"], "renamed in NetBox")
         self.assertEqual(self.fake.scopes["10.1.0.0"]["state"], "Inactive")
 
+    def test_option_value_with_commas_and_spaces_round_trips(self):
+        """A value holding a comma and spaces comes in from Windows and goes back out exactly as it was."""
+        value = [" a, b ", "c,d"]
+        DhcpClient(self.fake).set_option_value(OptionKey(option_id=224, scope_id="10.1.0.0"), value)
+        self.apply_all()
+        self.assertEqual(OptionValue.objects.get(code=224).value, value)
+        self.target = FakeDhcpServer()
+        run = self._run()
+        self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)
+        self.assertEqual(self.target.options[(224, "10.1.0.0", "", "", "", "")]["value"], value)
+        self.assertEqual(self.remaining(), [])
+        self.assertEqual(self._run(DryRunJob).summary["changes"], 0)
+
     def test_reservation_description_change_keeps_its_option_values(self):
         """Issue #42: Windows may drop a reservation's values on update; the push puts them back."""
         self._run()  # adopts everything
         self.fake.reservation_set_drops_options = True
-        reservation = HostReservation.objects.get()
+        reservation = NetBoxReservation.objects.get()
         reservation.snapshot()
-        # The Windows description is the sys4 comments field (the sys4 description is the Windows name).
-        reservation.comments = "changed in NetBox"
+        reservation.description = "changed in NetBox"
         reservation.save()
         dry = self._run(DryRunJob)
         self.assertEqual([(c["action"], c["kind"]) for c in dry.summary["planned"]], [("update", "reservation")])
@@ -112,8 +123,6 @@ class PushJobTest(PushTestMixin, TestCase):
 
     def test_failed_reservation_value_restore_says_whether_the_next_push_recreates_it(self):
         """Issue #42 review: a value NetBox does not hold never comes back by itself, and the error says so."""
-        from netbox_windows_dhcp_plugin.windows.client import OptionKey
-
         self._run()  # adopts everything
         # Added by hand on Windows after the import: NetBox does not hold it.
         DhcpClient(self.fake).set_option_value(OptionKey(15, reserved_ip="10.1.0.50"), ["by.hand"])
@@ -121,9 +130,9 @@ class PushJobTest(PushTestMixin, TestCase):
         self.fake.fail = lambda op, p: (
             PSError("denied", "PermissionDenied", "", "Set-DhcpServerv4OptionValue") if op == "option.set" else None
         )
-        reservation = HostReservation.objects.get()
+        reservation = NetBoxReservation.objects.get()
         reservation.snapshot()
-        reservation.comments = "changed in NetBox"
+        reservation.description = "changed in NetBox"
         reservation.save()
         with self.assertRaises(JobFailed):
             self._run()
@@ -134,7 +143,7 @@ class PushJobTest(PushTestMixin, TestCase):
 
     def test_deleted_in_netbox_is_deleted_on_windows_once_managed(self):
         self._run()  # adopts everything
-        HostReservation.objects.get().delete()
+        NetBoxReservation.objects.get().delete()
         run = self._run()
         self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)
         self.assertNotIn("10.1.0.50", self.fake.reservations)
@@ -181,6 +190,32 @@ class PushJobTest(PushTestMixin, TestCase):
         self.assertIn("Add-DhcpServerv4Class", run.error)
         self.assertIn("10.1.0.0", self.target.scopes)
 
+    def test_job_log_counts_what_was_applied_not_what_was_planned(self):
+        from types import SimpleNamespace
+
+        from netbox_windows_dhcp_plugin.jobs import push_log_line
+        from netbox_windows_dhcp_plugin.sync import push
+        from netbox_windows_dhcp_plugin.sync.pusher import PushOutcome
+
+        plan = SimpleNamespace(changes=["a", "b", "c", "d"])
+        result = push.Result(applied=["a"], failed=[("b", "denied")], skipped=[("c", "x"), ("d", "x")])
+        self.assertEqual(
+            push_log_line("dhcp1", PushOutcome(plan=plan, result=result), dry_run=False),
+            "Push to dhcp1: changed 1 of 4 object(s), 1 failed, 2 not attempted",
+        )
+        self.assertEqual(
+            push_log_line("dhcp1", PushOutcome(plan=plan), dry_run=True), "Push to dhcp1: would change 4 object(s)"
+        )
+        empty = SimpleNamespace(changes=[])
+        self.assertEqual(
+            push_log_line("dhcp1", PushOutcome(plan=empty, result=push.Result()), dry_run=False),
+            "Push to dhcp1: nothing to change",
+        )
+        replication = PushOutcome(plan=empty, result=push.Result(), replication_errors=["campus: denied"])
+        self.assertEqual(
+            push_log_line("dhcp1", replication, dry_run=False), "Push to dhcp1, failover replication failed (1)"
+        )
+
     def test_busy_server_reschedules_the_push(self):
         other = connection.copy()
         try:
@@ -201,7 +236,7 @@ class PushJobTest(PushTestMixin, TestCase):
     def test_applying_an_import_records_the_objects_as_managed(self):
         # No push has run yet, but a NetBox delete of an imported object still reaches Windows.
         self.assertTrue(SyncState.objects.filter(kind="reservation").exists())
-        HostReservation.objects.get().delete()
+        NetBoxReservation.objects.get().delete()
         self._run()
         self.assertNotIn("10.1.0.50", self.fake.reservations)
 
@@ -211,21 +246,14 @@ class PushJobTest(PushTestMixin, TestCase):
         DhcpClient(self.fake).add_policy(
             Policy(name="phones", scope_id="10.1.0.0", criteria={"vendor_class": ["EQ,MSFT"]})
         )
-        Subnet.objects.get().delete()
+        NetBoxScope.objects.get().delete()
         run = self._run()
         self.assertIn("10.1.0.0", self.fake.scopes)
         reasons = {s["key"]: s["reason"] for s in run.summary["not_pushed"]}
         self.assertIn("policy 10.1.0.0/phones", reasons["10.1.0.0"])
 
     def test_lease_time_option_is_not_pushed(self):
-        from netbox_dhcp.models import OptionDefinition
-
-        definition = OptionDefinition.objects.filter(code=51, space="dhcp4", standard=True).first()
-        if definition is None:  # netbox-plugin-dhcp (like Kea) may not define it: use a server definition
-            definition = OptionDefinition.objects.create(
-                dhcp_server=self.dhcp, family=4, space="dhcp4", code=51, name="lease-time", type="uint32"
-            )
-        Option.objects.create(definition=definition, data="3600", assigned_object=Subnet.objects.get())
+        OptionValue.objects.create(server=self.server, scope=NetBoxScope.objects.get(), code=51, value=["3600"])
         run = self._run()
         self.assertEqual(run.summary["changes"], 0)
         self.assertTrue(any("lease time" in s["reason"] for s in run.summary["not_pushed"]))
@@ -261,24 +289,28 @@ class PushJobTest(PushTestMixin, TestCase):
 class FailoverPushTest(PushTestMixin, TestCase):
     def setUp(self):
         super().setUp()
-        (self.partner_dhcp,) = dhcp_servers(1, start=2)
+        self.partner = windows_server("dhcp2")
         self.relationship = FailoverRelationship.objects.create(
-            name="fo", primary_server=self.dhcp, partner_server=self.partner_dhcp
+            name="fo", primary_server=self.server, partner_server=self.partner
         )
-        self.relationship.subnets.add(Subnet.objects.get())
-        self.fake.failovers["fo"] = {"name": "fo", "scope_ids": ["10.1.0.0"]}
+        self.relationship.scopes.add(NetBoxScope.objects.get())
+        # As Windows holds it with the settings NetBox defaults to, so only scope changes need replicating.
+        self.fake.failovers["fo"] = {
+            "name": "fo",
+            "partner_server": "dhcp2.example.com",
+            "scope_ids": ["10.1.0.0"],
+            "max_client_lead_time": 3600,
+        }
 
     def test_primary_replicates_changed_scopes(self):
-        subnet = Subnet.objects.get()
-        subnet.snapshot()
-        subnet.description = "changed"
-        subnet.save()
+        self._change_scope()
         self._run()
         # Only the scoped parameter set: Windows refuses a relationship name with scope ids (#51).
         self.assertEqual(self.fake.replications[-1], {"name": "", "scope_ids": ["10.1.0.0"]})
 
     def test_nothing_changed_nothing_replicated(self):
-        self._run()
+        run = self._run()
+        self.assertEqual(run.summary["changes"], 0, run.summary.get("planned"))
         self.assertEqual(self.fake.replications, [])
 
     def _fail_replication(self):
@@ -288,15 +320,15 @@ class FailoverPushTest(PushTestMixin, TestCase):
             else None
         )
 
-    def _change_subnet(self):
-        subnet = Subnet.objects.get()
-        subnet.snapshot()
-        subnet.description = "changed"
-        subnet.save()
+    def _change_scope(self):
+        scope = NetBoxScope.objects.get()
+        scope.snapshot()
+        scope.name = "changed"
+        scope.save()
 
     def test_failed_replication_is_retried_by_the_next_push(self):
         self._fail_replication()
-        self._change_subnet()
+        self._change_scope()
         with self.assertRaises(JobFailed):
             self._run()
         failed = SyncRun.objects.get(kind=SyncKindChoices.PUSH)
@@ -314,7 +346,7 @@ class FailoverPushTest(PushTestMixin, TestCase):
 
     def test_pending_replication_survives_a_push_that_stopped_before_writing(self):
         self._fail_replication()
-        self._change_subnet()
+        self._change_scope()
         with self.assertRaises(JobFailed):
             self._run()
         # A later push that never reached Windows (a connection error) records no summary.
@@ -331,9 +363,12 @@ class FailoverPushTest(PushTestMixin, TestCase):
 
     def test_scopes_not_yet_in_the_windows_relationship_wait_for_the_next_push(self):
         # The scope is not in the relationship on Windows (say its addition failed): replicating it would make Windows
-        # refuse the whole call, so it waits instead. That alone does not fail the push.
+        # refuse the whole call, so it waits instead. That alone does not fail the push. Here NetBox cannot push the
+        # relationship either (hot standby without a role), so nothing adds the scope to it on Windows.
+        self.relationship.mode = "hotstandby"
+        self.relationship.save()
         self.fake.failovers["fo"]["scope_ids"] = []
-        self._change_subnet()
+        self._change_scope()
         run = self._run()
         self.assertEqual(run.status, SyncStatusChoices.COMPLETED)
         self.assertEqual(self.fake.replications, [])
@@ -346,7 +381,7 @@ class FailoverPushTest(PushTestMixin, TestCase):
 
     def test_pending_replication_skips_scopes_no_longer_in_the_relationship(self):
         self._fail_replication()
-        self._change_subnet()
+        self._change_scope()
         with self.assertRaises(JobFailed):
             self._run()
         failed = SyncRun.objects.get(kind=SyncKindChoices.PUSH)
@@ -358,7 +393,7 @@ class FailoverPushTest(PushTestMixin, TestCase):
 
     def test_partner_leaves_failover_scopes_to_the_primary(self):
         # Make this server the partner instead.
-        self.relationship.primary_server, self.relationship.partner_server = self.partner_dhcp, self.dhcp
+        self.relationship.primary_server, self.relationship.partner_server = self.partner, self.server
         self.relationship.save()
         self.target = FakeDhcpServer()
         run = self._run()
@@ -379,20 +414,20 @@ class ServersForTest(ImportTestMixin, TestCase):
         return signals.servers_for(obj._meta.label_lower, obj.pk, signals._data(obj))
 
     def test_every_watched_object_maps_to_its_server(self):
-        reservation = HostReservation.objects.get()
+        reservation = NetBoxReservation.objects.get()
         objects = [
-            Subnet.objects.get(),
+            NetBoxScope.objects.get(),
             reservation,
-            reservation.ipv4_address,
-            reservation.hw_address,
+            reservation.ip_address,
+            reservation.mac_address,
             IPRange.objects.get(),
-            Subnet.objects.get().prefix,
-            *Option.objects.all(),
-            *WindowsScope.objects.all(),
+            NetBoxScope.objects.get().prefix,
+            *ExclusionRange.objects.all(),
+            *OptionValue.objects.all(),
         ]
         for obj in objects:
             with self.subTest(obj=obj):
-                self.assertEqual(self.servers(obj), {self.dhcp.pk})
+                self.assertEqual(self.servers(obj), {self.server.pk})
 
     def test_unrelated_objects_map_to_nothing(self):
         mac = MACAddress.objects.create(mac_address="00:00:00:00:00:01")
@@ -400,12 +435,12 @@ class ServersForTest(ImportTestMixin, TestCase):
         self.assertEqual(signals.servers_for("dcim.site", 1, {"name": "x"}), set())
 
     def test_object_change_covers_before_and_after(self):
-        (other,) = dhcp_servers(1, start=5)
-        subnet = Subnet.objects.get()
-        subnet.snapshot()
-        subnet.dhcp_server = other
-        change = subnet.to_objectchange(ObjectChangeActionChoices.ACTION_UPDATE)
-        self.assertEqual(signals.servers_for_change(change), {self.dhcp.pk, other.pk})
+        other = windows_server("dhcp5")
+        scope = NetBoxScope.objects.get()
+        scope.snapshot()
+        scope.server = other
+        change = scope.to_objectchange(ObjectChangeActionChoices.ACTION_UPDATE)
+        self.assertEqual(signals.servers_for_change(change), {self.server.pk, other.pk})
 
 
 class StandaloneTriggerTest(ImportTestMixin, TestCase):
@@ -417,17 +452,17 @@ class StandaloneTriggerTest(ImportTestMixin, TestCase):
         return PushJob.get_jobs(self.server)
 
     def test_save_queues_one_debounced_push_after_commit(self):
-        subnet = Subnet.objects.get()
+        scope = NetBoxScope.objects.get()
         with STANDALONE, self.captureOnCommitCallbacks(execute=True):
-            subnet.description = "x"
-            subnet.save()
-            HostReservation.objects.get().save()
+            scope.name = "x"
+            scope.save()
+            NetBoxReservation.objects.get().save()
         job = self.push_jobs().get()
         self.assertEqual(job.status, JobStatusChoices.STATUS_SCHEDULED)
 
     def test_delete_queues_a_push(self):
         with STANDALONE, self.captureOnCommitCallbacks(execute=True):
-            HostReservation.objects.get().delete()
+            NetBoxReservation.objects.get().delete()
         self.assertEqual(self.push_jobs().count(), 1)
 
     def test_applying_an_import_queues_no_push(self):
@@ -440,7 +475,7 @@ class StandaloneTriggerTest(ImportTestMixin, TestCase):
         self.server.sync_enabled = False
         self.server.save()
         with STANDALONE, self.captureOnCommitCallbacks(execute=True):
-            Subnet.objects.get().save()
+            NetBoxScope.objects.get().save()
         self.assertFalse(self.push_jobs().exists())
 
     def test_saves_inside_branches_or_merges_are_ignored(self):
@@ -450,29 +485,32 @@ class StandaloneTriggerTest(ImportTestMixin, TestCase):
             ),
             self.captureOnCommitCallbacks(execute=True),
         ):
-            Subnet.objects.get().save()
+            NetBoxScope.objects.get().save()
         self.assertFalse(self.push_jobs().exists())
 
     def test_direct_edits_of_main_push_with_branching_too(self):
         # No branch active and nothing merging: an edit of main is pushed, whether or not branching is installed.
         with self.captureOnCommitCallbacks(execute=True):
-            Subnet.objects.get().save()
+            NetBoxScope.objects.get().save()
         self.assertEqual(self.push_jobs().count(), 1)
 
-    def test_moving_a_subnet_pushes_both_servers(self):
-        (other_dhcp,) = dhcp_servers(1, start=7)
-        other = windows_server(other_dhcp)
-        subnet = Subnet.objects.get()
-        subnet.snapshot()
-        subnet.dhcp_server = other_dhcp
+    def test_moving_a_scope_pushes_both_servers(self):
+        other = windows_server("dhcp7")
+        scope = NetBoxScope.objects.get()
+        scope.snapshot()
+        scope.server = other
         with STANDALONE, self.captureOnCommitCallbacks(execute=True):
-            subnet.save()
+            scope.save()
         self.assertEqual(self.push_jobs().count(), 1)
         self.assertEqual(PushJob.get_jobs(other).count(), 1)
 
-    def test_deleting_a_reservation_address_queues_a_push(self):
+    def test_editing_a_reservation_address_queues_a_push(self):
+        # The reservation protects its address from deletion; an edit of it still reaches the server.
+        address = NetBoxReservation.objects.get().ip_address
+        address.snapshot()
+        address.address = "10.1.0.51/24"
         with STANDALONE, self.captureOnCommitCallbacks(execute=True):
-            HostReservation.objects.get().ipv4_address.delete()
+            address.save()
         self.assertEqual(self.push_jobs().count(), 1)
 
 
@@ -487,13 +525,13 @@ class BranchTriggerTest(ImportTestMixin, TestCase):
     def setUp(self):
         super().setUp()
         self.apply_all()
-        subnet = Subnet.objects.get()
-        subnet.snapshot()
-        subnet.description = "merged"
+        scope = NetBoxScope.objects.get()
+        scope.snapshot()
+        scope.name = "merged"
         self.branch = SimpleNamespace(
             pk=1,
             name="feature",
-            get_merged_changes=lambda: _Changes([subnet.to_objectchange(ObjectChangeActionChoices.ACTION_UPDATE)]),
+            get_merged_changes=lambda: _Changes([scope.to_objectchange(ObjectChangeActionChoices.ACTION_UPDATE)]),
         )
 
     def test_merge_queues_a_push_per_server(self):
@@ -519,7 +557,7 @@ class BranchTriggerTest(ImportTestMixin, TestCase):
 class PushViewTest(ViewTestCase):
     def setUp(self):
         super().setUp()
-        self.server = windows_server(dhcp_servers(1)[0])
+        self.server = windows_server()
 
     def test_buttons_and_views(self):
         self.add_permissions(
@@ -542,7 +580,7 @@ class PushViewTest(ViewTestCase):
 class PushAPITest(PluginAPIMixin, APITestCase):
     def setUp(self):
         super().setUp()
-        self.server = windows_server(dhcp_servers(1)[0])
+        self.server = windows_server()
         self.url = f"/api/plugins/windows-dhcp/windows-servers/{self.server.pk}/"
 
     def post(self, action):

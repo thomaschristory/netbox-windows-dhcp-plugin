@@ -13,7 +13,7 @@ error names the step, the cmdlet and the PowerShell message.
 | `credential profile 'x' may not be used with host 'y'` | `allowed_hosts` does not cover the host (or `computer_name`). Fix the host or extend the list |
 | `Basic authentication needs HTTPS with certificate verification` | Use NTLM or Kerberos, or HTTPS with verification |
 | `winrm: host, username and password are required` | The profile has no username or password |
-| `winrm: kerberos_realm is required with kerberos auth` | Set **Kerberos realm** on the Windows server |
+| `winrm: kerberos_realm is required with kerberos auth` | Set **Kerberos realm** on the Windows server (the form refuses Kerberos without one) |
 | `...Failover...: Failed to verify if a failover relationship ... exists on server ... (PermissionDenied)` | The server could not reach its partner as your account, or could not resolve the partner's host as NetBox gives it. Use CredSSP (or SSH with a password) for failover servers, and make the partner's host resolvable on the primary DHCP server, see [Failover](failover.md#connecting-to-the-servers) |
 | `CredSSP hands the password to the server, so it needs HTTPS with certificate verification` | Turn on **WinRM over HTTPS** and **Verify host** (the server needs an HTTPS listener with a certificate the worker trusts). In a lab only, set `allow_insecure_credssp` on the credential profile |
 | `Failover relationship x on server y is not in NORMAL state` | The partner cannot be reached. The plugin never forces a removal, which would leave the partner serving the scope alone. Bring the partner back and push again |
@@ -54,7 +54,7 @@ proposes exactly the same values.
 Import again to get a fresh item.
 
 **Some Windows objects never show up.** Check the import's notes in the sync run: DHCPv6 vendor classes, DHCPv6
-exclusions, values with surrounding spaces and options of unknown DHCPv6 codes are left out on purpose. A failover
+exclusions and values of DHCPv6 codes that are not standard options are left out on purpose. A failover
 relationship imports from one partner only: the first one imported, which becomes its primary. A scope deleted on
 Windows while the server was being read counts as deleted on Windows in that run, and the notes name it.
 
@@ -62,27 +62,31 @@ Windows while the server was being read counts as deleted on Windows in that run
 
 **Nothing happens after a save.** Check, in order: **Sync enabled** on the Windows server; that the worker runs;
 with branching, that you edited main or merged the branch (edits inside a branch push nothing); that the object
-belongs to the server (a subnet's DHCP server or shared network).
+belongs to the server (through its scope, for reservations and exclusion ranges).
 
 **"Sync is disabled for X: nothing pushed".** Turn **Sync enabled** on.
 
 **A change is in `not_pushed`, or the push failed with a "cannot change on Windows" error.** The reason says why;
 see [what a push will not do](push.md#what-a-push-will-not-do).
 
-**The push failed on one change.** The sync run's **Error** names the change and the cmdlet's message, and the
-summary lists it under `errors`; the other changes were applied. Here Windows refused DNS servers that do not answer
-DNS queries (option 6 is checked by `Set-DhcpServerv4OptionValue`): fix the value in NetBox and the next push sends
-it.
+**The push failed on one change.** The sync run's **Error** names the change and the cmdlet's message, and the summary
+lists it under `errors`; the other changes were applied. Here a new policy with an FQDN condition went to Windows,
+but the option value set on it did not: Windows does not allow ordinary option values on such a policy (see
+[Limitations](limitations.md#windows-rules-the-plugin-will-not-work-around)), and Windows Server 2025 only says
+"Failed to set option values" (`InvalidOperation`) rather than naming DHCP 20136. Fix the policy or the value in
+NetBox and the next push sends it.
 
-![A failed push: four changes applied, option 6 refused by Windows with "is not a valid DNS
-server"](images/troubleshooting-failed-push.webp)
-The usual ones:
+![A failed push: policy Kiosks-FQDN created, its option 15 value refused with Set-DhcpServerv4OptionValue: Failed to
+set option values on DHCP server dhcp01 (InvalidOperation)](images/troubleshooting-failed-push.webp)
+
+The usual reasons a change is in `not_pushed`:
 
 | Reason starts with | What to do |
 |---|---|
 | `changed on Windows since NetBox last pushed it` | Someone edited it on Windows. Import it back, or delete it on Windows by hand |
-| `NetBox holds more than one object for this Windows object` | Delete the extra subnet, reservation or option in NetBox |
-| `option 1 is the subnet mask` / `option 51 is the lease time` | Remove the option from NetBox; the prefix and the valid lifetime set them |
+| `NetBox holds more than one object for this Windows object` | Delete the extra object in NetBox (for example a class or policy whose name differs only in case) |
+| `option 1 is the subnet mask on Windows` / `option 51 is the lease time on Windows` | Remove the option value from NetBox; the scope's prefix length and lease duration set them |
+| `scope(s) ... are already in failover relationship ... on Windows` | Windows holds those scopes in a relationship NetBox does not have (made by hand, or renamed on Windows). Import it, or remove the scopes from it on Windows |
 
 **DHCP 20007 when deleting a scope.** The scope still has leases. The plugin never forces the delete; it succeeds on a
 later push once the leases are gone, or delete the scope on Windows by hand.
@@ -98,23 +102,13 @@ with the kind, the key and both values (without anything that identifies your ne
 
 ## Leases
 
-**There is no Leases tab.** The subnet does not belong to a Windows server (directly or through its shared network),
-or you may not view that Windows server.
+**There is no Leases tab.** You may not view the scope's Windows server.
 
 **The Load leases button is missing.** You need `change` on the Windows server, and to be in main rather than a
 branch.
 
 **"The last read never finished".** The worker did not run the job within 15 minutes. Check that the worker runs, then
 load again.
-
-## Pages and buttons
-
-**Clicking Test connection, Sync now, Dry run, Import now, Apply or Dismiss returns "CSRF verification failed"
-(403).** 0.1.0rc1 rendered these buttons without the CSRF token. Upgrade to 0.1.0rc2 or later; until then the REST actions work (see
-[REST API](api.md)).
-
-**An Edit button leads to an address ending in `/None` (404).** Also fixed in 0.1.0rc2: sync runs, import
-proposals and their items cannot be edited, and their pages no longer offer it.
 
 ## Getting more detail
 

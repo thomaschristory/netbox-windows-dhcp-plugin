@@ -18,9 +18,6 @@ DEFAULTS = {
     # CredSSP (needed for failover) hands the password to the server, so it requires HTTPS with certificate
     # verification, as Basic does. "allow_insecure_credssp": True on a profile lifts that, for labs only.
     "credentials": {},
-    # Name given to imported netbox-plugin-dhcp objects, whose names must be unique across all servers.
-    "subnet_name_template": "{server}/{scope_id}",
-    "reservation_name_template": "{server}/{scope_id}/{ip_address}",
     # Prefix of the branches created by imports when netbox-branching is installed.
     "import_branch_prefix": "dhcp-import",
     # Open a change request for each import branch when netbox-change-control is installed.

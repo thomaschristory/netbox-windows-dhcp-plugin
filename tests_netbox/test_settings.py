@@ -10,7 +10,7 @@ from netbox_windows_dhcp_plugin.conf import (
 )
 from netbox_windows_dhcp_plugin.connection import check_connection_allowed
 
-from .fixtures import dhcp_servers, windows_server
+from .fixtures import windows_server
 
 
 class CredentialProfileTest(SimpleTestCase):
@@ -98,7 +98,7 @@ class AllowedHostsTest(SimpleTestCase):
 )
 class ServerValidationTest(TestCase):
     def setUp(self):
-        self.server = windows_server(dhcp_servers(1)[0])
+        self.server = windows_server()
 
     def test_allowed_host_validates(self):
         self.server.full_clean()
@@ -151,7 +151,7 @@ class CredSSPTransportTest(TestCase):
     credential profile allows otherwise (review of #55)."""
 
     def setUp(self):
-        self.server = windows_server(dhcp_servers(1)[0])
+        self.server = windows_server()
         self.server.winrm_auth = "credssp"
 
     def test_https_with_verification_is_fine(self):

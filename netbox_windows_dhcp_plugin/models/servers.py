@@ -21,17 +21,34 @@ DEFAULT_PORTS = {
 
 class WindowsServer(JobsMixin, PrimaryModel):
     """
-    How to reach the Windows host behind a netbox-plugin-dhcp DHCPServer.
+    A Windows DHCP server and how to reach it. Every scope, class, policy and filter of the server hangs off it.
 
     Credentials are never stored here: `credential_profile` names an entry of the plugin's `credentials` setting,
     which reads them from the environment or files. This model is not branchable (see integrations.branching).
     """
 
-    dhcp_server = models.OneToOneField(
-        to="netbox_dhcp.DHCPServer",
-        on_delete=models.CASCADE,
-        related_name="%(app_label)s_windows_server",
-        verbose_name=_("DHCP server"),
+    name = models.CharField(
+        verbose_name=_("name"),
+        max_length=100,
+        unique=True,
+        help_text=_("The server's name in NetBox"),
+    )
+    # The machine the DHCP service runs on, for reference only: the connection always uses `host`.
+    device = models.ForeignKey(
+        to="dcim.Device",
+        on_delete=models.SET_NULL,
+        related_name="%(app_label)s_windows_servers",
+        blank=True,
+        null=True,
+        verbose_name=_("device"),
+    )
+    virtual_machine = models.ForeignKey(
+        to="virtualization.VirtualMachine",
+        on_delete=models.SET_NULL,
+        related_name="%(app_label)s_windows_servers",
+        blank=True,
+        null=True,
+        verbose_name=_("virtual machine"),
     )
     host = models.CharField(
         verbose_name=_("host"),
@@ -142,12 +159,12 @@ class WindowsServer(JobsMixin, PrimaryModel):
     )
 
     class Meta:
-        ordering = ("dhcp_server",)
+        ordering = ("name",)
         verbose_name = _("Windows server")
         verbose_name_plural = _("Windows servers")
 
     def __str__(self):
-        return str(self.dhcp_server)
+        return self.name
 
     def get_absolute_url(self):
         return reverse("plugins:netbox_windows_dhcp_plugin:windowsserver", args=[self.pk])
@@ -163,6 +180,8 @@ class WindowsServer(JobsMixin, PrimaryModel):
 
     def clean(self):
         super().clean()
+        if self.device_id and self.virtual_machine_id:
+            raise ValidationError(_("A server runs on a device or a virtual machine, not both."))
         self._clean_allowed_hosts()
         if self.transport == TransportChoices.SSH and not self.verify_tls:
             raise ValidationError(

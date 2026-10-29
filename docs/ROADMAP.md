@@ -2,6 +2,11 @@
 
 Milestones from [DESIGN.md](DESIGN.md#11-milestones).
 
+Milestones 1 to 6 built the 0.1.x line, a sub-plugin of netbox-plugin-dhcp: the model names they mention
+(`WindowsReservation`, `WindowsVendorOption`...) are 0.1.x ones. Milestone 7 makes the plugin standalone for 0.2.0.
+`main` is the 0.2 line; the `release/0.1` branch keeps bug fixes, and no new features, for users who stay on
+netbox-plugin-dhcp (latest 0.1.1, 2026-10-29).
+
 1. **Done.** Repo scaffold, models, REST and GraphQL API, connection test.
 2. **Done.** PowerShell layer ported from terraform-provider-windowsddi, with fake server and pwsh stub tests.
    Cmdlets the provider did not use are marked `# unverified:` in `windows/client.py` until checked on a real server.
@@ -16,11 +21,11 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
 5. **Done.** Remaining objects end to end, in two PRs.
    - **PR A (#4, merged):** superscopes, policies (and policy-qualified option values), vendor class option definitions and values
      (`WindowsVendorOptionDefinition`, `WindowsVendorOption`), failover relationships (secret from a credential
-     profile), MAC filters and list switches (`MacFilterLists`), option values containing commas (Kea's `\,`).
-   - **PR B (#5, merged):** DHCPv6 scopes, reservations, user classes and option values against sys4's standard dhcp6
+     profile), MAC filters and list switches (`MacFilterLists`), option values containing commas (a `\,` escape in 0.1.x).
+   - **PR B (#5, merged):** DHCPv6 scopes, reservations, user classes and option values against the standard DHCPv6
      definitions (v6 custom definitions, vendor classes and values, and exclusions are skipped, logged and kept);
-     IAID on `WindowsReservation`; live leases on a Leases tab of the subnet page through a job and an HTMX panel,
-     without a cache model.
+     IAID on `WindowsReservation`; live leases through a job and an HTMX panel, without a cache model, on a Leases
+     tab (of the netbox-plugin-dhcp subnet page in 0.1.x, of the scope page since 0.2.0).
 6. **Done (0.1.0, 2026-10-27).** Lab acceptance tests against real Windows servers, then the first release.
    - **Built:** the opt-in lab tier. `make test-lab` (`tests/lab/`) runs the real client over WinRM with one round
      trip test per `# unverified:` marker and known question; `make lab-e2e` (`dev/scripts/lab_e2e.py`) imports the
@@ -38,7 +43,7 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
      allows option 51 (#29); the missing-module unit test no longer depends on RSAT being absent (#31); an Import
      panel on the server and sync run pages says whether an import is queued, running or done and, with branching,
      links its branch and change request and says main has not changed (#32). Then #36: with branching the Import
-button is a menu of import branch, the branch you work in, or main (confirmed, policy and permission checked). And
+     button is a menu of import branch, the branch you work in, or main (confirmed, policy and permission checked). And
      #38: the Windows servers list links server names to the Windows server page (saved layouts included). Also #33: hot standby updates no
      longer send `-ServerRole`, which `Set-DhcpServerv4Failover` lacks; a role change is refused.
    - **rc3 acceptance (after 0.1.0rc3, for rc4):** #42, a reservation description update dropped the reservation's
@@ -67,3 +72,32 @@ button is a menu of import branch, the branch you work in, or main (confirmed, p
      ready) wait for the owner's go.
    - **Fixes from testing 0.1.0rc1:** CSRF tokens on the plugin's buttons (#19); no Edit, Clone or Add buttons
      leading to "None" on read-only pages (#23).
+7. **Release candidate (0.2.0rc1).** Standalone (0.2.0): drop netbox-plugin-dhcp.
+   - **Why:** netbox-plugin-dhcp models DHCP the way Kea does, so every Windows concept needed a side model or a
+     workaround (`<server>/<scope id>` names, comma-escaped option values, covering prefixes for superscopes, subnet
+     ID allocation across branches, upstream bugs such as netbox-plugin-dhcp issues #68 and #69).
+   - **What:** the plugin owns the data model (see [DESIGN.md](DESIGN.md#3-data-model)): `WindowsServer` with its own
+     name and an optional device or virtual machine; `Scope` (v4 and v6, on an IPAM prefix and, for IPv4, an IP
+     range), `Superscope`, `Reservation` (IPAM IP address plus MAC address or client ID; DHCPv6 DUID and IAID),
+     `ExclusionRange`, `WindowsClass`, `OptionDefinition` (optional vendor class), `OptionValue` (server, scope or
+     reservation level, optional vendor class, user class or policy, value as a list), `WindowsPolicy`,
+     `FailoverRelationship`, `MacFilter`, `MacFilterLists`. Standard options come from `standard_options.py`. The
+     record kinds, keys and fields are unchanged, so the Windows layer, diff, push and writer keep their logic. One
+     migration, `0001_standalone`, replaces the six 0.1.x ones. Also new: a device or virtual machine page lists its
+     Windows servers, and the scope and reservation forms create their prefix, IP range, IP address and MAC address
+     in a pop-up.
+   - **Upgrade:** no data migration. The new migration drops the 0.1.x tables; users merge or delete open import
+     branches, upgrade, remove `netbox_dhcp` from `PLUGINS` if unused, migrate, run `remove_stale_contenttypes`,
+     recreate the Windows servers and import them again.
+   - **Release lines (2026-10-29):** `main` is the 0.2 line; `release/0.1` takes backports through PRs. The first, the two fixes below, shipped as 0.1.1.
+   - **Lab run (2026-10-28):** the demo plan on two Windows Server 2025 servers, without branching (import into a
+     proposal), passed after two fixes: option values are set with `-Force`, since Windows refuses a DNS server
+     address it cannot query, and failover Set sends `-Mode` only on a switch, since Windows refuses the current
+     mode. `make lab-seed` and `make lab-wipe` now fill the lab servers with a realistic configuration to import.
+   - **Done:** migration and query-count baselines regenerated.
+   - **Docs (2026-10-29):** every page checked against the code; the screenshots of netbox-plugin-dhcp forms removed,
+     the read-only ones retaken on 0.2.0.
+   - **Screenshots (2026-10-29):** every NetBox screenshot retaken on 0.2.0 against the fresh lab (lab NetBox without
+     branching; branching and change control from the dev stack pointed at the lab servers).
+   - **Lab (2026-10-29):** fresh Windows Server 2025 lab, plugin 1a2108a: `make test-lab` 31 passed, `make lab-e2e`
+     passed (failover phase included), seeded import of both servers applied with dry runs at 0 changes.

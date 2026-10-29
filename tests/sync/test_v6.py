@@ -12,7 +12,7 @@ from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
 PREFIX = "2001:db8:1::"
-# sys4's standard DHCPv6 codes used here: DNS servers (23) and the domain search list (24).
+# Standard DHCPv6 codes used here: DNS servers (23) and the domain search list (24).
 STANDARD6 = {21, 22, 23, 24, 31}
 # Windows' default rebinding time (T2) for a new DHCPv6 scope: 6.4 days, as read back from Windows Server 2025 (#16).
 WINDOWS_T2 = 6 * 86400 + 9 * 3600 + 36 * 60
@@ -148,7 +148,7 @@ def test_v6_keys_never_meet_v4_keys():
 def test_unsupported_v6_objects_are_skipped_and_hidden(client, fake):
     seed(client, fake)
     fake.add_v6_exclusion(PREFIX, "2001:db8:1::1", "2001:db8:1::ff")
-    # A vendor class value, a value of a code sys4 has no standard definition for, and one with a trailing space.
+    # A vendor class value, a value of a code without a standard definition, and one with a trailing space (kept).
     fake.v6_options[(17, PREFIX, "", "Microsoft Windows Options", "")] = {
         "option_id": 17,
         "name": "vendor",
@@ -162,13 +162,13 @@ def test_unsupported_v6_objects_are_skipped_and_hidden(client, fake):
     client.set_v6_option_value(OptionKeyV6(21, prefix=PREFIX, reserved_ip="2001:db8:1::10"), ["a "])
     state = ws.read(client)
     out, notes = ws.to_records(state, standard_codes=(), standard_codes6=STANDARD6)
-    assert not [r for r in out if r.kind == "option6" and r.fields["option_id"] in (17, 99, 21)]
+    assert not [r for r in out if r.kind == "option6" and r.fields["option_id"] in (17, 99)]
+    assert [r.fields["value"] for r in out if r.kind == "option6" and r.fields["option_id"] == 21] == [["a "]]
     assert sorted(notes) == sorted(
         [
             "skipped 1 DHCPv6 vendor class(es): the plugin syncs DHCPv6 user classes only",
             f"skipped 1 {ws.V6_VENDOR_VALUES}",
             f"skipped 1 {ws.V6_UNDEFINED}",
-            f"skipped 1 {ws.UNSTORABLE_VALUES}",
             f"skipped 1 {ws.V6_EXCLUSIONS}",
         ]
     )
@@ -176,7 +176,7 @@ def test_unsupported_v6_objects_are_skipped_and_hidden(client, fake):
     assert ("exclusion6", "v6/2001:db8:1::/2001:db8:1::1-2001:db8:1::ff") in hidden
     assert ("option6", "v6/2001:db8:1::/17;vendor=microsoft windows options") in hidden
     assert ("option6", "v6/2001:db8:1::/99") in hidden
-    assert ("option6", "v6/2001:db8:1::/2001:db8:1::10/21") in hidden
+    assert ("option6", "v6/2001:db8:1::/2001:db8:1::10/21") not in hidden
 
 
 def test_ipv6_option_values_compare_in_any_spelling():

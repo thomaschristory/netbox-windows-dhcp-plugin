@@ -19,7 +19,7 @@ def open_items(queryset):
     """Items still waiting for a decision (pending, or failed and worth retrying)."""
     return queryset.filter(
         status__in=(ProposalItemStatusChoices.PENDING, ProposalItemStatusChoices.FAILED)
-    ).select_related("proposal__windows_server__dhcp_server")
+    ).select_related("proposal__windows_server")
 
 
 def missing_permission(user, item):

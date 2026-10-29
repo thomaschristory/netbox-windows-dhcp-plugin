@@ -27,10 +27,9 @@ reservations, user classes and option values for DHCPv6 (see [DHCPv6](dhcpv6.md)
   written yet (sync disabled, or a failed push): dismiss those.
 
 Some Windows data is left out and noted in the sync run instead: DHCPv6 vendor classes and their values, DHCPv6
-exclusion ranges, DHCPv6 values of codes sys4 has no standard definition for, and option values with leading or
-trailing spaces (sys4's comma-separated storage would lose the spaces). A failover relationship is imported from
-one partner only: the first one imported becomes its primary (the server the plugin writes to), and the other
-partner's imports leave it alone. Import the server you want to write to first.
+exclusion ranges, and DHCPv6 values of codes that are not standard DHCPv6 options. A failover relationship is
+imported from one partner only: the first one imported becomes its primary (the server the plugin writes to), and the
+other partner's imports leave it alone. Import the server you want to write to first.
 
 ## Choosing where an import writes
 
@@ -59,10 +58,9 @@ reason; it never falls back to another one. Scheduled imports always use an impo
 
 Imports into main or into your own branch write as you: every object is checked against your permissions as it is
 saved, and a change you may not make (or that change control refuses) is rolled back and listed in the sync run,
-while the others stay. Event rules and webhooks only hear about the changes that stayed. New subnets get subnet IDs
-above those in main, in open import branches and in branches an import wrote into by choice, so merging any of
-them later does not collide. Your branch is checked again just before the import writes into it: if it has started
-merging (or is otherwise no longer ready) by then, nothing is written. An import into main queues no push (NetBox then matches Windows) and records the objects it
+while the others stay. Event rules and webhooks only hear about the changes that stayed. Your branch is checked
+again just before the import writes into it: if it has started merging (or is otherwise no longer ready) by then,
+nothing is written. An import into main queues no push (NetBox then matches Windows) and records the objects it
 wrote as managed, as applying a proposal does.
 
 The **Import** panel and the sync run say where each import went: the branch and its change request, the branch
@@ -112,14 +110,14 @@ opened (see [Permissions](permissions.md)).
 Once the job has finished, the **Import** panel on the server page links the branch, its change request and the sync
 run, and says that main has not changed:
 
-![The Import panel after an import into a branch: 39 differences, the branch, change request CR1 and the sync
-run](images/branching-import-panel.webp)
+![The Import panel after an import into a branch: 78 differences imported into a new branch, main not changed,
+the branch, change request CR3 and the sync run](images/branching-import-panel.webp)
 
 The branch's **Diff** tab lists every object the import created, changed or deleted. Review it there, then merge it
 (through the change request, with netbox-change-control):
 
-![The diff of an import branch: one row per created object, the failover relationship, options, reservations,
-addresses](images/branching-diff.webp)
+![The Diff tab of the import branch: the objects the import created, from classes to failover relationships and MAC
+filters](images/branching-diff.webp)
 
 ![The change request of an import, approved by a reviewer and ready to merge](images/branching-change-request.webp)
 
@@ -135,8 +133,8 @@ On a proposal you can:
 - select items in the list and **Apply selected** or **Dismiss selected**;
 - open one item and **Apply** or **Dismiss** it.
 
-![One proposal item: create reservation 198.18.10.0/198.18.10.20, with what NetBox holds (nothing yet) and what
-Windows holds](images/import-proposal-item.webp)
+![One proposal item: create reservation 198.18.60.0/198.18.60.30 (handmade01, made by hand on Windows), with what
+NetBox holds (nothing yet) and what Windows holds](images/import-proposal-item.webp)
 
 Proposals and items are written by the import, so they cannot be added or edited by hand; they can be deleted.
 
@@ -178,22 +176,20 @@ hand every day builds up one branch to review rather than one per run.
 
 ## What an import creates in NetBox
 
-- sys4 subnets, pools, shared networks, host reservations, option definitions and options, named as described in
-  [How objects map](mapping.md#names);
-- the plugin's own objects (scope and reservation settings, exclusion ranges, classes, policies, failover
-  relationships, MAC filters, vendor options);
-- the prefixes, IP ranges, IP addresses and MAC addresses sys4 needs, in the server's import VRF. Existing ones are
-  reused, so failover partners share one IP range per scope.
+- the server's scopes, superscopes, exclusion ranges, reservations, classes, option definitions, option values,
+  policies, failover relationships, MAC filters and list switches, with their Windows names (see
+  [How objects map](mapping.md#names));
+- the prefixes, IP ranges, IP addresses and MAC addresses the scopes and reservations point at, in the server's
+  import VRF. Existing ones are reused, so failover partners share one IP range per scope.
 
-![The sys4 subnets after an import, named after the server and the scope](images/import-subnets.webp)
+![The scopes after an import: Windows scope name, server, prefix, IP range, state, superscope and
+description](images/import-subnets.webp)
 
-![An imported sys4 subnet: description (the Windows scope name), shared network (the superscope), prefix, valid
-lifetime (the lease duration), the Windows description in the comments, and the Leases tab](images/import-subnet-page.webp)
+![An imported scope: name and description from Windows, server, prefix, IP range, superscope, lease duration, and
+the Leases tab](images/import-subnet-page.webp)
 
-![Scope settings: the Windows state, type and other settings sys4 has no field for](images/import-windows-scopes.webp)
+![The IPv4 settings panel of an imported scope: type, lease duration, offer delay, max BOOTP clients and activate
+policies](images/import-windows-scopes.webp)
 
-Text going into a 200-character description field is cut to 200 characters on both sides, so a long Windows name
-does not show as a difference on every run.
-
-New sys4 subnets get subnet IDs higher than any in main and in every open import branch, so two import branches never
-merge the same ID.
+Text going into a length-limited field is cut to that length on both sides, so a long Windows name does not show as
+a difference on every run.

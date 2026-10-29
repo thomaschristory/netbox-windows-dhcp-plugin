@@ -210,10 +210,9 @@ def chosen_branch(name, user):
     return branch, None
 
 
-# Models an import writes, as protect_main_scope entries would name them: netbox-plugin-dhcp, the core objects it
-# needs, and this plugin's own branchable models.
+# Models an import writes, as protect_main_scope entries would name them: this plugin's own branchable models and the
+# core objects its scopes and reservations point at.
 _IMPORT_MODELS = (
-    "netbox_dhcp.",
     "ipam.prefix",
     "ipam.iprange",
     "ipam.ipaddress",
@@ -283,7 +282,7 @@ def _name_prefix(windows_server):
 
     prefix = get_setting("import_branch_prefix")
     room = BRANCH_NAME_LENGTH - len(prefix) - 2 - 15
-    return f"{prefix}/{windows_server.dhcp_server.name[: max(room, 1)]}/"
+    return f"{prefix}/{windows_server.name[: max(room, 1)]}/"
 
 
 def open_import_branch(windows_server, logger=log):
@@ -476,63 +475,6 @@ def writing_main(user):
 
     with on_main(), event_tracking(_request(user)):
         yield
-
-
-# Advisory lock (two numbers) serialising branch-mode imports while they allocate subnet IDs.
-_SUBNET_ID_LOCK = (0x57444843, 0)
-
-
-@contextmanager
-def subnet_id_allocation(also=None):
-    """
-    Yield an iterator of free netbox-plugin-dhcp subnet IDs, while holding a lock other imports wait on.
-
-    sys4 numbers a new Subnet max(subnet_id) + 1 within the schema it is saved in. Two import branches would each
-    start from main's maximum and both merge the same ID, which the unique constraint refuses at merge time. So
-    count from the highest ID in main and in every open import branch instead, and in every open branch an import
-    wrote into by the user's choice (#36), including ``also``, the branch being written.
-    """
-    import itertools
-
-    from django.db import DatabaseError, connection
-    from django.db.models import Max
-    from netbox_branching.choices import BranchStatusChoices
-    from netbox_branching.models import Branch
-    from netbox_branching.utilities import activate_branch
-    from netbox_dhcp.models import Subnet
-
-    from ..conf import get_setting
-
-    with connection.cursor() as cursor:
-        cursor.execute("SELECT pg_advisory_lock(%s, %s)", list(_SUBNET_ID_LOCK))
-    try:
-        highest = Subnet.objects.aggregate(m=Max("subnet_id"))["m"] or 0
-        from django.db.models import Q
-
-        from ..choices import ImportDestinationChoices
-        from ..models import SyncRun
-
-        chosen = SyncRun.objects.filter(destination=ImportDestinationChoices.CURRENT).values("branch_name")
-        others = list(
-            Branch.objects.filter(
-                Q(name__startswith=f"{get_setting('import_branch_prefix')}/") | Q(name__in=chosen),
-                status=BranchStatusChoices.READY,
-            )
-        )
-        if also is not None and all(other.pk != also.pk for other in others):
-            others.append(also)
-        for other in others:
-            try:
-                with activate_branch(other):
-                    highest = max(highest, Subnet.objects.aggregate(m=Max("subnet_id"))["m"] or 0)
-            except DatabaseError:
-                log.warning("could not read subnet IDs from branch %s", other.name)
-            finally:
-                close_connection(other)
-        yield itertools.count(highest + 1)
-    finally:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_advisory_unlock(%s, %s)", list(_SUBNET_ID_LOCK))
 
 
 def close_connection(branch):

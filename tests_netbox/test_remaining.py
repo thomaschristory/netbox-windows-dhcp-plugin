@@ -5,8 +5,8 @@ definitions and values, failover relationships, MAC filters and option values co
 
 from core.exceptions import JobFailed
 from django.core.exceptions import ValidationError
+from django.db.models import ProtectedError, RestrictedError
 from django.test import TestCase, override_settings
-from netbox_dhcp.models import HostReservation, Option, SharedNetwork, Subnet
 
 from netbox_windows_dhcp_plugin import signals
 from netbox_windows_dhcp_plugin.choices import POLICY_CRITERIA_KEYS, SyncStatusChoices
@@ -15,14 +15,16 @@ from netbox_windows_dhcp_plugin.models import (
     FailoverRelationship,
     MacFilter,
     MacFilterLists,
+    OptionDefinition,
+    OptionValue,
+    Scope,
     SyncRun,
     SyncState,
     WindowsClass,
     WindowsPolicy,
     WindowsServer,
-    WindowsVendorOption,
-    WindowsVendorOptionDefinition,
 )
+from netbox_windows_dhcp_plugin.models import Superscope as NetBoxSuperscope
 from netbox_windows_dhcp_plugin.sync import importer, netbox_state, pusher, windows_state
 from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows.client import (
@@ -30,7 +32,6 @@ from netbox_windows_dhcp_plugin.windows.client import (
     OptionKey,
     Policy,
     PolicyIPRange,
-    Scope,
     Superscope,
 )
 from netbox_windows_dhcp_plugin.windows.client import (
@@ -39,9 +40,12 @@ from netbox_windows_dhcp_plugin.windows.client import (
 from netbox_windows_dhcp_plugin.windows.client import (
     MacFilter as WinMacFilter,
 )
+from netbox_windows_dhcp_plugin.windows.client import (
+    Scope as WinScope,
+)
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 
-from .fixtures import dhcp_servers, subnets, windows_server
+from .fixtures import reservation, scope, windows_server, windows_servers
 from .test_jobs import CREDENTIALS
 from .test_push import PushTestMixin
 
@@ -52,6 +56,7 @@ SECRET_PROFILES = {
             "lab": {"username": "lab\\admin", "password": "x"},
             "ha": {"secret": "s3cret", "allowed_hosts": ["*.example.com"]},
             "elsewhere": {"secret": "s3cret", "allowed_hosts": ["*.other.example"]},
+            "primary-only": {"secret": "s3cret", "allowed_hosts": ["dhcp1.example.com"]},
         }
     },
 }
@@ -60,7 +65,7 @@ SECRET_PROFILES = {
 def seed_more(fake):
     """What the base seed lacks: a second scope, a superscope, policies, a failover relationship, MAC filters."""
     c = DhcpClient(fake)
-    c.add_scope(Scope(name="Lab", start_range="10.2.0.10", end_range="10.2.0.200", subnet_mask="255.255.255.0"))
+    c.add_scope(WinScope(name="Lab", start_range="10.2.0.10", end_range="10.2.0.200", subnet_mask="255.255.255.0"))
     c.add_superscope(Superscope(name="Campus", scope_ids=["10.1.0.0", "10.2.0.0"]))
     c.add_policy(Policy(name="Windows", criteria={"vendor_class": ["EQ", "MSFT"]}, processing_order=1))
     c.add_policy(
@@ -86,8 +91,7 @@ def seed_more(fake):
 class RemainingObjectsMixin(PushTestMixin):
     def setUp(self):
         # The partner must exist before the import reads the relationship.
-        self.partner_dhcp = dhcp_servers(1, start=2)[0]
-        self.partner = windows_server(self.partner_dhcp)
+        self.partner = windows_server("dhcp2")
         self._seed_more = True
         super().setUp()
 
@@ -101,53 +105,52 @@ class RemainingObjectsMixin(PushTestMixin):
 @override_settings(PLUGINS_CONFIG=CREDENTIALS)
 class ImportRemainingTest(RemainingObjectsMixin, TestCase):
     def test_import_writes_every_kind(self):
-        network = SharedNetwork.objects.get()
-        self.assertEqual((network.name, network.description), ("dhcp1/Campus", "Campus"))
-        self.assertEqual(str(network.prefix.prefix), "10.0.0.0/14")
-        members = Subnet.objects.filter(shared_network=network)
-        self.assertEqual(members.count(), 2)
-        self.assertFalse(members.filter(dhcp_server__isnull=False).exists())
+        superscope = NetBoxSuperscope.objects.get()
+        self.assertEqual((superscope.server, superscope.name), (self.server, "Campus"))
+        self.assertEqual(sorted(s.name for s in superscope.scopes.all()), ["LAN", "Lab"])
 
         printers = WindowsPolicy.objects.get(name="Printers")
-        self.assertEqual(printers.subnet.description, "LAN")
+        self.assertEqual(printers.scope.name, "LAN")
         self.assertEqual(printers.lease_duration, 4 * 3600)
         self.assertEqual(printers.ip_ranges, [["10.1.0.100", "10.1.0.120"]])
         # As Windows stores the "00-15-5d*" it was given (#21).
         self.assertEqual(printers.criteria, {"mac_address": ["EQ", "00-15-5d-*"]})
-        self.assertEqual(printers.options.get().option.data, "10.1.0.2")
-        self.assertIsNone(WindowsPolicy.objects.get(name="Windows").subnet)
+        value = printers.option_values.get()
+        self.assertEqual((value.scope, value.code, value.value), (printers.scope, 3, ["10.1.0.2"]))
+        self.assertIsNone(WindowsPolicy.objects.get(name="Windows").scope)
 
-        definition = WindowsVendorOptionDefinition.objects.get()
+        definition = OptionDefinition.objects.get(vendor_class__isnull=False)
         self.assertEqual((definition.vendor_class.name, definition.code), ("MSFT", 2))
-        values = {o.policy.name if o.policy else "": o.value for o in WindowsVendorOption.objects.all()}
+        vendor_values = OptionValue.objects.filter(vendor_class__name="MSFT")
+        values = {o.policy.name if o.policy else "": o.value for o in vendor_values}
         self.assertEqual(values, {"": ["1"], "Windows": ["0"]})
 
         relationship = FailoverRelationship.objects.get()
-        self.assertEqual((relationship.primary_server, relationship.partner_server), (self.dhcp, self.partner_dhcp))
-        self.assertEqual([s.description for s in relationship.subnets.all()], ["Lab"])
+        self.assertEqual((relationship.primary_server, relationship.partner_server), (self.server, self.partner))
+        self.assertEqual([s.name for s in relationship.scopes.all()], ["Lab"])
         self.assertEqual(MacFilter.objects.get().list, "deny")
         lists = MacFilterLists.objects.get()
         self.assertEqual((lists.allow_list_enabled, lists.deny_list_enabled), (False, True))
 
-        # sys4 validates a string option as one value, so the escaped comma passes its checks.
-        comma = Option.objects.get(definition__code=224, assigned_object_id=self.dhcp.pk)
-        self.assertEqual((comma.data, windows_state.split_values(comma.data)), ("a\\,b", ["a,b"]))
+        # Values are lists, as Windows holds them: a comma inside one value stays one value.
+        comma = OptionValue.objects.get(server=self.server, code=224, scope__isnull=True)
+        self.assertEqual(comma.value, ["a,b"])
 
     def test_round_trip_leaves_nothing_to_import(self):
         self.assertEqual(self.changes(), [])
 
-    def test_superscope_removed_on_windows_keeps_its_subnets(self):
+    def test_superscope_removed_on_windows_keeps_its_scopes(self):
         self.client.remove_superscope("Campus")
         self.apply_all()
-        self.assertFalse(SharedNetwork.objects.exists())
-        self.assertEqual(Subnet.objects.filter(dhcp_server=self.dhcp).count(), 2)
+        self.assertFalse(NetBoxSuperscope.objects.exists())
+        self.assertEqual(Scope.objects.filter(server=self.server, superscope__isnull=True).count(), 2)
         self.assertEqual(self.changes(), [])
 
-    def test_superscope_membership_change_moves_subnets(self):
+    def test_superscope_membership_change_moves_scopes(self):
         self.client.set_superscope(Superscope(name="Campus", scope_ids=["10.1.0.0"]))
         self.apply_all()
-        self.assertEqual(Subnet.objects.get(shared_network__isnull=False).description, "LAN")
-        self.assertEqual(Subnet.objects.get(dhcp_server=self.dhcp).description, "Lab")
+        self.assertEqual(Scope.objects.get(superscope__isnull=False).name, "LAN")
+        self.assertEqual(Scope.objects.get(superscope__isnull=True).name, "Lab")
         self.assertEqual(self.changes(), [])
 
     def test_partner_import_leaves_the_relationship_to_the_primary(self):
@@ -163,18 +166,18 @@ class ImportRemainingTest(RemainingObjectsMixin, TestCase):
         self.partner.save()
         FailoverRelationship.objects.all().delete()
         self.apply_all()
-        self.assertEqual(FailoverRelationship.objects.get().partner_server, self.partner_dhcp)
+        self.assertEqual(FailoverRelationship.objects.get().partner_server, self.partner)
         self.assertEqual(self.changes(), [])
 
-    def test_too_wide_superscope_is_refused_with_a_clear_message(self):
+    def test_superscope_of_scopes_far_apart_imports(self):
+        # A superscope needs no covering prefix.
         DhcpClient(self.fake).add_scope(
-            Scope(name="Far", start_range="172.16.0.10", end_range="172.16.0.20", subnet_mask="255.255.255.0")
+            WinScope(name="Far", start_range="172.16.0.10", end_range="172.16.0.20", subnet_mask="255.255.255.0")
         )
         DhcpClient(self.fake).add_superscope(Superscope(name="Campus", scope_ids=["172.16.0.0"]))
-        result = self.propose()
-        importer.apply_items(result.proposal.items.all())
-        item = result.proposal.items.get(kind="superscope")
-        self.assertIn("too far apart", item.error)
+        self.apply_all()
+        self.assertEqual(Scope.objects.get(name="Far").superscope.name, "Campus")
+        self.assertEqual(self.changes(), [])
 
     def test_vendor_items_need_the_vendor_model_permissions(self):
         from users.models import User
@@ -184,7 +187,7 @@ class ImportRemainingTest(RemainingObjectsMixin, TestCase):
 
         user = User.objects.create(username="reviewer")
         item = ImportProposalItem(kind="option", action="create", after={"vendor_class": "MSFT"})
-        self.assertEqual(missing_permission(user, item), "netbox_windows_dhcp_plugin.add_windowsvendoroption")
+        self.assertEqual(missing_permission(user, item), "netbox_windows_dhcp_plugin.add_optionvalue")
 
     def test_unknown_partner_fails_the_item_clearly(self):
         DhcpClient(self.fake).add_failover(WinFailover(name="Other", partner_server="nowhere", scope_ids=["10.1.0.0"]))
@@ -206,10 +209,10 @@ class ImportRemainingTest(RemainingObjectsMixin, TestCase):
         importer.apply_items([item])
         item.refresh_from_db()
         self.assertEqual(item.error, "")
-        self.assertEqual(FailoverRelationship.objects.get(name="Other").partner_server, self.partner_dhcp)
+        self.assertEqual(FailoverRelationship.objects.get(name="Other").partner_server, self.partner)
 
     def test_a_computer_name_two_servers_report_matches_neither(self):
-        other = windows_server(dhcp_servers(1, start=3)[0])
+        other = windows_server("dhcp3")
         WindowsServer.objects.filter(pk__in=[self.partner.pk, other.pk]).update(reported_names=["dhcp-b"])
         DhcpClient(self.fake).add_failover(WinFailover(name="Other", partner_server="dhcp-b", scope_ids=["10.1.0.0"]))
         item = self.propose().proposal.items.get(kind="failover")
@@ -294,8 +297,8 @@ class PushRemainingTest(RemainingObjectsMixin, TestCase):
         """#24: names sorting opposite to processing orders; Windows refuses order 2 before order 1 exists."""
         printers = WindowsPolicy.objects.get(name="Printers")
         WindowsPolicy.objects.create(
-            dhcp_server=self.dhcp,
-            subnet=printers.subnet,
+            server=self.server,
+            scope=printers.scope,
             name="Accounting",
             processing_order=2,
             criteria={"mac_address": ["EQ", "02-4e-42-cd*"]},
@@ -323,7 +326,7 @@ class PushRemainingTest(RemainingObjectsMixin, TestCase):
             Policy(name="phones", scope_id="10.2.0.0", criteria={"vendor_class": ["EQ", "MSFT"]})
         )
         FailoverRelationship.objects.all().delete()
-        Subnet.objects.get(description="Lab").delete()
+        Scope.objects.get(name="Lab").delete()
         run = self._run()
         self.assertIn("10.2.0.0", self.fake.scopes)
         reasons = {s["key"]: s["reason"] for s in run.summary["not_pushed"]}
@@ -332,10 +335,10 @@ class PushRemainingTest(RemainingObjectsMixin, TestCase):
     def test_scope_leaving_a_relationship_is_deleted_in_one_push(self):
         self._run()
         relationship = FailoverRelationship.objects.get()
-        subnet = Subnet.objects.get(description="Lab")
+        lab = Scope.objects.get(name="Lab")
         relationship.snapshot()
-        relationship.subnets.set([Subnet.objects.get(description="LAN")])
-        subnet.delete()
+        relationship.scopes.set([Scope.objects.get(name="LAN")])
+        lab.delete()
         run = self._run()
         self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)
         self.assertNotIn("10.2.0.0", self.fake.scopes)
@@ -398,19 +401,24 @@ class PushRemainingTest(RemainingObjectsMixin, TestCase):
         self.assertIn("may not be used with host", run.error)
         self.assertEqual(self.fake.failover_secrets, {})
 
-    def test_secret_needs_the_partner_windows_server(self):
+    def test_secret_is_not_sent_when_the_partner_host_is_outside_the_profile(self):
+        # The secret goes to both partners: a profile set behind the form's back that covers the primary only stops
+        # the push before the secret is read.
         self._run()
-        relationship = FailoverRelationship.objects.get()
-        FailoverRelationship.objects.filter(pk=relationship.pk).update(shared_secret_profile="ha")
-        self.partner.delete()
-        run = self._run()
-        # Reported, not pushed, and the secret is never read.
-        reasons = {s["key"]: s["reason"] for s in run.summary["not_pushed"]}
-        self.assertIn("no Windows server", reasons["ha"])
+        FailoverRelationship.objects.update(shared_secret_profile="primary-only")
+        with self.assertRaises(JobFailed):
+            self._run()
+        self.assertIn("may not be used with host", SyncRun.objects.latest("pk").error)
         self.assertEqual(self.fake.failover_secrets, {})
-        relationship.refresh_from_db()
         with self.assertRaises(ValidationError):
-            relationship.full_clean()
+            FailoverRelationship.objects.get().full_clean()
+
+    def test_deleting_the_partner_server_is_refused(self):
+        # Deleting the relationship with it would make the next push remove failover from the primary on Windows.
+        self._run()
+        with self.assertRaises(ProtectedError):
+            self.partner.delete()
+        self.assertTrue(FailoverRelationship.objects.exists())
 
     def test_partner_push_leaves_the_relationship_alone(self):
         self._run()
@@ -421,15 +429,18 @@ class PushRemainingTest(RemainingObjectsMixin, TestCase):
     def test_new_objects_map_to_their_server(self):
         objects = [
             *WindowsPolicy.objects.all(),
-            *WindowsVendorOptionDefinition.objects.all(),
-            *WindowsVendorOption.objects.all(),
+            *OptionDefinition.objects.all(),
+            *OptionValue.objects.all(),
             *MacFilter.objects.all(),
             *MacFilterLists.objects.all(),
-            *SharedNetwork.objects.all(),
+            *NetBoxSuperscope.objects.all(),
+            *Scope.objects.all(),
         ]
         for obj in objects:
             with self.subTest(obj=obj):
-                self.assertEqual(signals.servers_for(obj._meta.label_lower, obj.pk, signals._data(obj)), {self.dhcp.pk})
+                self.assertEqual(
+                    signals.servers_for(obj._meta.label_lower, obj.pk, signals._data(obj)), {self.server.pk}
+                )
 
 
 class ModelValidationTest(TestCase):
@@ -437,32 +448,40 @@ class ModelValidationTest(TestCase):
         self.assertEqual(set(POLICY_CRITERIA_KEYS), set(POLICY_CRITERIA))
 
     def test_policy_criteria_are_validated(self):
-        (server,) = dhcp_servers(1)
+        server = windows_server()
         for criteria in ({"colour": ["EQ", "x"]}, {"fqdn": "x"}, {"fqdn": ["LIKE", "x"]}, ["EQ"]):
             with self.subTest(criteria=criteria), self.assertRaises(ValidationError):
-                WindowsPolicy(dhcp_server=server, name="p", criteria=criteria).full_clean()
+                WindowsPolicy(server=server, name="p", criteria=criteria).full_clean()
 
-    def test_vendor_value_needs_its_definition_server(self):
-        one, two = dhcp_servers(2)
-        vendor = WindowsClass.objects.create(dhcp_server=one, name="MSFT", class_type="vendor", data="MSFT 5.0")
-        definition = WindowsVendorOptionDefinition.objects.create(vendor_class=vendor, code=1, name="x")
+    def test_class_option_values_do_not_block_deleting_the_server(self):
+        server = windows_server()
+        vendor = WindowsClass.objects.create(server=server, name="MSFT", class_type="vendor", data="MSFT 5.0")
+        phones = WindowsClass.objects.create(server=server, name="Phones", class_type="user", data="p")
+        OptionDefinition.objects.create(server=server, vendor_class=vendor, code=1, name="x")
+        OptionValue.objects.create(server=server, vendor_class=vendor, code=1, value=["1"])
+        OptionValue.objects.create(server=server, user_class=phones, code=6, value=["10.0.0.1"])
+        # A class in use still cannot be deleted on its own.
+        with self.assertRaises(RestrictedError):
+            phones.delete()
+        server.delete()
+        self.assertFalse(WindowsClass.objects.exists())
+        self.assertFalse(OptionValue.objects.exists())
+
+    def test_vendor_value_needs_its_server(self):
+        one, two = windows_servers(2)
+        vendor = WindowsClass.objects.create(server=one, name="MSFT", class_type="vendor", data="MSFT 5.0")
+        OptionDefinition.objects.create(server=one, vendor_class=vendor, code=1, name="x")
         with self.assertRaises(ValidationError):
-            WindowsVendorOption(definition=definition, assigned_object=two, value=["1"]).full_clean()
-        WindowsVendorOption(definition=definition, assigned_object=one, value=["1"]).full_clean()
-        other_user = WindowsClass.objects.create(dhcp_server=two, name="Phones", class_type="user", data="p")
+            OptionValue(server=two, vendor_class=vendor, code=1, value=["1"]).full_clean()
+        OptionValue(server=one, vendor_class=vendor, code=1, value=["1"]).full_clean()
+        other_user = WindowsClass.objects.create(server=two, name="Phones", class_type="user", data="p")
         with self.assertRaises(ValidationError):
-            WindowsVendorOption(
-                definition=definition, assigned_object=one, user_class=other_user, value=["1"]
-            ).full_clean()
-        (subnet,) = subnets(one, 1)
-        scope_policy = WindowsPolicy.objects.create(dhcp_server=one, subnet=subnet, name="p")
+            OptionValue(server=one, vendor_class=vendor, user_class=other_user, code=1, value=["1"]).full_clean()
+        lan = scope(one, "10.1.0.0/24")
+        scope_policy = WindowsPolicy.objects.create(server=one, scope=lan, name="p")
         with self.assertRaises(ValidationError):
-            WindowsVendorOption(
-                definition=definition, assigned_object=one, policy=scope_policy, value=["1"]
-            ).full_clean()
-        WindowsVendorOption(
-            definition=definition, assigned_object=subnet, policy=scope_policy, value=["1"]
-        ).full_clean()
-        reservation = HostReservation.objects.create(name="r", dhcp_server=two)
+            OptionValue(server=one, vendor_class=vendor, policy=scope_policy, code=1, value=["1"]).full_clean()
+        OptionValue(server=one, scope=lan, vendor_class=vendor, policy=scope_policy, code=1, value=["1"]).full_clean()
+        printer = reservation(scope(two, "10.2.0.0/24"), "10.2.0.5/24", client_id="aa")
         with self.assertRaises(ValidationError):
-            WindowsVendorOption(definition=definition, assigned_object=reservation, value=["1"]).full_clean()
+            OptionValue(server=one, reservation=printer, vendor_class=vendor, code=1, value=["1"]).full_clean()

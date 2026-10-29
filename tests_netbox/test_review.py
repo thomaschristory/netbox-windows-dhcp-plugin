@@ -5,25 +5,23 @@ from unittest import skipUnless
 from core.models import ObjectChange, ObjectType
 from django.apps import apps
 from ipam.models import Prefix
-from netbox_dhcp.models import Subnet
 from utilities.testing import APITestCase, TestCase
 
 from netbox_windows_dhcp_plugin.choices import ProposalItemStatusChoices, ProposalStatusChoices
+from netbox_windows_dhcp_plugin.models import Scope as NetBoxScope
 from netbox_windows_dhcp_plugin.sync import importer, windows_state
 from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows.client import Scope
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 
-from .fixtures import PluginAPIMixin, dhcp_servers, ensure_standard_option_definitions, windows_server
+from .fixtures import PluginAPIMixin, windows_server
 
 # Everything applying a scope writes.
 SCOPE_PERMISSIONS = (
-    "netbox_dhcp.add_subnet",
-    "netbox_dhcp.view_subnet",
-    "netbox_dhcp.add_pool",
+    "netbox_windows_dhcp_plugin.add_scope",
+    "netbox_windows_dhcp_plugin.view_scope",
     "ipam.add_prefix",
     "ipam.add_iprange",
-    "netbox_windows_dhcp_plugin.add_windowsscope",
 )
 ITEM = "netbox_windows_dhcp_plugin.change_importproposalitem"
 # What starting an import needs when it opens a branch and a change request.
@@ -40,8 +38,7 @@ ITEMS_APPLY = "/api/plugins/windows-dhcp/import-proposal-items/apply/"
 
 
 def make_proposal():
-    ensure_standard_option_definitions()
-    server = windows_server(dhcp_servers(1)[0])
+    server = windows_server()
     fake = FakeDhcpServer()
     DhcpClient(fake).add_scope(
         Scope(name="LAN", start_range="10.1.0.10", end_range="10.1.0.200", subnet_mask="255.255.255.0")
@@ -62,8 +59,8 @@ class ReviewViewTest(TestCase):
         self.assertEqual(response.status_code, 302)
         self.item.refresh_from_db()
         self.assertEqual(self.item.status, ProposalItemStatusChoices.APPLIED, self.item.error)
-        subnet = Subnet.objects.get()
-        change = ObjectChange.objects.get(changed_object_id=subnet.pk, changed_object_type__model="subnet")
+        scope = NetBoxScope.objects.get()
+        change = ObjectChange.objects.get(changed_object_id=scope.pk, changed_object_type__model="scope")
         self.assertEqual(change.user, self.user)
         self.proposal.refresh_from_db()
         self.assertEqual(self.proposal.status, ProposalStatusChoices.APPLIED)
@@ -73,16 +70,16 @@ class ReviewViewTest(TestCase):
         self.client.post(f"/plugins/windows-dhcp/importproposalitems/{self.item.pk}/apply/")
         self.item.refresh_from_db()
         self.assertEqual(self.item.status, ProposalItemStatusChoices.PENDING)
-        self.assertFalse(Subnet.objects.exists())
+        self.assertFalse(NetBoxScope.objects.exists())
 
     def test_apply_needs_permission_on_every_object_written(self):
-        # add_subnet alone must not let a reviewer create prefixes and IP ranges through an import.
+        # add_scope alone must not let a reviewer create prefixes and IP ranges through an import.
         self.add_permissions(ITEM, *(p for p in SCOPE_PERMISSIONS if p != "ipam.add_prefix"))
         self.client.post(f"/plugins/windows-dhcp/importproposalitems/{self.item.pk}/apply/")
         self.item.refresh_from_db()
         self.assertEqual(self.item.status, ProposalItemStatusChoices.FAILED)
         self.assertIn("ipam.add_prefix", self.item.error)
-        self.assertFalse(Subnet.objects.exists())
+        self.assertFalse(NetBoxScope.objects.exists())
         self.assertFalse(Prefix.objects.exists())
 
     def test_apply_respects_permission_constraints(self):
@@ -103,19 +100,19 @@ class ReviewViewTest(TestCase):
         self.add_permissions(*SCOPE_PERMISSIONS)
         response = self.client.post(f"/plugins/windows-dhcp/importproposalitems/{self.item.pk}/apply/")
         self.assertEqual(response.status_code, 403)
-        self.assertFalse(Subnet.objects.exists())
+        self.assertFalse(NetBoxScope.objects.exists())
 
     def test_dismiss_closes_the_proposal(self):
         self.add_permissions(PROPOSAL, ITEM)
         self.client.post(f"/plugins/windows-dhcp/importproposals/{self.proposal.pk}/dismiss/")
         self.proposal.refresh_from_db()
         self.assertEqual(self.proposal.status, ProposalStatusChoices.DISMISSED)
-        self.assertFalse(Subnet.objects.exists())
+        self.assertFalse(NetBoxScope.objects.exists())
 
     def test_bulk_apply_selected(self):
         self.add_permissions(ITEM, *SCOPE_PERMISSIONS)
         self.client.post("/plugins/windows-dhcp/importproposalitems/apply/", {"pk": [self.item.pk]})
-        self.assertTrue(Subnet.objects.exists())
+        self.assertTrue(NetBoxScope.objects.exists())
 
     def test_object_permissions_limit_which_server_can_be_imported(self):
         from users.models import ObjectPermission
@@ -173,7 +170,7 @@ class ReviewAPITest(PluginAPIMixin, APITestCase):
         )
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data, {"applied": 1, "failed": 0, "missing_permissions": []})
-        self.assertTrue(Subnet.objects.exists())
+        self.assertTrue(NetBoxScope.objects.exists())
 
     def test_apply_reports_missing_permissions(self):
         self.add_permissions(ITEM)
@@ -183,8 +180,8 @@ class ReviewAPITest(PluginAPIMixin, APITestCase):
             format="json",
             **self.header,
         )
-        self.assertEqual(response.data["missing_permissions"], ["netbox_dhcp.add_subnet"])
-        self.assertFalse(Subnet.objects.exists())
+        self.assertEqual(response.data["missing_permissions"], ["netbox_windows_dhcp_plugin.add_scope"])
+        self.assertFalse(NetBoxScope.objects.exists())
 
     def test_ids_are_required(self):
         self.add_permissions(ITEM)

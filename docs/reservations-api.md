@@ -1,55 +1,57 @@
 # Reservations through the API
 
-This page creates a DHCP reservation with the NetBox REST API, waits for the plugin to push it to Windows, checks
-the result, and deletes it again. It is the API version of [Reservations](reservations.md), which does the same in
-the web UI and explains each field.
+This page creates a DHCP reservation with the NetBox REST API, gives it an option value, waits for the plugin to
+push it to Windows, checks the result, and deletes it again. It is the API version of
+[Reservations](reservations.md), which does the same in the web UI and explains each field.
 
-Everything below was run as shown against the lab used for the other pages: NetBox 4.7 without branching, two
-Windows Server 2025 DHCP servers (`dhcp01.example.com` and `dhcp02.example.com`) in a failover relationship, sync
-enabled on both, and the scope `198.18.60.0/24` already pushed to `dhcp01`.
+The lab is the one used for the other pages: NetBox 4.7 without branching, two Windows Server 2025 DHCP servers
+(`dhcp01.example.com` and `dhcp02.example.com`, known to NetBox as `dhcp01` and `dhcp02`) in a failover
+relationship, sync enabled on both, and the scope `198.18.60.0/24` (`VLAN60-Office`) already pushed to `dhcp01`.
 
 ## What you need
 
 - An API token that may write (a v2 token is sent as `Authorization: Bearer nbt_...`; a v1 token as
-  `Authorization: Token ...`), for a user allowed to add IP addresses, MAC addresses, host reservations and
-  Windows reservation settings, and to change the Windows server (for the push action).
-- The scope in NetBox: a sys4 subnet with a pool on the DHCP server of a Windows server.
+  `Authorization: Token ...`), for a user allowed to add IP addresses, MAC addresses, reservations and option
+  values, and to change the Windows server (for the push action).
+- The scope in NetBox, on a Windows server.
 - **Sync enabled** on that Windows server. Then every save queues a push by itself, `push_debounce` seconds (10)
   later, and the push action works. With sync disabled, the push action answers `409 sync is disabled` and nothing
   reaches Windows.
 
 ## The calls
 
-A reservation is three NetBox objects, plus one optional object of this plugin:
+A reservation is three NetBox objects (an IP address, a MAC address and the reservation), plus its option values.
+All plugin endpoints are under `/api/plugins/windows-dhcp/`:
 
 | Step | Request | Body |
 |---|---|---|
-| Find the Windows server | `GET /api/plugins/windows-dhcp/windows-servers/?host=dhcp01.example.com` | |
-| Find the subnet (the scope) | `GET /api/plugins/netbox-dhcp/subnets/?name=dhcp01/198.18.60.0` | |
+| Find the Windows server | `GET /api/plugins/windows-dhcp/windows-servers/?name=dhcp01` | |
+| Find the scope | `GET /api/plugins/windows-dhcp/scopes/?server_id=<id>&name=VLAN60-Office` | |
 | IP address | `POST /api/ipam/ip-addresses/` | `{"address": "198.18.60.23/24", "status": "active"}` |
 | MAC address | `POST /api/dcim/mac-addresses/` | `{"mac_address": "02:4E:42:60:00:23"}` |
-| Host reservation | `POST /api/plugins/netbox-dhcp/hostreservations/` | `{"name": ..., "description": ..., "subnet": <id>, "hw_address": <id>, "ipv4_address": <id>}` |
-| Reservation type (optional) | `POST /api/plugins/windows-dhcp/windows-reservations/` | `{"host_reservation": <id>, "reservation_type": "dhcp"}` |
+| Reservation | `POST /api/plugins/windows-dhcp/reservations/` | `{"scope": <id>, "ip_address": <id>, "mac_address": <id>, "name": "label-printer01", "reservation_type": "dhcp"}` |
+| Option value on the reservation | `POST /api/plugins/windows-dhcp/option-values/` | `{"server": <id>, "reservation": <id>, "family": 4, "code": 15, "value": ["print.example.com"]}` |
 | Push | `POST /api/plugins/windows-dhcp/windows-servers/<id>/push/` | |
 | Follow the push | `GET /api/plugins/windows-dhcp/sync-runs/?windows_server_id=<id>&kind=push&created__gte=<time>` | |
 
 How the fields reach Windows:
 
-- **name**: unique among all host reservations in NetBox, never sent to Windows. Imports name reservations
-  `<server>/<scope>/<ip>`; using the same pattern keeps API-made and imported reservations alike.
-- **description**: the Windows reservation **name**. **comments**: the Windows description.
-- **hw_address**: the client ID. **ipv4_address**: the reserved address, inside the subnet.
-- **reservation_type**: `dhcp`, `bootp` or `both`. Without reservation settings, the reservation is pushed as
-  `both`, the Windows default.
+- **name**: the Windows reservation **name**. **description**: the Windows description.
+- **mac_address**: the client ID. For a client identified by something else, leave it out and set **client_id**.
+  One of the two is required.
+- **ip_address**: the reserved address, inside the scope's prefix.
+- **reservation_type**: `dhcp`, `bootp` or `both`. Left out, it is `both`, the Windows default.
+- An option value names its option by **code** and holds its **value** as a list of strings, one per Windows value
+  (`["10.1.0.53", "10.1.0.54"]` for two DNS servers). Setting **reservation** makes it a reservation value; its scope
+  is filled in from the reservation.
 
-The same requests with curl, for the host reservation for example (the IDs come from the lookups and the two
-POSTs before it):
+The same request with curl, for the reservation for example (the IDs come from the lookups and the two POSTs before
+it):
 
 ```bash
-curl -s -X POST "$NETBOX_URL/api/plugins/netbox-dhcp/hostreservations/" \
+curl -s -X POST "$NETBOX_URL/api/plugins/windows-dhcp/reservations/" \
   -H "Authorization: Bearer $NETBOX_TOKEN" -H "Content-Type: application/json" \
-  -d '{"name": "dhcp01/198.18.60.0/198.18.60.23", "description": "label-printer01",
-       "subnet": 1, "hw_address": 7, "ipv4_address": 9}'
+  -d '{"scope": 1, "ip_address": 9, "mac_address": 7, "name": "label-printer01", "reservation_type": "dhcp"}'
 ```
 
 ## End to end: create
@@ -58,7 +60,7 @@ The script below does every step and waits for the push. It needs Python 3.11 or
 `NETBOX_URL` and `NETBOX_TOKEN` from the environment.
 
 ```python
-"""Create a DHCP reservation through the NetBox REST API and wait until Windows has it."""
+"""Create a DHCP reservation with an option value through the NetBox REST API and wait until Windows has it."""
 
 import os
 import sys
@@ -68,13 +70,14 @@ from datetime import UTC, datetime
 import requests
 
 NETBOX = os.environ["NETBOX_URL"].rstrip("/") + "/api/"
+PLUGIN = "plugins/windows-dhcp/"
 api = requests.Session()
 api.headers["Authorization"] = f"Bearer {os.environ['NETBOX_TOKEN']}"
 api.headers["Accept"] = "application/json"
 
 # What to reserve, and where.
-WINDOWS_HOST = "dhcp01.example.com"
-SUBNET = "dhcp01/198.18.60.0"
+SERVER = "dhcp01"
+SCOPE = "VLAN60-Office"
 IP = "198.18.60.23/24"
 MAC = "02:4E:42:60:00:23"
 NAME = "label-printer01"
@@ -94,38 +97,44 @@ def one(path, **params):
     return results[0]
 
 
-# 1. Look up the Windows server and the subnet (the Windows scope).
-server = one("plugins/windows-dhcp/windows-servers/", host=WINDOWS_HOST)
-subnet = one("plugins/netbox-dhcp/subnets/", name=SUBNET)
+# 1. Look up the Windows server and the scope.
+server = one(PLUGIN + "windows-servers/", name=SERVER)
+scope = one(PLUGIN + "scopes/", server_id=server["id"], name=SCOPE)
 started = datetime.now(UTC).isoformat()
 
 # 2. The IP address and the MAC address the reservation points at.
 ip = call("POST", "ipam/ip-addresses/", json={"address": IP, "status": "active", "description": NAME}).json()
 mac = call("POST", "dcim/mac-addresses/", json={"mac_address": MAC, "description": NAME}).json()
 
-# 3. The reservation. Its description becomes the Windows reservation name.
+# 3. The reservation. Its name is the Windows reservation name; the type is optional (both when left out).
 reservation = call(
     "POST",
-    "plugins/netbox-dhcp/hostreservations/",
+    PLUGIN + "reservations/",
     json={
-        "name": f"{SUBNET}/{IP.split('/')[0]}",
-        "description": NAME,
-        "subnet": subnet["id"],
-        "hw_address": mac["id"],
-        "ipv4_address": ip["id"],
+        "scope": scope["id"],
+        "ip_address": ip["id"],
+        "mac_address": mac["id"],
+        "name": NAME,
+        "reservation_type": "dhcp",
     },
 ).json()
-print(f"host reservation {reservation['id']}: {reservation['name']}")
+print(f"reservation {reservation['id']}: {reservation['display']}")
 
-# 4. Optional: Windows reservation type (DHCP, BOOTP or both; both when left out).
+# 4. An option value on the reservation: option 15 (DNS domain name). Values are lists of strings.
 call(
     "POST",
-    "plugins/windows-dhcp/windows-reservations/",
-    json={"host_reservation": reservation["id"], "reservation_type": "dhcp"},
+    PLUGIN + "option-values/",
+    json={
+        "server": server["id"],
+        "reservation": reservation["id"],
+        "family": 4,
+        "code": 15,
+        "value": ["print.example.com"],
+    },
 )
 
 # 5. Push. With sync enabled the saves above already queued one (409 here just means it is waiting).
-r = call("POST", f"plugins/windows-dhcp/windows-servers/{server['id']}/push/")
+r = call("POST", PLUGIN + f"windows-servers/{server['id']}/push/")
 print("push:", r.status_code, r.json().get("detail", "queued"))
 if r.status_code == 409 and "disabled" in r.json()["detail"]:
     sys.exit("sync is disabled for this server: enable it, or push from the server page later")
@@ -134,7 +143,7 @@ if r.status_code == 409 and "disabled" in r.json()["detail"]:
 for _ in range(60):
     runs = call(
         "GET",
-        "plugins/windows-dhcp/sync-runs/",
+        PLUGIN + "sync-runs/",
         params={"windows_server_id": server["id"], "kind": "push", "created__gte": started, "ordering": "-id"},
     ).json()["results"]
     done = [run for run in runs if run["status"]["value"] in ("completed", "failed")]
@@ -152,19 +161,20 @@ if run["error"]:
     print(run["error"])
 ```
 
-What it printed:
+What it prints:
 
 ```text
 $ python reserve.py
-host reservation 6: dhcp01/198.18.60.0/198.18.60.23
+reservation 6: 198.18.60.23
 push: 409 a push for this server is already queued
 sync run 17: completed
   create reservation 198.18.60.0/198.18.60.23
+  create option 198.18.60.0/198.18.60.23/15
 ```
 
 The push action answered `409` because the saves had already queued a push, which is what sync enabled does; the
-script then waited for that push. One push carried both the reservation and its type, since the reservation
-settings were saved before it ran.
+script then waited for that push. One push carried the reservation and its option value, since both were saved
+before it ran.
 
 On Windows:
 
@@ -177,21 +187,30 @@ ScopeId     : 198.18.60.0
 Name        : label-printer01
 Type        : Dhcp
 Description :
+
+PS> Get-DhcpServerv4OptionValue -ReservedIP 198.18.60.23
+
+OptionId   Name            Type       Value                VendorClass     UserClass       PolicyName
+--------   ----            ----       -----                -----------     ---------       ----------
+15         DNS Domain Name String     {print.example.com}
 ```
 
-The scope is in a failover relationship with `dhcp01` as primary, so the push also replicated it: `dhcp02` showed
+The scope is in a failover relationship with `dhcp01` as primary, so the push also replicated it: `dhcp02` shows
 the same reservation without NetBox writing to it (see [Failover](failover.md#5-changes-replicate)).
 
-## Option values on a reservation
+## Option values at other levels
 
-!!! warning "Not through the REST API with netbox-plugin-dhcp 0.2.x"
-    sys4's option endpoint (`/api/plugins/netbox-dhcp/options/`) refuses `"assigned_object_type":
-    "netbox_dhcp.hostreservation"` with `Invalid content type`: its list of allowed parents misspells the host
-    reservation model (`hostresevration`,
-    [sys4/netbox-plugin-dhcp#69](https://github.com/sys4/netbox-plugin-dhcp/issues/69)). Options on servers and subnets work through the API; for a reservation,
-    add the option in the web UI (**Add Object > Option** on the host reservation, see
-    [Reservations](reservations.md#reservation-options)) until sys4 fixes it. The plugin pushes reservation options
-    however they were created.
+The same endpoint sets server and scope values: leave out `reservation` and `scope` for a server value, set `scope`
+for a scope value. A value can also be restricted to a user class (`user_class`), a vendor class (`vendor_class`, for
+an option that class defines) or, for IPv4 server and scope values, a policy (`policy`). For example the routers of
+the scope:
+
+```json
+{"server": 1, "scope": 1, "family": 4, "code": 3, "value": ["198.18.60.1"]}
+```
+
+List a reservation's values with `GET /api/plugins/windows-dhcp/option-values/?reservation_id=<id>`, or a scope's
+with `?scope_id=<id>` (which includes the values of its reservations; add `&level=scope` for the scope's own).
 
 ## Check without writing: dry run
 
@@ -214,8 +233,8 @@ agree; otherwise `planned` lists each create, update and delete the push would m
 
 ## End to end: delete
 
-Deleting the host reservation also deletes its reservation settings and option values. The IP and MAC address
-objects stay, unless you delete them as well:
+Deleting the reservation also deletes its option values. The IP and MAC address objects stay, unless you delete
+them as well (after the reservation: they cannot be deleted while it points at them):
 
 ```python
 """Delete a DHCP reservation through the NetBox REST API, and its IP and MAC address objects."""
@@ -228,12 +247,14 @@ from datetime import UTC, datetime
 import requests
 
 NETBOX = os.environ["NETBOX_URL"].rstrip("/") + "/api/"
+PLUGIN = "plugins/windows-dhcp/"
 api = requests.Session()
 api.headers["Authorization"] = f"Bearer {os.environ['NETBOX_TOKEN']}"
 api.headers["Accept"] = "application/json"
 
-WINDOWS_HOST = "dhcp01.example.com"
-RESERVATION = "dhcp01/198.18.60.0/198.18.60.23"
+SERVER = "dhcp01"
+SCOPE = "VLAN60-Office"
+NAME = "label-printer01"
 
 
 def one(path, **params):
@@ -245,20 +266,21 @@ def one(path, **params):
     return results[0]
 
 
-server = one("plugins/windows-dhcp/windows-servers/", host=WINDOWS_HOST)
-reservation = one("plugins/netbox-dhcp/hostreservations/", name=RESERVATION)
+server = one(PLUGIN + "windows-servers/", name=SERVER)
+scope = one(PLUGIN + "scopes/", server_id=server["id"], name=SCOPE)
+reservation = one(PLUGIN + "reservations/", scope_id=scope["id"], name=NAME)
 started = datetime.now(UTC).isoformat()
 
-# Deleting the reservation also deletes its reservation settings and option values.
-api.delete(NETBOX + f"plugins/netbox-dhcp/hostreservations/{reservation['id']}/").raise_for_status()
+# Deleting the reservation also deletes its option values.
+api.delete(NETBOX + PLUGIN + f"reservations/{reservation['id']}/").raise_for_status()
 # The IP and MAC address objects are not part of the reservation: delete them too if nothing else uses them.
-api.delete(NETBOX + f"ipam/ip-addresses/{reservation['ipv4_address']['id']}/").raise_for_status()
-api.delete(NETBOX + f"dcim/mac-addresses/{reservation['hw_address']['id']}/").raise_for_status()
+api.delete(NETBOX + f"ipam/ip-addresses/{reservation['ip_address']['id']}/").raise_for_status()
+api.delete(NETBOX + f"dcim/mac-addresses/{reservation['mac_address']['id']}/").raise_for_status()
 
 # With sync enabled the delete queued a push; wait for it.
 for _ in range(60):
     runs = api.get(
-        NETBOX + "plugins/windows-dhcp/sync-runs/",
+        NETBOX + PLUGIN + "sync-runs/",
         params={"windows_server_id": server["id"], "kind": "push", "created__gte": started, "ordering": "-id"},
     ).json()["results"]
     done = [run for run in runs if run["status"]["value"] in ("completed", "failed")]
@@ -277,6 +299,7 @@ for change in run["summary"].get("planned", []):
 ```text
 $ python release.py
 sync run 18: completed
+  delete option 198.18.60.0/198.18.60.23/15
   delete reservation 198.18.60.0/198.18.60.23
 ```
 
@@ -294,8 +317,11 @@ records the branch name. Follow it the same way, with `created__gte` set to the 
 
 | Answer | Meaning |
 |---|---|
-| `400` on the host reservation, `name` | The name is already used by another host reservation |
-| `201` for an address outside the subnet | netbox-plugin-dhcp 0.2.x does not check that the IPv4 address is inside the subnet: check it yourself before creating the reservation |
+| `400` on the reservation, `ip_address` | The address is outside the scope's prefix |
+| `400` on the reservation, `mac_address` | Neither a MAC address nor a client ID (IPv4) |
+| `400` on the reservation, `duid` or `iaid` | A DHCPv6 reservation without its DUID or IAID |
+| `400` on the reservation | The scope already has a reservation for that address, a MAC address and a client ID together, or DUID and IAID on an IPv4 reservation |
+| `400` on the option value | The value is not a non-empty list of strings, the scope, reservation or class belongs to another server, the family does not match the scope or the class, the reservation is in another scope than the one given, the policy does not fit (with a user class, on a reservation, or from another server or scope), or the server already holds a value for that code at that level (with the same classes and policy) |
 | `409` from `push/`, `already queued` | A push is waiting to run (sync enabled queued it): wait for its sync run |
 | `409` from `push/`, `sync is disabled` | Enable sync on the Windows server, or use a dry run |
 | `404` from `push/` or `dry-run/` | The token's user may not change this Windows server |

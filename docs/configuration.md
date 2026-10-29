@@ -11,8 +11,6 @@ environment variables and the files they name exist for both.
 | Setting | Default | Meaning |
 |---|---|---|
 | `credentials` | `{}` | [Credential profiles](#credential-profiles), by name |
-| `subnet_name_template` | `'{server}/{scope_id}'` | Name of subnets created by imports. sys4 names are unique across all servers, so the default includes the server |
-| `reservation_name_template` | `'{server}/{scope_id}/{ip_address}'` | Name of reservations created by imports |
 | `import_branch_prefix` | `'dhcp-import'` | Branches created by imports are named `<prefix>/<server>/<timestamp>` |
 | `import_change_request` | `True` | Open a change request for each import branch when netbox-change-control is installed |
 | `import_direct` | `True` | With netbox-branching, offer **Import directly** (an import written straight into main). `False` allows branch imports only. Change control's `protect_main` applies either way |
@@ -20,10 +18,6 @@ environment variables and the files they name exist for both.
 | `push_debounce` | `10` | Seconds to wait after a save before pushing, so a burst of edits becomes one push (saves outside branching) |
 | `max_concurrency` | `4` | PowerShell commands one job runs at the same time against a server |
 | `command_timeout` | `120` | Seconds: the WinRM connection and operation timeout, and the longest silence allowed while an SSH command runs (SSH connects within 30 seconds) |
-
-In the templates, `{server}` is the netbox-plugin-dhcp server name, `{scope_id}` the Windows scope ID (for example
-`10.1.0.0`, or the prefix of a DHCPv6 scope) and `{ip_address}` the reserved address. Changing a template only
-affects objects created afterwards.
 
 ## Credential profiles
 

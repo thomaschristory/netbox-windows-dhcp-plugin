@@ -106,7 +106,7 @@ class SyncRun(NetBoxModel):
         max_length=10,
         choices=ImportDestinationChoices,
         blank=True,
-        help_text=_("Where an import wrote: an import branch, main, or an import proposal"),
+        help_text=_("Where an import wrote: a new import branch, a chosen branch, main, or an import proposal"),
     )
     summary = models.JSONField(verbose_name=_("summary"), default=dict, blank=True)
     error = models.TextField(verbose_name=_("error"), blank=True)

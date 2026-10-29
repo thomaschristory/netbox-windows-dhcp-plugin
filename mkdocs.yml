@@ -1,5 +1,5 @@
 site_name: netbox-windows-dhcp-plugin
-site_description: Keep Microsoft Windows DHCP servers and netbox-plugin-dhcp in step, in both directions.
+site_description: Model Microsoft Windows DHCP servers in NetBox and keep both in step, in both directions.
 site_url: https://thomaschristory.github.io/netbox-windows-dhcp-plugin/
 repo_url: https://github.com/thomaschristory/netbox-windows-dhcp-plugin
 repo_name: netbox-windows-dhcp-plugin

@@ -37,20 +37,19 @@ menu = PluginMenu(
         (
             _("Scopes"),
             (
-                _item("windowsscope", _("Scope settings")),
+                _item("superscope", _("Superscopes")),
+                _item("scope", _("Scopes")),
                 _item("exclusionrange", _("Exclusion ranges")),
-                _item("windowsreservation", _("Reservation settings")),
+                _item("reservation", _("Reservations")),
             ),
         ),
         (
             _("Options and policies"),
             (
                 _item("windowsclass", _("User and vendor classes")),
+                _item("optiondefinition", _("Option definitions")),
+                _item("optionvalue", _("Option values")),
                 _item("windowspolicy", _("Policies")),
-                _item("windowsoptiondefinition", _("Option definition settings")),
-                _item("windowsoptionqualifier", _("Option qualifiers")),
-                _item("windowsvendoroptiondefinition", _("Vendor option definitions")),
-                _item("windowsvendoroption", _("Vendor option values")),
             ),
         ),
         (

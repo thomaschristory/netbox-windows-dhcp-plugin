@@ -16,17 +16,14 @@ __all__ = ("LEASE_LIMIT", "rows", "scope_of", "windows_server_for")
 LEASE_LIMIT = 5000
 
 
-def windows_server_for(subnet):
-    """The Windows server holding this subnet's scope (directly, or through its shared network), or None."""
-    dhcp = subnet.dhcp_server if subnet.dhcp_server_id else getattr(subnet.shared_network, "dhcp_server", None)
-    if dhcp is None:
-        return None
-    return WindowsServer.objects.filter(dhcp_server=dhcp).first()
+def windows_server_for(scope):
+    """The Windows server holding this scope, or None."""
+    return WindowsServer.objects.filter(pk=scope.server_id).first() if scope.server_id else None
 
 
-def scope_of(subnet):
-    """(family, Windows scope ID or prefix) of a subnet: the network address, as Windows names its scopes."""
-    network = ipaddress.ip_network(str(subnet.prefix.prefix), strict=False)
+def scope_of(scope):
+    """(family, Windows scope ID or prefix) of a scope: the network address, as Windows names its scopes."""
+    network = ipaddress.ip_network(str(scope.prefix.prefix), strict=False)
     return network.version, str(network.network_address)
 
 

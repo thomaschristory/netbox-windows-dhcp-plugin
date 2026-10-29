@@ -12,7 +12,6 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from ipam.models import IPAddress, IPRange, Prefix
-from netbox_dhcp.models import DHCPServer, HostReservation, Option, OptionDefinition, Pool, Subnet
 
 from netbox_windows_dhcp_plugin.choices import (
     ProposalItemStatusChoices,
@@ -24,13 +23,13 @@ from netbox_windows_dhcp_plugin.jobs import ImportJob, due_servers
 from netbox_windows_dhcp_plugin.models import (
     ExclusionRange,
     ImportProposal,
+    OptionDefinition,
+    OptionValue,
     SyncRun,
     WindowsClass,
-    WindowsOptionDefinition,
-    WindowsOptionQualifier,
-    WindowsReservation,
-    WindowsScope,
 )
+from netbox_windows_dhcp_plugin.models import Reservation as NetBoxReservation
+from netbox_windows_dhcp_plugin.models import Scope as NetBoxScope
 from netbox_windows_dhcp_plugin.sync import importer, windows_state
 from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows.client import (
@@ -47,7 +46,7 @@ from netbox_windows_dhcp_plugin.windows.client import (
 )
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 
-from .fixtures import dhcp_servers, ensure_standard_option_definitions, windows_server
+from .fixtures import windows_server
 from .test_jobs import CREDENTIALS
 
 
@@ -82,10 +81,7 @@ def seed(fake):
 
 class ImportTestMixin:
     def setUp(self):
-        ensure_standard_option_definitions()
-        (dhcp,) = dhcp_servers(1)
-        self.dhcp = dhcp
-        self.server = windows_server(dhcp)
+        self.server = windows_server()
         self.fake = FakeDhcpServer()
         self.client = seed(self.fake)
 
@@ -117,7 +113,7 @@ class ProposalImportTest(ImportTestMixin, TestCase):
         )
         self.assertTrue(all(i.action == "create" for i in result.proposal.items.all()))
         # Proposing writes nothing but the queue.
-        self.assertFalse(Subnet.objects.exists())
+        self.assertFalse(NetBoxScope.objects.exists())
 
     def test_items_follow_dependency_order(self):
         items = list(self.propose().proposal.items.all())
@@ -126,45 +122,56 @@ class ProposalImportTest(ImportTestMixin, TestCase):
         self.assertLess(kinds.index("class"), kinds.index("optiondef"))
         self.assertLess(kinds.index("reservation"), kinds.index("option"))
 
-    def test_apply_writes_sys4_and_core_objects(self):
+    def test_apply_writes_dhcp_and_core_objects(self):
         self.apply_all()
-        subnet = Subnet.objects.get()
-        self.assertEqual(subnet.name, "dhcp1/10.1.0.0")
-        self.assertEqual(subnet.description, "LAN")
-        self.assertEqual(subnet.comments, "office floor 1")
-        self.assertEqual(subnet.valid_lifetime, 86400)
-        self.assertEqual(str(subnet.prefix.prefix), "10.1.0.0/24")
-        self.assertEqual(subnet.dhcp_server, self.dhcp)
-        pool = Pool.objects.get()
+        scope = NetBoxScope.objects.get()
+        self.assertEqual(scope.name, "LAN")
+        self.assertEqual(scope.description, "office floor 1")
+        self.assertEqual(scope.lease_duration, 86400)
+        self.assertEqual(str(scope.prefix.prefix), "10.1.0.0/24")
+        self.assertEqual(scope.server, self.server)
         self.assertEqual(
-            (str(pool.ip_range.start_address), str(pool.ip_range.end_address)), ("10.1.0.10/24", "10.1.0.200/24")
+            (str(scope.ip_range.start_address), str(scope.ip_range.end_address)), ("10.1.0.10/24", "10.1.0.200/24")
         )
-        self.assertEqual(WindowsScope.objects.get().subnet, subnet)
-        self.assertEqual(ExclusionRange.objects.get().start_address, "10.1.0.10")
+        self.assertEqual(IPRange.objects.get(), scope.ip_range)
+        exclusion = ExclusionRange.objects.get()
+        self.assertEqual((exclusion.scope, exclusion.start_address), (scope, "10.1.0.10"))
 
-        reservation = HostReservation.objects.get()
-        self.assertEqual(reservation.name, "dhcp1/10.1.0.0/10.1.0.50")
-        self.assertEqual(reservation.description, "printer")
-        self.assertEqual(str(reservation.ipv4_address.address), "10.1.0.50/24")
-        self.assertEqual(str(reservation.hw_address.mac_address), "AA:BB:CC:00:11:22")
-        self.assertEqual(WindowsReservation.objects.get().reservation_type, "both")
+        reservation = NetBoxReservation.objects.get()
+        self.assertEqual(reservation.scope, scope)
+        self.assertEqual(reservation.name, "printer")
+        self.assertEqual(str(reservation.ip_address.address), "10.1.0.50/24")
+        self.assertEqual(str(reservation.mac_address.mac_address), "AA:BB:CC:00:11:22")
+        self.assertEqual(reservation.client_id, "")
+        self.assertEqual(reservation.reservation_type, "both")
 
-        custom = OptionDefinition.objects.get(code=224, dhcp_server=self.dhcp)
-        self.assertFalse(custom.standard)
-        self.assertEqual(WindowsOptionDefinition.objects.get().windows_type, "String")
-        # Vendor class definitions and values wait for a later release.
-        self.assertFalse(OptionDefinition.objects.filter(code=2, dhcp_server=self.dhcp).exists())
+        custom = OptionDefinition.objects.get(code=224, server=self.server)
+        self.assertEqual((custom.name, custom.windows_type, custom.vendor_class), ("Custom", "String", None))
+        vendor_definition = OptionDefinition.objects.get(code=2, server=self.server)
+        self.assertEqual((vendor_definition.vendor_class.name, vendor_definition.windows_type), ("MSFT", "DWord"))
+        self.assertEqual(OptionDefinition.objects.count(), 2)  # standard definitions are not copied
         self.assertEqual(WindowsClass.objects.count(), 2)
 
-        server_dns = Option.objects.get(definition__code=6, assigned_object_id=self.dhcp.pk, definition__standard=True)
-        self.assertEqual(server_dns.data, "10.0.0.1, 10.0.0.2")
-        self.assertTrue(server_dns.definition.standard)
-        qualified = WindowsOptionQualifier.objects.get(user_class__name="Labs")
-        self.assertEqual(qualified.option.data, "10.9.9.9")
+        server_dns = OptionValue.objects.get(code=6, scope=None, user_class=None)
+        self.assertEqual(server_dns.value, ["10.0.0.1", "10.0.0.2"])
+        self.assertEqual(server_dns.level, "server")
+        qualified = OptionValue.objects.get(user_class__name="Labs")
+        self.assertEqual((qualified.scope, qualified.value), (scope, ["10.9.9.9"]))
+        vendor_value = OptionValue.objects.get(vendor_class__name="MSFT")
+        self.assertEqual((vendor_value.code, vendor_value.level, vendor_value.value), (2, "server", ["1"]))
+        on_reservation = OptionValue.objects.get(reservation=reservation)
+        self.assertEqual((on_reservation.scope, on_reservation.code, on_reservation.value), (scope, 3, ["10.1.0.254"]))
         self.assertEqual(result_status(self.server), ProposalStatusChoices.APPLIED)
 
     def test_round_trip_leaves_nothing_to_import(self):
         self.apply_all()
+        self.assertEqual(self.changes(), [])
+
+    def test_option_values_keep_commas_and_spaces(self):
+        """Values are lists, as on Windows: a comma or a space inside one value is not a separator."""
+        self.client.set_option_value(OptionKey(option_id=224, scope_id="10.1.0.0"), [" a, b ", "c,d"])
+        self.apply_all()
+        self.assertEqual(OptionValue.objects.get(code=224).value, [" a, b ", "c,d"])
         self.assertEqual(self.changes(), [])
 
     def test_existing_core_objects_are_reused(self):
@@ -172,9 +179,9 @@ class ProposalImportTest(ImportTestMixin, TestCase):
         ip = IPAddress.objects.create(address="10.1.0.50/24")
         mac = MACAddress.objects.create(mac_address="AA:BB:CC:00:11:22")
         self.apply_all()
-        self.assertEqual(Subnet.objects.get().prefix, prefix)
-        self.assertEqual(HostReservation.objects.get().ipv4_address, ip)
-        self.assertEqual(HostReservation.objects.get().hw_address, mac)
+        self.assertEqual(NetBoxScope.objects.get().prefix, prefix)
+        self.assertEqual(NetBoxReservation.objects.get().ip_address, ip)
+        self.assertEqual(NetBoxReservation.objects.get().mac_address, mac)
         self.assertEqual(Prefix.objects.count(), 1)
 
     def test_update_and_delete_after_windows_changes(self):
@@ -185,9 +192,9 @@ class ProposalImportTest(ImportTestMixin, TestCase):
         self.assertIn(("update", "scope", "10.1.0.0"), changes)
         self.assertIn(("delete", "reservation", "10.1.0.0/10.1.0.50"), changes)
         self.apply_all()
-        self.assertEqual(Subnet.objects.get().description, "LAN 2")
+        self.assertEqual(NetBoxScope.objects.get().name, "LAN 2")
         self.assertEqual(str(IPRange.objects.get().end_address), "10.1.0.100/24")
-        self.assertFalse(HostReservation.objects.exists())
+        self.assertFalse(NetBoxReservation.objects.exists())
         self.assertEqual(self.changes(), [])
 
     def test_objects_missing_on_windows_are_proposed_for_deletion(self):
@@ -197,30 +204,40 @@ class ProposalImportTest(ImportTestMixin, TestCase):
         deletes = set(result.proposal.items.filter(action="delete").values_list("kind", flat=True))
         self.assertEqual(deletes, {"scope", "exclusion", "reservation", "option"})
         importer.apply_items(result.proposal.items.all())
-        self.assertFalse(Subnet.objects.exists())
+        self.assertFalse(NetBoxScope.objects.exists())
+        self.assertFalse(OptionValue.objects.filter(scope__isnull=False).exists())
 
     def test_duplicate_options_are_removed(self):
+        from netbox_windows_dhcp_plugin.models import WindowsPolicy
+
         self.apply_all()
-        original = Option.objects.get(definition__code=6, assigned_object_id=self.dhcp.pk, definition__standard=True)
-        Option.objects.create(definition=original.definition, assigned_object=self.dhcp, data="10.0.0.1, 10.0.0.2")
-        (change,) = self.changes()
-        self.assertEqual((change.action, change.kind), ("delete", "option"))
-        self.assertTrue(change.key.startswith("server/6#"))
+        # Policy names are not case sensitive on Windows but are in NetBox: these two values land on one Windows key.
+        criteria = {"mac_address": ["EQ", "00-15-5d*"]}
+        night, other = (
+            WindowsPolicy.objects.create(server=self.server, name=name, criteria=criteria)
+            for name in ("Night", "night")
+        )
+        OptionValue.objects.create(server=self.server, code=6, policy=night, value=["10.0.0.1"])
+        duplicate = OptionValue.objects.create(server=self.server, code=6, policy=other, value=["10.0.0.1"])
+        changes = {(c.action, c.kind, c.key) for c in self.changes()}
+        self.assertIn(("delete", "option", f"server/6;policy=night#{duplicate.pk}"), changes)
+        self.assertIn(("delete", "option", "server/6;policy=night"), changes)
+        self.apply_all()
+        self.assertFalse(OptionValue.objects.filter(policy__isnull=False).exists())
+        self.assertEqual(self.changes(), [])
 
     def test_class_names_cannot_point_at_other_options(self):
         # A "#<pk>" key suffix marks a duplicate option. A Windows class name ending in "#<pk>" must not make the
         # import touch that option, here one belonging to another server.
-        (other,) = dhcp_servers(1, start=2)
-        definition = OptionDefinition.objects.get(standard=True, space="dhcp4", code=6)
-        victim = Option.objects.create(definition=definition, assigned_object=other, data="192.0.2.1")
+        other = windows_server("dhcp2")
+        victim = OptionValue.objects.create(server=other, code=6, value=["192.0.2.1"])
         self.client.add_class(DhcpClass(name=f"evil#{victim.pk}", type="User", data="evil"))
         self.client.set_option_value(OptionKey(option_id=6, user_class=f"evil#{victim.pk}"), ["10.6.6.6"])
         self.apply_all()
         victim.refresh_from_db()
-        self.assertEqual(victim.data, "192.0.2.1")
-        self.assertEqual(
-            WindowsOptionQualifier.objects.get(user_class__name=f"evil#{victim.pk}").option.data, "10.6.6.6"
-        )
+        self.assertEqual((victim.server, victim.value), (other, ["192.0.2.1"]))
+        evil = OptionValue.objects.get(user_class__name=f"evil#{victim.pk}")
+        self.assertEqual((evil.server, evil.value), (self.server, ["10.6.6.6"]))
         self.assertEqual(self.changes(), [])
 
     def test_dismissals_survive_the_proposal_closing(self):
@@ -273,20 +290,29 @@ class ProposalImportTest(ImportTestMixin, TestCase):
 
     def test_netbox_duplicates_do_not_break_the_import(self):
         self.apply_all()
-        subnet = Subnet.objects.get()
-        extra = Subnet.objects.create(name="dup", dhcp_server=self.dhcp, prefix=subnet.prefix)
-        no_ip = HostReservation.objects.create(name="no-ip", subnet=subnet)
+        from ipam.models import VRF
+
+        # NetBox can hold what Windows cannot: the same network or address twice, in two VRFs.
+        vrf = VRF.objects.create(name="elsewhere")
+        scope = NetBoxScope.objects.get()
+        extra = NetBoxScope.objects.create(
+            server=self.server, name="dup", prefix=Prefix.objects.create(prefix="10.1.0.0/24", vrf=vrf)
+        )
+        twin = NetBoxReservation.objects.create(
+            scope=scope, ip_address=IPAddress.objects.create(address="10.1.0.50/24", vrf=vrf), client_id="aa"
+        )
         changes = {(c.action, c.key) for c in self.changes()}
-        self.assertEqual(changes, {("delete", f"10.1.0.0#{extra.pk}"), ("delete", f"10.1.0.0/#{no_ip.pk}")})
+        self.assertEqual(changes, {("delete", f"10.1.0.0#{extra.pk}"), ("delete", f"10.1.0.0/10.1.0.50#{twin.pk}")})
         self.apply_all()
-        self.assertFalse(Subnet.objects.filter(pk=extra.pk).exists())
-        self.assertFalse(HostReservation.objects.filter(pk=no_ip.pk).exists())
-        self.assertTrue(Subnet.objects.filter(pk=subnet.pk).exists())
+        self.assertFalse(NetBoxScope.objects.filter(pk=extra.pk).exists())
+        self.assertFalse(NetBoxReservation.objects.filter(pk=twin.pk).exists())
+        self.assertTrue(NetBoxScope.objects.filter(pk=scope.pk).exists())
+        self.assertEqual(NetBoxReservation.objects.count(), 1)
         self.assertEqual(self.changes(), [])
 
     def test_failover_partners_share_and_move_one_ip_range(self):
         self.apply_all()
-        partner = windows_server(dhcp_servers(1, start=2)[0])
+        partner = windows_server("dhcp2")
         state = windows_state.read(DhcpClient(self.fake))
         result = importer.import_to_proposal(partner, state, None)
         importer.apply_items(result.proposal.items.all())
@@ -324,14 +350,14 @@ class ProposalImportTest(ImportTestMixin, TestCase):
             Scope(scope_id="10.1.0.0", name="from windows", start_range="10.1.0.10", end_range="10.1.0.200")
         )
         proposal = self.propose().proposal
-        subnet = Subnet.objects.get()
-        subnet.description = "edited in netbox"
-        subnet.save()
+        scope = NetBoxScope.objects.get()
+        scope.name = "edited in netbox"
+        scope.save()
         importer.apply_items(proposal.items.all())
         item = proposal.items.get(kind="scope")
         self.assertEqual(item.status, ProposalItemStatusChoices.FAILED)
         self.assertIn("changed in NetBox", item.error)
-        self.assertEqual(Subnet.objects.get().description, "edited in netbox")
+        self.assertEqual(NetBoxScope.objects.get().name, "edited in netbox")
 
     def test_child_without_parent_fails_with_a_clear_message(self):
         proposal = self.propose().proposal
@@ -339,7 +365,7 @@ class ProposalImportTest(ImportTestMixin, TestCase):
         item = proposal.items.get(kind="reservation")
         self.assertEqual(item.status, ProposalItemStatusChoices.FAILED)
         self.assertIn("scope 10.1.0.0 is not in NetBox yet", item.error)
-        self.assertFalse(HostReservation.objects.exists())
+        self.assertFalse(NetBoxReservation.objects.exists())
 
     def test_no_differences_open_no_proposal(self):
         self.apply_all()
@@ -432,8 +458,7 @@ class ImportJobTest(ImportTestMixin, TestCase):
 
 class ScheduleTest(TestCase):
     def setUp(self):
-        (dhcp,) = dhcp_servers(1)
-        self.server = windows_server(dhcp, import_interval=60)
+        self.server = windows_server(import_interval=60)
 
     def test_server_without_import_is_due(self):
         self.assertEqual(list(due_servers()), [self.server])
@@ -464,8 +489,8 @@ class ScheduleTest(TestCase):
 
 @skipUnless(apps.is_installed("netbox_branching"), "netbox-branching is not installed")
 class BranchImportTest(ImportTestMixin, TransactionTestCase):
-    # Provisioning a branch copies the schema and commits, which needs real transactions. Restore the data
-    # migrations seed (netbox-plugin-dhcp's standard option definitions) after each test's flush.
+    # Provisioning a branch copies the schema and commits, which needs real transactions. Restore what the data
+    # migrations seed (object types, for one) after each test's flush, for the test cases that run next.
     serialized_rollback = True
 
     def setUp(self):
@@ -489,10 +514,10 @@ class BranchImportTest(ImportTestMixin, TransactionTestCase):
         result = importer.import_to_branch(self.server, self.state(), self.user)
         self.assertEqual(result.failed, [])
         self.assertTrue(result.branch.name.startswith("dhcp-import/dhcp1/"))
-        self.assertFalse(Subnet.objects.exists())  # main is untouched
+        self.assertFalse(NetBoxScope.objects.exists())  # main is untouched
         with activate_branch(result.branch):
-            self.assertEqual(Subnet.objects.get().name, "dhcp1/10.1.0.0")
-            self.assertEqual(HostReservation.objects.count(), 1)
+            self.assertEqual(NetBoxScope.objects.get().name, "LAN")
+            self.assertEqual(NetBoxReservation.objects.count(), 1)
         self.assertGreater(result.branch.get_unmerged_changes().count(), 0)
 
     def test_repeated_import_reuses_the_branch(self):
@@ -543,22 +568,10 @@ class BranchImportTest(ImportTestMixin, TransactionTestCase):
 
     def test_branches_of_other_servers_are_not_reused(self):
         # "dhcp1" must not pick up the branch of a server whose name starts with "dhcp1/".
-        other = windows_server(DHCPServer.objects.create(name="dhcp1/east"))
+        other = windows_server("dhcp1/east", host="east.example.com")
         first = importer.import_to_branch(other, self.state(), self.user)
         mine = importer.import_to_branch(self.server, self.state(), self.user)
         self.assertNotEqual(first.branch.pk, mine.branch.pk)
-
-    def test_import_branches_get_distinct_subnet_ids(self):
-        from netbox_branching.utilities import activate_branch
-
-        other = windows_server(dhcp_servers(1, start=2)[0])
-        first = importer.import_to_branch(self.server, self.state(), self.user)
-        second = importer.import_to_branch(other, self.state(), self.user)
-        ids = []
-        for result in (first, second):
-            with activate_branch(result.branch):
-                ids += list(Subnet.objects.values_list("subnet_id", flat=True))
-        self.assertEqual(len(ids), len(set(ids)))
 
     def test_no_differences_create_no_branch(self):
         from netbox_branching.models import Branch

@@ -7,11 +7,10 @@ import logging
 from dataclasses import dataclass, field
 
 from django.db import transaction
-from netbox_dhcp.models import Subnet
 
 from ..choices import SyncKindChoices
 from ..connection import failover_secret_lookup
-from ..models import FailoverRelationship, SyncRun, SyncState
+from ..models import FailoverRelationship, Scope, SyncRun, SyncState
 from ..windows.psscript import NotFound, WindowsLayerError
 from . import netbox_state, push, windows_state
 from .windows_writer import WindowsWriter, option_target
@@ -74,8 +73,8 @@ def _scope_of(change):
 
 
 def _relationship_scopes(relationship):
-    subnets = Subnet.objects.filter(pk__in=relationship.subnets.values("pk")).select_related("prefix")
-    return {netbox_state.scope_id_of(s) for s in subnets}
+    scopes = Scope.objects.filter(pk__in=relationship.scopes.values("pk")).select_related("prefix")
+    return {netbox_state.scope_id_of(s) for s in scopes}
 
 
 def _hold_partner_scopes(windows_server, plan, logger):
@@ -83,8 +82,8 @@ def _hold_partner_scopes(windows_server, plan, logger):
     A failover partner gets its scopes from the primary through replication. Writing them on the partner as well
     would be overwritten at the next replication, so leave them to the primary.
     """
-    dhcp = windows_server.dhcp_server
-    for relationship in FailoverRelationship.objects.filter(partner_server=dhcp).select_related("primary_server"):
+    relationships = FailoverRelationship.objects.filter(partner_server=windows_server).select_related("primary_server")
+    for relationship in relationships:
         scopes = _relationship_scopes(relationship)
         reason = REPLICATED.format(name=relationship.name, primary=relationship.primary_server)
         kept = []
@@ -128,7 +127,7 @@ def _replicate(windows_server, client, applied, logger):
     touched = {_scope_of(c) for c in applied} - {None}
     server_level = "" in touched
     errors, still_pending = [], {}
-    for relationship in FailoverRelationship.objects.filter(primary_server=windows_server.dhcp_server):
+    for relationship in FailoverRelationship.objects.filter(primary_server=windows_server):
         scopes = _relationship_scopes(relationship)
         # Scopes since dropped from the relationship are no longer the partner's business.
         changed = sorted(

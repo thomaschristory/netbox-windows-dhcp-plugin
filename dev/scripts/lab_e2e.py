@@ -39,7 +39,6 @@ sys.path.insert(0, "/plugin")
 from django.contrib.auth import get_user_model  # noqa: E402
 from django.test import Client  # noqa: E402
 from django.urls import reverse  # noqa: E402
-from netbox_dhcp.models import DHCPServer  # noqa: E402
 
 from netbox_windows_dhcp_plugin.connection import build_client  # noqa: E402
 from netbox_windows_dhcp_plugin.jobs import enqueue_leases, record_names  # noqa: E402
@@ -165,10 +164,9 @@ def create_windows_objects(lab):
 
 
 def netbox_server(env, name=SERVER_NAME, host=""):
-    dhcp, _ = DHCPServer.objects.get_or_create(name=name)
-    server = WindowsServer.objects.filter(dhcp_server=dhcp).first()
+    server = WindowsServer.objects.filter(name=name).first()
     if server is None:
-        server = WindowsServer(dhcp_server=dhcp)
+        server = WindowsServer(name=name)
     server.host = host or env["WINDOWS_DHCP_LAB_HOST"]
     server.port = int(env["WINDOWS_DHCP_LAB_PORT"]) if env.get("WINDOWS_DHCP_LAB_PORT") else None
     server.credential_profile = "lab"
@@ -296,10 +294,10 @@ def delete_test_objects(server):
 
 
 def read_leases_tab(server, scope_id, expect_ip):
-    # Through the superscope too: a scope in one sits in a shared network, not directly under the server.
-    subnet = netbox_state.server_subnets(server.dhcp_server).get(prefix__prefix=f"{scope_id}/24")
+    # A scope in a superscope still belongs to its server directly, so this finds it either way.
+    scope = netbox_state.server_scopes(server).get(prefix__prefix=f"{scope_id}/24")
     admin = get_user_model().objects.filter(is_superuser=True).first()
-    job = enqueue_leases(subnet, admin)
+    job = enqueue_leases(scope, admin)
     if job is None:
         raise Abort("leases: no job queued")
     for _ in range(120):
@@ -314,7 +312,7 @@ def read_leases_tab(server, scope_id, expect_ip):
         raise Abort(f"leases: {expect_ip} not in {ips}")
     web = Client()
     web.force_login(admin)
-    page = web.get(reverse("plugins:netbox_dhcp:subnet_windows_leases", kwargs={"pk": subnet.pk}))
+    page = web.get(reverse("plugins:netbox_windows_dhcp_plugin:scope_leases", kwargs={"pk": scope.pk}))
     if page.status_code != 200 or expect_ip not in page.content.decode():
         raise Abort(f"leases: tab returned {page.status_code} without {expect_ip}")
     log(f"leases: {len(ips)} lease(s) read, {expect_ip} shown on the Leases tab")
@@ -344,12 +342,12 @@ def failover_phase(env, server, lab):
     )
     lab._cleanups.clear()
     import_into_netbox(server)
-    subnet = netbox_state.server_subnets(server.dhcp_server).get(prefix__prefix=f"{s.scope_id}/24")
+    scope = netbox_state.server_scopes(server).get(prefix__prefix=f"{s.scope_id}/24")
 
     rel = FailoverRelationship(
         name=FAILOVER,
-        primary_server=server.dhcp_server,
-        partner_server=partner.dhcp_server,
+        primary_server=server,
+        partner_server=partner,
         mode="loadbalance",
         load_balance_percent=60,
         max_client_lead_time=1800,
@@ -357,7 +355,7 @@ def failover_phase(env, server, lab):
     )
     rel.full_clean()
     rel.save()
-    rel.subnets.set([subnet])
+    rel.scopes.set([scope])
     guarded_push(server, "6. push failover create", {"create"})
     got = pc.get_failover(FAILOVER)
     if got.scope_ids != [s.scope_id] or got.load_balance_percent != 40:
@@ -421,9 +419,9 @@ def main():
         raise Abort(f"sweep: {leftovers}")
     server = netbox_server(env)
     # What an aborted failover phase left in NetBox (Windows was swept above).
-    for rel in FailoverRelationship.objects.filter(primary_server=server.dhcp_server, name__istartswith="nbwd-test-"):
+    for rel in FailoverRelationship.objects.filter(primary_server=server, name__istartswith="nbwd-test-"):
         rel.delete()
-    if FailoverRelationship.objects.filter(primary_server=server.dhcp_server).exists():
+    if FailoverRelationship.objects.filter(primary_server=server).exists():
         # A push to a failover primary replicates whole relationships to the partner, outside the plan the guard
         # checks. The lab is a single server; refuse rather than guess.
         raise Abort("the lab server is a failover primary in NetBox: not supported by this script")

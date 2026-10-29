@@ -5,6 +5,71 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+The plugin is standalone: it no longer needs netbox-plugin-dhcp. This is a fresh start, with no data migration from
+0.1.x: read the upgrade notes before upgrading. Installs that stay on netbox-plugin-dhcp keep the 0.1.x line.
+
+### Changed (breaking)
+
+- The plugin is standalone: it no longer depends on netbox-plugin-dhcp and holds the whole Windows DHCP
+  configuration in its own models. A Windows server has its own name; scopes (IPv4 and DHCPv6), superscopes,
+  reservations, exclusion ranges, classes, option definitions, option values, policies, failover relationships, MAC
+  filters and the list switches are plugin models. Scopes and reservations still point at core NetBox objects
+  (prefix, IP range, IP address, MAC address), which imports create or reuse in the server's import VRF as before.
+- Imported objects keep their Windows names: the `subnet_name_template` and `reservation_name_template` settings and
+  the `<server>/<scope id>` names are gone. Lists and selectors still show a scope as `<server>/<scope id>` so scopes
+  of different servers are told apart.
+- Option values are lists, so values containing commas or leading and trailing spaces are imported and pushed like
+  any other; the `\,` escape is gone. Standard options are named by their code.
+- The Leases tab moved to the plugin's scope page.
+- The **Windows DHCP** menu lists Superscopes, Scopes, Reservations, Option definitions and Option values; the
+  "settings" entries (scope, reservation and option definition settings, option qualifiers, vendor option
+  definitions and values) are gone.
+- Object permissions name the new models (scope, reservation, option value...): permissions granted on
+  netbox-plugin-dhcp's models or on the removed 0.1.x models no longer apply here.
+- The REST endpoints and GraphQL queries follow the new models; the old ones (scope and reservation settings, option
+  definition settings, option qualifiers, vendor option definitions and values) are gone.
+- **No upgrade path from 0.1.x: 0.2.0 is a fresh start.** Its migration drops the plugin's 0.1.x tables, so the
+  Windows servers' connection settings, sync state, sync runs and import proposals are lost. Data in
+  netbox-plugin-dhcp is left untouched. Before upgrading, merge or delete open import branches; after it, recreate
+  the Windows servers and import each one again. Remove `netbox_dhcp` from `PLUGINS` if it was there only for this
+  plugin. See [Installation](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-01x).
+  To stay on netbox-plugin-dhcp, pin `netbox-windows-dhcp-plugin<0.2`: the 0.1.x line (branch `release/0.1`) keeps
+  getting bug fixes, but no new features.
+
+### Added
+
+- Documentation: every NetBox screenshot retaken on 0.2.0 (Windows Server 2025 lab), and the step-by-step pages
+  (new scope, reservations, failover, branching) walk through the 0.2.0 forms.
+- Lease durations, DHCPv6 lifetimes and T1/T2 show in days next to the seconds on scope and policy pages, for
+  example `28800 (0.33 days)`.
+- A Windows server can be linked to the device or virtual machine it runs on, and that device or virtual machine's
+  page lists its Windows servers.
+- NetBox's global search finds superscopes, scopes, reservations and option definitions, and Windows servers by
+  name.
+- The reservation form creates its IP address and MAC address in place: a **+** button next to each field opens
+  NetBox's add form in a pop-up, so a new reservation needs no trip to IPAM or Devices first. The scope form does
+  the same for its prefix and IP range.
+- Option values on reservations through the REST API (netbox-plugin-dhcp could not do it,
+  [netbox-plugin-dhcp#69](https://github.com/sys4/netbox-plugin-dhcp/issues/69)).
+
+### Fixed
+
+- A failover relationship whose scopes Windows already holds in another relationship (made by hand, or renamed on
+  Windows) made every push fail with the cmdlet's error. It is now left out with a reason ("not pushed") and the rest
+  of the push goes ahead.
+- NetBox accepted an IPv4 reservation with neither a MAC address nor a client ID, or a DHCPv6 one without DUID or
+  IAID, which the push could then only leave out ("not pushed"). The form, the REST API and CSV import now refuse
+  them. Existing incomplete reservations are kept; editing one asks for the missing client.
+- A push that failed on some changes logged "changed N object(s)" with the number planned. The job log now gives
+  what was applied, failed and not attempted.
+- A Windows server's Import panel no longer says differences wait for review once the import proposal has been
+  applied or dismissed; it shows the proposal's status.
+
+## [0.1.1] - 2026-10-29
+
+Two fixes found on Windows Server 2025. 0.1.x stays on netbox-plugin-dhcp and gets fixes only; new features go to
+0.2, which no longer needs netbox-plugin-dhcp.
+
 ### Added
 
 - Documentation: a Reservations page (create, type, options, change, delete) and a step-by-step failover
@@ -12,6 +77,14 @@ All notable changes to this project are documented here. The format follows
   Windows Server 2025 servers.
 - Documentation: Reservations through the API, an end-to-end script that creates a reservation with the REST API,
   waits for the push and deletes it again, with the calls, the output and the errors to expect.
+
+### Fixed
+
+- Pushing a DNS server option (6, or 23 for DHCPv6) no longer fails with "is not a valid DNS server" when the
+  Windows server cannot query that address: option values are set with `-Force`, which skips the check.
+- Adding or removing scopes in an existing failover relationship, or changing its settings, no longer fails with
+  "Failover relationship ... is already in LoadBalance mode" (Windows Server 2025): the mode is sent only when it
+  changes.
 
 ## [0.1.0] - 2026-10-27
 

@@ -3,8 +3,6 @@
 ## Requirements
 
 - NetBox 4.7.
-- [netbox-plugin-dhcp](https://github.com/sys4/netbox-plugin-dhcp) 0.2.x. It is installed as a dependency, but it
-  is a NetBox plugin too and must be enabled.
 - Python 3.12, 3.13 or 3.14.
 - A NetBox background worker (`rqworker`). Every connection to Windows runs in a job.
 - PostgreSQL connections from the worker that do not go through a transaction-pooling proxy (pgbouncer in
@@ -23,6 +21,11 @@ Optional:
 ## Install the package
 
 Install it into NetBox's virtual environment, and add it to `local_requirements.txt` so NetBox upgrades keep it:
+
+!!! note "Release candidate"
+    Until 0.2.0 is out, PyPI has 0.2.0 only as a release candidate (0.2.0rc1), which pip skips by default. Ask for it
+    by version (`pip install netbox-windows-dhcp-plugin==0.2.0rc1`, and the same line in `local_requirements.txt`) or
+    add `--pre`. Without either, pip installs 0.1.x, which needs netbox-plugin-dhcp.
 
 ```bash
 source /opt/netbox/venv/bin/activate
@@ -47,10 +50,10 @@ For the [netbox-docker](https://github.com/netbox-community/netbox-docker) image
 
 ## Enable it
 
-In `configuration.py`, enable netbox-plugin-dhcp first, then this plugin:
+In `configuration.py`, enable the plugin:
 
 ```python
-PLUGINS = ["netbox_dhcp", "netbox_windows_dhcp_plugin"]
+PLUGINS = ["netbox_windows_dhcp_plugin"]
 ```
 
 With branching and change control, `netbox_branching` must come last, and NetBox needs its schema-aware database
@@ -59,7 +62,7 @@ settings and router:
 ```python
 from netbox_branching.utilities import DynamicSchemaDict
 
-PLUGINS = ["netbox_dhcp", "netbox_windows_dhcp_plugin", "netbox_change_control", "netbox_branching"]
+PLUGINS = ["netbox_windows_dhcp_plugin", "netbox_change_control", "netbox_branching"]
 DATABASES = DynamicSchemaDict({"default": {...}})  # your existing database settings
 DATABASE_ROUTERS = ["netbox_branching.database.BranchAwareRouter"]
 ```
@@ -99,9 +102,44 @@ Restart the worker as well as the web service: the worker runs every job, and it
 Install the new version, run `migrate`, and restart NetBox and the worker. Read the [changelog](changelog.md) first:
 while the plugin is below 1.0, a minor version can change behaviour.
 
+### Upgrading from 0.1.x
+
+0.1.x kept scopes, reservations and options in netbox-plugin-dhcp and only added Windows settings next to them. From
+0.2.0 the plugin holds the whole Windows DHCP configuration in its own models and no longer uses netbox-plugin-dhcp.
+There is no data migration: **0.2.0 is a fresh start**, and the Windows servers themselves are the source to rebuild
+from. Nothing on Windows changes during the upgrade.
+
+To stay on netbox-plugin-dhcp instead, pin `netbox-windows-dhcp-plugin<0.2`. The 0.1.x line (latest 0.1.1, branch
+`release/0.1` in the repository) keeps getting bug fixes, but no new features.
+
+1. **Merge or delete open import branches** (with netbox-branching). Their changes are written against the 0.1.x
+   models and cannot be merged after the upgrade.
+2. **Upgrade the package** in NetBox's virtual environment (`pip install -U netbox-windows-dhcp-plugin`, or the
+   version in `local_requirements.txt` or `plugin_requirements.txt`).
+3. **Update `PLUGINS`.** Remove `netbox_dhcp` if it was there only for this plugin. Its data (servers, subnets,
+   reservations, options) is left untouched in the database; uninstall netbox-plugin-dhcp separately, following its
+   own instructions, if nothing else uses it.
+4. **Migrate**: `python manage.py migrate`. The new migration drops the plugin's 0.1.x tables: the Windows servers'
+   connection settings, sync state, sync runs and import proposals are lost, along with the 0.1.x Windows settings
+   (scope and reservation settings, exclusion ranges, classes, policies, failover relationships, MAC filters).
+5. **Clean up content types** (optional): `python manage.py remove_stale_contenttypes` removes the entries of the
+   dropped models (and of netbox-plugin-dhcp's, if you removed it). It can stop with an error on content types that
+   old change log entries still point at; those leftovers are harmless and can stay.
+6. **Restart** NetBox and the worker.
+7. **Recreate the Windows servers** (**Windows DHCP > Windows servers > Add**, now with a name of their own), run
+   **Test connection**, and **import each one**. Review and merge (or apply) the import. Import the primary of each
+   failover relationship first (see [Failover](failover.md#how-it-syncs)).
+
+The prefixes, IP ranges, IP addresses and MAC addresses that 0.1.x imports created stay in IPAM, and the new
+imports reuse the ones they find in the server's import VRF. Sync state starts empty. Objects become managed when you
+apply the import proposal (or import straight into main). After a branch import, the first push adopts the objects
+that are identical on both sides; until then a push deletes nothing (see [Managed objects](push.md#managed-objects)).
+Leave **Sync enabled** off and run a **Dry run** before the first push.
+
 ## Removing it
 
 1. Remove `netbox_windows_dhcp_plugin` from `PLUGINS` and restart NetBox and the worker. Nothing is pushed to or
    removed from Windows.
-2. To drop its tables, follow NetBox's guide to removing a plugin. The sys4 objects that imports created (subnets,
-   reservations, options) belong to netbox-plugin-dhcp and stay.
+2. To drop its tables, follow NetBox's guide to removing a plugin. This deletes the DHCP configuration the plugin
+   holds (scopes, reservations, options and the rest). The prefixes, IP ranges, IP addresses and MAC addresses that
+   imports created are core NetBox objects and stay.

@@ -375,6 +375,8 @@ def test_option(pw: PwshRunner) -> None:
     assert v.value == ["10.1.20.1"] and v.option_id == 3 and v.name == "Router" and v.scope_id == "10.1.20.0"
     st = find_call(pw.last_calls(), "Set-DhcpServerv4OptionValue")
     assert st["Value"] == ["10.1.20.1"] and st["ScopeId"] == "10.1.20.0" and "ReservedIP" not in st
+    # Without -Force Windows refuses DNS server addresses it cannot query itself.
+    assert st["Force"] is True
     v = c.set_option_value(OptionKey(6, vendor_class="Vendor A"), ["10.0.0.53", "10.0.1.53"])
     assert len(v.value) == 2 and v.vendor_class == "Vendor A"
     st = find_call(pw.last_calls(), "Set-DhcpServerv4OptionValue")
@@ -523,12 +525,13 @@ def test_failover(pw: PwshRunner) -> None:
     assert f.mode == "LoadBalance" and f.load_balance_percent == 60 and f.reserve_percent is None
     with pytest.raises(NotFound):
         c.get_failover("nope")
-    f = c.set_failover(
-        FailoverRelationship(name="lb", mode="LoadBalance", load_balance_percent=70, state_switch_interval=600)
-    )
+    f = c.set_failover(FailoverRelationship(name="lb", mode="", load_balance_percent=70, state_switch_interval=600))
     assert f.load_balance_percent == 70 and f.state_switch_interval == 600
     st = find_call(pw.last_calls(), "Set-DhcpServerv4Failover")
-    assert st["Force"] is True and "SharedSecret" not in st and "ServerRole" not in st
+    assert st["Force"] is True and "SharedSecret" not in st and "ServerRole" not in st and "Mode" not in st
+    # The stub refuses the mode the relationship already has, as Windows Server 2025 does.
+    with pytest.raises(PSError, match="already in LoadBalance mode"):
+        c.set_failover(FailoverRelationship(name="lb", mode="LoadBalance"))
     assert c.add_failover_scopes("lb", ["10.1.30.0"]).scope_ids == ["10.1.20.0", "10.1.30.0"]
     assert c.remove_failover_scopes("lb", ["10.1.20.0"]).scope_ids == []
     # Never forced: with the partner unreachable, -Force would remove the scope on this server only.
@@ -558,7 +561,7 @@ def test_hot_standby_update_sends_no_server_role(pw: PwshRunner) -> None:
         FailoverRelationship(
             name="hs",
             partner_server="dhcp02",
-            mode="HotStandby",
+            mode="",
             server_role="Active",
             reserve_percent=10,
             max_client_lead_time=120,
@@ -566,7 +569,7 @@ def test_hot_standby_update_sends_no_server_role(pw: PwshRunner) -> None:
     )
     assert (f.server_role, f.reserve_percent, f.max_client_lead_time) == ("Active", 10, 120)
     st = find_call(pw.last_calls(), "Set-DhcpServerv4Failover")
-    assert "ServerRole" not in st and st["Mode"] == "HotStandby" and st["Force"] is True
+    assert "ServerRole" not in st and "Mode" not in st and st["Force"] is True
     # The stub refuses the parameter, as Windows does.
     with pytest.raises(PSError, match="ServerRole"):
         c._run(Script("raw", "Set-DhcpServerv4Failover -Name hs -ServerRole Standby"))
@@ -718,7 +721,8 @@ def test_v6(pw: PwshRunner) -> None:
     pw.seed = seed
     v = c.set_v6_option_value(OptionKeyV6(23, prefix="2001:db8:1::"), ["2001:db8::53"])
     assert v.value == ["2001:db8::53"] and v.prefix == "2001:db8:1::"
-    assert find_call(pw.last_calls(), "Set-DhcpServerv6OptionValue")["Prefix"] == "2001:db8:1::"
+    st = find_call(pw.last_calls(), "Set-DhcpServerv6OptionValue")
+    assert st["Prefix"] == "2001:db8:1::" and st["Force"] is True
     with pytest.raises(NotFound):
         c.get_v6_option_value(OptionKeyV6(23, prefix="2001:db8:1::"))
     c.remove_v6_option_value(OptionKeyV6(23))

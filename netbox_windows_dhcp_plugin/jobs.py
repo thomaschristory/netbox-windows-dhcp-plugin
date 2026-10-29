@@ -83,8 +83,9 @@ class TestConnectionJob(JobRunner):
 
 class LeaseJob(JobRunner):
     """
-    Read the live leases of one scope into the job's data. The job belongs to the Windows server (netbox-plugin-dhcp
-    subnets cannot hold jobs); ``data["subnet"]`` says which subnet it read, from the moment it is queued.
+    Read the live leases of one scope into the job's data. The job belongs to the Windows server, so one server's
+    reads are listed together; ``data["scope"]`` (the Scope's primary key) says which scope it read, from the moment
+    it is queued, and ``data["scope_id"]`` how Windows names that scope.
     """
 
     class Meta:
@@ -93,22 +94,21 @@ class LeaseJob(JobRunner):
     # Tests substitute a fake runner here.
     runner_factory = None
 
-    subnet_id = None
+    scope_pk = None
 
-    def run(self, *args, subnet_id=None, **kwargs):
-        from netbox_dhcp.models import Subnet
-
+    def run(self, *args, scope_pk=None, **kwargs):
         from . import leases
+        from .models import Scope
         from .windows.psscript import NotFound
 
-        self.subnet_id = subnet_id
+        self.scope_pk = scope_pk
         server = self.job.object
-        subnet = Subnet.objects.select_related("prefix").filter(pk=subnet_id).first()
-        if subnet is None:
-            self._fail("the subnet no longer exists")
-        if server is None or leases.windows_server_for(subnet) != server:
-            self._fail(f"{subnet} no longer belongs to this Windows server")
-        family, scope = leases.scope_of(subnet)
+        found_scope = Scope.objects.select_related("prefix").filter(pk=scope_pk).first()
+        if found_scope is None:
+            self._fail("the scope no longer exists")
+        if server is None or found_scope.server_id != server.pk:
+            self._fail(f"{found_scope} no longer belongs to this Windows server")
+        family, scope = leases.scope_of(found_scope)
         runner = self.runner_factory(server) if self.runner_factory else None
         client = None
         try:
@@ -124,9 +124,9 @@ class LeaseJob(JobRunner):
         kept, total = leases.rows(found, family)
         self._forget_earlier_reads(server)
         self.job.data = {
-            "subnet": subnet_id,
+            "scope": scope_pk,
             "server": str(server),
-            "scope": scope,
+            "scope_id": scope,
             "family": family,
             "total": total,
             "truncated": total > len(kept),
@@ -138,21 +138,21 @@ class LeaseJob(JobRunner):
         # Only the newest read is shown, so earlier ones (up to 5000 leases each) are not kept in the job table.
         from core.choices import JobStatusChoices
 
-        earlier = LeaseJob.get_jobs(server).filter(data__subnet=self.subnet_id).exclude(pk=self.job.pk)
+        earlier = LeaseJob.get_jobs(server).filter(data__scope=self.scope_pk).exclude(pk=self.job.pk)
         earlier.filter(status__in=JobStatusChoices.TERMINAL_STATE_CHOICES).delete()
 
     def _fail(self, message):
         # Job.terminate saves the job, data included: the page shows the reason without reading the job log.
-        if self.job.object is not None and self.subnet_id is not None:
+        if self.job.object is not None and self.scope_pk is not None:
             self._forget_earlier_reads(self.job.object)
-        self.job.data = {"subnet": self.subnet_id, "error": message}
+        self.job.data = {"scope": self.scope_pk, "error": message}
         self.logger.error(message)
         raise JobFailed(message)
 
 
-def lease_jobs(subnet, server):
-    """Lease reads of this subnet, newest first."""
-    return LeaseJob.get_jobs(server).filter(data__subnet=subnet.pk).order_by("-created")
+def lease_jobs(scope, server):
+    """Lease reads of this scope, newest first."""
+    return LeaseJob.get_jobs(server).filter(data__scope=scope.pk).order_by("-created")
 
 
 def lease_read_in_progress(job, now=None):
@@ -167,34 +167,34 @@ def lease_read_in_progress(job, now=None):
     return job.created >= (now or timezone.now()) - ORPHANED_JOB
 
 
-# Advisory lock (with the subnet's key) taken while deciding whether to queue a lease read.
+# Advisory lock (with the scope's key) taken while deciding whether to queue a lease read.
 _LEASE_LOCK_CLASS = 0x57444C53  # "WDLS"
 
 
-def enqueue_leases(subnet, user):
-    """Queue a lease read for the subnet unless one is already waiting or running. Returns the job, or None."""
+def enqueue_leases(scope, user):
+    """Queue a lease read for the scope unless one is already waiting or running. Returns the job, or None."""
     from django.db import transaction
 
     from . import leases
 
-    server = leases.windows_server_for(subnet)
+    server = leases.windows_server_for(scope)
     if server is None:
         return None
-    # RQ only gets the job once this transaction commits, so the subnet is recorded before the job can start; the
+    # RQ only gets the job once this transaction commits, so the scope is recorded before the job can start; the
     # lock makes two clicks at the same moment queue one read.
     with transaction.atomic():
         with connection.cursor() as cursor:
-            cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_LEASE_LOCK_CLASS, subnet.pk])
-        if lease_read_in_progress(lease_jobs(subnet, server).first()):
+            cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_LEASE_LOCK_CLASS, scope.pk])
+        if lease_read_in_progress(lease_jobs(scope, server).first()):
             return None
         job = LeaseJob.enqueue(
             instance=server,
             user=user,
             # Never notify: the person who asked is watching the page, which updates itself.
             notifications=JobNotificationChoices.NOTIFICATION_NEVER,
-            subnet_id=subnet.pk,
+            scope_pk=scope.pk,
         )
-        job.data = {"subnet": subnet.pk}
+        job.data = {"scope": scope.pk}
         job.save(update_fields=["data"])
     return job
 
@@ -312,6 +312,24 @@ class ImportJob(JobRunner):
             sync_run.summary = {"applied": 0}
 
 
+def push_log_line(host, outcome, dry_run):
+    """The job log's last line: what a dry run plans, or what a push really changed (not what it planned)."""
+    planned = len(outcome.plan.changes)
+    if dry_run:
+        return f"Push to {host}: would change {planned} object(s)"
+    result = outcome.result
+    line = f"Push to {host}: changed {len(result.applied)} of {planned} object(s)" if planned else f"Push to {host}"
+    if result.failed:
+        line += f", {len(result.failed)} failed"
+    if result.skipped:
+        line += f", {len(result.skipped)} not attempted"
+    if outcome.replication_errors:
+        line += f", failover replication failed ({len(outcome.replication_errors)})"
+    if not planned and not outcome.replication_errors:
+        line += ": nothing to change"
+    return line
+
+
 class PushJob(JobRunner):
     """Make a Windows server match NetBox: create, update and delete what differs, in dependency order."""
 
@@ -377,8 +395,7 @@ class PushJob(JobRunner):
                 sync_run.error = "\n".join(outcome.errors())
             else:
                 sync_run.status = SyncStatusChoices.COMPLETED
-            verb = "would change" if self.dry_run else "changed"
-            self.logger.info(f"Push to {server.host}: {verb} {len(outcome.plan.changes)} object(s)")
+            self.logger.info(push_log_line(server.host, outcome, self.dry_run))
         finally:
             if sync_run.status == SyncStatusChoices.RUNNING:
                 sync_run.status = SyncStatusChoices.FAILED

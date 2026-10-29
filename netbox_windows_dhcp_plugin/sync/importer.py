@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
-from netbox_dhcp.models import HostReservation, Option, OptionDefinition, SharedNetwork, Subnet
 from utilities.exceptions import AbortRequest
 
 from ..choices import ProposalItemStatusChoices, ProposalStatusChoices
@@ -26,10 +25,13 @@ from ..models import (
     ImportProposalItem,
     MacFilter,
     MacFilterLists,
+    OptionDefinition,
+    OptionValue,
+    Reservation,
+    Scope,
+    Superscope,
     WindowsClass,
     WindowsPolicy,
-    WindowsVendorOption,
-    WindowsVendorOptionDefinition,
 )
 from . import netbox_state, windows_state
 from .diff import CREATE, DELETE, UPDATE, Change, Record, diff, index
@@ -49,33 +51,28 @@ __all__ = (
 
 log = logging.getLogger(__name__)
 
-# The NetBox model each kind of change creates, updates or deletes, for permission checks and links. Vendor class
-# definitions and values use their own models (see kind_model).
+# The NetBox model each kind of change creates, updates or deletes, for permission checks and links.
 KIND_MODELS = {
     "class": WindowsClass,
     "optiondef": OptionDefinition,
-    "scope": Subnet,
+    "scope": Scope,
     "exclusion": ExclusionRange,
-    "reservation": HostReservation,
-    "option": Option,
-    "superscope": SharedNetwork,
+    "reservation": Reservation,
+    "option": OptionValue,
+    "superscope": Superscope,
     "policy": WindowsPolicy,
     "failover": FailoverRelationship,
     "macfilter": MacFilter,
     "filterlists": MacFilterLists,
     "class6": WindowsClass,
-    "scope6": Subnet,
-    "reservation6": HostReservation,
-    "option6": Option,
+    "scope6": Scope,
+    "reservation6": Reservation,
+    "option6": OptionValue,
 }
 
-VENDOR_KIND_MODELS = {"optiondef": WindowsVendorOptionDefinition, "option": WindowsVendorOption}
 
-
-def kind_model(kind, fields):
-    """The model a change writes: vendor class definitions and values have models of their own."""
-    if (fields or {}).get("vendor_class") and kind in VENDOR_KIND_MODELS:
-        return VENDOR_KIND_MODELS[kind]
+def kind_model(kind, fields=None):
+    """The model a change writes. ``fields`` is unused now that vendor class objects share their models."""
     return KIND_MODELS.get(kind)
 
 
@@ -164,7 +161,7 @@ def _target(writer, change):
     fields = change.before
     try:
         if change.kind == "scope":
-            return writer.subnet(change.key, required=False)
+            return writer.scope(change.key, required=False)
         if change.kind == "reservation":
             return writer.reservation(*change.key.split("/", 1), required=False)
         if change.kind == "class":
@@ -176,17 +173,17 @@ def _target(writer, change):
         if change.kind == "policy":
             return writer.windows_policy(fields["scope_id"], fields["name"], required=False)
         if change.kind == "superscope":
-            return writer.shared_network(fields["name"])
+            return writer.superscope(fields["name"])
         if change.kind == "failover":
             return writer.failover(fields["name"])
         if change.kind == "macfilter":
-            return MacFilter.objects.filter(dhcp_server=writer.dhcp, mac_address__iexact=fields["mac_address"]).first()
+            return writer.mac_filter(fields["mac_address"])
         if change.kind == "filterlists":
-            return MacFilterLists.objects.filter(dhcp_server=writer.dhcp).first()
+            return writer.filter_lists()
         if change.kind == "class6":
             return writer.windows_class6(fields["name"], required=False)
         if change.kind == "scope6":
-            return writer.subnet6(change.key.removeprefix("v6/"), required=False)
+            return writer.scope6(change.key.removeprefix("v6/"), required=False)
         if change.kind == "reservation6":
             return writer.reservation6(*change.key.removeprefix("v6/").split("/", 1), required=False)
         if change.kind == "option6":
@@ -449,8 +446,8 @@ def _fill_branch(windows_server, user, branch, result, logger, on_branch, chosen
         if not branching.branch_ready(branch):
             raise branching.BranchError(f"branch {branch.name} is no longer ready: nothing was written")
 
-    with branching.subnet_id_allocation(also=branch) as subnet_ids, branching.writing(branch, user):
-        writer = Writer(windows_server, user=user if chosen else None, subnet_ids=subnet_ids)
+    with branching.writing(branch, user):
+        writer = Writer(windows_server, user=user if chosen else None)
         for change in changes:
             try:
                 with _one_change(), branching.atomic(branch):
@@ -501,9 +498,8 @@ def import_to_main(windows_server, state, user, logger=log):
         return result
 
     logger.info(f"Writing {len(changes)} difference(s) into main as {user}")
-    # Subnet IDs above those in open import branches too, so merging one of them later cannot collide with these.
-    with push_suppressed(), branching.subnet_id_allocation() as subnet_ids, branching.writing_main(user):
-        writer = Writer(windows_server, user=user, subnet_ids=subnet_ids)
+    with push_suppressed(), branching.writing_main(user):
+        writer = Writer(windows_server, user=user)
         for change in changes:
             try:
                 with _one_change(), transaction.atomic():

@@ -13,7 +13,7 @@ from netbox_windows_dhcp_plugin.windows.client import Scope
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
-from .fixtures import dhcp_servers, windows_server
+from .fixtures import windows_server
 
 CREDENTIALS = {
     **settings.PLUGINS_CONFIG,
@@ -24,8 +24,7 @@ CREDENTIALS = {
 @override_settings(PLUGINS_CONFIG=CREDENTIALS)
 class TestConnectionJobTest(TestCase):
     def setUp(self):
-        (dhcp_server,) = dhcp_servers(1)
-        self.server = windows_server(dhcp_server)
+        self.server = windows_server()
         self.fake = FakeDhcpServer()
         TestConnectionJob.runner_factory = staticmethod(lambda server: self.fake)
         self.addCleanup(setattr, TestConnectionJob, "runner_factory", None)
@@ -112,8 +111,7 @@ class TestConnectionViewTest(TestCase):
     def setUp(self):
         from django.contrib.auth import get_user_model
 
-        (dhcp_server,) = dhcp_servers(1)
-        self.server = windows_server(dhcp_server)
+        self.server = windows_server()
         self.user = get_user_model().objects.create_superuser("admin", "admin@example.com", "admin")
         self.client.force_login(self.user)
 

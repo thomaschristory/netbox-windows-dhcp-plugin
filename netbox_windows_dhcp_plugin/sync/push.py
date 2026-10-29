@@ -274,7 +274,7 @@ def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] 
     if DUPLICATE in f:
         return CONFLICT
     if record.kind == "scope" and not (f.get("start_range") and f.get("end_range")):
-        return "the subnet has no pool (IP range) to use as the scope range; add one in NetBox"
+        return "the scope has no IP range to hand out; add one in NetBox"
     if record.kind == "reservation" and not f.get("client_id"):
         return "the reservation has neither a MAC address nor a client ID; add one in NetBox"
     if record.kind == "optiondef" and f["option_id"] in skipped_option_ids and not f.get("vendor_class"):
@@ -289,14 +289,14 @@ def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] 
         if f["mode"] == "hotstandby" and not f.get("server_role"):
             return "a hot standby relationship needs the primary server's role (active or standby); set it in NetBox"
     if record.kind == "scope6" and f.get("prefix_length") != V6_PREFIX_LENGTH:
-        return f"Windows DHCPv6 scopes are /{V6_PREFIX_LENGTH} prefixes; this subnet is /{f.get('prefix_length')}"
+        return f"Windows DHCPv6 scopes are /{V6_PREFIX_LENGTH} prefixes; this scope is /{f.get('prefix_length')}"
     if record.kind == "reservation6":
         if not f.get("ip_address"):
             return "the reservation has no IPv6 address; add one in NetBox"
         if not f.get("client_duid"):
             return "the reservation has no DUID; add one in NetBox"
         if f.get("iaid") is None:
-            return "the reservation has no IAID; set it on its Windows reservation in NetBox"
+            return "the reservation has no IAID; set it on the reservation in NetBox"
     if record.kind == "class6" and f.get("class_type") != "user":
         return "only DHCPv6 user classes are synced"
     if record.kind == "option6" and f.get("policy"):
@@ -307,7 +307,7 @@ def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] 
         code = f["option_id"]
         vendor = f.get("vendor_class", "")
         if code in skipped_option_ids and not vendor:
-            what, source = ("subnet mask", "prefix length") if code == 1 else ("lease time", "subnet's valid lifetime")
+            what, source = ("subnet mask", "prefix length") if code == 1 else ("lease time", "scope's lease duration")
             return LEASE_OR_MASK.format(code=code, what=what, source=source)
         if not f.get("value"):
             return "the option has no value; set one or remove the option in NetBox"
@@ -513,6 +513,7 @@ def plan(
             deleting.discard(key)
             continue
         result.changes.append(change)
+    result.changes = _scopes_in_other_relationships(result.changes, target_index, result)
     result.changes = _membership_updates_first(result.changes, target_index)
     result.changes = _order_policies(result.changes, source_index, target_index, result)
     return result
@@ -568,6 +569,44 @@ def _protect_memberships(
         if not diff([Record(c.kind, c.key, fields)], [Record(c.kind, c.key, c.before or {})], equal=equal):
             continue  # nothing else to change
         out.append(Change(c.action, c.kind, c.key, before=c.before, after=fields))
+    return out
+
+
+def _scopes_in_other_relationships(changes: list[Change], target: Mapping[Key, Record], plan: Plan) -> list[Change]:
+    """
+    Windows puts a scope in one failover relationship at most, and refuses to add it to a second one. A relationship
+    NetBox does not know about (made by hand, or renamed on Windows) would make every push fail on it: leave such a
+    create or update out with a reason instead, unless this push deletes the other relationship first.
+    """
+    deleted = {c.key for c in changes if c.kind == "failover" and c.action == DELETE}
+    holder = {}
+    for (kind, key), record in target.items():
+        if kind == "failover" and key not in deleted:
+            for scope_id in record.fields.get("scope_ids") or []:
+                holder[scope_id] = record.fields.get("name") or key
+    out = []
+    for c in changes:
+        if c.kind != "failover" or c.action == DELETE:
+            out.append(c)
+            continue
+        before = set((c.before or {}).get("scope_ids") or [])
+        taken = [
+            s
+            for s in (c.after or {}).get("scope_ids") or []
+            if s not in before and s in holder and holder[s].lower() != c.key
+        ]
+        if not taken:
+            out.append(c)
+            continue
+        others = ", ".join(sorted({holder[s] for s in taken}))
+        plan.skipped.append(
+            Skip(
+                c,
+                f"scope(s) {', '.join(taken)} are already in failover relationship {others} on Windows, which a "
+                "scope can only be in once; import that relationship into NetBox, or remove the scopes from it on "
+                "Windows",
+            )
+        )
     return out
 
 
