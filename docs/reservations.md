@@ -41,6 +41,9 @@ reservations (see [DHCPv6](dhcpv6.md)). Windows matches a reservation on its cli
 MAC address or a client ID (one of the two), and a DHCPv6 one a DUID and an IAID: NetBox refuses to save it without
 them. A scope holds one reservation per IP address.
 
+![The reservation form: server dhcp01, scope dhcp01/198.18.60.0, IP address 198.18.60.20, name printer01, MAC
+address 02:4E:42:60:00:20, type Both](images/reservation-form.webp)
+
 Saving queues a push to the Windows server. Its sync run (**Windows DHCP > Sync runs**, or the **Sync runs** table
 on the Windows server) lists what it planned and applied: one reservation created, with type `both`, the default.
 
@@ -60,11 +63,17 @@ printer01](images/reservation-windows-console.webp)
 Windows reservations answer DHCP clients, BOOTP clients or both. The reservation's **Type** says which;
 **Both** is the Windows default. To change it, edit the reservation and pick the type:
 
+![The IPv4 client part of the reservation's edit form: MAC address 02:4E:42:60:00:20, no client ID, type
+DHCP](images/reservation-windows-settings.webp)
+
 ## Reservation options
 
 Option values on a reservation override the scope and server values for that one client. **Windows DHCP > Option
 values > Add**: the server, the address family, the code, the value as a list of strings and, under **Set on**, the
-reservation (its scope is filled in from it). Here option 15 (DNS domain name), value `["print.example.com"]`.
+reservation (its scope is filled in from it). Here option 15 (DNS domain name), value `["print.example.com"]`:
+
+![A new option value: server dhcp01, IPv4, code 15, value ["print.example.com"], set on the reservation
+198.18.60.20](images/reservation-option-form.webp)
 
 Here the two saves above went out in one push, as saves made close together do: the reservation updated from `both`
 to `dhcp`, and the option value created on it.
@@ -122,7 +131,7 @@ In this example a second reservation, `camera01` at `198.18.60.21`, was created 
 `handmade01` at `198.18.60.30`, was added on Windows with `Add-DhcpServerv4Reservation`. Deleting `camera01` in
 NetBox gave this push:
 
-![The sync run of the delete: one reservation deleted, camera01 at 198.18.60.21; 16 unmanaged objects
+![The sync run of the delete: one reservation deleted, camera01 at 198.18.60.21; one unmanaged object (handmade01)
 left alone](images/reservation-delete-push.webp)
 
 `camera01` is gone from Windows; `handmade01` stays:

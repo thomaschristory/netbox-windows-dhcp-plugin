@@ -155,7 +155,7 @@ From now on, edit the scope on the primary in NetBox. A new reservation, `scanne
 scope `dhcp01/198.18.60.0`, was pushed to DHCP01 and the scope replicated to DHCP02 in the same job:
 
 ![The push job log: Replicated 1 scope(s) to the partner of dhcp01-dhcp02; Push to dhcp01.example.com: changed 1
-object(s)](images/failover-replication-log.webp)
+of 1 object(s)](images/failover-replication-log.webp)
 
 DHCP02 has both reservations without NetBox writing to it:
 

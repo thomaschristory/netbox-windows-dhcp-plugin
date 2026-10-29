@@ -38,6 +38,8 @@ The plugin is standalone: it no longer needs netbox-plugin-dhcp. This is a fresh
 
 ### Added
 
+- Documentation: every NetBox screenshot retaken on 0.2.0 (Windows Server 2025 lab), and the step-by-step pages
+  (new scope, reservations, failover, branching) walk through the 0.2.0 forms.
 - Lease durations, DHCPv6 lifetimes and T1/T2 show in days next to the seconds on scope and policy pages, for
   example `28800 (0.33 days)`.
 - A Windows server can be linked to the device or virtual machine it runs on, and that device or virtual machine's

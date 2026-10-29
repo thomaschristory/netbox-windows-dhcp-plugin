@@ -110,11 +110,14 @@ opened (see [Permissions](permissions.md)).
 Once the job has finished, the **Import** panel on the server page links the branch, its change request and the sync
 run, and says that main has not changed:
 
-![The Import panel after an import into a branch: 39 differences, the branch, change request CR1 and the sync
-run](images/branching-import-panel.webp)
+![The Import panel after an import into a branch: 78 differences imported into a new branch, main not changed,
+the branch, change request CR3 and the sync run](images/branching-import-panel.webp)
 
 The branch's **Diff** tab lists every object the import created, changed or deleted. Review it there, then merge it
 (through the change request, with netbox-change-control):
+
+![The Diff tab of the import branch: the objects the import created, from classes to failover relationships and MAC
+filters](images/branching-diff.webp)
 
 ![The change request of an import, approved by a reviewer and ready to merge](images/branching-change-request.webp)
 
@@ -130,8 +133,8 @@ On a proposal you can:
 - select items in the list and **Apply selected** or **Dismiss selected**;
 - open one item and **Apply** or **Dismiss** it.
 
-![One proposal item: create reservation 198.18.10.0/198.18.10.20, with what NetBox holds (nothing yet) and what
-Windows holds](images/import-proposal-item.webp)
+![One proposal item: create reservation 198.18.60.0/198.18.60.30 (handmade01, made by hand on Windows), with what
+NetBox holds (nothing yet) and what Windows holds](images/import-proposal-item.webp)
 
 Proposals and items are written by the import, so they cannot be added or edited by hand; they can be deleted.
 

@@ -70,10 +70,14 @@ belongs to the server (through its scope, for reservations and exclusion ranges)
 see [what a push will not do](push.md#what-a-push-will-not-do).
 
 **The push failed on one change.** The sync run's **Error** names the change and the cmdlet's message, and the summary
-lists it under `errors`; the other changes were applied. Here Windows refused a policy with an FQDN condition that also
-sets an ordinary option value (DHCP 20135 or 20136, see
-[Limitations](limitations.md#windows-rules-the-plugin-will-not-work-around)): fix the policy in NetBox and the next push
-sends it.
+lists it under `errors`; the other changes were applied. Here a new policy with an FQDN condition went to Windows,
+but the option value set on it did not: Windows does not allow ordinary option values on such a policy (see
+[Limitations](limitations.md#windows-rules-the-plugin-will-not-work-around)), and Windows Server 2025 only says
+"Failed to set option values" (`InvalidOperation`) rather than naming DHCP 20136. Fix the policy or the value in
+NetBox and the next push sends it.
+
+![A failed push: policy Kiosks-FQDN created, its option 15 value refused with Set-DhcpServerv4OptionValue: Failed to
+set option values on DHCP server dhcp01 (InvalidOperation)](images/troubleshooting-failed-push.webp)
 
 The usual reasons a change is in `not_pushed`:
 

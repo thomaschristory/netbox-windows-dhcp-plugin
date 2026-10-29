@@ -83,8 +83,8 @@ reservation (**Windows DHCP > Reservations**):
 
 The push's sync run lists what it applied, with the values before and after:
 
-![The sync run of the push: one reservation updated, its name from fileserver to
-nas01](images/quickstart-6-push.webp)
+![The sync run of the push: one reservation updated, its name from app02 to
+web02](images/quickstart-6-push.webp)
 
 Check on Windows:
 

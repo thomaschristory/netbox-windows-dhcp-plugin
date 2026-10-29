@@ -97,7 +97,7 @@ netbox-plugin-dhcp (latest 0.1.1, 2026-10-29).
    - **Done:** migration and query-count baselines regenerated.
    - **Docs (2026-10-29):** every page checked against the code; the screenshots of netbox-plugin-dhcp forms removed,
      the read-only ones retaken on 0.2.0.
-   - **Left before 0.2.0:** retake the remaining 0.1.x-era screenshots (walkthrough forms, failover, branching,
-     sync runs).
+   - **Screenshots (2026-10-29):** every NetBox screenshot retaken on 0.2.0 against the fresh lab (lab NetBox without
+     branching; branching and change control from the dev stack pointed at the lab servers).
    - **Lab (2026-10-29):** fresh Windows Server 2025 lab, plugin 1a2108a: `make test-lab` 31 passed, `make lab-e2e`
      passed (failover phase included), seeded import of both servers applied with dry runs at 0 changes.
