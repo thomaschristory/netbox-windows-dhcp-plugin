@@ -72,7 +72,7 @@ netbox-plugin-dhcp (latest 0.1.1, 2026-10-29).
      ready) wait for the owner's go.
    - **Fixes from testing 0.1.0rc1:** CSRF tokens on the plugin's buttons (#19); no Edit, Clone or Add buttons
      leading to "None" on read-only pages (#23).
-7. **Done (0.2.0, 2026-10-29).** Standalone (0.2.0): drop netbox-plugin-dhcp.
+7. **Release candidate (0.2.0rc1).** Standalone (0.2.0): drop netbox-plugin-dhcp.
    - **Why:** netbox-plugin-dhcp models DHCP the way Kea does, so every Windows concept needed a side model or a
      workaround (`<server>/<scope id>` names, comma-escaped option values, covering prefixes for superscopes, subnet
      ID allocation across branches, upstream bugs such as netbox-plugin-dhcp issues #68 and #69).
@@ -97,5 +97,5 @@ netbox-plugin-dhcp (latest 0.1.1, 2026-10-29).
    - **Done:** migration and query-count baselines regenerated.
    - **Docs (2026-10-29):** every page checked against the code; the screenshots of netbox-plugin-dhcp forms removed,
      the read-only ones retaken on 0.2.0.
-   - **Left after the release:** retake the remaining 0.1.x-era screenshots (walkthrough forms, failover, branching,
+   - **Left before 0.2.0:** retake the remaining 0.1.x-era screenshots (walkthrough forms, failover, branching,
      sync runs) and run `make test-lab` and `make lab-e2e` on 0.2.0.

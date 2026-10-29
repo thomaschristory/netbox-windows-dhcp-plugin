@@ -5,8 +5,6 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.2.0] - 2026-10-29
-
 The plugin is standalone: it no longer needs netbox-plugin-dhcp. This is a fresh start, with no data migration from
 0.1.x: read the upgrade notes before upgrading. Installs that stay on netbox-plugin-dhcp keep the 0.1.x line.
 

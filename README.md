@@ -5,8 +5,8 @@ over WinRM or SSH.
 
 **Documentation: https://thomaschristory.github.io/netbox-windows-dhcp-plugin/**
 
-> **Status: 0.2.0, standalone.** The plugin no longer needs netbox-plugin-dhcp: it holds the whole Windows DHCP
-> configuration in its own models. 0.2.0 is a fresh start from 0.1.x (see the [upgrade
+> **Status: 0.2.0rc1, release candidate.** The plugin no longer needs netbox-plugin-dhcp: it holds the whole Windows
+> DHCP configuration in its own models. 0.2.0 is a fresh start from 0.1.x (see the [upgrade
 > notes](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-01x)). Every v1
 > feature is built and tested against an in-memory fake server and PowerShell stubs. The Windows side (scripts,
 > transports, sync rules) is that of 0.1.x, apart from option values now being lists; 0.1.0's lab tests ran in full
@@ -51,7 +51,7 @@ Windows Server 2016 or later with the DHCP Server role.
 ## Quick start
 
 ```bash
-pip install netbox-windows-dhcp-plugin
+pip install --pre netbox-windows-dhcp-plugin   # or ==0.2.0rc1; 0.1.x stays the default until 0.2.0 is out
 # extras: [kerberos] for Kerberos (needs system GSSAPI libraries), [branching] for branching and change control
 ```
 

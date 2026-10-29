@@ -1,10 +1,11 @@
 name: docs
 
 # Publishes the documentation site to GitHub Pages for each release tag, so the site describes the released version.
-# Run it by hand from main to publish the current docs between releases.
+# Release candidates are skipped: the site keeps describing the latest final release. Run it by hand from main to
+# publish the current docs between releases.
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*", "!v*rc*"]
   workflow_dispatch:
 
 permissions: {}
