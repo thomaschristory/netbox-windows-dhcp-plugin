@@ -190,6 +190,32 @@ class PushJobTest(PushTestMixin, TestCase):
         self.assertIn("Add-DhcpServerv4Class", run.error)
         self.assertIn("10.1.0.0", self.target.scopes)
 
+    def test_job_log_counts_what_was_applied_not_what_was_planned(self):
+        from types import SimpleNamespace
+
+        from netbox_windows_dhcp_plugin.jobs import push_log_line
+        from netbox_windows_dhcp_plugin.sync import push
+        from netbox_windows_dhcp_plugin.sync.pusher import PushOutcome
+
+        plan = SimpleNamespace(changes=["a", "b", "c", "d"])
+        result = push.Result(applied=["a"], failed=[("b", "denied")], skipped=[("c", "x"), ("d", "x")])
+        self.assertEqual(
+            push_log_line("dhcp1", PushOutcome(plan=plan, result=result), dry_run=False),
+            "Push to dhcp1: changed 1 of 4 object(s), 1 failed, 2 not attempted",
+        )
+        self.assertEqual(
+            push_log_line("dhcp1", PushOutcome(plan=plan), dry_run=True), "Push to dhcp1: would change 4 object(s)"
+        )
+        empty = SimpleNamespace(changes=[])
+        self.assertEqual(
+            push_log_line("dhcp1", PushOutcome(plan=empty, result=push.Result()), dry_run=False),
+            "Push to dhcp1: nothing to change",
+        )
+        replication = PushOutcome(plan=empty, result=push.Result(), replication_errors=["campus: denied"])
+        self.assertEqual(
+            push_log_line("dhcp1", replication, dry_run=False), "Push to dhcp1, failover replication failed (1)"
+        )
+
     def test_busy_server_reschedules_the_push(self):
         other = connection.copy()
         try:
