@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-29
+
+Two fixes found on Windows Server 2025. 0.1.x stays on netbox-plugin-dhcp and gets fixes only; new features go to
+0.2, which no longer needs netbox-plugin-dhcp.
+
 ### Added
 
 - Documentation: a Reservations page (create, type, options, change, delete) and a step-by-step failover
