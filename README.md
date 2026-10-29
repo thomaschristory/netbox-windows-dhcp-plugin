@@ -8,10 +8,12 @@ over WinRM or SSH.
 > **Status: 0.2.0 in development.** The plugin no longer needs netbox-plugin-dhcp: it holds the whole Windows DHCP
 > configuration in its own models. 0.2.0 is a fresh start from 0.1.x (see the
 > [upgrade notes](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-01x)).
-> Every v1 feature is built and tested against an in-memory fake server and
-> PowerShell stubs, and the lab tests have run in full against two Windows Server 2022 DHCP servers (import, push,
-> leases and failover, over WinRM HTTP and HTTPS and over SSH). Kerberos and SSH key authentication have not been
-> tried on a real server yet (see the
+> Every v1 feature is built and tested against an in-memory fake server and PowerShell stubs. The Windows side
+> (scripts, transports, sync rules) is that of 0.1.x, apart from option values now being lists; 0.1.0's lab tests
+> ran in full against two Windows Server 2022 DHCP servers (import, push, leases and failover, over WinRM HTTP and
+> HTTPS and over SSH). 0.2.0 has been run end to
+> end on two Windows Server 2025 servers (import, push, failover); its lab test suite run is still to come. Kerberos
+> and SSH key authentication have not been tried on a real server yet (see the
 > [limitations](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/limitations/)). Try it on a lab server
 > first.
 
@@ -41,6 +43,9 @@ over WinRM or SSH.
 |---|---|---|---|---|
 | 0.2.x | 4.7 | not used | 1.2.2+ (optional) | 3.12 to 3.14 |
 | 0.1.x | 4.7 | 0.2.x (required) | 1.2.2+ (optional) | 3.12 to 3.14 |
+
+`main` is the 0.2 line. The 0.1.x line (latest 0.1.1, branch `release/0.1`) keeps getting bug fixes, but no new
+features, for installs that stay on netbox-plugin-dhcp: pin `netbox-windows-dhcp-plugin<0.2` to stay on it.
 
 Windows Server 2016 or later with the DHCP Server role.
 

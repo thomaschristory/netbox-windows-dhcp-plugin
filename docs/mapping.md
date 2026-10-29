@@ -17,7 +17,7 @@ IPAM like any other.
 | IPv4 reservation | **Reservation** | **IP Address**, **MAC Address** (or a client ID) |
 | DHCPv6 reservation | **Reservation** (DUID and IAID) | **IP Address** |
 | User or vendor class | **Class** | |
-| Option definition (standard or of a vendor class) | **Option definition** | |
+| Option definition (one the server adds, or of a vendor class) | **Option definition** | |
 | Option value (server, scope or reservation; for a user class, vendor class or policy) | **Option value** | |
 | Policy | **Policy** | |
 | Failover relationship | **Failover relationship** | |
@@ -35,9 +35,13 @@ while it does.
 
 Objects keep their Windows names. A scope's or a reservation's **name** is its Windows name, and its
 **description** is the Windows description. Two Windows servers can both have a scope called "LAN": names only need
-to be unique within one server where Windows wants that too (classes, policies, superscopes, failover
-relationships, compared without case as on Windows). In lists, a scope with a prefix shows as
-`<server>/<scope id>`, for example `dhcp01/10.1.0.0`, so scopes of different servers are easy to tell apart.
+to be unique where Windows wants that too: classes per server and family (compared without case), superscopes per
+server, policies per level (the server or one scope), failover relationships per primary server. Windows compares
+these names without case, so two that differ only in case are one Windows object: a push refuses them and an import
+proposes deleting the extra copy (see [Windows keys](#windows-keys)). Wherever another object names a scope (the
+scope column of reservation and option value lists, selectors), a scope with a prefix shows as `<server>/<scope id>`,
+for example `dhcp01/10.1.0.0`, so scopes of different servers are easy to tell apart. The Scopes list shows its
+name, server and prefix.
 
 ## Scopes (IPv4)
 
@@ -49,7 +53,7 @@ relationships, compared without case as on Windows). In lists, a scope with a pr
 | Lease duration | Lease duration (seconds). Empty keeps the Windows value |
 | State (Active, Inactive) | State |
 | Type (DHCP, BOOTP, Both) | Type |
-| Delay, max BOOTP clients, activate policies | Delay (ms), max BOOTP clients, activate policies. "No BOOTP limit" (4294967295 on Windows) is empty in NetBox |
+| Delay, max BOOTP clients, activate policies | Offer delay (ms), max BOOTP clients, activate policies. "No BOOTP limit" (4294967295 on Windows) is empty in NetBox |
 | Superscope | Superscope |
 | Option 3, 6, 15 ... | Option values on the scope |
 
@@ -79,7 +83,7 @@ way to change one, so a changed range is pushed as a remove and an add.
 | IP address | IP address (an IPAM IP address inside the scope's prefix) |
 | Client ID | MAC address (an IPAM MAC address), or **client ID** when the client is identified by something else |
 | Name, description | Name, description |
-| Type (DHCP, BOOTP, Both) | Reservation type (Both by default) |
+| Type (DHCP, BOOTP, Both) | Type (Both by default) |
 
 A scope has one reservation per IP address. A reservation without a name gets its IP address as its name, as
 Windows does. See [Reservations](reservations.md) for a walkthrough.

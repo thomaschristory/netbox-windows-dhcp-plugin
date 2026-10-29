@@ -26,6 +26,7 @@ uv sync
 | `make docs-serve` | Serve the site with live reload |
 | `make test-lab` | Opt-in lab tests against a real Windows server, see [below](#lab-tests) |
 | `make lab-e2e` | Opt-in end-to-end run on the dev stack against that server |
+| `make lab-seed`, `make lab-wipe` | Opt-in: fill two lab servers with a configuration to import, or remove it, see [below](#seed-data-to-import) |
 
 The dev stack runs in branching mode. Its first start migrates a fresh database and takes several minutes. Log in as
 `admin` with the `SUPERUSER_PASSWORD` from `dev/env/netbox.env`.
@@ -165,3 +166,7 @@ is tagged.
 3. Tag `vX.Y.Z` on main and push the tag. The release workflow checks the tag is on main, builds, and publishes to
    PyPI through trusted publishing (the `pypi` environment only accepts `v*` tags, with no manual approval); the docs
    workflow publishes the site.
+
+`main` is the 0.2 line. The `release/0.1` branch keeps bug fixes, and no new features, for those who stay on 0.1.x
+with netbox-plugin-dhcp: fixes reach it through pull requests into `release/0.1`, and a `v0.1.Z` tag there publishes
+to PyPI without touching the documentation site, which describes main.

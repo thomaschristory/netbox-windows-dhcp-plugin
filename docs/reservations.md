@@ -7,9 +7,9 @@ it, with what Windows shows after each push. To do the same from a script, see
 [Reservations through the API](reservations-api.md).
 
 The screenshots come from a lab: NetBox without branching, two Windows Server 2025 DHCP servers known to NetBox as
-`dhcp01.example.com` and `dhcp02.example.com`, with **Sync enabled** on both, so every save queues a push. With
-netbox-branching, make the same changes in a branch: the push runs when the branch is merged (see
-[Push to Windows](push.md#when-a-push-runs)). Without sync enabled, click **Dry run** and then **Sync now** on the
+`dhcp01` and `dhcp02` (hosts `dhcp01.example.com` and `dhcp02.example.com`), with **Sync enabled** on both, so every
+save queues a push. With netbox-branching, make the same changes in a branch: the push runs when the branch is merged
+(see [Push to Windows](push.md#when-a-push-runs)). Without sync enabled, click **Dry run** and then **Sync now** on the
 Windows server after each change.
 
 ## Before you start
@@ -27,19 +27,17 @@ Windows server after each change.
 
 | Field | Value | On Windows |
 |---|---|---|
+| Server | optional, only narrows the scope list | the server |
 | Scope | the scope | the scope |
 | IP address | the reserved address, inside the scope's prefix | the IP address |
 | MAC address | the MAC address | the client ID |
 | Client ID | empty (only for clients identified by something else than a MAC address) | the client ID |
 | Name | `printer01` | the reservation **name** |
 | Description | optional | the reservation **description** |
-| Reservation type | DHCP, BOOTP or Both (the default) | the supported types |
+| Type | DHCP, BOOTP or Both (the default) | the supported types |
 
-DUID and IAID are for DHCPv6 reservations (see [DHCPv6](dhcpv6.md)). A scope holds one reservation per IP
-address.
-
-![A new host reservation: name dhcp01/198.18.60.0/198.18.60.20, description printer01, subnet dhcp01/198.18.60.0,
-hardware address 02:4E:42:60:00:20, IPv4 address 198.18.60.20/24](images/reservation-form.webp)
+MAC address, client ID and type sit under **IPv4 client**; DUID and IAID, under **DHCPv6 client**, are for DHCPv6
+reservations (see [DHCPv6](dhcpv6.md)). A scope holds one reservation per IP address.
 
 Saving queues a push to the Windows server. Its sync run (**Windows DHCP > Sync runs**, or the **Sync runs** table
 on the Windows server) lists what it planned and applied: one reservation created, with type `both`, the default.
@@ -57,18 +55,14 @@ printer01](images/reservation-windows-console.webp)
 
 ## Reservation type (DHCP, BOOTP or both)
 
-Windows reservations answer DHCP clients, BOOTP clients or both. The reservation's **Reservation type** says which;
+Windows reservations answer DHCP clients, BOOTP clients or both. The reservation's **Type** says which;
 **Both** is the Windows default. To change it, edit the reservation and pick the type:
-
-![A new Windows reservation: host reservation dhcp01/198.18.60.0/198.18.60.20, type DHCP](images/reservation-windows-settings.webp)
 
 ## Reservation options
 
 Option values on a reservation override the scope and server values for that one client. **Windows DHCP > Option
-values > Add**: the server, the reservation (its scope is filled in from it), the code and the value. Here option 15
-(DNS domain name), value `print.example.com`:
-
-![A new option on the reservation: dhcp4 domain-name (15), data print.example.com](images/reservation-option-form.webp)
+values > Add**: the server, the address family, the code, the value as a list of strings and, under **Set on**, the
+reservation (its scope is filled in from it). Here option 15 (DNS domain name), value `["print.example.com"]`.
 
 Here the two saves above went out in one push, as saves made close together do: the reservation updated from `both`
 to `dhcp`, and the option value created on it.
@@ -94,8 +88,8 @@ Type        : Dhcp
 Description :
 ```
 
-Windows also shows the reservation's options. The console also lists the values the reservation inherits from the scope (003 Router here); only
-015 belongs to the reservation:
+Windows also shows the reservation's options. The console also lists the values the reservation inherits from the
+scope (003 Router here); only 015 belongs to the reservation:
 
 ![The reservation's options in the Windows DHCP console: 015 DNS Domain Name print.example.com and the inherited
 003 Router 198.18.60.1](images/reservation-windows-options.webp)
@@ -111,15 +105,16 @@ OptionId   Name            Type       Value                VendorClass     UserC
 ## Change a reservation
 
 Edit the reservation (or its MAC address or option values) in NetBox; the next push updates Windows. A changed
-name renames the reservation on Windows. An update keeps the reservation's option
-values: the push sends the client ID and type only when they change, and puts back any option value Windows drops
-(see [Push to Windows](push.md#order)).
+name renames the reservation on Windows. An update keeps the reservation's option values: the push sends the client
+ID and type only when they change, and puts back any option value Windows drops (see
+[Push to Windows](push.md#order)).
 
 ## Delete a reservation
 
-Delete the reservation in NetBox (its option values go with it; the IP and MAC address objects stay in IPAM). The next push removes it from Windows, as long as NetBox manages it (the
-plugin created it, adopted it or imported it). A reservation made by hand on Windows is never deleted by a push: it
-counts as **unmanaged** and comes into NetBox with the next import.
+Delete the reservation in NetBox (its option values go with it; the IP and MAC address objects stay in NetBox). The
+next push removes it from Windows, as long as NetBox manages it (the plugin created it, adopted it or imported it).
+A reservation made by hand on Windows is never deleted by a push: it counts as **unmanaged** and comes into NetBox
+with the next import.
 
 In this example a second reservation, `camera01` at `198.18.60.21`, was created from NetBox and pushed, and a third,
 `handmade01` at `198.18.60.30`, was added on Windows with `Add-DhcpServerv4Reservation`. Deleting `camera01` in

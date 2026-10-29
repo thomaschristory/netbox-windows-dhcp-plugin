@@ -1,8 +1,8 @@
 # REST API and GraphQL
 
-Every model of the plugin has a REST endpoint under `/api/plugins/windows-dhcp/` and GraphQL queries, with the usual
-NetBox filtering, brief mode and tags. Sync runs, import proposals and their items are read only, apart from the
-review actions below.
+Every model of the plugin, apart from its internal sync state, has a REST endpoint under `/api/plugins/windows-dhcp/`
+and GraphQL queries, with the usual NetBox filtering, brief mode and tags. Sync runs, import proposals and their
+items are read only, apart from the review actions below.
 
 The examples use a NetBox v2 API token (`Authorization: Bearer nbt_...`); a v1 token works too, with
 `Authorization: Token ...`.
@@ -51,7 +51,7 @@ or find its sync run with `GET /api/plugins/windows-dhcp/sync-runs/?windows_serv
 | Action | Request | Answers |
 |---|---|---|
 | Test connection | `POST windows-servers/<id>/test-connection/` | 202 |
-| Import | `POST windows-servers/<id>/import/`, optionally with `{"destination": ...}` (below) | 202; 409 when an import is already queued or running; 400 for a destination not available here; 403 when permissions are missing or the destination is refused |
+| Import | `POST windows-servers/<id>/import/`, optionally with `{"destination": ...}` (below) | 202; 409 when an import is already queued or running; 400 for a destination not available here, or for `current` with no branch named or active; 403 when permissions are missing or the destination is refused |
 | Push (Sync now) | `POST windows-servers/<id>/push/` | 202; 409 when sync is disabled or a push is already waiting |
 | Dry run | `POST windows-servers/<id>/dry-run/` | 202; 409 when a dry run is already waiting |
 

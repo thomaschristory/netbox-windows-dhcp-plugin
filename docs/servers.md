@@ -1,15 +1,15 @@
 # Windows servers
 
-A **Windows server** is one Windows DHCP server and how to reach it. Every scope, class, option definition, option
-value, policy, failover relationship and MAC filter in the plugin belongs to one. Find them under **Windows DHCP >
-Windows servers**.
+A **Windows server** is one Windows DHCP server and how to reach it. Every scope, superscope, class, option
+definition, option value, policy, failover relationship and MAC filter in the plugin belongs to one. Find them
+under **Windows DHCP > Windows servers**.
 
 The Windows server itself is connection settings and bookkeeping, not DHCP configuration: with netbox-branching it
 always lives in main and is never branched. The DHCP configuration under it (scopes and the rest) is branched like
 any other NetBox data.
 
-![The Windows servers list: dhcp01 and dhcp02 with host, transport, credential profile and sync
-state](images/servers-list.webp)
+![The Windows servers list: dhcp01 and dhcp02 with host, transport, WinRM authentication, credential profile, sync
+state and device](images/servers-list.webp)
 
 ## Fields
 
@@ -83,7 +83,8 @@ change](images/quickstart-6-push.webp)
 | Kind | Push, Dry run, Import or Connection test |
 | Status | Pending, Running, Completed or Failed |
 | Started, Completed | When the run started and ended |
-| Branch | The branch whose merge triggered the push, or that the import created |
+| Branch | The branch whose merge triggered the push, or that the import wrote into |
+| Destination | Imports only: where the import wrote (import branch, chosen branch, main or import proposal) |
 | Summary | Counts and lists, see below |
 | Error | One line per failed change, or the reason the run failed |
 
@@ -105,12 +106,14 @@ The job log (**Operations > Jobs**, or the job linked from the sync run) has one
 
 ## Deleting a Windows server
 
-Deleting a Windows server deletes, in NetBox, everything that belongs to it: its scopes, reservations, exclusion
-ranges, classes, option definitions and values, policies, MAC filters, the failover relationships it is the primary
-of, sync runs, sync state and import proposals. A server that is the partner in a failover relationship cannot be
-deleted until that relationship is deleted: deleting it along with the partner would make the next push to the
-primary remove failover on Windows. Nothing is removed from Windows, and the prefixes, IP ranges, IP addresses and MAC addresses
-the scopes and reservations pointed at stay in IPAM. A new Windows server for the same host starts empty: import it
-to bring its configuration back. The first push after that adopts the objects that are identical on both sides.
+Deleting a Windows server deletes, in NetBox, everything that belongs to it: its scopes, superscopes, reservations,
+exclusion ranges, classes, option definitions and values, policies, MAC filters, the failover relationships it is the
+primary of, sync runs, sync state and import proposals. A server that is the partner in a failover relationship cannot
+be deleted until that relationship is deleted: deleting it along with the partner would make the next push to the
+primary remove failover on Windows. Nothing is removed from Windows, and the prefixes, IP ranges, IP addresses and MAC
+addresses the scopes and reservations pointed at stay in IPAM. A new Windows server for the same host starts empty:
+import it to bring its configuration back. The first push after that adopts the objects that are identical on both
+sides.
 
-When the server's device or virtual machine is deleted, the Windows server stays, without the link.
+The page of a linked device or virtual machine lists its Windows servers in a **Windows DHCP servers** panel. When
+the device or virtual machine is deleted, the Windows server stays, without the link.

@@ -9,8 +9,8 @@ NetBox models, and NetBox IP addresses are not updated from them.
 2. Click **Load leases**. A background job connects to Windows and reads the scope's IPv4 or DHCPv6 leases.
 3. The panel refreshes itself every few seconds while the job runs, then shows the result.
 
-![The Leases tab of a subnet: four active leases and the reservation, with client ID, host name, state and
-expiry](images/leases-tab.webp)
+![The Leases tab of a scope after Load leases: the scope's reservations with client ID, host name, state, expiry and
+description](images/leases-tab.webp)
 
 | Column | Meaning |
 |---|---|
@@ -30,14 +30,16 @@ shows the first 5000.
 - Only the latest read of a scope is kept, in the data of its job. Each new read deletes the earlier ones.
 - The job belongs to the Windows server and records the scope, so the read also appears in the server's jobs, for
   users who may view jobs.
-- One read per scope waits or runs at a time; clicking again meanwhile does nothing.
+- One read per scope waits or runs at a time: the button is disabled meanwhile, and a second request only gets a
+  warning that the leases are already being read.
 - A read still waiting or running after 15 minutes counts as lost (the worker may have stopped): the panel says so
   and you can load the leases again.
 - A failed read shows its reason, for example a scope that no longer exists on Windows.
 
 ## Who can see and load leases
 
-- Seeing the tab needs `view` on the scope and on its Windows server (object permissions included).
+- Seeing the tab needs `view` on the scope and on Windows servers. The panel shows the leases only when the user may
+  view that scope's Windows server (object permissions included).
 - Loading leases connects to Windows, so, like the connection test, it needs `change` on the Windows server too.
 
 ## Branches

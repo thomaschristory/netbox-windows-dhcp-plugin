@@ -4,7 +4,7 @@ Status: approved 2026-10-13; data model revised for 0.2.0 (standalone) on 2026-1
 
 ## 1. Goal
 
-A NetBox 4.7+ plugin that models Windows DHCP servers in NetBox and keeps NetBox and the servers in step, in both directions, over WinRM or SSH. It is standalone: it owns the whole Windows DHCP data model (0.1.x was a sub-plugin of [sys4 netbox-plugin-dhcp](https://github.com/sys4/netbox-plugin-dhcp); 0.2.0 dropped that dependency, see section 3).
+A NetBox 4.7+ plugin that models Windows DHCP servers in NetBox and keeps NetBox and the servers in step, in both directions, over WinRM or SSH. It is standalone: it owns the whole Windows DHCP data model (0.1.x was a sub-plugin of netbox-plugin-dhcp; 0.2.0 dropped that dependency, see section 3). `main` is the 0.2 line; the `release/0.1` branch keeps bug fixes, and no new features, for users who stay on netbox-plugin-dhcp.
 
 - **NetBox to Windows (push).** Changes to DHCP objects in NetBox are applied to the Windows servers. With netbox-branching, this happens when a branch is merged (and change control has approved it). Without branching, it happens after each save.
 - **Windows to NetBox (import).** Changes found on a Windows server are brought back for review. With branching, each import creates a new branch. Without branching, they go into a review queue.
@@ -34,7 +34,7 @@ One plugin model per Windows concept, named and shaped the way Windows sees it. 
 | DHCP server | `WindowsServer` | Own unique `name`; optional `device` (dcim.Device) or `virtual_machine`, for reference only (the connection uses `host`); connection settings (section 4) |
 | Scope (v4 and v6) | `Scope` | `server`, `prefix` (unique per server; the family comes from it), `ip_range` (v4 only, the scope start and end, inside the prefix), `superscope`, `name` and `description` (the Windows ones), `state`. v4: `scope_type`, `lease_duration`, `delay_ms`, `max_bootp_clients`, `activate_policies`. v6: `preference`, `preferred_lifetime`, `valid_lifetime`, `renew_timer` (T1), `rebind_timer` (T2). Properties `network`, `family`, `scope_id` |
 | Superscope | `Superscope` | `server`, `name`. No prefix. `Scope.superscope` is `SET_NULL`: removing a superscope keeps its scopes, as on Windows. No DHCPv6 superscopes |
-| Reservation | `Reservation` | `scope`, `ip_address` (both families, unique per scope), v4: `mac_address` or `client_id` (one of them), `reservation_type`; v6: `duid`, `iaid`. `name` and `description` are the Windows ones |
+| Reservation | `Reservation` | `scope`, `ip_address` (both families, unique per scope), v4: `mac_address` or `client_id` (not both; a reservation with neither is not pushed), `reservation_type`; v6: `duid`, `iaid`. `name` and `description` are the Windows ones |
 | Exclusion range | `ExclusionRange` | `scope`, start, end |
 | User and vendor class | `WindowsClass` | `server`, name, type, data, family |
 | Option definition | `OptionDefinition` | `server`, `family`, `vendor_class` (nullable), `code`, `name`, `windows_type`, `multi_valued`, `default_value` (list). Unique per (server, family, vendor class, code). Windows' standard v4 definitions are not stored |
@@ -50,15 +50,15 @@ One plugin model per Windows concept, named and shaped the way Windows sees it. 
 
 **Core objects.** Import creates or reuses the NetBox `Prefix`, `IPRange`, `IPAddress` and `MACAddress` objects in a VRF chosen per server (`import_vrf`, default global). Failover partners therefore share one IP range per scope.
 
-**From 0.1.x (sys4).** 0.1.x stored servers, scopes, reservations, definitions and options in sys4 (`DHCPServer`, `Subnet` + `Pool`, `SharedNetwork`, `HostReservation`, `OptionDefinition`, `Option`) with our Windows-only settings beside them (`WindowsScope`, `WindowsReservation`, `WindowsOptionDefinition`, `WindowsOptionQualifier`, `WindowsVendorOptionDefinition`, `WindowsVendorOption`). sys4 is modelled on Kea, which forced workarounds: names unique across servers (`<server>/<scope id>` naming templates), option values as one comma-separated string (`\,` escape, values with surrounding spaces skipped), a covering prefix for each shared network, `subnet_id` allocation across branches, no `Option` uniqueness, `save()` side effects lost on branch merges, and upstream bugs (sys4#68, sys4#69). 0.2.0 replaced all of it with the models above. There is no data migration: the 0.2.0 migrations drop the 0.1.x tables and users re-import from Windows (see `installation.md`). The record kinds, keys and fields the sync works on did not change, so diff, push and the Windows layer are unchanged.
+**From 0.1.x.** 0.1.x stored servers, scopes, reservations, definitions and options in netbox-plugin-dhcp (its DHCP server, subnet and pool, shared network, host reservation, option definition and option models) with our Windows-only settings beside them (`WindowsScope`, `WindowsReservation`, `WindowsOptionDefinition`, `WindowsOptionQualifier`, `WindowsVendorOptionDefinition`, `WindowsVendorOption`). netbox-plugin-dhcp is modelled on Kea, which forced workarounds: names unique across servers (`<server>/<scope id>` naming templates), option values as one comma-separated string (`\,` escape, values with surrounding spaces skipped), a covering prefix for each superscope, subnet ID allocation across branches, no uniqueness on option values, `save()` side effects lost on branch merges, and upstream bugs (netbox-plugin-dhcp issues #68 and #69). 0.2.0 replaced all of it with the models above. There is no data migration: the single 0.2.0 migration (`0001_standalone`) drops the 0.1.x tables and users re-import from Windows (see `installation.md`). The record kinds, keys and fields the sync works on did not change, so the diff engine, the push planner and the Windows layer kept their logic; only the comma-escaping workaround went.
 
 ## 4. Branchable and bookkeeping models
 
 Branchable (DHCP configuration, reviewed and merged like any NetBox data): `Scope`, `Superscope`, `Reservation`, `ExclusionRange`, `WindowsClass`, `OptionDefinition`, `OptionValue`, `WindowsPolicy`, `FailoverRelationship`, `MacFilter`, `MacFilterLists`.
 
-Not branchable (bookkeeping; listed in branching's `exempt_models` so change control's `protect_main` does not block them):
+Not branchable (bookkeeping, always written in main): `integrations/branching.NON_BRANCHABLE`, handed to netbox-branching through `register_branching_resolver` at startup.
 
-- `WindowsServer`: name, optional device or virtual machine, host, transport (winrm or ssh), port, WinRM auth (ntlm, basic, kerberos, credssp), HTTPS (default on), TLS verification, Kerberos realm and SPN, SSH host key, optional `computer_name` for remoting, the names it reports for itself, VRF for imports, sync enabled, import schedule, and a credential profile name. Deleting it deletes its DHCP objects in NetBox (not on Windows; IPAM objects stay).
+- `WindowsServer`: name, optional device or virtual machine, host, transport (winrm or ssh), port, WinRM auth (ntlm, basic, kerberos, credssp), HTTPS (default on), TLS verification, Kerberos realm and SPN, SSH host key, optional `computer_name` for remoting, the names it reports for itself, VRF for imports, sync enabled, import schedule, and a credential profile name. Deleting it deletes its DHCP objects in NetBox (not on Windows; IPAM objects stay). A server that is the partner of another server's failover relationship cannot be deleted while that relationship exists.
 - `SyncState`: per managed Windows object, the last pushed fingerprint. This is what lets the push delete only objects NetBox manages, and spot drift. A push records every object it creates or updates, and adopts every object it finds identical on both sides (which is how objects merged from an import branch become managed). Applying an import proposal item records it too, since NetBox and Windows then agree.
 - `SyncRun`: one row per push or import job with its result, linked to the NetBox `Job`.
 - `ImportProposal` and `ImportProposalItem`: the review queue used when branching is off.
@@ -77,7 +77,7 @@ sync engine  ->  client (one function per cmdlet operation)  ->  psscript (envel
 
 - **psscript.** Same contract: each script runs in try/catch and prints one JSON envelope `{ok, data}` or `{ok: false, error}`. User values only enter as a single-quoted JSON literal `$p` with quotes doubled; nothing from NetBox is ever interpolated into PowerShell. Same preamble, including `$PSDefaultParameterValues['*:ErrorAction']='Stop'`, and the same base64 stdin bootstrap, which reads the script as one line (Windows OpenSSH sometimes loses the end of stdin; over SSH, input above 64 KB is refused, as Windows OpenSSH stalls on it).
 - **Not found** uses the same rules: `ObjectNotFound`, `DHCP 20005`, `20010`, `20018`, or a null result. `DHCP 20007` (scope has leases) is a real error. A getter that finds nothing leaves `$out` holding AutomationNull, which Windows PowerShell 5.1 serialises as `{}` (pwsh 7 as `null`); the envelope turns it into `$null` before serialising, and the client also reads an empty object as not found (issue #15).
-- **Cmdlet parameters checked on Windows Server 2025** (lab run, issues #14 to #22): an option value on a reservation is named by `-ReservedIP` alone, since Set and Remove refuse it next to `-ScopeId` (IPv4) or `-Prefix` (DHCPv6); the client keeps the scope or prefix as context in what it returns. `Rename-DhcpServerv4Superscope` takes `-Name` and `-NewName`, unlike Add and Remove (`-SuperscopeName`). `Get-DhcpServerv6Lease` has no `AddressState`, so a DHCPv6 lease has no state. A policy condition takes a wildcard only at its start or end, and a policy with an FQDN condition cannot hold IP ranges (DHCP 20135) or ordinary option values (DHCP 20136). `Set-DhcpServerv4Scope` refuses a range that moves one end out and the other in (DHCP 20023), so the client first narrows to the overlap of the old and new pools (or widens over both when they do not overlap), then sets the final range, and tries to put the old range back if that fails (#30; both directions checked in the lab, Windows Server 2022). `Set-DhcpServerv4Failover` has no `-ServerRole` (only Add has it), so a hot standby role cannot change in place and the push refuses that change (#33). A `Set-DhcpServerv4Reservation` or `Set-DhcpServerv6Reservation` that resent the client ID and type (DHCPv6: DUID and IAID) for a description change reported success but dropped the reservation's option values (#42). The client now sends those only when they change, and the push writer reads the reservation's option values before and after every reservation update (two extra list calls) and writes back any that went missing; the plan and dry run do not change. A failed write-back does not stop the others; the error names each lost value and whether NetBox holds it (the next push recreates it) or not (DHCPv6 vendor class values, unsynced codes, values added on Windows since the last import: put back by hand). A new client ID, type, DUID or IAID on its own drops them too (lab, Windows Server 2022, #56).
+- **Cmdlet parameters checked on Windows Server 2025** (lab run, issues #14 to #22): an option value on a reservation is named by `-ReservedIP` alone, since Set and Remove refuse it next to `-ScopeId` (IPv4) or `-Prefix` (DHCPv6); the client keeps the scope or prefix as context in what it returns. `Rename-DhcpServerv4Superscope` takes `-Name` and `-NewName`, unlike Add and Remove (`-SuperscopeName`). `Get-DhcpServerv6Lease` has no `AddressState`, so a DHCPv6 lease has no state. A policy condition takes a wildcard only at its start or end, and a policy with an FQDN condition cannot hold IP ranges (DHCP 20135) or ordinary option values (DHCP 20136). `Set-DhcpServerv4Scope` refuses a range that moves one end out and the other in (DHCP 20023), so the client first narrows to the overlap of the old and new pools (or widens over both when they do not overlap), then sets the final range, and tries to put the old range back if that fails (#30; both directions checked in the lab, Windows Server 2022). `Set-DhcpServerv4Failover` has no `-ServerRole` (only Add has it), so a hot standby role cannot change in place and the push refuses that change (#33). A `Set-DhcpServerv4Reservation` or `Set-DhcpServerv6Reservation` that resent the client ID and type (DHCPv6: DUID and IAID) for a description change reported success but dropped the reservation's option values (#42). The client now sends those only when they change, and the push writer reads the reservation's option values before and after every reservation update (two extra list calls) and writes back any that went missing; the plan and dry run do not change. A failed write-back does not stop the others; the error names each lost value and whether NetBox holds it (the next push recreates it) or not (DHCPv6 vendor class values, unsynced codes, values added on Windows since the last import: put back by hand). A new client ID, type, DUID or IAID on its own drops them too (lab, Windows Server 2022, #56). `Set-DhcpServerv4OptionValue` and `Set-DhcpServerv6OptionValue` check that every DNS server address (option 6, DHCPv6 23) answers before saving and refuse one they cannot query ("is not a valid DNS server"); NetBox cannot know what the DHCP server reaches, so the client sends `-Force`, which skips the check as the DHCP console allows. `Set-DhcpServerv4Failover` refuses `-Mode` when it names the mode the relationship already has (Windows Server 2025), so the writer sends the mode only with a switch.
 - **Failover writes** (checked on two Windows Server 2022 servers, 2026-10-26): Add, Set, Remove, the scope add and
   remove, and replication make the server call its partner as the caller, so they need CredSSP (an NTLM or plain
   Kerberos logon cannot be passed on: `PermissionDenied`). Add, Set and replication ask for confirmation unless given
@@ -90,7 +90,7 @@ sync engine  ->  client (one function per cmdlet operation)  ->  psscript (envel
 
 ## 6. Push: NetBox to Windows
 
-The push is a **reconcile per server**, not a replay of the change log. For each affected server it reads the Windows state, compares it with NetBox, and applies the difference in dependency order (classes and definitions, then scopes, exclusions, reservations, options, policies, failover). It only deletes Windows objects listed in `SyncState`, so objects created by hand on Windows are left alone (they come back through import instead).
+The push is a **reconcile per server**, not a replay of the change log. For each affected server it reads the Windows state, compares it with NetBox, and applies the difference in dependency order (classes and definitions, then scopes, superscopes, exclusions, reservations, policies, options, failover, MAC filters). It only deletes Windows objects listed in `SyncState`, so objects created by hand on Windows are left alone (they come back through import instead).
 
 **With branching.** A `post_merge` receiver reads `branch.get_merged_changes()`, keeps the plugin and IPAM changes, works out which servers are affected, and queues one push job per server. Because `post_merge` fires in the RQ worker after commit, nothing is pushed for an aborted merge. `post_revert` does the same, with affected IDs captured in `pre_revert`. Model saves made inside a branch, or while a branch is merging or reverting, are ignored (the merge queues its own pushes); direct edits of main still push, as without branching.
 
@@ -178,8 +178,8 @@ relationships, MAC filters, list switches.
   still match while the policy keeps that number (`push.unchanged`).
 - **Superscopes.** A `Superscope` with the Windows name; members are the scopes whose `superscope` points at it.
   Import sets and clears `Scope.superscope`. On Windows, removing a superscope keeps its scopes, and in NetBox
-  deleting a `Superscope` sets its scopes' `superscope` to null, so the two agree. (0.1.x used a sys4
-  `SharedNetwork` with a covering prefix, which deleted its subnets with it.)
+  deleting a `Superscope` sets its scopes' `superscope` to null, so the two agree. (0.1.x used a netbox-plugin-dhcp
+  shared network with a covering prefix, which deleted its scopes with it.)
 - **Failover.** Pushed from the primary only: on the partner, the relationship is neither imported nor pushed
   (`partner_failovers`). The partner is the DHCP server itself, so its Windows server's `computer_name` when it
   connects through a management host, else its `host`; short and fully qualified names match. A partner without a
@@ -198,8 +198,8 @@ relationships, MAC filters, list switches.
 - **Vendor class definitions and values.** `OptionDefinition` and `OptionValue` rows with `vendor_class` set. Their
   option code 1 and 51 are ordinary vendor options, not the mask and lease time.
 - **Option values are lists.** `OptionValue.value` is a JSON list of strings, one per Windows value, so commas,
-  backslashes and surrounding spaces are stored and compared as they are. (0.1.x stored sys4's comma-separated
-  string with a `\,` escape and skipped values with surrounding spaces.)
+  backslashes and surrounding spaces are stored and compared as they are. (0.1.x stored netbox-plugin-dhcp's
+  comma-separated string with a `\,` escape and skipped values with surrounding spaces.)
 - **Duplicates.** Extra NetBox copies of one Windows object carry a `_duplicate` field (their primary key) as well
   as the `#<pk>` key suffix, so a Windows name ending in `#<digits>` is not mistaken for one, and import deletes
   exactly the marked copy.
@@ -256,7 +256,7 @@ NetBox records them and change control's `protect_main` judges every save; per-o
 transaction, and a failed one drops the change log events it queued, so webhooks only see what stayed. Main is offered when `import_direct` is on and `protect_main` does not cover the imported models for a
 user without `bypass_policy`. `jobs.import_refusal()` checks the destination when it is queued and again when the job
 starts; a refused destination fails, never falls back. The destination is a job kwarg (plus `job.data` for the panel
-while queued) and `SyncRun.destination` (migration 0005). Without branching the only destination is `proposal`.
+while queued) and `SyncRun.destination`. Without branching the only destination is `proposal`.
 
 **Repeated runs.** If an open import branch or proposal already exists for a server, the job updates it instead of opening another.
 
@@ -265,8 +265,8 @@ while queued) and `SyncRun.destination` (migration 0005). Without branching the 
 **How it is built (milestone 3).**
 
 - **Diff engine.** `sync/diff.py` is pure Python. Both sides become records (kind, Windows key, flat fields) and the
-  engine returns create, update and delete changes in dependency order: classes, option definitions, scopes,
-  exclusions, reservations, options; deletes in reverse. It does not know which side is Windows, so push reuses it.
+  engine returns create, update and delete changes in dependency order (`diff.KIND_ORDER`, see section 6);
+  deletes in reverse. It does not know which side is Windows, so push reuses it.
   `sync/windows_state.py` (pure) and `sync/netbox_state.py` (Django) produce the records; `sync/mapping.py` writes a
   change into NetBox, one object at a time, with `snapshot()` before each update or delete.
 - **What is imported.** IPv4 scopes, exclusion ranges, reservations, user and vendor classes, option definitions and
@@ -304,8 +304,13 @@ while queued) and `SyncRun.destination` (migration 0005). Without branching the 
 
 ## 8. UI and API
 
-- The Windows server page: connection status, reported names, linked device or virtual machine, Import panel, sync
-  runs.
+- The Windows server page: name, linked device or virtual machine, connection and authentication settings, reported
+  names, sync settings, the Import panel, and tables of the server's scopes, superscopes, classes, policies, option
+  definitions, server option values, MAC filters, failover relationships and sync runs. Buttons: Sync now, Dry run,
+  Import now (a menu of destinations with branching) and Test connection.
+- A device or virtual machine page lists the Windows servers linked to it, for users who may view them.
+- The scope form can create its prefix and IP range, and the reservation form its IP address and MAC address, in a
+  pop-up ("+" next to the field, NetBox's `quick_add`).
 - **Live leases (milestone 5).** A Leases tab on the scope page, shown to users who can view both the scope and its
   Windows server (object permissions included). "Load leases"
   connects to Windows, so like the connection test it needs permission to view and change that Windows server. It
@@ -315,15 +320,16 @@ while queued) and `SyncRun.destination` (migration 0005). Without branching the 
   total, the scope read and the time of the read. The panel asks for itself again every few seconds (HTMX) while the
   job runs; a job still waiting or running after 15 minutes counts as lost, so the page stops waiting and a new read
   can be queued. Only the latest read of a scope is kept: each read deletes the earlier finished ones. A failed read
-  shows its reason. The job belongs to the Windows server and records the scope in its data, so users who may view
-  jobs see the latest lease read too (0.1.x needed this because sys4 subnets could not hold jobs). Reads are refused
+  shows its reason. The job belongs to the Windows server (so one server's reads are listed together) and records the
+  scope in its data, so users who may view jobs see the latest lease read too. Reads are refused
   inside a branch, since the job reads the scope as it is in main.
 - Pages for our models, the review queue and sync runs, under a "Windows DHCP" menu.
 - Pages only show buttons whose views the plugin registers: sync runs, import proposals and their items are written
   by jobs, so their pages offer Delete and the review actions but no Add, Edit, Clone, Import or bulk edit. The
   plugin's own POST buttons pass the CSRF token to their template themselves, because NetBox renders action buttons
   without the page's request context. Tests check the rendered links and tokens, not just the status code (#19, #23).
-- REST and GraphQL for every model, plus actions to trigger push, dry-run and import.
+- REST and GraphQL for every model, plus actions on a Windows server to test the connection, push, dry-run and import,
+  and on import proposals and their items to apply or dismiss. Lease reads have no API.
 - Built per the netboxlabs plugin skill: `@register_model_view`, `get_model_urls`, Strawberry GraphQL, `@register_filterset`, `PluginMenu`.
 
 ## 9. Testing
@@ -331,11 +337,11 @@ while queued) and `SyncRun.destination` (migration 0005). Without branching the 
 - **Unit** (`tests/`): psscript rendering and envelope parsing, normalisation, mapping, diff engine, all against recorded JSON fixtures and an in-memory fake server, as in the provider.
 - **PowerShell** tests: run the real scripts in `pwsh` against stub cmdlets, reusing the provider's approach.
 - **NetBox** (`tests_netbox/`): models, views, API, push and import against the fake server, with and without branching.
-- **Lab** acceptance tests against a real Windows server, opt-in through environment variables (`make test-lab` for the client over WinRM, `make lab-e2e` for import, push and leases on the dev stack). They only create `nbwd-test-` objects in `198.18.0.0/15` and `2001:db8:4e42::/64`, check name and range before every delete, and clean up even when a test fails. Not run in CI.
+- **Lab** acceptance tests against a real Windows server, opt-in through environment variables (`make test-lab` for the client over WinRM or SSH, `make lab-e2e` for import, push and leases on the dev stack). They only create `nbwd-test-` objects, with scopes in `198.19.0.0/16` (inside the `198.18.0.0/15` lab range) and `2001:db8:4e42::/64`, check name and range before every delete, and clean up even when a test fails. Not run in CI. `make lab-seed` (and `make lab-wipe`) fill two lab servers with a realistic configuration to import, in `198.18.0.0/15` outside `198.19.0.0/16` and in `2001:db8:4e43::/64`, so it never meets the test objects (`dev/scripts/lab_seed.py`).
 
 ## 10. Repo setup
 
-Matches `netbox-ipam-treeview-plugin` and `netbox-opentelemetry-plugin`: hatchling `pyproject.toml` with uv, ruff (line length 120), `Makefile` (test, test-netbox, lint, format, dev, seed, dist), `dev/` docker compose stack with seed scripts, `tests/` and `tests_netbox/`, `ci.yml` and `release.yml` with SHA-pinned actions, grouped weekly Dependabot, issue and PR templates, CODEOWNERS, CHANGELOG, Apache-2.0 and `docs/`, built into a documentation site with Zensical (`make docs`, checked in CI, published to GitHub Pages from release tags). The dev stack includes branching and change control so both modes are tested.
+Matches `netbox-ipam-treeview-plugin` and `netbox-opentelemetry-plugin`: hatchling `pyproject.toml` with uv, ruff (line length 120), `Makefile` (test, test-lab, lab-e2e, lab-seed, test-netbox, lint, format, dev, dist, docs), `dev/` docker compose stack with lab scripts, `tests/` and `tests_netbox/`, `ci.yml` and `release.yml` with SHA-pinned actions, grouped weekly Dependabot, issue and PR templates, CODEOWNERS, CHANGELOG, Apache-2.0 and `docs/`, built into a documentation site with Zensical (`make docs`, checked in CI, published to GitHub Pages from release tags). The dev stack includes branching and change control so both modes are tested.
 
 ## 11. Milestones
 
@@ -355,9 +361,10 @@ Matches `netbox-ipam-treeview-plugin` and `netbox-opentelemetry-plugin`: hatchli
    or adopted by an import); objects made by hand on Windows come into NetBox through import.
 3. **Leases.** Live view only (a background job and an HTMX panel on the scope page). NetBox IP addresses are not
    updated from leases, and there is no lease cache.
-4. **sys4.** 0.1.x was a sub-plugin of sys4 netbox-plugin-dhcp (pinned `>=0.2,<0.3`). Its Kea-shaped model needed
-   workarounds for every Windows concept it lacked (section 3), so 0.2.0 (2026-10-27) made the plugin standalone,
-   with a fresh start instead of a data migration: Windows is the source of truth, and an import rebuilds NetBox
-   from it.
+4. **netbox-plugin-dhcp.** 0.1.x was a sub-plugin of netbox-plugin-dhcp (pinned `>=0.2,<0.3`). Its Kea-shaped model
+   needed workarounds for every Windows concept it lacked (section 3), so it was decided on 2026-10-27 that 0.2.0
+   makes the plugin standalone, with a fresh start instead of a data migration: Windows is the source of truth, and
+   an import rebuilds NetBox from it. Release lines (2026-10-29): `main` carries 0.2 and later; `release/0.1`
+   (0.1.1 and on) keeps bug fixes, and no new features, for users who stay on netbox-plugin-dhcp.
 5. **Device link.** A `WindowsServer` may point at the `dcim.Device` or `virtualization.VirtualMachine` it runs on,
    for reference. The connection always uses `host`, so the link cannot redirect credentials.

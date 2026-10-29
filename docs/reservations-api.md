@@ -164,7 +164,7 @@ What it prints:
 
 ```text
 $ python reserve.py
-reservation 6: label-printer01
+reservation 6: 198.18.60.23
 push: 409 a push for this server is already queued
 sync run 17: completed
   create reservation 198.18.60.0/198.18.60.23
@@ -316,9 +316,9 @@ records the branch name. Follow it the same way, with `created__gte` set to the 
 
 | Answer | Meaning |
 |---|---|
-| `400` on the reservation, `ip_address` | The address is outside the scope's prefix, or the scope already has a reservation for it |
-| `400` on the reservation | A MAC address and a client ID together, or DUID and IAID on an IPv4 reservation |
-| `400` on the option value | The value is not a non-empty list of strings, the reservation or class belongs to another server, or the server already holds a value for that code at that level |
+| `400` on the reservation, `ip_address` | The address is outside the scope's prefix |
+| `400` on the reservation | The scope already has a reservation for that address, a MAC address and a client ID together, or DUID and IAID on an IPv4 reservation |
+| `400` on the option value | The value is not a non-empty list of strings, the scope, reservation or class belongs to another server, the family does not match the scope or the class, the reservation is in another scope than the one given, the policy does not fit (with a user class, on a reservation, or from another server or scope), or the server already holds a value for that code at that level (with the same classes and policy) |
 | `409` from `push/`, `already queued` | A push is waiting to run (sync enabled queued it): wait for its sync run |
 | `409` from `push/`, `sync is disabled` | Enable sync on the Windows server, or use a dry run |
 | `404` from `push/` or `dry-run/` | The token's user may not change this Windows server |

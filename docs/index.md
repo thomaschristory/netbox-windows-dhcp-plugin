@@ -7,10 +7,11 @@ over WinRM or SSH.
     From 0.2.0 the plugin no longer needs netbox-plugin-dhcp: it holds the whole Windows DHCP configuration in its
     own models. Coming from 0.1.x, read [Upgrading from 0.1.x](installation.md#upgrading-from-01x) first: there is no
     data migration. Every v1 feature is built and tested against an in-memory fake server and PowerShell stubs.
-    The Windows side (scripts, transports, sync rules) is the one of 0.1.0, whose lab tests ran in full against two
-    Windows Server 2022 DHCP servers, over WinRM (HTTP and HTTPS) and SSH; release candidate testers ran Windows
-    Server 2025. Kerberos and SSH keys have not been tried on a real server yet (see [Limitations](limitations.md)).
-    Try it on a lab server before a production one.
+    The Windows side (scripts, transports, sync rules) is that of 0.1.x, apart from option values now being lists.
+    0.1.0's lab tests ran in full against two Windows Server 2022 DHCP servers, over WinRM (HTTP and HTTPS) and SSH;
+    release candidate testers ran Windows Server 2025. 0.2.0 has been run end to end on two Windows Server 2025 servers
+    (import, push, failover); its lab test suite run is still to come. Kerberos and SSH keys have not been tried on a
+    real server yet (see [Limitations](limitations.md)). Try it on a lab server before a production one.
 
 ## What it does
 
@@ -70,6 +71,9 @@ pages for the rules that keep both sides safe.
 |---|---|---|---|---|---|
 | 0.2.x | 4.7 | not used | 1.2.2 or later (optional) | 0.6 or later (optional) | 3.12 to 3.14 |
 | 0.1.x | 4.7 | 0.2.x (required) | 1.2.2 or later (optional) | 0.6 or later (optional) | 3.12 to 3.14 |
+
+The 0.1.x line (latest 0.1.1) keeps getting bug fixes, but no new features, for installs that stay on
+netbox-plugin-dhcp; see [Upgrading from 0.1.x](installation.md#upgrading-from-01x).
 
 Windows Server 2016 or later with the DHCP Server role and its PowerShell module (`DhcpServer`).
 

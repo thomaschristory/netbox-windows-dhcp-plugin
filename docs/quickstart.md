@@ -12,8 +12,8 @@ Use a lab server the first time. The import only writes to NetBox, but the push 
 
 | Field | Value |
 |---|---|
-| Name | `dhcp01`: how NetBox calls the server. Pick a short, stable one |
-| Device or virtual machine | optional: the machine the DHCP service runs on, for reference |
+| Name | `dhcp01`: the server's name in NetBox. Pick a short, stable one |
+| Device, Virtual machine | optional, one or the other: the machine the DHCP service runs on, for reference |
 | Host | `dhcp01.corp.example` (must be covered by the profile's `allowed_hosts`) |
 | Transport | WinRM |
 | Credential profile | `dhcp-admin` |
@@ -25,8 +25,8 @@ Use a lab server the first time. The import only writes to NetBox, but the push 
 
 See [Windows servers](servers.md) for every field.
 
-![The Windows server form: DHCP server dhcp01, host dhcp01.example.com, WinRM, credential profile, CredSSP over
-HTTP](images/quickstart-2-windows-server-form.webp)
+![The Windows server form: name dhcp01, host dhcp01.corp.example, WinRM, credential profile dhcp-admin, NTLM over
+HTTPS, sync not enabled yet](images/quickstart-2-windows-server-form.webp)
 
 The screenshots on this page come from a lab: WinRM over HTTP with CredSSP, which a lab profile allows with
 `allow_insecure_credssp`. Use HTTPS in production.
@@ -37,8 +37,8 @@ Open the Windows server and click **Test connection**. It queues a job; the **Sy
 page shows the result after a few seconds. A completed run says how many IPv4 scopes the server holds. A failed run
 says why; see [Troubleshooting](troubleshooting.md#connection) for the usual causes.
 
-![The Windows server page after a connection test: connection and authentication panels, the reported names, and a
-completed connection test in the sync runs](images/quickstart-3-server-page.webp)
+![A Windows server page (dhcp02, a few steps later): the server, connection, import and authentication panels, the
+reported names, and its sync runs, a connection test and an import](images/quickstart-3-server-page.webp)
 
 **Reported names** are the names and addresses the server gave for itself. Failover partners are matched on them
 (see [Failover](failover.md#the-model)).
@@ -57,8 +57,8 @@ Click **Import now** (with netbox-branching: **Import > Import into branch**).
 The sync run of the import gives the number of differences and notes on anything left out (for example DHCPv6
 vendor classes, which the plugin does not sync).
 
-![An import proposal with one pending item per class, option definition, scope, exclusion range, reservation, policy
-and option value](images/quickstart-4-import-proposal.webp)
+![An import proposal with one pending item per class, option definition, scope, superscope, exclusion range,
+reservation, policy, option value and failover relationship](images/quickstart-4-import-proposal.webp)
 
 You now have a scope for every Windows scope, with its reservations, exclusion ranges and option values, plus the
 server's classes, option definitions, policies and the rest (see [How objects map](mapping.md)). The prefixes, IP
@@ -83,7 +83,8 @@ reservation (**Windows DHCP > Reservations**):
 
 The push's sync run lists what it applied, with the values before and after:
 
-![The sync run of the push: one reservation updated, its Windows name from fileserver to nas01](images/quickstart-6-push.webp)
+![The sync run of the push: one reservation updated, its name from fileserver to
+nas01](images/quickstart-6-push.webp)
 
 Check on Windows:
 

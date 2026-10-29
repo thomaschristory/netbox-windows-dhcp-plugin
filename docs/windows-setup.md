@@ -9,7 +9,8 @@ Each DHCP server needs:
 
 !!! tip "Lab server"
     For a test VM, `dev/scripts/lab-server-setup.ps1` in the repository does all of this in one go (role, a local
-    account, WinRM over HTTPS with a self-signed certificate, firewall rule). See [Development](development.md#lab-tests).
+    account, WinRM over HTTPS with a self-signed certificate, firewall rule). See
+    [Development](development.md#lab-tests).
 
 ## The account
 
@@ -22,10 +23,10 @@ The least privilege the plugin needs is:
 A domain account (for example `CORP\svc-netbox-dhcp`) is easiest with several servers. It does not need to be a
 local or domain administrator.
 
-With failover, the account needs DHCP Administrators on both partners. After a push, the plugin replicates from the
-primary (`Invoke-DhcpServerv4FailoverReplication`), and that cmdlet contacts the partner from inside the remote
-session. Whether this needs delegation (the "double hop" described [below](#managing-a-dhcp-server-through-another-host))
-has not been checked on a real pair of servers yet; see [Limitations](limitations.md).
+With failover, the account needs DHCP Administrators on both partners. Creating or changing a relationship and
+replicating it after a push (`Invoke-DhcpServerv4FailoverReplication`) make the server contact its partner as your
+account from inside the remote session, so use CredSSP (or SSH with a password) for those servers; see
+[Failover](failover.md#connecting-to-the-servers).
 
 If the DHCP Administrators group does not exist yet, create it on the server and restart the service:
 
@@ -105,9 +106,10 @@ The plugin never accepts an unknown host key, and **Verify host** cannot be turn
 ## Managing a DHCP server through another host
 
 **Remote DHCP server** (`computer_name`) on the Windows server in NetBox runs the cmdlets against another server
-(`-ComputerName`) through the host you connect to. Your credentials then have to travel one hop further, which
-Windows only allows with CredSSP (choose it as the WinRM authentication) or Kerberos constrained delegation. Connecting straight to each DHCP server is
-simpler and recommended. When you do use it, the credential profile's `allowed_hosts` must cover both names.
+(`-ComputerName`) through the host you connect to. Your credentials then have to travel one hop further, which Windows
+only allows with CredSSP (choose it as the WinRM authentication) or Kerberos constrained delegation. Connecting straight
+to each DHCP server is simpler and recommended. When you do use it, the credential profile's `allowed_hosts` must cover
+both names.
 
 ## Checking the account by hand
 

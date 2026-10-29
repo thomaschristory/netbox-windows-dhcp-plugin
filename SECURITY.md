@@ -2,7 +2,13 @@
 
 ## Supported versions
 
-Only the latest release gets security fixes while the plugin is below 1.0.
+While the plugin is below 1.0, security fixes go to the latest release of each line:
+
+| Line | Branch | Gets fixes |
+|---|---|---|
+| 0.2.x | `main` | Yes, in the next release |
+| 0.1.x (with netbox-plugin-dhcp) | `release/0.1` | Yes, as 0.1.x bug fix releases |
+| Older releases and release candidates | | No: upgrade to the latest release of your line |
 
 ## Reporting a vulnerability
 

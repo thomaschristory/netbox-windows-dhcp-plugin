@@ -27,9 +27,9 @@ reservations, user classes and option values for DHCPv6 (see [DHCPv6](dhcpv6.md)
   written yet (sync disabled, or a failed push): dismiss those.
 
 Some Windows data is left out and noted in the sync run instead: DHCPv6 vendor classes and their values, DHCPv6
-exclusion ranges, and DHCPv6 values of codes that are not standard DHCPv6 options. A failover relationship is imported from
-one partner only: the first one imported becomes its primary (the server the plugin writes to), and the other
-partner's imports leave it alone. Import the server you want to write to first.
+exclusion ranges, and DHCPv6 values of codes that are not standard DHCPv6 options. A failover relationship is
+imported from one partner only: the first one imported becomes its primary (the server the plugin writes to), and the
+other partner's imports leave it alone. Import the server you want to write to first.
 
 ## Choosing where an import writes
 
@@ -58,8 +58,9 @@ reason; it never falls back to another one. Scheduled imports always use an impo
 
 Imports into main or into your own branch write as you: every object is checked against your permissions as it is
 saved, and a change you may not make (or that change control refuses) is rolled back and listed in the sync run,
-while the others stay. Event rules and webhooks only hear about the changes that stayed. Your branch is checked again just before the import writes into it: if it has started
-merging (or is otherwise no longer ready) by then, nothing is written. An import into main queues no push (NetBox then matches Windows) and records the objects it
+while the others stay. Event rules and webhooks only hear about the changes that stayed. Your branch is checked
+again just before the import writes into it: if it has started merging (or is otherwise no longer ready) by then,
+nothing is written. An import into main queues no push (NetBox then matches Windows) and records the objects it
 wrote as managed, as applying a proposal does.
 
 The **Import** panel and the sync run say where each import went: the branch and its change request, the branch
@@ -114,9 +115,6 @@ run](images/branching-import-panel.webp)
 
 The branch's **Diff** tab lists every object the import created, changed or deleted. Review it there, then merge it
 (through the change request, with netbox-change-control):
-
-![The diff of an import branch: one row per created object, the failover relationship, options, reservations,
-addresses](images/branching-diff.webp)
 
 ![The change request of an import, approved by a reviewer and ready to merge](images/branching-change-request.webp)
 
@@ -181,12 +179,14 @@ hand every day builds up one branch to review rather than one per run.
 - the prefixes, IP ranges, IP addresses and MAC addresses the scopes and reservations point at, in the server's
   import VRF. Existing ones are reused, so failover partners share one IP range per scope.
 
-![The sys4 subnets after an import, named after the server and the scope](images/import-subnets.webp)
+![The scopes after an import: Windows scope name, server, prefix, IP range, state, superscope and
+description](images/import-subnets.webp)
 
-![An imported sys4 subnet: description (the Windows scope name), shared network (the superscope), prefix, valid
-lifetime (the lease duration), the Windows description in the comments, and the Leases tab](images/import-subnet-page.webp)
+![An imported scope: name and description from Windows, server, prefix, IP range, superscope, lease duration, and
+the Leases tab](images/import-subnet-page.webp)
 
-![Scope settings: the Windows state, type and other settings sys4 has no field for](images/import-windows-scopes.webp)
+![The IPv4 settings panel of an imported scope: type, lease duration, offer delay, max BOOTP clients and activate
+policies](images/import-windows-scopes.webp)
 
 Text going into a length-limited field is cut to that length on both sides, so a long Windows name does not show as
 a difference on every run.

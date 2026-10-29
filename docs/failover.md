@@ -80,7 +80,7 @@ load balance 50 %, state switchover interval 3600](images/failover-form.webp)
 
 Further down, the shared secret profile and the scopes the relationship covers:
 
-![The rest of the form: shared secret profile lab-failover and the subnet dhcp01/198.18.60.0](images/failover-form-scopes.webp)
+![The rest of the form: shared secret profile lab-failover and the scope dhcp01/198.18.60.0](images/failover-form-scopes.webp)
 
 ### 3. The push
 
@@ -94,7 +94,7 @@ A push also runs for the partner, since the relationship touches it. It changes 
 `skipped 1 failover relationship(s) whose primary is another server: they are synced from that server`.
 
 ![The failover relationship in NetBox: primary dhcp01, partner dhcp02, load balance, settings, shared secret profile
-and subnet](images/failover-relationship.webp)
+and scope](images/failover-relationship.webp)
 
 ### 4. Check on Windows
 
