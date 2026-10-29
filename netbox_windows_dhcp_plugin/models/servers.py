@@ -31,7 +31,7 @@ class WindowsServer(JobsMixin, PrimaryModel):
         verbose_name=_("name"),
         max_length=100,
         unique=True,
-        help_text=_("How NetBox calls this DHCP server"),
+        help_text=_("The server's name in NetBox"),
     )
     # The machine the DHCP service runs on, for reference only: the connection always uses `host`.
     device = models.ForeignKey(

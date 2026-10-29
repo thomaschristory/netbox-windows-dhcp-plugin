@@ -672,9 +672,11 @@ class OptionValue(NetBoxModel):
         verbose_name=_("code"),
         validators=[MinValueValidator(1), MaxValueValidator(65535)],
     )
+    # RESTRICT, not PROTECT: a class still in use cannot be deleted on its own, but deleting the server removes the
+    # class and its option values together.
     vendor_class = models.ForeignKey(
         to="netbox_windows_dhcp_plugin.WindowsClass",
-        on_delete=models.PROTECT,
+        on_delete=models.RESTRICT,
         related_name="vendor_class_option_values",
         blank=True,
         null=True,
@@ -684,7 +686,7 @@ class OptionValue(NetBoxModel):
     )
     user_class = models.ForeignKey(
         to="netbox_windows_dhcp_plugin.WindowsClass",
-        on_delete=models.PROTECT,
+        on_delete=models.RESTRICT,
         related_name="user_class_option_values",
         blank=True,
         null=True,

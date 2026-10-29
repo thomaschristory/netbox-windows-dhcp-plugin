@@ -7,32 +7,53 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed (breaking)
 
-- The plugin is standalone: it no longer depends on netbox-plugin-dhcp (sys4) and holds the whole Windows DHCP
+- The plugin is standalone: it no longer depends on netbox-plugin-dhcp and holds the whole Windows DHCP
   configuration in its own models. A Windows server has its own name; scopes (IPv4 and DHCPv6), superscopes,
   reservations, exclusion ranges, classes, option definitions, option values, policies, failover relationships, MAC
   filters and the list switches are plugin models. Scopes and reservations still point at core NetBox objects
   (prefix, IP range, IP address, MAC address), which imports create or reuse in the server's import VRF as before.
 - Imported objects keep their Windows names: the `subnet_name_template` and `reservation_name_template` settings and
-  the `<server>/<scope id>` naming are gone.
+  the `<server>/<scope id>` names are gone. Lists and selectors still show a scope as `<server>/<scope id>` so scopes
+  of different servers are told apart.
 - Option values are lists, so values containing commas or leading and trailing spaces are imported and pushed like
   any other; the `\,` escape is gone. Standard options are named by their code.
 - The Leases tab moved to the plugin's scope page.
+- The **Windows DHCP** menu lists Superscopes, Scopes, Reservations, Option definitions and Option values; the
+  "settings" entries (scope, reservation and option definition settings, option qualifiers, vendor option
+  definitions and values) are gone.
+- Object permissions name the new models (scope, reservation, option value...): permissions granted on
+  netbox-plugin-dhcp's models or on the removed 0.1.x models no longer apply here.
 - The REST endpoints and GraphQL queries follow the new models; the old ones (scope and reservation settings, option
   definition settings, option qualifiers, vendor option definitions and values) are gone.
-- **No upgrade path from 0.1.x: 0.2.0 is a fresh start.** Its migrations drop the plugin's 0.1.x tables, so the
+- **No upgrade path from 0.1.x: 0.2.0 is a fresh start.** Its migration drops the plugin's 0.1.x tables, so the
   Windows servers' connection settings, sync state, sync runs and import proposals are lost. Data in
   netbox-plugin-dhcp is left untouched. Before upgrading, merge or delete open import branches; after it, recreate
   the Windows servers and import each one again. See [Installation](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-01x).
+  To stay on netbox-plugin-dhcp, pin `netbox-windows-dhcp-plugin<0.2`: the 0.1.x line (branch `release/0.1`) keeps
+  getting bug fixes, but no new features.
 
 ### Added
 
-- A Windows server can be linked to the device or virtual machine it runs on.
+- Lease durations, DHCPv6 lifetimes and T1/T2 show in days next to the seconds on scope and policy pages, for
+  example `28800 (0.33 days)`.
+- A Windows server can be linked to the device or virtual machine it runs on, and that device or virtual machine's
+  page lists its Windows servers.
+- NetBox's global search finds superscopes, scopes, reservations and option definitions, and Windows servers by
+  name.
 - The reservation form creates its IP address and MAC address in place: a **+** button next to each field opens
   NetBox's add form in a pop-up, so a new reservation needs no trip to IPAM or Devices first. The scope form does
   the same for its prefix and IP range.
 - Option values on reservations through the REST API (netbox-plugin-dhcp could not do it,
-  [sys4/netbox-plugin-dhcp#69](https://github.com/sys4/netbox-plugin-dhcp/issues/69)).
+  [netbox-plugin-dhcp#69](https://github.com/sys4/netbox-plugin-dhcp/issues/69)).
 - Option values keep commas and leading or trailing spaces, in NetBox and on the way to and from Windows.
+
+## [0.1.1] - 2026-10-29
+
+Two fixes found on Windows Server 2025. 0.1.x stays on netbox-plugin-dhcp and gets fixes only; new features go to
+0.2, which no longer needs netbox-plugin-dhcp.
+
+### Added
+
 - Documentation: a Reservations page (create, type, options, change, delete) and a step-by-step failover
   walkthrough, each with screenshots of NetBox and of the Windows DHCP console and PowerShell output, taken on two
   Windows Server 2025 servers.

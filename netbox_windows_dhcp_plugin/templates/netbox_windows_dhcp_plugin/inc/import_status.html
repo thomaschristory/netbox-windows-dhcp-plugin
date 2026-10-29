@@ -104,6 +104,9 @@
           {% elif not status.review %}
             {% trans "No new differences waiting for review." %}
             {% blocktrans count n=status.dismissed %}{{ n }} difference found earlier was dismissed and stays ignored while Windows shows the same values.{% plural %}{{ n }} differences found earlier were dismissed and stay ignored while Windows shows the same values.{% endblocktrans %}
+          {% elif status.proposal and status.proposal.status != "open" %}
+            {# The proposal was reviewed after the run: say so instead of "waits for review". #}
+            {% blocktrans count n=status.review %}{{ n }} difference was sent for review in an import proposal, now closed.{% plural %}{{ n }} differences were sent for review in an import proposal, now closed.{% endblocktrans %}
           {% elif status.proposal %}
             {% blocktrans count n=status.review %}{{ n }} difference waits for review in an import proposal.{% plural %}{{ n }} differences wait for review in an import proposal.{% endblocktrans %}
           {% elif status.proposal_hidden %}
@@ -129,7 +132,10 @@
         {% elif status.proposal %}
           <tr>
             <th scope="row">{% trans "Import proposal" %}</th>
-            <td><a href="{{ status.proposal.get_absolute_url }}">{{ status.proposal }}</a></td>
+            <td>
+              <a href="{{ status.proposal.get_absolute_url }}">{{ status.proposal }}</a>
+              <span class="badge text-bg-{{ status.proposal.get_status_color }} ms-2">{{ status.proposal.get_status_display }}</span>
+            </td>
           </tr>
         {% elif status.open_proposal %}
           <tr>

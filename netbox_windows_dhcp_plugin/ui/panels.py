@@ -1,5 +1,23 @@
 from django.utils.translation import gettext_lazy as _
+from django.utils.translation import ngettext
 from netbox.ui import attrs, panels
+
+
+def days(seconds):
+    """A duration in seconds as days, the unit the Windows DHCP console uses: "(8 days)", "(0.33 days)"."""
+    value = round(seconds / 86400, 2)
+    if seconds and not value:
+        # Under about seven minutes: two decimals would read "0 days".
+        return f"(< {0.01:g} {ngettext('day', 'days', 2)})"
+    count = int(value) if float(value).is_integer() else 2
+    return f"({ngettext('%(n)s day', '%(n)s days', count) % {'n': f'{value:g}'}})"
+
+
+class DurationAttr(attrs.NumericAttr):
+    """Seconds, followed by the same duration in days."""
+
+    def get_context(self, obj, attr, value, context):
+        return {**super().get_context(obj, attr, value, context), "unit": days(value)}
 
 
 class WindowsServerPanel(panels.ObjectAttributesPanel):
@@ -69,7 +87,7 @@ class ScopeIPv4Panel(_FamilyPanel):
     title = _("IPv4 settings")
     family = 4
     scope_type = attrs.ChoiceAttr("scope_type", label=_("Type"))
-    lease_duration = attrs.NumericAttr("lease_duration", label=_("Lease duration (s)"))
+    lease_duration = DurationAttr("lease_duration", label=_("Lease duration (s)"))
     delay_ms = attrs.NumericAttr("delay_ms", label=_("Offer delay (ms)"))
     max_bootp_clients = attrs.NumericAttr("max_bootp_clients", label=_("Max BOOTP clients"))
     activate_policies = attrs.BooleanAttr("activate_policies")
@@ -79,10 +97,10 @@ class ScopeIPv6Panel(_FamilyPanel):
     title = _("DHCPv6 settings")
     family = 6
     preference = attrs.NumericAttr("preference")
-    preferred_lifetime = attrs.NumericAttr("preferred_lifetime", label=_("Preferred lifetime (s)"))
-    valid_lifetime = attrs.NumericAttr("valid_lifetime", label=_("Valid lifetime (s)"))
-    renew_timer = attrs.NumericAttr("renew_timer", label=_("T1 (s)"))
-    rebind_timer = attrs.NumericAttr("rebind_timer", label=_("T2 (s)"))
+    preferred_lifetime = DurationAttr("preferred_lifetime", label=_("Preferred lifetime (s)"))
+    valid_lifetime = DurationAttr("valid_lifetime", label=_("Valid lifetime (s)"))
+    renew_timer = DurationAttr("renew_timer", label=_("T1 (s)"))
+    rebind_timer = DurationAttr("rebind_timer", label=_("T2 (s)"))
 
 
 class ReservationPanel(panels.ObjectAttributesPanel):
@@ -141,7 +159,7 @@ class WindowsPolicyPanel(panels.ObjectAttributesPanel):
     processing_order = attrs.NumericAttr("processing_order")
     enabled = attrs.BooleanAttr("enabled")
     condition = attrs.ChoiceAttr("condition")
-    lease_duration = attrs.NumericAttr("lease_duration", label=_("Lease duration (s)"))
+    lease_duration = DurationAttr("lease_duration", label=_("Lease duration (s)"))
     description = attrs.TextAttr("description")
 
 

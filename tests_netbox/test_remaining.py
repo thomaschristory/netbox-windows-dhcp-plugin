@@ -5,7 +5,7 @@ definitions and values, failover relationships, MAC filters and option values co
 
 from core.exceptions import JobFailed
 from django.core.exceptions import ValidationError
-from django.db.models import ProtectedError
+from django.db.models import ProtectedError, RestrictedError
 from django.test import TestCase, override_settings
 
 from netbox_windows_dhcp_plugin import signals
@@ -170,7 +170,7 @@ class ImportRemainingTest(RemainingObjectsMixin, TestCase):
         self.assertEqual(self.changes(), [])
 
     def test_superscope_of_scopes_far_apart_imports(self):
-        # A superscope needs no covering prefix (netbox-plugin-dhcp's shared networks did, and refused this one).
+        # A superscope needs no covering prefix.
         DhcpClient(self.fake).add_scope(
             WinScope(name="Far", start_range="172.16.0.10", end_range="172.16.0.20", subnet_mask="255.255.255.0")
         )
@@ -452,6 +452,20 @@ class ModelValidationTest(TestCase):
         for criteria in ({"colour": ["EQ", "x"]}, {"fqdn": "x"}, {"fqdn": ["LIKE", "x"]}, ["EQ"]):
             with self.subTest(criteria=criteria), self.assertRaises(ValidationError):
                 WindowsPolicy(server=server, name="p", criteria=criteria).full_clean()
+
+    def test_class_option_values_do_not_block_deleting_the_server(self):
+        server = windows_server()
+        vendor = WindowsClass.objects.create(server=server, name="MSFT", class_type="vendor", data="MSFT 5.0")
+        phones = WindowsClass.objects.create(server=server, name="Phones", class_type="user", data="p")
+        OptionDefinition.objects.create(server=server, vendor_class=vendor, code=1, name="x")
+        OptionValue.objects.create(server=server, vendor_class=vendor, code=1, value=["1"])
+        OptionValue.objects.create(server=server, user_class=phones, code=6, value=["10.0.0.1"])
+        # A class in use still cannot be deleted on its own.
+        with self.assertRaises(RestrictedError):
+            phones.delete()
+        server.delete()
+        self.assertFalse(WindowsClass.objects.exists())
+        self.assertFalse(OptionValue.objects.exists())
 
     def test_vendor_value_needs_its_server(self):
         one, two = windows_servers(2)
