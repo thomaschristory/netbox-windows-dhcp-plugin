@@ -26,7 +26,6 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..windows import normalize
 from ..windows.psscript import NotFound, WindowsLayerError
 from ..windows.runner import RunnerError
 from .diff import CREATE, DELETE, KIND_ORDER, UPDATE, Change, Record, diff, index
@@ -35,15 +34,16 @@ from .windows_state import (
     SKIPPED_OPTION_IDS,
     V6_PREFIX_LENGTH,
     canonical_criteria,
+    canonical_option_fields,
     class6_key,
     class_key,
-    equal,
-    ipv6,
     option6_target,
     optiondef_key,
     policy_key,
+    records_equal,
     reservation6_key,
     scope6_key,
+    with_option_types,
 )
 from .windows_state import scope_ids as windows_scope_ids
 from .windows_writer import PushRefused, option_target
@@ -84,6 +84,9 @@ DRIFTED = (
     "changed on Windows since NetBox last pushed it, so it was not deleted; delete it on Windows by hand, or import "
     "it back into NetBox"
 )
+# A non-hash SyncState value: no unchanged check can trust a partially reconciled membership. Keeping the old
+# fingerprint alone is insufficient when a safe settings update happens to restore that old configuration.
+PROTECTED_MEMBERSHIPS = "protected-failover-memberships"
 CONFLICT = "NetBox holds more than one object for this Windows object (or one without an address); fix it in NetBox"
 LEASE_OR_MASK = (
     "option {code} is the {what} on Windows, which a push sets from the {source}; remove the option from NetBox"
@@ -110,6 +113,8 @@ class Plan:
     stale: set[Key] = field(default_factory=set)
     # For each Windows object, the Windows objects that would go with it if it were removed.
     children: dict[Key, list[Key]] = field(default_factory=dict)
+    # Safe partial updates must not adopt a relationship whose out-of-band memberships remain protected.
+    protected: set[Key] = field(default_factory=set)
 
     def summary(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -156,32 +161,19 @@ def _skip_dict(change: Change, reason: str) -> dict[str, str]:
 # -- fingerprints --------------------------------------------------------------------------------------------------
 
 
-def _canonical_value(v: Any) -> Any:
-    try:
-        return str(normalize.parse_option_number(v))
-    except (ValueError, TypeError):
-        pass
-    # An IPv6 address in one spelling; anything else is returned as it is.
-    return ipv6(v) if isinstance(v, str) else v
-
-
 def fingerprint(record: Record) -> str:
     """
-    A hash of what an object looks like, to notice later whether someone changed it on Windows. Option numbers are
-    hashed in decimal, so 0x40 on Windows and 64 in NetBox give the same fingerprint, and policy conditions as Windows
-    stores them. A policy's processing order is left out: Windows renumbers the policies of a level by itself whenever
-    one is added, moved or removed, so the number is no sign that someone edited the policy.
+    A hash of what an object looks like, to notice later whether someone changed it on Windows. Numeric option
+    types hash in decimal; String/Binary values remain exact. A policy's processing order is left out: Windows
+    renumbers policies itself whenever one is added, moved or removed.
     """
     return _fingerprint(record, keep_order=False)
 
 
 def _fingerprint(record: Record, keep_order: bool) -> str:
-    fields = dict(record.fields)
+    fields = canonical_option_fields(record.kind, record.fields)
     if record.kind == "policy" and not keep_order:
         fields.pop("processing_order", None)
-    for name in ("value", "default_value"):
-        if isinstance(fields.get(name), list):
-            fields[name] = [_canonical_value(v) for v in fields[name]]
     # Windows names are not case sensitive.
     for kind, name in NAME_FIELDS:
         if kind == record.kind and isinstance(fields.get(name), str):
@@ -193,7 +185,12 @@ def _fingerprint(record: Record, keep_order: bool) -> str:
     # of the NetBox spelling, which a deleted policy no longer has.
     if record.kind == "policy" and isinstance(fields.get("criteria"), dict):
         fields["criteria"] = canonical_criteria(fields["criteria"])
-    data = json.dumps({"kind": record.kind, "key": record.key, "fields": fields}, sort_keys=True, default=str)
+    data = {"kind": record.kind, "key": record.key, "fields": fields}
+    if record.kind in ("option", "option6", "optiondef"):
+        # Old hashes normalized every string numerically, so even a hash matching the current exact text could
+        # describe a different spelling. Never use one to authorize deletion; an equal push/import adopts v2.
+        data["option_value_version"] = 2
+    data = json.dumps(data, sort_keys=True, default=str)
     return hashlib.sha256(data.encode()).hexdigest()
 
 
@@ -266,7 +263,9 @@ def parents(kind: str, fields: Mapping[str, Any]) -> list[Key]:
 # -- planning ------------------------------------------------------------------------------------------------------
 
 
-def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] | None) -> str | None:
+def _unpushable(
+    record: Record, skipped_option_ids: set[int], defined: set[str] | None, exists: bool = False
+) -> str | None:
     """Why NetBox data cannot become a Windows object, or None."""
     f = record.fields
     # netbox_state marks extra copies with "#<pk>", and a reservation without an address ends in "/": neither names
@@ -281,7 +280,7 @@ def _unpushable(record: Record, skipped_option_ids: set[int], defined: set[str] 
         return f"Windows defines option {f['option_id']} itself; remove the definition from NetBox"
     if record.kind == "policy" and not f.get("criteria"):
         return "a policy needs at least one condition on Windows; add one in NetBox"
-    if record.kind in MEMBERSHIPS and not f.get("scope_ids"):
+    if not f.get("scope_ids") and (record.kind == "superscope" or (record.kind == "failover" and not exists)):
         return f"a {record.kind} needs at least one scope on Windows; add one in NetBox, or delete it"
     if record.kind == "failover":
         if not f.get("partner_server"):
@@ -450,8 +449,8 @@ def plan(
     None skips that check.
     """
     result = Plan()
-    target_index = index(target)
-    source = list(source)
+    target_index = index(with_option_types(target))
+    source = with_option_types(source, fallback=target_index.values())
     defined = None
     if defined_options is not None:
         defined = {str(c) for c in defined_options} | {r.key for r in source if r.kind == "optiondef"}
@@ -461,7 +460,7 @@ def plan(
     pushable = []
     for record in source:
         reason = (
-            _unpushable(record, skipped_ids, defined)
+            _unpushable(record, skipped_ids, defined, (record.kind, record.key) in target_index)
             or orders.get((record.kind, record.key))
             or _missing_policy(record, policies)
         )
@@ -477,9 +476,13 @@ def plan(
 
     # A NetBox object that cannot be pushed still says "keep this": never delete its Windows counterpart.
     held = {(s.change.kind, s.change.key) for s in result.skipped}
-    changes = diff(pushable, [r for k, r in target_index.items() if k not in held], equal=equal)
-    changes = _protect_memberships(changes, managed, source_index, target_index, result)
+    changes = diff(pushable, [r for k, r in target_index.items() if k not in held], equal_records=records_equal)
     changed = {(c.kind, c.key) for c in changes}
+    changes = _protect_memberships(changes, managed, source_index, target_index, result)
+    membership_changes = {(c.kind, c.key): c for c in changes if (c.kind, c.key) in result.protected}
+    for key in result.protected:
+        fields = membership_changes[key].after if key in membership_changes else target_index[key].fields
+        source_index[key] = Record(*key, fields)
     for key in source_index:
         if key in target_index and key not in changed:
             result.in_sync[key] = fingerprint(target_index[key])
@@ -558,6 +561,7 @@ def _protect_memberships(
         if not protected:
             out.append(c)
             continue
+        plan.protected.add(key)
         plan.skipped.append(
             Skip(
                 c,
@@ -566,7 +570,7 @@ def _protect_memberships(
             )
         )
         fields = {**(c.after or {}), "scope_ids": windows_scope_ids([*after, *protected])}
-        if not diff([Record(c.kind, c.key, fields)], [Record(c.kind, c.key, c.before or {})], equal=equal):
+        if records_equal(c.kind, fields, c.before or {}):
             continue  # nothing else to change
         out.append(Change(c.action, c.kind, c.key, before=c.before, after=fields))
     return out
@@ -763,6 +767,7 @@ def _released(child: Key, parent: Key, source: Mapping[Key, Record]) -> bool:
 def execute(plan: Plan, writer: Any) -> Result:
     """Apply a plan, one change at a time. Errors on one object do not stop the others; a lost connection does."""
     result = Result(upserts=dict(plan.in_sync), removals=set(plan.stale))
+    result.upserts.update({key: PROTECTED_MEMBERSHIPS for key in plan.protected})
     # Objects that could not be created (children cannot follow) or deleted (parents must stay).
     missing: set[Key] = {(s.change.kind, s.change.key) for s in plan.skipped if s.change.action == CREATE}
     kept: set[Key] = {(s.change.kind, s.change.key) for s in plan.skipped if s.change.action == DELETE}
@@ -770,8 +775,8 @@ def execute(plan: Plan, writer: Any) -> Result:
     children: defaultdict[Key, list[Key]] = defaultdict(list, plan.children)
 
     def block(change: Change) -> None:
-        # An object that failed to update still exists, so its children may go ahead.
-        if change.action == DELETE:
+        # Failed membership updates have not safely released their scopes: their deletes must wait too.
+        if change.action == DELETE or (change.action == UPDATE and change.kind in MEMBERSHIPS):
             kept.add((change.kind, change.key))
         elif change.action == CREATE:
             missing.add((change.kind, change.key))
@@ -782,17 +787,15 @@ def execute(plan: Plan, writer: Any) -> Result:
 
     for change in plan.changes:
         key = (change.kind, change.key)
+        if result.aborted:
+            result.skipped.append((change, "not attempted: the connection to the server failed"))
+            continue
         if change.action == DELETE and change.kind == "scope":
             pending.discard(change.key)
             if change.key in refused:
                 result.failed.append((change, refused[change.key]))
                 block(change)
                 continue
-        if change.action == UPDATE and change.kind == "failover":
-            change = _keep_undeleted_scopes(change, kept, pending, refused, writer)
-        if result.aborted:
-            result.skipped.append((change, "not attempted: the connection to the server failed"))
-            continue
         if change.action == DELETE:
             blocked = [c for c in children[key] if c in kept]
         else:
@@ -804,6 +807,8 @@ def execute(plan: Plan, writer: Any) -> Result:
             block(change)
             continue
         try:
+            if change.action == UPDATE and change.kind == "failover":
+                change = _keep_undeleted_scopes(change, kept, pending, refused, writer)
             writer.apply(change)
         except NotFound:
             if change.action != DELETE:
@@ -824,7 +829,7 @@ def execute(plan: Plan, writer: Any) -> Result:
         if change.action == DELETE:
             result.removals.add(key)
             result.upserts.pop(key, None)
-        else:
+        elif key not in plan.protected:
             result.upserts[key] = fingerprint(Record(change.kind, change.key, _as_on_windows(change)))
     return result
 

@@ -54,6 +54,23 @@ The plugin is standalone: it no longer needs netbox-plugin-dhcp. This is a fresh
 
 ### Fixed
 
+- Option values and defaults now compare and fingerprint according to their definition type: numeric-looking
+  String and Binary values remain exact. Values without a local definition use the effective Windows definition.
+  Older option fingerprints must be refreshed by a matching push or accepted import before authorizing deletion
+  (#73).
+- Parent edits that would strand dependent options, policies, classes or failover memberships are refused with
+  field errors instead of silently omitting their configuration from both servers. Safe moves remain supported
+  (#74).
+- Failover memberships protected because they changed on Windows remain protected across repeated pushes and
+  unrelated relationship settings updates (#75).
+- Direct edits of main still queue pushes while an unrelated branch is merging or reverting. Merge and revert
+  replays retain their own attributed completion push (#76).
+- Failover lease-preflight failures preserve earlier push progress, stop further I/O after transport loss, and
+  prevent dependent scope deletions (#77).
+- An existing failover relationship can be left empty by clearing its final membership; new empty relationships
+  remain refused (#78).
+- Scope and reservation names retain all 255 supported characters in both address families. Option-definition
+  descriptions are no longer shortened to 200 characters (#79).
 - A failover relationship whose scopes Windows already holds in another relationship (made by hand, or renamed on
   Windows) made every push fail with the cmdlet's error. It is now left out with a reason ("not pushed") and the rest
   of the push goes ahead.

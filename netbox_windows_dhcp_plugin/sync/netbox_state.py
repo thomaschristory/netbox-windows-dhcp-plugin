@@ -95,7 +95,7 @@ def _scope(scope):
         "scope",
         scope_id_of(scope),
         {
-            "name": text_field(scope.name),
+            "name": scope.name or "",
             "description": scope.description,
             "start_range": str(rng.start_address.ip) if rng else "",
             "end_range": str(rng.end_address.ip) if rng else "",
@@ -129,7 +129,7 @@ def _reservation(reservation, scope_id):
             "scope_id": scope_id,
             "ip_address": ip,
             "client_id": _client_id(reservation),
-            "name": text_field(reservation.name),
+            "name": reservation.name or "",
             "description": reservation.description,
             "reservation_type": reservation.reservation_type,
         },
@@ -147,7 +147,7 @@ def _optiondef(d):
             "type": d.windows_type,
             "multi_valued": bool(d.multi_valued),
             "default_value": list(d.default_value or []),
-            "description": text_field(d.description),
+            "description": d.description or "",
             "vendor_class": vendor,
         },
     )
@@ -204,7 +204,11 @@ def read(windows_server, for_import=False):
     records.extend(_failovers(windows_server, scope_ids))
     records.extend(_mac_filters(windows_server, for_import))
     records.extend(_v6(windows_server))
-    return records
+    definitions = {
+        optiondef_key(d.code, d.vendor_class.name if d.vendor_class_id else ""): d.windows_type
+        for d in OptionDefinition.objects.filter(server=windows_server, family=4).select_related("vendor_class")
+    }
+    return windows_state.with_option_types(records, definitions)
 
 
 def _scope6(scope):
@@ -215,7 +219,7 @@ def _scope6(scope):
         {
             "prefix": prefix,
             "prefix_length": scope.prefix.prefix.prefixlen,
-            "name": text_field(scope.name),
+            "name": scope.name or "",
             "description": scope.description,
             "state": scope.state,
             "preference": scope.preference or 0,
@@ -241,7 +245,7 @@ def _reservation6(reservation, prefix):
             "ip_address": ip,
             "client_duid": duid,
             "iaid": reservation.iaid,
-            "name": text_field(reservation.name),
+            "name": reservation.name or "",
             "description": reservation.description,
         },
     )

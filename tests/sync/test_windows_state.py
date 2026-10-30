@@ -134,6 +134,7 @@ def test_option_records_and_skipped_ids(client):
         "value": ["10.0.0.1", "10.0.0.2"],
         "vendor_class": "",
         "user_class": "",
+        "_value_type": "exact",
     }
     assert options["10.1.0.0/10.1.0.50/15"]["parent"] == "10.1.0.0/10.1.0.50"
 
@@ -169,22 +170,23 @@ def test_values_with_spaces_commas_and_backslashes_are_kept():
     assert ws.hidden_records(state) == []
 
 
-def test_long_names_are_cut_like_netbox_cuts_them(client):
-    client.set_scope(Scope(scope_id="10.1.0.0", name="n" * 300, start_range="10.1.0.10", end_range="10.1.0.200"))
+@pytest.mark.parametrize("length", [200, 201, 255])
+def test_long_names_keep_the_full_model_length(client, length):
+    client.set_scope(Scope(scope_id="10.1.0.0", name="n" * length, start_range="10.1.0.10", end_range="10.1.0.200"))
     scope = by_kind(ws.to_records(ws.read(client))[0])["scope"]["10.1.0.0"]
-    assert scope["name"] == "n" * 200
+    assert scope["name"] == "n" * length
 
 
 def test_text_option_values_compare_exactly():
     assert not ws.equal("option", "value", ["BootX64.efi"], ["bootx64.efi"])
-    assert ws.equal("option", "value", ["0x0A"], ["10"])
+    assert not ws.equal("option", "value", ["0x0A"], ["10"])
     assert not ws.equal("option", "value", ["1"], ["1", "2"])
 
 
 def test_option_values_compare_hex_and_decimal():
-    a = [Record("option", "server/46", {"value": ["0x8"]})]
-    b = [Record("option", "server/46", {"value": ["8"]})]
-    assert diff(a, b, equal=ws.equal) == []
+    a = [Record("option", "server/46", {"option_id": 46, "value": ["0x8"]})]
+    b = [Record("option", "server/46", {"option_id": 46, "value": ["8"]})]
+    assert diff(a, b, equal_records=ws.records_equal) == []
 
 
 def test_unparseable_lease_duration_reads_as_none():
