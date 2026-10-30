@@ -6,10 +6,12 @@ point at core NetBox objects (prefix, IP range, IP address, MAC address), so the
 """
 
 import ipaddress
+from copy import copy
 
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models import Q
 from django.db.models.functions import Lower
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
@@ -59,13 +61,54 @@ def _server_fk(related_name, **kwargs):
     )
 
 
-class Superscope(NetBoxModel):
+class _ParentMoveValidationMixin:
+    """Validate existing children against changed parent identities, including saves made by branch merges."""
+
+    def clean(self):
+        super().clean()
+        self._validate_parent_move()
+
+    def save(self, *args, **kwargs):
+        # NetBox's API validates a copy; branch merges and other callers can save without calling clean().
+        self._validate_parent_move(update_fields=kwargs.get("update_fields"), using=kwargs.get("using"))
+        return super().save(*args, **kwargs)
+
+    def _validate_parent_move(self, update_fields=None, using=None):
+        if self.pk is None:
+            return
+        fields = {name: self._meta.get_field(name).attname for name in self._parent_fields}
+        written = (
+            fields
+            if update_fields is None
+            else {
+                name: attname for name, attname in fields.items() if name in update_fields or attname in update_fields
+            }
+        )
+        if not written:
+            return
+        previous = type(self).objects.using(using).filter(pk=self.pk).values(*fields.values()).first()
+        if previous is None:
+            return
+        changed = {name for name, attname in written.items() if previous[attname] != getattr(self, attname)}
+        if not changed:
+            return
+        candidate = self
+        if len(written) != len(fields):
+            candidate = copy(self)
+            for name, attname in fields.items():
+                if name not in written:
+                    setattr(candidate, attname, previous[attname])
+        candidate._clean_parent_move(changed)
+
+
+class Superscope(_ParentMoveValidationMixin, NetBoxModel):
     """A Windows superscope: IPv4 scopes of one server served together on the same network segment."""
 
     server = _server_fk("superscopes")
     name = models.CharField(verbose_name=_("name"), max_length=255)
     description = models.CharField(verbose_name=_("description"), max_length=200, blank=True)
     comments = models.TextField(verbose_name=_("comments"), blank=True)
+    _parent_fields = ("server",)
 
     class Meta:
         ordering = ("server", "name")
@@ -84,8 +127,12 @@ class Superscope(NetBoxModel):
     def get_absolute_url(self):
         return _url("superscope", self.pk)
 
+    def _clean_parent_move(self, changed):
+        if self.server_id and self.scopes.exclude(server_id=self.server_id).exists():
+            raise ValidationError({"server": _("Remove or reassign this superscope's scopes before changing server.")})
 
-class Scope(NetBoxModel):
+
+class Scope(_ParentMoveValidationMixin, NetBoxModel):
     """
     A Windows DHCP scope, IPv4 or DHCPv6 (the prefix decides). An IPv4 scope hands out its IP range; a DHCPv6 scope
     is a /64 and has no range.
@@ -186,6 +233,7 @@ class Scope(NetBoxModel):
         help_text=_("DHCPv6 scopes only: rebinding time. Empty follows the preferred lifetime"),
     )
     comments = models.TextField(verbose_name=_("comments"), blank=True)
+    _parent_fields = ("server", "prefix")
 
     clone_fields = (
         "server",
@@ -257,8 +305,42 @@ class Scope(NetBoxModel):
         if self.superscope_id is not None and self.server_id and self.superscope.server_id != self.server_id:
             raise ValidationError({"superscope": _("The superscope belongs to another server.")})
 
+    def _clean_parent_move(self, changed):
+        values = OptionValue.objects.filter(Q(scope_id=self.pk) | Q(reservation__scope_id=self.pk))
+        if "server" in changed and self.server_id:
+            if (
+                self.policies.exclude(server_id=self.server_id).exists()
+                or values.exclude(server_id=self.server_id).exists()
+            ):
+                raise ValidationError(
+                    {"server": _("Remove or reassign this scope's policies and option values before changing server.")}
+                )
+            if self.failover_relationships.exclude(primary_server_id=self.server_id).exists():
+                raise ValidationError({"server": _("Remove this scope from failover before changing server.")})
+        if "prefix" not in changed or not self.prefix_id:
+            return
+        network = self.network
+        if values.exclude(family=network.version).exists():
+            raise ValidationError({"prefix": _("The new prefix would invalidate this scope's option values.")})
+        if network.version == 6 and (self.policies.exists() or self.failover_relationships.exists()):
+            raise ValidationError({"prefix": _("Remove policies and failover membership before changing to DHCPv6.")})
+        for reservation in self.reservations.select_related("ip_address"):
+            if ipaddress.ip_address(str(reservation.ip_address.address.ip)) not in network:
+                raise ValidationError({"prefix": _("The new prefix must contain all existing reservation addresses.")})
+        for exclusion in self.exclusion_ranges.all():
+            if (
+                network.version != 4
+                or ipaddress.ip_address(exclusion.start_address) not in network
+                or ipaddress.ip_address(exclusion.end_address) not in network
+            ):
+                raise ValidationError({"prefix": _("The new prefix must contain all existing exclusion ranges.")})
+        for policy in self.policies.all():
+            for start, end in policy.ip_ranges:
+                if ipaddress.ip_address(start) not in network or ipaddress.ip_address(end) not in network:
+                    raise ValidationError({"prefix": _("The new prefix must contain all existing policy IP ranges.")})
 
-class Reservation(NetBoxModel):
+
+class Reservation(_ParentMoveValidationMixin, NetBoxModel):
     """
     A reserved address in a scope. IPv4: for a MAC address (or another client ID). DHCPv6: for a DUID and IAID.
     """
@@ -313,6 +395,7 @@ class Reservation(NetBoxModel):
         help_text=_("IPv4 reservations only"),
     )
     comments = models.TextField(verbose_name=_("comments"), blank=True)
+    _parent_fields = ("scope",)
 
     clone_fields = ("scope", "reservation_type")
 
@@ -378,6 +461,17 @@ class Reservation(NetBoxModel):
             if missing:
                 raise ValidationError(missing)
 
+    def _clean_parent_move(self, changed):
+        if (
+            self.scope_id
+            and self.option_values.exclude(
+                scope_id=self.scope_id, server_id=self.scope.server_id, family=self.scope.family
+            ).exists()
+        ):
+            raise ValidationError(
+                {"scope": _("Remove or reassign this reservation's option values before changing scope.")}
+            )
+
 
 class ExclusionRange(NetBoxModel):
     """An address range inside a scope that the server never hands out."""
@@ -428,7 +522,7 @@ class ExclusionRange(NetBoxModel):
                 raise ValidationError(_("The range must be inside the scope {prefix}.").format(prefix=network))
 
 
-class WindowsClass(PrimaryModel):
+class WindowsClass(_ParentMoveValidationMixin, PrimaryModel):
     """A Windows user or vendor class, matched on the class data the client sends."""
 
     server = _server_fk("classes")
@@ -448,6 +542,7 @@ class WindowsClass(PrimaryModel):
         choices=FamilyChoices,
         default=FamilyChoices.IPV4,
     )
+    _parent_fields = ("server", "family", "class_type")
 
     class Meta:
         ordering = ("server", "family", "class_type", "name")
@@ -473,6 +568,22 @@ class WindowsClass(PrimaryModel):
 
     def get_class_type_color(self):
         return ClassTypeChoices.colors.get(self.class_type)
+
+    def _clean_parent_move(self, changed):
+        references = (
+            (self.option_definitions, ClassTypeChoices.VENDOR),
+            (self.vendor_class_option_values, ClassTypeChoices.VENDOR),
+            (self.user_class_option_values, ClassTypeChoices.USER),
+        )
+        for related, expected_type in references:
+            invalid = related.all()
+            if self.class_type == expected_type:
+                invalid = invalid.exclude(server_id=self.server_id, family=self.family)
+            if invalid.exists():
+                field = next(name for name in self._parent_fields if name in changed)
+                raise ValidationError(
+                    {field: _("Remove or reassign this class's option definitions and values before changing it.")}
+                )
 
 
 class OptionDefinition(NetBoxModel):
@@ -550,7 +661,7 @@ class OptionDefinition(NetBoxModel):
             raise ValidationError({"vendor_class": _("The vendor class is of another address family.")})
 
 
-class WindowsPolicy(PrimaryModel):
+class WindowsPolicy(_ParentMoveValidationMixin, PrimaryModel):
     """A Windows DHCP policy, at server level or (with a scope) at scope level. IPv4 only."""
 
     server = _server_fk("policies")
@@ -591,6 +702,7 @@ class WindowsPolicy(PrimaryModel):
         blank=True,
         help_text=_('Scope-level policies only, for example [["10.0.0.10", "10.0.0.50"]]'),
     )
+    _parent_fields = ("server", "scope")
 
     class Meta:
         ordering = ("server", "scope", "processing_order", "name")
@@ -649,6 +761,13 @@ class WindowsPolicy(PrimaryModel):
                 or values[0].upper() not in ("EQ", "NE")
             ):
                 raise ValidationError({"criteria": error})
+
+    def _clean_parent_move(self, changed):
+        if self.option_values.exclude(server_id=self.server_id, scope_id=self.scope_id).exists():
+            field = "server" if "server" in changed else "scope"
+            raise ValidationError(
+                {field: _("Remove or reassign this policy's option values before changing its server or scope.")}
+            )
 
 
 class OptionValue(NetBoxModel):

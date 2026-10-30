@@ -127,9 +127,16 @@ def _flush():
     if not pending:
         return
     from .conf import get_setting
+    from .integrations.branching import request_applied_by_branch
 
+    # AppliedChange is recorded after the model save; only after commit can its request be identified as a replay.
+    replayed = {
+        request_id: request_applied_by_branch(request_id) for request_id in {rid for _, rid in pending.values()}
+    }
     by_user = {}
-    for server_id, user in pending.items():
+    for server_id, (user, request_id) in pending.items():
+        if replayed[request_id]:
+            continue
         by_user.setdefault(user, set()).add(server_id)
     for user, ids in by_user.items():
         queue_pushes(ids, user, delay=get_setting("push_debounce"), notify_always=False)
@@ -165,7 +172,7 @@ def _changed(sender, instance, **kwargs):
     if getattr(_local, "pending", None) is None:
         _local.pending = {}
     for server_id in ids:
-        _local.pending.setdefault(server_id, user)
+        _local.pending.setdefault(server_id, (user, getattr(request, "id", None)))
     # One callback per change; the first to run takes everything pending. robust: failing to queue a push must not
     # turn a save that already committed into an error page.
     transaction.on_commit(_flush, robust=True)

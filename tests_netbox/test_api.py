@@ -156,6 +156,112 @@ class ReservationAPITest(*STANDARD):
         self.assertEqual(response.status_code, 400)
 
 
+class ParentMoveAPITest(PluginAPIMixin, APITestCase):
+    user_permissions = (*SCOPE_VIEW, "netbox_windows_dhcp_plugin.view_reservation", "ipam.view_ipaddress")
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server, cls.other = windows_servers(2)
+        cls.lan = scope(cls.server, "10.1.0.0/24")
+        cls.destination = scope(cls.other, "10.1.0.0/24")
+        cls.printer = reservation(cls.lan, "10.1.0.50/24", client_id="aa")
+
+    def patch(self, endpoint, obj, data):
+        return self.client.patch(f"/api/plugins/windows-dhcp/{endpoint}/{obj.pk}/", data, format="json", **self.header)
+
+    def test_scope_move_with_each_dependent_kind_is_rejected(self):
+        self.add_permissions("netbox_windows_dhcp_plugin.change_scope")
+        for kind in ("scope_option", "reservation_option", "policy"):
+            with self.subTest(kind=kind):
+                if kind == "policy":
+                    child = WindowsPolicy.objects.create(server=self.server, scope=self.lan, name="phones")
+                else:
+                    child = OptionValue.objects.create(
+                        server=self.server,
+                        scope=self.lan,
+                        reservation=self.printer if kind == "reservation_option" else None,
+                        code=3,
+                        value=["10.1.0.1"],
+                    )
+                response = self.patch("scopes", self.lan, {"server": self.other.pk})
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn("server", response.data)
+                self.lan.refresh_from_db()
+                child.refresh_from_db()
+                self.assertEqual(self.lan.server_id, self.server.pk)
+                self.assertEqual(child.server_id, self.server.pk)
+                child.delete()
+
+    def test_bulk_scope_move_is_atomic_when_one_scope_has_dependencies(self):
+        self.add_permissions("netbox_windows_dhcp_plugin.change_scope")
+        free = scope(self.server, "10.2.0.0/24")
+        OptionValue.objects.create(server=self.server, scope=self.lan, code=3, value=["10.1.0.1"])
+        response = self.client.patch(
+            "/api/plugins/windows-dhcp/scopes/",
+            [{"id": free.pk, "server": self.other.pk}, {"id": self.lan.pk, "server": self.other.pk}],
+            format="json",
+            **self.header,
+        )
+        self.assertEqual(response.status_code, 400, response.content)
+        self.lan.refresh_from_db()
+        free.refresh_from_db()
+        self.assertEqual((self.lan.server_id, free.server_id), (self.server.pk, self.server.pk))
+
+    def test_scope_move_without_server_bound_dependencies_is_allowed(self):
+        self.add_permissions("netbox_windows_dhcp_plugin.change_scope")
+        response = self.patch("scopes", self.lan, {"server": self.other.pk})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.lan.refresh_from_db()
+        self.printer.refresh_from_db()
+        self.assertEqual(self.lan.server_id, self.other.pk)
+        self.assertEqual(self.printer.server.pk, self.other.pk)
+
+    def test_reservation_move_with_option_is_rejected(self):
+        self.add_permissions("netbox_windows_dhcp_plugin.change_reservation")
+        value = OptionValue.objects.create(
+            server=self.server, scope=self.lan, reservation=self.printer, code=3, value=["10.1.0.1"]
+        )
+        same_server = scope(self.server, "10.1.0.0/23")
+        for destination in (same_server, self.destination):
+            with self.subTest(server=destination.server_id):
+                response = self.patch("reservations", self.printer, {"scope": destination.pk})
+                self.assertEqual(response.status_code, 400, response.content)
+                self.assertIn("scope", response.data)
+        self.printer.refresh_from_db()
+        value.refresh_from_db()
+        self.assertEqual(self.printer.scope_id, self.lan.pk)
+        self.assertEqual((value.server_id, value.scope_id), (self.server.pk, self.lan.pk))
+
+    def test_reservation_move_without_options_is_allowed(self):
+        self.add_permissions("netbox_windows_dhcp_plugin.change_reservation")
+        response = self.patch("reservations", self.printer, {"scope": self.destination.pk})
+        self.assertEqual(response.status_code, 200, response.content)
+        self.printer.refresh_from_db()
+        self.assertEqual(self.printer.scope_id, self.destination.pk)
+
+    def test_policy_move_with_option_is_rejected(self):
+        self.add_permissions("netbox_windows_dhcp_plugin.change_windowspolicy")
+        policy = WindowsPolicy.objects.create(server=self.server, scope=self.lan, name="phones")
+        OptionValue.objects.create(server=self.server, scope=self.lan, policy=policy, code=3, value=["10.1.0.1"])
+        response = self.patch("windows-policies", policy, {"scope": None})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("scope", response.data)
+        policy.refresh_from_db()
+        self.assertEqual(policy.scope_id, self.lan.pk)
+
+    def test_class_move_with_option_is_rejected(self):
+        self.add_permissions("netbox_windows_dhcp_plugin.change_windowsclass")
+        vendor = WindowsClass.objects.create(
+            server=self.server, name="phones", class_type=ClassTypeChoices.VENDOR, data="phones"
+        )
+        OptionValue.objects.create(server=self.server, vendor_class=vendor, code=3, value=["10.1.0.1"])
+        response = self.patch("windows-classes", vendor, {"server": self.other.pk})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("server", response.data)
+        vendor.refresh_from_db()
+        self.assertEqual(vendor.server_id, self.server.pk)
+
+
 class ExclusionRangeAPITest(*STANDARD):
     user_permissions = SCOPE_VIEW
     model = ExclusionRange

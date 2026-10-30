@@ -31,6 +31,11 @@ and the **MAC Address** of each IPv4 reservation identified by one. Failover par
 this way. A prefix, IP range, IP address or MAC address that a scope or reservation points at cannot be deleted
 while it does.
 
+Parent edits must keep their existing children valid. A referenced class cannot change server, address family or
+class type while its definitions or values would become inconsistent; the same rule applies to a policy's server
+or scope and a superscope's server. Changing a scope's prefix must still contain its reservations, exclusions and
+policy ranges, and preserve the address family required by its options and other dependencies.
+
 ## Names
 
 Objects keep their Windows names. A scope's or a reservation's **name** is its Windows name, and its
@@ -41,7 +46,8 @@ these names without case, so two that differ only in case are one Windows object
 proposes deleting the extra copy (see [Windows keys](#windows-keys)). Wherever another object names a scope (the
 scope column of reservation and option value lists, selectors), a scope with a prefix shows as `<server>/<scope id>`,
 for example `dhcp01/10.1.0.0`, so scopes of different servers are easy to tell apart. The Scopes list shows its
-name, server and prefix.
+name, server and prefix. Scope and reservation names retain all 255 characters supported by their model fields;
+they are not shortened to the 200-character limit used by some description fields.
 
 ## Scopes (IPv4)
 
@@ -58,6 +64,10 @@ name, server and prefix.
 | Option 3, 6, 15 ... | Option values on the scope |
 
 A server has one scope per prefix. A new scope defaults to active, type DHCP, no delay, policies on.
+
+A scope cannot move to another server while that would leave its option values, policies or failover memberships
+pointing at the old server. Remove or relocate those dependencies explicitly before moving the scope; they are
+never silently discarded or reassigned to similarly named classes on the destination.
 
 Options 1 (subnet mask) and 51 (lease time) are never option values in NetBox: the prefix and the lease duration
 hold them. An option value with one of those codes is reported and not pushed.
@@ -88,6 +98,9 @@ way to change one, so a changed range is pushed as a remove and an add.
 A scope has one reservation per IP address. A reservation without a name gets its IP address as its name, as
 Windows does. See [Reservations](reservations.md) for a walkthrough.
 
+A reservation with option values cannot move to another scope until those values are explicitly relocated or
+removed. This keeps the values' stored scope and server consistent with the reservation.
+
 ## Option definitions and values
 
 An **Option definition** belongs to a server and an address family, and optionally to a vendor class. It holds the
@@ -96,6 +109,9 @@ code, name, exact Windows type (`Byte`, `Word`, `DWord`, `DWordDword`, `IPv4Addr
 options (codes RFC 2132 and its successors assign) are not imported: Windows ships them, and a push never touches
 them. The type and the array flag of a definition cannot be changed in place on Windows, so a push refuses those
 changes.
+
+Option-definition descriptions are stored in full; they are not subject to the 200-character limit used by some
+other models' description fields.
 
 An **Option value** belongs to a server and an address family, and is set on the server, a scope or a reservation
 (its **level**): leave scope and reservation empty for a server value, set a scope for a scope value, set a
@@ -111,8 +127,13 @@ allows, to:
 
 The **value** is a list of strings, one per Windows value, for example `["10.1.0.1"]` or
 `["10.1.0.53", "10.1.0.54"]`. Commas and leading or trailing spaces inside a value are kept as they are. Numbers
-compare equal in hex and decimal (`0x1` and `1`); text compares exactly. A server holds one value per level, code,
+compare equal in hex and decimal (`0x1` and `1`) only for numeric option types; string and binary values compare
+exactly, including numeric-looking strings such as `"0010"`. A server holds one value per level, code,
 class and policy.
+
+When NetBox manages a value without holding its custom or vendor definition, a push uses the definition read from
+Windows for comparison and fingerprints. An explicitly declared string or binary type is never inferred to be
+numeric from the value's contents.
 
 ## Classes
 

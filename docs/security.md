@@ -55,7 +55,7 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
   not just `view`. See [Permissions](permissions.md).
 - Applying import proposal items writes as the reviewing user, with their permissions.
 - With netbox-branching and netbox-change-control, pushes only follow merges, and merges only follow approved change
-  requests. Edits made directly in main still push (except while a branch is being merged or reverted); restrict who
+  requests. Edits made directly in main still push, including during unrelated branch merges or reverts; restrict who
   may edit main if every change must be approved.
 
 ## Safety of the Windows data
