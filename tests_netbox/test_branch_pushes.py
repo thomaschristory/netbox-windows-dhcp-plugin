@@ -88,6 +88,25 @@ class BranchSaveTest(ImportTestMixin, TestCase):
             raise ValueError("abort")
         self.assertFalse(PushJob.get_jobs(self.server).exists())
 
+    def test_rolled_back_save_does_not_shadow_a_later_edit(self):
+        # No request_started in between, as in an RQ worker after a dry-run or failed merge.
+        with self.assertRaises(ValueError), transaction.atomic():
+            scope = Scope.objects.get()
+            scope.name = "rolled back"
+            scope.save()
+            raise ValueError("abort")
+        with (
+            mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes") as pushes,
+            mock.patch("netbox.context_managers.flush_events"),
+            self.captureOnCommitCallbacks(execute=True),
+            event_tracking(self._request()),
+        ):
+            scope = Scope.objects.get()
+            scope.snapshot()
+            scope.name = "main edit"
+            scope.save()
+        pushes.assert_called_once_with({self.server.pk}, self.user, delay=mock.ANY, notify_always=False)
+
 
 @skipUnless(apps.is_installed("netbox_branching"), "netbox-branching is not installed")
 class BranchMergeIntegrationTest(ImportTestMixin, TransactionTestCase):
@@ -140,3 +159,5 @@ class BranchMergeIntegrationTest(ImportTestMixin, TransactionTestCase):
             self.branch.merge(user=self.user, commit=False)
         self.assertEqual(Scope.objects.get().name, "LAN")
         pushes.assert_not_called()
+        # The worker's next commit must not push the dry run's servers under the merge's user.
+        self.assertFalse(getattr(signals._local, "pending", None) and signals._pending_is_live())

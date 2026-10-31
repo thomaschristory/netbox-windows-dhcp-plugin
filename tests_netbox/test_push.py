@@ -396,7 +396,6 @@ class FailoverPushTest(PushTestMixin, TestCase):
         self.assertEqual(self._run().summary["changes"], 0)
 
     def _protected_membership(self, settings_change):
-        from netbox_windows_dhcp_plugin.sync import push
         from netbox_windows_dhcp_plugin.windows.client import Scope
 
         self.client.add_scope(
@@ -412,8 +411,6 @@ class FailoverPushTest(PushTestMixin, TestCase):
             run = self._run()
             self.assertTrue(any("added on Windows" in s["reason"] for s in run.summary["not_pushed"]))
             self.assertEqual(self.fake.failovers["fo"]["scope_ids"], ["10.1.0.0", "10.2.0.0"])
-            state = SyncState.objects.get(windows_server=self.server, kind="failover", key="fo")
-            self.assertEqual(state.fingerprint, push.PROTECTED_MEMBERSHIPS)
         if settings_change:
             self.assertEqual(self.fake.failovers["fo"]["load_balance_percent"], 70)
 

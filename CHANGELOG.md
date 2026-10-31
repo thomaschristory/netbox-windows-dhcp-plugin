@@ -62,7 +62,10 @@ The plugin is standalone: it no longer needs netbox-plugin-dhcp. This is a fresh
   field errors instead of silently omitting their configuration from both servers. Safe moves remain supported
   (#74).
 - Failover memberships protected because they changed on Windows remain protected across repeated pushes and
-  unrelated relationship settings updates (#75).
+  unrelated relationship settings updates, while scopes NetBox added can still be removed from the same
+  relationship (#75).
+- A rolled-back save or branch merge (including a dry run) no longer leaves servers queued for a push that a later,
+  unrelated commit in the same worker would send, or that would hide a later edit's own push.
 - Direct edits of main still queue pushes while an unrelated branch is merging or reverting. Merge and revert
   replays retain their own attributed completion push (#76).
 - Failover lease-preflight failures preserve earlier push progress, stop further I/O after transport loss, and

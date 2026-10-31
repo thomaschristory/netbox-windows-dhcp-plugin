@@ -8,6 +8,7 @@ or during a merge or revert are ignored; merges and reverts queue their own push
 with the same ``servers_for`` mapping.
 """
 
+import functools
 import threading
 from contextlib import contextmanager
 
@@ -147,6 +148,17 @@ def _forget_pending(**kwargs):
     _local.pending = None
 
 
+def _pending_is_live():
+    """
+    Whether the transaction that queued the pending servers can still commit. A rollback (a failed save, a dry-run
+    or failed branch merge) drops its on-commit callbacks but not our pending entries, and RQ workers never see
+    request_started, so the entries would otherwise be pushed, or shadow a later edit, under the wrong request.
+    """
+    token = getattr(_local, "token", None)
+    connection = transaction.get_connection()
+    return any(getattr(entry[1], "_token", None) is token for entry in connection.run_on_commit)
+
+
 def _changed(sender, instance, **kwargs):
     # Connected for every model, so leave quickly for the ones a push does not read.
     label = sender._meta.label_lower
@@ -169,13 +181,19 @@ def _changed(sender, instance, **kwargs):
     user = getattr(request, "user", None) if request is not None else None
     if user is not None and not user.is_authenticated:
         user = None
+    if getattr(_local, "pending", None) is not None and not _pending_is_live():
+        _local.pending = None
     if getattr(_local, "pending", None) is None:
         _local.pending = {}
+        _local.token = object()
     for server_id in ids:
         _local.pending.setdefault(server_id, (user, getattr(request, "id", None)))
     # One callback per change; the first to run takes everything pending. robust: failing to queue a push must not
-    # turn a save that already committed into an error page.
-    transaction.on_commit(_flush, robust=True)
+    # turn a save that already committed into an error page. The token ties the callback to this batch of pending
+    # servers, so a later save can tell whether that batch was rolled back.
+    callback = functools.partial(_flush)
+    callback._token = _local.token
+    transaction.on_commit(callback, robust=True)
 
 
 def connect():

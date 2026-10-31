@@ -198,7 +198,8 @@ def test_protected_membership_is_not_adopted_by_repeated_pushes(client, fake, se
         plan, result = run(client, source, managed)
         managed = state_after(managed, result)
         assert any("added on Windows" in s.reason for s in plan.skipped)
-        assert managed["failover", "ha"] == push.PROTECTED_MEMBERSHIPS
+        # Recorded as NetBox left it, without the hand-added scope, so the next push still protects that one.
+        assert managed["failover", "ha"] == push.fingerprint(desired)
         assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0", "10.2.0.0"]
         assert second.key in fake.scopes
     assert fake.failovers["ha"]["load_balance_percent"] == (70 if settings_change else 60)
@@ -209,6 +210,76 @@ def test_protected_membership_is_not_adopted_by_repeated_pushes(client, fake, se
     plan, result = run(client, [scope(), second, failover(load_balance_percent=70)], managed)
     assert not plan.skipped and not result.failed
     assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0"]
+
+
+@pytest.mark.parametrize("push_between", [False, True])
+def test_netbox_can_still_remove_its_own_scope_next_to_a_hand_added_one(client, fake, push_between):
+    second, third = second_scope(), second_scope(3)
+    both = failover(scope_ids=["10.1.0.0", "10.3.0.0"])
+    _, first = run(client, [scope(), second, third, both])
+    managed = state_after({}, first)
+    client.add_failover_scopes("HA", [second.key])
+    if push_between:
+        # A push sees the hand-added scope before NetBox drops one of its own.
+        plan, result = run(client, [scope(), second, third, both], managed)
+        managed = state_after(managed, result)
+        assert sorted(fake.failovers["ha"]["scope_ids"]) == ["10.1.0.0", "10.2.0.0", "10.3.0.0"]
+    for _ in range(2):
+        plan, result = run(client, [scope(), second, third, failover()], managed)
+        managed = state_after(managed, result)
+        assert not result.failed
+        assert sorted(fake.failovers["ha"]["scope_ids"]) == ["10.1.0.0", "10.2.0.0"]
+        assert any("10.2.0.0 stay" in s.reason for s in plan.skipped)
+    # Accepting the hand-added scope makes the relationship NetBox's again, and it can then leave too.
+    _, result = run(client, [scope(), second, third, failover(scope_ids=["10.1.0.0", "10.2.0.0"])], managed)
+    managed = state_after(managed, result)
+    plan, result = run(client, [scope(), second, third, failover()], managed)
+    assert not plan.skipped and not result.failed
+    assert sorted(fake.failovers["ha"]["scope_ids"]) == ["10.1.0.0"]
+
+
+def test_scope_kept_for_its_leases_next_to_a_hand_added_one_can_go_later(client, fake):
+    second, third = second_scope(), second_scope(3)
+    _, first = run(client, [scope(), second, third, failover(scope_ids=["10.1.0.0", "10.3.0.0"])])
+    managed = state_after({}, first)
+    client.add_failover_scopes("HA", [second.key])
+    fake.add_lease(third.key, "10.3.0.15")
+    # NetBox deletes the third scope; Windows refuses while it has leases, so it stays in the relationship for now.
+    _, result = run(client, [scope(), second, failover()], managed)
+    managed = state_after(managed, result)
+    assert third.key in fake.scopes
+    fake.leases.pop(third.key, None)
+    _, result = run(client, [scope(), second, failover()], managed)
+    managed = state_after(managed, result)
+    assert third.key not in fake.scopes
+    assert sorted(fake.failovers["ha"]["scope_ids"]) == ["10.1.0.0", "10.2.0.0"]
+
+
+def test_relationship_update_left_out_later_records_nothing(client, fake):
+    second, third, fourth = second_scope(), second_scope(3), second_scope(4)
+    scopes = [scope(), second, third, fourth]
+    _, first = run(client, [*scopes, failover(scope_ids=["10.1.0.0", "10.4.0.0"])])
+    managed = state_after({}, first)
+    client.add_failover_scopes("HA", [second.key])
+    # A relationship made by hand holds the third scope, so the update that would add it is left out.
+    fake.failovers["hb"] = {**fake.failovers["ha"], "name": "HB", "scope_ids": [third.key]}
+    wanted = [*scopes, failover(scope_ids=["10.1.0.0", "10.3.0.0"])]
+    _, result = run(client, wanted, managed)
+    managed = state_after(managed, result)
+    fake.failovers["hb"]["scope_ids"] = []
+    _, result = run(client, wanted, managed)
+    managed = state_after(managed, result)
+    assert sorted(fake.failovers["ha"]["scope_ids"]) == ["10.1.0.0", "10.2.0.0", "10.3.0.0"]
+
+
+def test_settings_changed_on_windows_keep_every_scope(client, fake):
+    second = second_scope()
+    _, first = run(client, [scope(), second, failover(scope_ids=["10.1.0.0", "10.2.0.0"])])
+    managed = state_after({}, first)
+    fake.failovers["ha"]["load_balance_percent"] = 55
+    plan, result = run(client, [scope(), second, failover()], managed)
+    assert sorted(fake.failovers["ha"]["scope_ids"]) == ["10.1.0.0", "10.2.0.0"]
+    assert any("10.2.0.0 stay" in s.reason for s in plan.skipped)
 
 
 def test_existing_failover_can_be_emptied_and_then_converges(client, fake):

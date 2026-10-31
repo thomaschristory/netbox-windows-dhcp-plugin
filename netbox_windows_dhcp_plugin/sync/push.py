@@ -20,6 +20,7 @@ Safety rules, because a push can delete on a production DHCP server:
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
@@ -84,9 +85,10 @@ DRIFTED = (
     "changed on Windows since NetBox last pushed it, so it was not deleted; delete it on Windows by hand, or import "
     "it back into NetBox"
 )
-# A non-hash SyncState value: no unchanged check can trust a partially reconciled membership. Keeping the old
-# fingerprint alone is insufficient when a safe settings update happens to restore that old configuration.
-PROTECTED_MEMBERSHIPS = "protected-failover-memberships"
+# A relationship holding scopes added on Windows by hand is recorded with the fingerprint of the relationship without
+# them: the scopes NetBox put there. The next push finds that set again by trying the fingerprint against the
+# Windows list minus some of the scopes NetBox no longer wants; past this many candidates it gives up and keeps them.
+OWNED_SEARCH_LIMIT = 10
 CONFLICT = "NetBox holds more than one object for this Windows object (or one without an address); fix it in NetBox"
 LEASE_OR_MASK = (
     "option {code} is the {what} on Windows, which a push sets from the {source}; remove the option from NetBox"
@@ -113,8 +115,9 @@ class Plan:
     stale: set[Key] = field(default_factory=set)
     # For each Windows object, the Windows objects that would go with it if it were removed.
     children: dict[Key, list[Key]] = field(default_factory=dict)
-    # Safe partial updates must not adopt a relationship whose out-of-band memberships remain protected.
-    protected: set[Key] = field(default_factory=set)
+    # Relationships updated around scopes added on Windows by hand: those scopes, left out of the fingerprint the
+    # update records (see _protect_memberships).
+    protected: dict[Key, set[str]] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -551,17 +554,17 @@ def _protect_memberships(
             out.append(c)
             continue
         key = (c.kind, c.key)
-        trusted = key in managed and unchanged(managed[key], target[key])
         before, after = (c.before or {}).get("scope_ids", []), (c.after or {}).get("scope_ids", [])
+        owned = _owned_scope_ids(managed.get(key), target[key], after)
         protected = [
             s
             for s in before
-            if s not in after and (not trusted or (("scope", s) not in managed and ("scope", s) not in source))
+            if s not in after
+            and (owned is None or s not in owned or (("scope", s) not in managed and ("scope", s) not in source))
         ]
         if not protected:
             out.append(c)
             continue
-        plan.protected.add(key)
         plan.skipped.append(
             Skip(
                 c,
@@ -570,10 +573,45 @@ def _protect_memberships(
             )
         )
         fields = {**(c.after or {}), "scope_ids": windows_scope_ids([*after, *protected])}
+        # Record the relationship without the scopes NetBox did not put there, so they stay protected next time
+        # while NetBox can still take out the ones it added. Unknown ownership counts every kept scope as hand-added.
+        hand_added = {s for s in protected if owned is None or s not in owned}
+        plan.protected[key] = hand_added
         if records_equal(c.kind, fields, c.before or {}):
-            continue  # nothing else to change
+            # Nothing else to change: Windows already holds this, so it can be recorded now.
+            plan.in_sync[key] = _fingerprint_without(Change(c.action, c.kind, c.key, c.before, fields), hand_added)
+            continue
         out.append(Change(c.action, c.kind, c.key, before=c.before, after=fields))
     return out
+
+
+def _fingerprint_without(change: Change, hand_added: set[str]) -> str:
+    """The fingerprint of a failover relationship as ``change`` leaves it on Windows, minus scopes added by hand."""
+    fields = _as_on_windows(change)
+    fields["scope_ids"] = [s for s in fields.get("scope_ids") or [] if s not in hand_added]
+    return fingerprint(Record(change.kind, change.key, fields))
+
+
+def _owned_scope_ids(stored: str | None, record: Record, wanted: Iterable[str]) -> set[str] | None:
+    """
+    The scopes of a Windows failover relationship that NetBox put there, or None when the recorded fingerprint cannot
+    tell (never pushed, or changed on Windows in some other way). The fingerprint covers the relationship as NetBox
+    left it: scopes NetBox still wants plus some of those it no longer wants; anything else was added by hand.
+    """
+    if stored is None:
+        return None
+    on_windows = list(record.fields.get("scope_ids") or [])
+    wanted = set(wanted)
+    kept = [s for s in on_windows if s in wanted]
+    extra = [s for s in on_windows if s not in wanted]
+    if len(extra) > OWNED_SEARCH_LIMIT:
+        return set(on_windows) if unchanged(stored, record) else None
+    for size in range(len(extra), -1, -1):
+        for subset in itertools.combinations(extra, size):
+            ids = windows_scope_ids([*kept, *subset])
+            if unchanged(stored, Record(record.kind, record.key, {**record.fields, "scope_ids": ids})):
+                return set(ids)
+    return None
 
 
 def _scopes_in_other_relationships(changes: list[Change], target: Mapping[Key, Record], plan: Plan) -> list[Change]:
@@ -767,7 +805,6 @@ def _released(child: Key, parent: Key, source: Mapping[Key, Record]) -> bool:
 def execute(plan: Plan, writer: Any) -> Result:
     """Apply a plan, one change at a time. Errors on one object do not stop the others; a lost connection does."""
     result = Result(upserts=dict(plan.in_sync), removals=set(plan.stale))
-    result.upserts.update({key: PROTECTED_MEMBERSHIPS for key in plan.protected})
     # Objects that could not be created (children cannot follow) or deleted (parents must stay).
     missing: set[Key] = {(s.change.kind, s.change.key) for s in plan.skipped if s.change.action == CREATE}
     kept: set[Key] = {(s.change.kind, s.change.key) for s in plan.skipped if s.change.action == DELETE}
@@ -829,7 +866,10 @@ def execute(plan: Plan, writer: Any) -> Result:
         if change.action == DELETE:
             result.removals.add(key)
             result.upserts.pop(key, None)
-        elif key not in plan.protected:
+        elif key in plan.protected:
+            # From the change as written: scopes kept back while it ran (still holding leases) are NetBox's too.
+            result.upserts[key] = _fingerprint_without(change, plan.protected[key])
+        else:
             result.upserts[key] = fingerprint(Record(change.kind, change.key, _as_on_windows(change)))
     return result
 

@@ -33,8 +33,10 @@ while it does.
 
 Parent edits must keep their existing children valid. A referenced class cannot change server, address family or
 class type while its definitions or values would become inconsistent; the same rule applies to a policy's server
-or scope and a superscope's server. Changing a scope's prefix must still contain its reservations, exclusions and
-policy ranges, and preserve the address family required by its options and other dependencies.
+or scope and a superscope's server. Pointing a scope at another prefix is refused unless the new prefix still
+contains its reservations, exclusions and policy ranges and keeps the address family its options and other
+dependencies need. Editing the IPAM prefix itself is not checked: keep its children inside it, or the next push
+fails on Windows.
 
 ## Names
 
@@ -98,8 +100,8 @@ way to change one, so a changed range is pushed as a remove and an add.
 A scope has one reservation per IP address. A reservation without a name gets its IP address as its name, as
 Windows does. See [Reservations](reservations.md) for a walkthrough.
 
-A reservation with option values cannot move to another scope until those values are explicitly relocated or
-removed. This keeps the values' stored scope and server consistent with the reservation.
+A reservation with option values cannot move to another scope until those values are removed (an option value on a
+reservation always belongs to that reservation's scope). This keeps the values' stored scope and server consistent with the reservation.
 
 ## Option definitions and values
 

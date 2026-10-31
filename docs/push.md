@@ -138,9 +138,11 @@ Option fingerprints recorded before type-aware comparison are not trusted for de
 could hide a change to a string value. A push that finds the option identical on both sides, or an accepted import,
 refreshes its fingerprint. Until then, a deletion is refused rather than assuming the old hash proves no drift.
 
-Failover memberships protected because of Windows-side drift stay protected on later pushes, including when a push
-changes unrelated relationship settings. A skipped membership change is not adopted as synchronized. Import and
-accept the Windows membership, or make both sides agree explicitly, before managing its removal again.
+A scope added to a failover relationship by hand on Windows stays in it on later pushes too, including when a push
+changes other relationship settings: the push records the relationship as NetBox left it, without that scope. Scopes
+NetBox put in the relationship can still be taken out next to it. Add the scope to the relationship in NetBox (or
+import it) to manage it from NetBox. If the relationship's settings were also changed on Windows, the push cannot
+tell which scopes are NetBox's and keeps every scope; import the relationship to settle it.
 
 ## What a push will not do
 
