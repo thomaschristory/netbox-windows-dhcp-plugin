@@ -84,7 +84,7 @@ sync engine  ->  client (one function per cmdlet operation)  ->  psscript (envel
   `-Force` (`-Confirm:$false` does not help, ConfirmImpact is Medium), so they send it. The removes never do: they do
   not ask in the Normal state, and when the partner is unreachable `-Force` removes on this server only (split
   relationship), while without it Windows refuses ("not in NORMAL state"). Windows keeps a relationship whose last scope left, empty, on both partners.
-- **Normalisation** is ported as is: scope ID from start and mask, MAC canonical form, lease durations, `InActive`/`Inactive` casing, option values compared hex-or-decimal.
+- **Normalisation:** scope ID from start and mask, MAC canonical form, lease durations, `InActive`/`Inactive` casing. Numeric option types compare hex-or-decimal; string and binary values compare exactly.
 - **runner.** WinRM through pypsrp with a new connection per call, as the Go code learned the hard way with NTLM. SSH through paramiko with pinned host key or known_hosts. Concurrency is capped per job (`max_concurrency`), and a PostgreSQL advisory lock per server lets only one import or push talk to a server at a time, across all workers. The lock is held by the database session, so the workers' database connection must not go through a transaction-pooling proxy (pgbouncer in transaction mode).
 - **New cmdlets** beyond the provider: DHCPv6 scopes, reservations and options, superscopes, option definitions, classes, policies, failover, MAC filters, server settings. These follow the same patterns and get the same fixture tests.
 
@@ -92,7 +92,7 @@ sync engine  ->  client (one function per cmdlet operation)  ->  psscript (envel
 
 The push is a **reconcile per server**, not a replay of the change log. For each affected server it reads the Windows state, compares it with NetBox, and applies the difference in dependency order (classes and definitions, then scopes, superscopes, exclusions, reservations, policies, options, failover, MAC filters). It only deletes Windows objects listed in `SyncState`, so objects created by hand on Windows are left alone (they come back through import instead).
 
-**With branching.** A `post_merge` receiver reads `branch.get_merged_changes()`, keeps the plugin and IPAM changes, works out which servers are affected, and queues one push job per server. Because `post_merge` fires in the RQ worker after commit, nothing is pushed for an aborted merge. `post_revert` does the same, with affected IDs captured in `pre_revert`. Model saves made inside a branch, or while a branch is merging or reverting, are ignored (the merge queues its own pushes); direct edits of main still push, as without branching.
+**With branching.** A `post_merge` receiver reads `branch.get_merged_changes()`, keeps the plugin and IPAM changes, works out which servers are affected, and queues one push job per server. Because `post_merge` fires in the RQ worker after commit, nothing is pushed for an aborted merge. `post_revert` does the same, with affected IDs captured in `pre_revert`. Model saves made inside a branch are ignored. Main saves collect their request IDs; after commit, `AppliedChange` identifies merge/revert replays whose completion receiver queues the push. Unrelated main edits still push even while another branch is merging or reverting.
 
 **With change control.** Nothing extra: it already refuses merges without an approved change request, so a push only ever follows an approved change.
 
@@ -278,9 +278,10 @@ while queued) and `SyncRun.destination`. Without branching the only destination 
   `description`. Options 1 (subnet mask) and 51 (lease time) are not imported as options, since the prefix and
   `Scope.lease_duration` already hold them. Windows definitions of standard v4 codes are not imported; others become
   `OptionDefinition`s of the server, with the exact Windows type and default value. Existing prefixes, IP ranges, IP addresses and MAC addresses in the import VRF are reused, so failover partners
-  share one IP range, which moves when the scope range changes. Text going into length-limited fields is cut on the
-  Windows side too, so both sides compare equal. Text option values compare exactly; numbers compare
-  equal in hex or decimal. "No BOOTP limit" (2^32-1) is stored as empty.
+  share one IP range, which moves when the scope range changes. Descriptions going into 200-character fields are
+  cut on the Windows side too, so both sides compare equal; scope and reservation names keep all 255 supported
+  characters. Text and binary option values compare exactly; numeric option types compare equal in hex or decimal.
+  "No BOOTP limit" (2^32-1) is stored as empty.
 - **Deletes.** Any object linked to the server that Windows no longer has is proposed for deletion, including what
   Windows cannot hold: extra copies of one Windows object (names that differ only in case). Those get a `#<pk>` key suffix, and the writer only follows it to an object of the
   same server and parent. Objects created in NetBox that no push has written yet (sync disabled, or a failed push)

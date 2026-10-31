@@ -149,7 +149,11 @@ def compute(windows_server, state):
         standard_codes6=netbox_state.standard_codes6(),
         partner_servers=netbox_state.partner_servers(windows_server),
     )
-    changes = diff(records, netbox_state.read(windows_server, for_import=True), equal=windows_state.equal)
+    changes = diff(
+        records,
+        netbox_state.read(windows_server, for_import=True),
+        equal_records=windows_state.records_equal,
+    )
     return changes, notes
 
 
@@ -350,14 +354,14 @@ def _record_managed(server, change):
     )
 
 
-def _same(a, b):
-    return not diff([Record("x", "x", a)], [Record("x", "x", b)], equal=windows_state.equal)
+def _same(kind, a, b):
+    return not diff([Record(kind, "x", a)], [Record(kind, "x", b)], equal_records=windows_state.records_equal)
 
 
 def _already_done(change, current):
     if change.action == DELETE:
         return current is None
-    return current is not None and _same(current.fields, change.after)
+    return current is not None and _same(change.kind, current.fields, change.after)
 
 
 def _stale(change, current):
@@ -369,7 +373,7 @@ def _stale(change, current):
     if change.action in (UPDATE, DELETE):
         if current is None:
             return "no longer in NetBox: run the import again"
-        if not _same(current.fields, change.before):
+        if not _same(change.kind, current.fields, change.before):
             return "changed in NetBox since the import: run the import again"
     return None
 

@@ -9,7 +9,7 @@ within the [safety rules](#what-a-push-will-not-do).
 
 | Setup | What queues a push |
 |---|---|
-| With netbox-branching | Merging or reverting a branch: one push per Windows server the branch touched. Edits made directly in main push as without branching, except while a branch is being merged or reverted (the merge queues its own pushes). Edits inside a branch push nothing until it is merged |
+| With netbox-branching | Merging or reverting a branch: one push per Windows server the branch touched. Edits made directly in main push as without branching, even while an unrelated branch is being merged or reverted. Edits inside a branch push nothing until it is merged |
 | With change control as well | The same; change control only allows a merge once its change request is approved, so a push always follows an approved change |
 | Without branching | Every save or delete of a DHCP object: one push per affected server, `push_debounce` seconds (10) after the change is committed, so a burst of edits becomes one push |
 | Always | **Sync now** on the Windows server page, or the REST action |
@@ -19,7 +19,9 @@ in the meantime by itself: run a dry run to see them, then **Sync now**.
 
 A change affects a server when it touches one of its DHCP objects (scopes, reservations, option values and the
 rest), or a prefix, IP range, IP address or MAC address one of its scopes or reservations points at. Moving a scope
-from one server to another pushes both. Applying import proposal items does not push.
+from one server to another pushes both, provided the move does not leave dependent options, policies or failover
+memberships attached to the wrong server. Unsafe moves are refused rather than silently dropping their
+configuration. Applying import proposal items does not push.
 
 A push queued while another for the same server is still waiting to start is not queued twice: the waiting one reads
 the latest NetBox data anyway.
@@ -132,6 +134,16 @@ managed when:
 Objects created by hand on Windows are not managed: a push leaves them alone (they count as `unmanaged` in the
 summary), and they come into NetBox with the next import.
 
+Option fingerprints recorded before type-aware comparison are not trusted for deletion: their old normalization
+could hide a change to a string value. A push that finds the option identical on both sides, or an accepted import,
+refreshes its fingerprint. Until then, a deletion is refused rather than assuming the old hash proves no drift.
+
+A scope added to a failover relationship by hand on Windows stays in it on later pushes too, including when a push
+changes other relationship settings: the push records the relationship as NetBox left it, without that scope. Scopes
+NetBox put in the relationship can still be taken out next to it. Add the scope to the relationship in NetBox (or
+import it) to manage it from NetBox. If the relationship's settings were also changed on Windows, the push cannot
+tell which scopes are NetBox's and keeps every scope; import the relationship to settle it.
+
 ## What a push will not do
 
 A push never touches Windows objects NetBox does not manage: it leaves them alone and only counts them (`unmanaged`).
@@ -161,7 +173,7 @@ the Windows object is kept as it is.
   leave a gap at its level (order 3 where Windows would only hold two policies, counting those made by hand), the
   other policies of that level when the policy is already on Windows (see above), or a policy option value whose
   policy NetBox does not hold at the same level;
-- a superscope or failover relationship without scopes, a failover relationship whose partner has no Windows server
+- a superscope or new failover relationship without scopes, a failover relationship whose partner has no Windows server
   in NetBox, or a hot standby relationship without the primary server's role;
 - a failover relationship that would take a scope Windows already holds in another relationship NetBox does not
   manage (a scope is in one relationship at most): import that relationship, or remove the scope from it on Windows;
@@ -201,4 +213,6 @@ push.
 ## Failover
 
 After pushing to the primary server of a failover relationship, the push replicates the changed scopes to the
-partner. A replication that fails is retried by the next push to the primary. See [Failover](failover.md).
+partner. A replication that fails is retried by the next push to the primary. An existing relationship may be left
+empty: clearing its last membership keeps the scope on the primary and removes it from the partner, subject to the
+same ownership and drift protections as other membership removals. See [Failover](failover.md).

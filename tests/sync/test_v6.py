@@ -180,10 +180,10 @@ def test_unsupported_v6_objects_are_skipped_and_hidden(client, fake):
 
 
 def test_ipv6_option_values_compare_in_any_spelling():
-    assert ws.equal("option6", "value", ["2001:DB8:0::53"], ["2001:db8::53"])
-    assert not ws.equal("option6", "value", ["2001:db8::53"], ["2001:db8::54"])
     a = option6("server", 23, ["2001:DB8:0::53"])
     b = option6("server", 23, ["2001:db8::53"])
+    assert ws.records_equal("option6", a.fields, b.fields)
+    assert not ws.records_equal("option6", a.fields, option6("server", 23, ["2001:db8::54"]).fields)
     assert push.fingerprint(a) == push.fingerprint(b)
 
 
@@ -193,7 +193,7 @@ def test_ipv6_option_values_compare_in_any_spelling():
 def test_push_creates_everything_and_a_second_push_changes_nothing(client, fake):
     p, r = apply(client, wanted())
     assert not r.failed and not p.skipped, (r.failed, p.skipped)
-    assert diff(wanted(), records(client), equal=ws.equal) == []
+    assert diff(wanted(), records(client), equal_records=ws.records_equal) == []
     assert fake.v6_reservations["2001:db8:1::10"]["iaid"] == 7
     managed = merged({}, r)
     p2, r2 = apply(client, wanted(), managed)
@@ -210,7 +210,7 @@ def test_push_updates(client, fake):
     source[3] = option6("server", 23, ["2001:db8::99"])
     _, r2 = apply(client, source, managed)
     assert not r2.failed, r2.failed
-    assert diff(source, records(client), equal=ws.equal) == []
+    assert diff(source, records(client), equal_records=ws.records_equal) == []
     assert fake.v6_scopes[PREFIX]["state"] == "Inactive"
 
 
