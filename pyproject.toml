@@ -42,9 +42,9 @@ Issues = "https://github.com/thomaschristory/netbox-windows-dhcp-plugin/issues"
 netbox_windows_dhcp_plugin = "netbox_windows_dhcp_plugin:config"
 
 [dependency-groups]
-dev = ["pytest>=8.3", "ruff>=0.12", "pypsrp>=0.8", "paramiko>=3.5"]
+dev = ["pytest>=8.3", "ruff>=0.17.2", "pypsrp>=0.8", "paramiko>=5.1.0"]
 docs = [
-    "zensical>=0.0.65",
+    "zensical>=0.0.71",
 ]
 
 [tool.hatch.version]
