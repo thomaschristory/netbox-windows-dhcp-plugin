@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = [
     "pypsrp[credssp]>=0.8",
-    "paramiko>=5.1.0",
+    "paramiko>=3.5",
 ]
 
 [project.optional-dependencies]
