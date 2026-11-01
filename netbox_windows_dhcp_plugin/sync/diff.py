@@ -73,6 +73,7 @@ class Change:
 _MISSING = object()
 
 Equal = Callable[[str, str, Any, Any], bool]
+RecordsEqual = Callable[[str, dict[str, Any], dict[str, Any]], bool]
 
 
 def _default_equal(kind: str, name: str, a: Any, b: Any) -> bool:
@@ -107,11 +108,13 @@ def diff(
     target: Iterable[Record],
     kinds: Iterable[str] | None = None,
     equal: Equal | None = None,
+    equal_records: RecordsEqual | None = None,
 ) -> list[Change]:
     """
     Return the changes that make ``target`` match ``source``: deletes first (children before parents), then creates
     and updates (parents before children). ``kinds`` limits the comparison; ``equal(kind, field, a, b)`` overrides
-    field comparison, for example to treat ``0x0A`` and ``10`` as the same option value.
+    field comparison. ``equal_records(kind, a, b)`` overrides whole-record comparison when equality needs other
+    fields, for example the data type of an option value.
     """
     wanted = set(kinds) if kinds is not None else None
     equal = equal or _default_equal
@@ -124,7 +127,11 @@ def diff(
         new = src[kind, key].fields
         if (kind, key) not in dst:
             upserts.append(Change(CREATE, kind, key, after=dict(new)))
-        elif not _same(kind, new, dst[kind, key].fields, equal):
+        elif not (
+            equal_records(kind, new, dst[kind, key].fields)
+            if equal_records
+            else _same(kind, new, dst[kind, key].fields, equal)
+        ):
             upserts.append(Change(UPDATE, kind, key, before=dict(dst[kind, key].fields), after=dict(new)))
 
     deletes.sort(key=lambda c: (-_rank(c.kind), c.key))

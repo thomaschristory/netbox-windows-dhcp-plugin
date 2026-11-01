@@ -21,22 +21,25 @@ def branching_installed():
 
 def save_belongs_to_branching():
     """
-    True when a model save is not an edit of main: it happens inside a branch (edits, imports, syncs from main), or
-    while a branch is being merged or reverted (the merge then queues its own pushes). Direct edits of main still
-    push, as without branching.
+    True when a save happens inside a branch (edits, imports, syncs from main). Merge/revert writes target main:
+    their change-log provenance is checked after commit, not by whether any branch happens to be busy.
     """
     if not branching_installed():
         return False
     try:
-        from netbox_branching.choices import BranchStatusChoices
         from netbox_branching.contextvars import active_branch
-        from netbox_branching.models import Branch
     except ImportError:
         return True
-    if active_branch.get() is not None:
-        return True
-    busy = (BranchStatusChoices.MERGING, BranchStatusChoices.REVERTING)
-    return Branch.objects.filter(status__in=busy).exists()
+    return active_branch.get() is not None
+
+
+def request_applied_by_branch(request_id):
+    """After commit, whether this request's writes were replayed by a merge/revert that queues its own push."""
+    if request_id is None or not branching_installed():
+        return False
+    from netbox_branching.models import AppliedChange
+
+    return AppliedChange.objects.filter(change__request_id=request_id).exists()
 
 
 def in_branch():

@@ -7,11 +7,13 @@ client IDs as aa-bb-cc-...), so the NetBox side can produce the very same record
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..standard_options import STANDARD_V4, STANDARD_V6
 from ..windows import normalize
 from ..windows.client import (
     DhcpClass,
@@ -44,6 +46,8 @@ __all__ = (
     "class6_key",
     "class_key",
     "equal",
+    "records_equal",
+    "with_option_types",
     "hidden_records",
     "mac_key",
     "option6_key",
@@ -365,7 +369,7 @@ def _scope(s: Scope) -> Record:
         "scope",
         s.scope_id,
         {
-            "name": text_field(s.name),
+            "name": s.name or "",
             "description": s.description or "",
             "start_range": s.start_range,
             "end_range": s.end_range,
@@ -494,7 +498,7 @@ def scope6_record(s: ScopeV6) -> Record:
         {
             "prefix": prefix,
             "prefix_length": V6_PREFIX_LENGTH,
-            "name": text_field(s.name),
+            "name": s.name or "",
             "description": s.description or "",
             "state": s.state.lower(),
             "preference": int(s.preference or 0),
@@ -517,7 +521,7 @@ def reservation6_record(r: ReservationV6) -> Record:
             "ip_address": ip,
             "client_duid": _client_id(r.client_duid),
             "iaid": int(r.iaid),
-            "name": text_field(r.name),
+            "name": r.name or "",
             "description": r.description or "",
         },
     )
@@ -640,7 +644,7 @@ def to_records(
                     "type": d.type,
                     "multi_valued": bool(d.multi_valued),
                     "default_value": list(d.default_value),
-                    "description": text_field(d.description),
+                    "description": d.description or "",
                     "vendor_class": d.vendor_class,
                 },
             )
@@ -671,7 +675,7 @@ def to_records(
                     "scope_id": r.scope_id,
                     "ip_address": r.ip_address,
                     "client_id": _client_id(r.client_id),
-                    "name": text_field(r.name),
+                    "name": r.name or "",
                     "description": r.description or "",
                     "reservation_type": r.type.lower(),
                 },
@@ -713,14 +717,104 @@ def to_records(
     records.extend(_v6_records(state, standard6, skip))
 
     notes = [*state.notes, *(f"skipped {count} {reason}" for reason, count in skips.items())]
-    return records, notes
+    definitions = {optiondef_key(d.option_id, d.vendor_class): d.type for d in state.option_definitions}
+    return with_option_types(records, definitions), notes
 
 
-def _number(value: str) -> int | None:
-    try:
-        return normalize.parse_option_number(value)
-    except ValueError:
-        return None
+VALUE_TYPE = "_value_type"
+NUMERIC_TYPES = frozenset(
+    {"byte", "word", "dword", "dworddword", "uint8", "uint16", "uint32", "uint64", "int32", "boolean"}
+)
+
+
+def _value_type(data_type: str) -> str:
+    data_type = data_type.lower()
+    if data_type in NUMERIC_TYPES:
+        return "number"
+    if data_type in ("ipv6address", "ipv6-address"):
+        return "ipv6"
+    # String, BinaryData, and unknown types must never be guessed from their contents.
+    return "exact"
+
+
+def option_value_type(kind: str, fields: dict[str, Any]) -> str:
+    if kind == "optiondef":
+        return _value_type(fields.get("type", ""))
+    if kind not in ("option", "option6"):
+        return "exact"
+    if VALUE_TYPE in fields:
+        return fields[VALUE_TYPE]
+    standard = STANDARD_V6 if kind == "option6" else STANDARD_V4
+    definition = None if fields.get("vendor_class") else standard.get(fields.get("option_id"))
+    return _value_type(definition[1]) if definition else "unknown"
+
+
+def with_option_types(
+    records: Iterable[Record],
+    definitions: dict[str, str] | None = None,
+    fallback: Iterable[Record] = (),
+) -> list[Record]:
+    """Carry the effective type with values, including custom/vendor definitions omitted from a partial diff."""
+    records = list(records)
+    definitions = {
+        **(definitions or {}),
+        **{r.key: r.fields["type"] for r in records if r.kind == "optiondef"},
+    }
+    fallback_types = {}
+    for r in fallback:
+        if r.kind == "optiondef":
+            fallback_types["option", r.key] = option_value_type(r.kind, r.fields)
+        elif r.kind in ("option", "option6"):
+            key = optiondef_key(r.fields["option_id"], r.fields.get("vendor_class", ""))
+            fallback_types.setdefault((r.kind, key), option_value_type(r.kind, r.fields))
+    out = []
+    for r in records:
+        if r.kind in ("option", "option6"):
+            key = optiondef_key(r.fields["option_id"], r.fields.get("vendor_class", ""))
+            typ = (
+                _value_type(definitions[key])
+                if r.kind == "option" and key in definitions
+                else option_value_type(r.kind, r.fields)
+            )
+            # A value can be managed without importing its Windows definition. Only an unknown type may inherit
+            # the effective Windows type; an explicit String/Binary definition must retain exact comparison.
+            if typ == "unknown":
+                typ = fallback_types.get((r.kind, key), typ)
+            r = Record(r.kind, r.key, {**r.fields, VALUE_TYPE: typ})
+        out.append(r)
+    return out
+
+
+def canonical_option_fields(kind: str, fields: dict[str, Any]) -> dict[str, Any]:
+    """Comparable/hashable values without changing the spelling sent to Windows or imported into NetBox."""
+    out = dict(fields)
+    typ = option_value_type(kind, fields)
+    if kind in ("option", "option6"):
+        out[VALUE_TYPE] = typ
+    name = "default_value" if kind == "optiondef" else "value"
+    if kind not in ("option", "option6", "optiondef") or not isinstance(out.get(name), list):
+        return out
+    values = []
+    for value in out[name]:
+        if typ == "number":
+            with contextlib.suppress(TypeError, ValueError):
+                value = str(normalize.parse_option_number(value))
+        elif typ == "ipv6" and isinstance(value, str):
+            value = ipv6(value)
+        values.append(value)
+    out[name] = values
+    return out
+
+
+def records_equal(kind: str, a: dict[str, Any], b: dict[str, Any]) -> bool:
+    if kind in ("option", "option6"):
+        a_type, b_type = option_value_type(kind, a), option_value_type(kind, b)
+        if a_type == "unknown":
+            a = {**a, VALUE_TYPE: b_type}
+        if b_type == "unknown":
+            b = {**b, VALUE_TYPE: a_type}
+    a, b = canonical_option_fields(kind, a), canonical_option_fields(kind, b)
+    return a.keys() == b.keys() and all(equal(kind, name, a[name], b[name]) for name in a)
 
 
 # Fields holding a Windows name, compared without case like Windows does.
@@ -742,10 +836,8 @@ NAME_FIELDS = frozenset(
 
 def equal(kind: str, name: str, a: Any, b: Any) -> bool:
     """
-    Field comparison for ``diff``. Option values match when they are equal, or the same number written in hex or
-    decimal (Windows prints 0x0A, NetBox may hold 10). Windows names match without case, as on Windows. Policy
-    conditions match as Windows stores them (``canonical_criteria``). Other text is compared exactly: a changed boot
-    file name is a change.
+    Field comparison for ``diff``. Windows names match without case, and policy conditions match as Windows stores
+    them. Option values compare exactly here: only ``records_equal`` has enough context to normalize numeric types.
     """
     if (kind, name) in NAME_FIELDS and isinstance(a, str) and isinstance(b, str):
         return a.casefold() == b.casefold()
@@ -756,29 +848,7 @@ def equal(kind: str, name: str, a: Any, b: Any) -> bool:
         return True
     if (kind, name) == ("policy", "criteria") and isinstance(a, dict) and isinstance(b, dict):
         return canonical_criteria(a) == canonical_criteria(b)
-    if name in ("value", "default_value") and isinstance(a, list) and isinstance(b, list):
-        if len(a) != len(b):
-            return False
-        return all(_same_value(x, y) for x, y in zip(a, b, strict=True))
     return a == b
-
-
-def _same_value(x: Any, y: Any) -> bool:
-    if x == y:
-        return True
-    if (n := _number(x)) is not None and n == _number(y):
-        return True
-    # DHCPv6 addresses: Windows prints them compressed and lowercase, NetBox keeps what was typed.
-    x, y = str(x), str(y)
-    return _is_ipv6(x) and _is_ipv6(y) and ipv6(x) == ipv6(y)
-
-
-def _is_ipv6(value: str) -> bool:
-    try:
-        ipaddress.IPv6Address(value.strip())
-    except ValueError:
-        return False
-    return True
 
 
 def hidden_records(

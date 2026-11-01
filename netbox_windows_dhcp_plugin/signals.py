@@ -8,6 +8,7 @@ or during a merge or revert are ignored; merges and reverts queue their own push
 with the same ``servers_for`` mapping.
 """
 
+import functools
 import threading
 from contextlib import contextmanager
 
@@ -127,9 +128,16 @@ def _flush():
     if not pending:
         return
     from .conf import get_setting
+    from .integrations.branching import request_applied_by_branch
 
+    # AppliedChange is recorded after the model save; only after commit can its request be identified as a replay.
+    replayed = {
+        request_id: request_applied_by_branch(request_id) for request_id in {rid for _, rid in pending.values()}
+    }
     by_user = {}
-    for server_id, user in pending.items():
+    for server_id, (user, request_id) in pending.items():
+        if replayed[request_id]:
+            continue
         by_user.setdefault(user, set()).add(server_id)
     for user, ids in by_user.items():
         queue_pushes(ids, user, delay=get_setting("push_debounce"), notify_always=False)
@@ -138,6 +146,17 @@ def _flush():
 def _forget_pending(**kwargs):
     # Servers left pending by a rolled-back transaction belong to an earlier request: do not push them under this one.
     _local.pending = None
+
+
+def _pending_is_live():
+    """
+    Whether the transaction that queued the pending servers can still commit. A rollback (a failed save, a dry-run
+    or failed branch merge) drops its on-commit callbacks but not our pending entries, and RQ workers never see
+    request_started, so the entries would otherwise be pushed, or shadow a later edit, under the wrong request.
+    """
+    token = getattr(_local, "token", None)
+    connection = transaction.get_connection()
+    return any(getattr(entry[1], "_token", None) is token for entry in connection.run_on_commit)
 
 
 def _changed(sender, instance, **kwargs):
@@ -162,13 +181,19 @@ def _changed(sender, instance, **kwargs):
     user = getattr(request, "user", None) if request is not None else None
     if user is not None and not user.is_authenticated:
         user = None
+    if getattr(_local, "pending", None) is not None and not _pending_is_live():
+        _local.pending = None
     if getattr(_local, "pending", None) is None:
         _local.pending = {}
+        _local.token = object()
     for server_id in ids:
-        _local.pending.setdefault(server_id, user)
+        _local.pending.setdefault(server_id, (user, getattr(request, "id", None)))
     # One callback per change; the first to run takes everything pending. robust: failing to queue a push must not
-    # turn a save that already committed into an error page.
-    transaction.on_commit(_flush, robust=True)
+    # turn a save that already committed into an error page. The token ties the callback to this batch of pending
+    # servers, so a later save can tell whether that batch was rolled back.
+    callback = functools.partial(_flush)
+    callback._token = _local.token
+    transaction.on_commit(callback, robust=True)
 
 
 def connect():

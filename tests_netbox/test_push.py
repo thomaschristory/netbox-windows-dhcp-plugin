@@ -58,7 +58,9 @@ class PushTestMixin(ImportTestMixin):
             windows_state.read(DhcpClient(self.target)), standard_codes=netbox_state.standard_codes()
         )
         # As an import sees it: no MAC filter lists object in NetBox means Windows' defaults.
-        return diff.diff(netbox_state.read(self.server, for_import=True), records, equal=windows_state.equal)
+        return diff.diff(
+            netbox_state.read(self.server, for_import=True), records, equal_records=windows_state.records_equal
+        )
 
 
 @override_settings(PLUGINS_CONFIG=CREDENTIALS)
@@ -286,6 +288,88 @@ class PushJobTest(PushTestMixin, TestCase):
 
 
 @override_settings(PLUGINS_CONFIG=CREDENTIALS)
+class SyncCorrectnessPushTest(PushTestMixin, TestCase):
+    def test_string_option_edits_are_written_and_manual_drift_blocks_deletion(self):
+        value = OptionValue.objects.create(server=self.server, code=67, value=["0010"])
+        self._run()
+        value.value = ["10"]
+        value.save()
+        run = self._run()
+        self.assertEqual(run.summary["update"], 1)
+        self.assertEqual(self.client.get_option_value(OptionKey(67)).value, ["10"])
+        self.client.set_option_value(OptionKey(67), ["0010"])
+        value.delete()
+        run = self._run()
+        self.assertTrue(any("changed on Windows" in s["reason"] for s in run.summary["not_pushed"]))
+        self.assertEqual(self.client.get_option_value(OptionKey(67)).value, ["0010"])
+
+    def test_import_detects_numeric_looking_string_changes(self):
+        self.client.set_option_value(OptionKey(67), ["0010"])
+        self.apply_all()
+        self.client.set_option_value(OptionKey(67), ["10"])
+        changes = [c for c in self.changes() if c.kind == "option" and c.key == "server/67"]
+        self.assertEqual(len(changes), 1)
+        self.assertEqual(changes[0].action, "update")
+        self.apply_all()
+        self.assertEqual(OptionValue.objects.get(server=self.server, code=67).value, ["10"])
+        self.assertEqual(self._run().summary["changes"], 0)
+
+    def test_netbox_reader_uses_model_types_for_custom_and_vendor_options(self):
+        from netbox_windows_dhcp_plugin.models import OptionDefinition
+        from netbox_windows_dhcp_plugin.sync import push
+
+        cases = [
+            (224, "", "String", False),
+            (224, "", "BinaryData", False),
+            (224, "", "DWord", True),
+            (2, "MSFT", "String", False),
+            (2, "MSFT", "DWord", True),
+        ]
+        for code, vendor, data_type, numeric in cases:
+            with self.subTest(code=code, vendor=vendor, data_type=data_type):
+                definition = OptionDefinition.objects.get(server=self.server, code=code)
+                definition.windows_type = data_type
+                definition.default_value = ["0x10"]
+                definition.save()
+                option = OptionValue.objects.get(server=self.server, code=code)
+                option.value = ["0x10"]
+                option.save()
+                records = netbox_state.read(self.server)
+                value = next(r for r in records if r.kind == "option" and r.fields["option_id"] == code)
+                default = next(r for r in records if r.kind == "optiondef" and r.fields["option_id"] == code)
+                for record, field in ((value, "value"), (default, "default_value")):
+                    decimal = diff.Record(record.kind, record.key, {**record.fields, field: ["16"]})
+                    self.assertEqual(windows_state.records_equal(record.kind, record.fields, decimal.fields), numeric)
+                    self.assertEqual(push.fingerprint(record) == push.fingerprint(decimal), numeric)
+
+    def test_full_length_names_import_and_push_for_both_families(self):
+        from .test_v6 import seed_v6
+
+        seed_v6(self.fake)
+        for length in (200, 201, 255):
+            with self.subTest(length=length):
+                name = "n" * length
+                for objects in (
+                    self.fake.scopes,
+                    self.fake.reservations,
+                    self.fake.v6_scopes,
+                    self.fake.v6_reservations,
+                ):
+                    for fields in objects.values():
+                        fields["name"] = name
+                self.apply_all()
+                objects = [*NetBoxScope.objects.all(), *NetBoxReservation.objects.all()]
+                self.assertEqual(len(objects), 4)
+                self.assertTrue(all(obj.name == name for obj in objects))
+                for obj in objects:
+                    obj.name = name[:-1] + "z"
+                    obj.save()
+                run = self._run()
+                self.assertEqual(run.summary["update"], 4)
+                self.assertEqual(self._run(DryRunJob).summary["changes"], 0)
+
+
+@override_settings(PLUGINS_CONFIG=CREDENTIALS)
 class FailoverPushTest(PushTestMixin, TestCase):
     def setUp(self):
         super().setUp()
@@ -301,6 +385,76 @@ class FailoverPushTest(PushTestMixin, TestCase):
             "scope_ids": ["10.1.0.0"],
             "max_client_lead_time": 3600,
         }
+
+    def test_clearing_last_membership_preserves_scope_and_converges(self):
+        self._run()
+        self.relationship.scopes.clear()
+        run = self._run()
+        self.assertEqual(run.summary["update"], 1)
+        self.assertEqual(self.fake.failovers["fo"]["scope_ids"], [])
+        self.assertIn("10.1.0.0", self.fake.scopes)
+        self.assertEqual(self._run().summary["changes"], 0)
+
+    def _protected_membership(self, settings_change):
+        from netbox_windows_dhcp_plugin.windows.client import Scope
+
+        self.client.add_scope(
+            Scope(name="second", start_range="10.2.0.10", end_range="10.2.0.200", subnet_mask="255.255.255.0")
+        )
+        self.apply_all()
+        self._run()
+        self.client.add_failover_scopes("fo", ["10.2.0.0"])
+        if settings_change:
+            self.relationship.load_balance_percent = 70
+            self.relationship.save()
+        for _ in range(3):
+            run = self._run()
+            self.assertTrue(any("added on Windows" in s["reason"] for s in run.summary["not_pushed"]))
+            self.assertEqual(self.fake.failovers["fo"]["scope_ids"], ["10.1.0.0", "10.2.0.0"])
+        if settings_change:
+            self.assertEqual(self.fake.failovers["fo"]["load_balance_percent"], 70)
+
+    def test_protected_membership_survives_repeated_push_jobs(self):
+        self._protected_membership(settings_change=False)
+
+    def test_protected_membership_survives_unrelated_settings_write(self):
+        self._protected_membership(settings_change=True)
+
+    def test_later_preflight_failure_persists_completed_relationship_write(self):
+        from netbox_windows_dhcp_plugin.sync import push
+        from netbox_windows_dhcp_plugin.windows.client import FailoverRelationship as WindowsFailover
+        from netbox_windows_dhcp_plugin.windows.client import Scope
+
+        for number in (2, 3, 4):
+            self.client.add_scope(
+                Scope(
+                    name=f"scope{number}",
+                    start_range=f"10.{number}.0.10",
+                    end_range=f"10.{number}.0.200",
+                    subnet_mask="255.255.255.0",
+                )
+            )
+        self.client.add_failover_scopes("fo", ["10.2.0.0"])
+        self.client.add_failover(
+            WindowsFailover(name="zz", partner_server="dhcp2.example.com", scope_ids=["10.3.0.0", "10.4.0.0"])
+        )
+        self.apply_all()
+        self._run()
+        NetBoxScope.objects.get(prefix__prefix="10.2.0.0/24").delete()
+        NetBoxScope.objects.get(prefix__prefix="10.4.0.0/24").delete()
+        self.fake.fail = lambda op, p: (
+            PSError("lease query refused", "PermissionDenied", "", "Get-DhcpServerv4Lease")
+            if op == "lease.list" and p["scope_id"] == "10.4.0.0"
+            else None
+        )
+        with self.assertRaises(JobFailed):
+            self._run()
+        state = SyncState.objects.get(windows_server=self.server, kind="failover", key="fo")
+        actual = windows_state.failover_record(self.client.get_failover("fo"))
+        self.assertEqual(state.fingerprint, push.fingerprint(actual))
+        self.assertEqual(self.fake.failovers["fo"]["scope_ids"], ["10.1.0.0"])
+        self.assertEqual(self.fake.failovers["zz"]["scope_ids"], ["10.3.0.0", "10.4.0.0"])
+        self.assertIn("10.4.0.0", self.fake.scopes)
 
     def test_primary_replicates_changed_scopes(self):
         self._change_scope()
@@ -497,6 +651,8 @@ class StandaloneTriggerTest(ImportTestMixin, TestCase):
     def test_moving_a_scope_pushes_both_servers(self):
         other = windows_server("dhcp7")
         scope = NetBoxScope.objects.get()
+        with signals.push_suppressed():
+            OptionValue.objects.filter(scope=scope).delete()
         scope.snapshot()
         scope.server = other
         with STANDALONE, self.captureOnCommitCallbacks(execute=True):

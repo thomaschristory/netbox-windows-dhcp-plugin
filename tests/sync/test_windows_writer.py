@@ -39,7 +39,7 @@ def scope(**over):
 
 def wanted():
     """What NetBox would hold for a small server, in the records' own spelling."""
-    return [
+    records = [
         Record("class", "user/phones", {"name": "Phones", "class_type": "user", "data": "phone", "description": "IP"}),
         Record(
             "optiondef",
@@ -107,6 +107,7 @@ def wanted():
         Record("macfilter", "00-15-5d-*", {"mac_address": "00-15-5d-*", "list": "deny", "description": "lab VMs"}),
         Record("filterlists", "server", {"allow": False, "deny": True}),
     ]
+    return ws.with_option_types(records)
 
 
 def policy(**over):
@@ -159,13 +160,13 @@ def windows_records(client):
 
 def push(client, source):
     writer = WindowsWriter(client)
-    for change in diff(source, windows_records(client), equal=ws.equal):
+    for change in diff(ws.with_option_types(source), windows_records(client), equal_records=ws.records_equal):
         writer.apply(change)
 
 
 def test_creates_everything_and_reads_back_the_same(client):
     push(client, wanted())
-    assert diff(wanted(), windows_records(client), equal=ws.equal) == []
+    assert diff(wanted(), windows_records(client), equal_records=ws.records_equal) == []
 
 
 def test_scope_state_and_lease_are_sent_in_windows_spelling(client, fake):
@@ -183,7 +184,7 @@ def test_updates(client, fake):
     source[4] = Record(res.kind, res.key, {**res.fields, "client_id": "aa-bb-cc-00-11-33", "name": "pc2"})
     source[5] = option("server", 6, ["10.0.0.9"])
     push(client, source)
-    assert diff(source, windows_records(client), equal=ws.equal) == []
+    assert diff(source, windows_records(client), equal_records=ws.records_equal) == []
     assert fake.scopes["10.1.0.0"]["state"] == "Active"
     assert fake.scopes["10.1.0.0"]["max_bootp_clients"] == 10
 

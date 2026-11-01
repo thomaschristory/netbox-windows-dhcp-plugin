@@ -63,6 +63,21 @@ def test_custom_equality_per_field():
     assert len(diff(source, target)) == 1
 
 
+def test_record_equality_has_type_context_and_preserves_original_fields():
+    source = [rec("option", "server/46", type="number", value=["0x8"])]
+    target = [rec("option", "server/46", type="number", value=["8"])]
+
+    def equal_records(kind, a, b):
+        assert kind == "option"
+        return a["type"] == b["type"] and int(a["value"][0], 0) == int(b["value"][0], 0)
+
+    assert diff(source, target, equal_records=equal_records) == []
+    target = [rec("option", "server/46", type="number", value=["9"])]
+    (change,) = diff(source, target, equal_records=equal_records)
+    assert change.after == source[0].fields
+    assert change.before == target[0].fields
+
+
 def test_fields_missing_on_one_side_count_as_changes():
     (change,) = diff([rec("scope", "a", name="x", delay=None)], [rec("scope", "a", name="x")])
     assert change.changed_fields == ["delay"]
