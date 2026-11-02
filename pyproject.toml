@@ -23,7 +23,7 @@ classifiers = [
     "Topic :: System :: Networking",
 ]
 dependencies = [
-    "pypsrp[credssp]>=0.8",
+    "pypsrp[credssp]>=0.9.1",
     "paramiko>=3.5",
 ]
 

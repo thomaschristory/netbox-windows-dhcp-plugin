@@ -629,7 +629,7 @@ requires-dist = [
     { name = "netbox-change-control", marker = "extra == 'branching'", specifier = ">=0.6" },
     { name = "netboxlabs-netbox-branching", marker = "extra == 'branching'", specifier = ">=1.2.2" },
     { name = "paramiko", specifier = ">=3.5" },
-    { name = "pypsrp", extras = ["credssp"], specifier = ">=0.8" },
+    { name = "pypsrp", extras = ["credssp"], specifier = ">=0.9.1" },
     { name = "pypsrp", extras = ["kerberos"], marker = "extra == 'kerberos'", specifier = ">=0.8" },
 ]
 provides-extras = ["branching", "kerberos"]
