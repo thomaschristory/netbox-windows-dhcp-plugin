@@ -44,7 +44,7 @@ netbox_windows_dhcp_plugin = "netbox_windows_dhcp_plugin:config"
 [dependency-groups]
 dev = ["pytest>=8.3", "ruff>=0.17.2", "pypsrp>=0.8", "paramiko>=5.1.0"]
 docs = [
-    "zensical>=0.0.71",
+    "zensical>=0.0.72",
 ]
 
 [tool.hatch.version]
