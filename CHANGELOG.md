@@ -52,6 +52,10 @@ The plugin is standalone: it no longer needs netbox-plugin-dhcp. This is a fresh
 - Option values on reservations through the REST API (netbox-plugin-dhcp could not do it,
   [netbox-plugin-dhcp#69](https://github.com/sys4/netbox-plugin-dhcp/issues/69)).
 
+### Changed
+
+- pypsrp 0.9.1 or later is required (with the `credssp` extra, and with the plugin's `kerberos` extra).
+
 ### Fixed
 
 - Option values and defaults now compare and fingerprint according to their definition type: numeric-looking
