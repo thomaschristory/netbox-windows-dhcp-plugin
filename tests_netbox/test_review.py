@@ -1,6 +1,7 @@
 """The review queue from the UI and the REST API: permissions, and writes made as the reviewing user."""
 
 from unittest import skipUnless
+from unittest.mock import patch
 
 from core.models import ObjectChange, ObjectType
 from django.apps import apps
@@ -9,6 +10,7 @@ from netbox_dhcp.models import Subnet
 from utilities.testing import APITestCase, TestCase
 
 from netbox_windows_dhcp_plugin.choices import ProposalItemStatusChoices, ProposalStatusChoices
+from netbox_windows_dhcp_plugin.models import ImportProposalItem
 from netbox_windows_dhcp_plugin.sync import importer, windows_state
 from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows.client import Scope
@@ -39,6 +41,17 @@ PROPOSAL = "netbox_windows_dhcp_plugin.change_importproposal"
 ITEMS_APPLY = "/api/plugins/windows-dhcp/import-proposal-items/apply/"
 
 
+def created_prefixes(flush):
+    return [
+        event["data"]["prefix"]
+        for call in flush.call_args_list
+        for event in call.args[0]
+        if event["object_type"].app_label == "ipam"
+        and event["object_type"].model == "prefix"
+        and event["event_type"] == "object_created"
+    ]
+
+
 def make_proposal():
     ensure_standard_option_definitions()
     server = windows_server(dhcp_servers(1)[0])
@@ -48,6 +61,28 @@ def make_proposal():
     )
     result = importer.import_to_proposal(server, windows_state.read(DhcpClient(fake)), None)
     return server, result.proposal
+
+
+class EventRollbackTest(TestCase):
+    def test_rollback_preserves_lazy_data_and_prior_snapshot(self):
+        from extras.events import EventContext
+        from netbox.context import events_queue
+
+        before = Prefix.objects.create(prefix="192.0.2.0/24")
+        after = Prefix.objects.create(prefix="198.51.100.0/24")
+        event = EventContext(object=before, snapshots={"postchange": {"prefix": "192.0.2.0/24"}})
+        token = events_queue.set({"prefix": event})
+        try:
+            with self.assertRaises(importer.ApplyError), importer._one_change():
+                event["snapshots"]["postchange"] = {"prefix": "198.51.100.0/24"}
+                event.refresh_serialization_source(after)
+                raise importer.ApplyError("refused")
+            restored = events_queue.get()["prefix"]
+            self.assertIsInstance(restored, EventContext)
+            self.assertEqual(restored["data"]["prefix"], "192.0.2.0/24")
+            self.assertEqual(restored["snapshots"]["postchange"], {"prefix": "192.0.2.0/24"})
+        finally:
+            events_queue.reset(token)
 
 
 class ReviewViewTest(TestCase):
@@ -78,12 +113,14 @@ class ReviewViewTest(TestCase):
     def test_apply_needs_permission_on_every_object_written(self):
         # add_subnet alone must not let a reviewer create prefixes and IP ranges through an import.
         self.add_permissions(ITEM, *(p for p in SCOPE_PERMISSIONS if p != "ipam.add_prefix"))
-        self.client.post(f"/plugins/windows-dhcp/importproposalitems/{self.item.pk}/apply/")
+        with patch("netbox.context_managers.flush_events") as flush:
+            self.client.post(f"/plugins/windows-dhcp/importproposalitems/{self.item.pk}/apply/")
         self.item.refresh_from_db()
         self.assertEqual(self.item.status, ProposalItemStatusChoices.FAILED)
         self.assertIn("ipam.add_prefix", self.item.error)
         self.assertFalse(Subnet.objects.exists())
         self.assertFalse(Prefix.objects.exists())
+        self.assertEqual(created_prefixes(flush), [])
 
     def test_apply_respects_permission_constraints(self):
         from users.models import ObjectPermission
@@ -94,10 +131,12 @@ class ReviewViewTest(TestCase):
         )
         permission.object_types.add(ObjectType.objects.get_for_model(Prefix))
         permission.users.add(self.user)
-        self.client.post(f"/plugins/windows-dhcp/importproposalitems/{self.item.pk}/apply/")
+        with patch("netbox.context_managers.flush_events") as flush:
+            self.client.post(f"/plugins/windows-dhcp/importproposalitems/{self.item.pk}/apply/")
         self.item.refresh_from_db()
         self.assertEqual(self.item.status, ProposalItemStatusChoices.FAILED)
         self.assertFalse(Prefix.objects.exists())
+        self.assertEqual(created_prefixes(flush), [])
 
     def test_apply_needs_change_on_items(self):
         self.add_permissions(*SCOPE_PERMISSIONS)
@@ -185,6 +224,39 @@ class ReviewAPITest(PluginAPIMixin, APITestCase):
         )
         self.assertEqual(response.data["missing_permissions"], ["netbox_dhcp.add_subnet"])
         self.assertFalse(Subnet.objects.exists())
+
+    def test_denied_supporting_write_dispatches_no_creation_event(self):
+        self.add_permissions(ITEM, *(p for p in SCOPE_PERMISSIONS if p != "ipam.add_prefix"))
+        with patch("netbox.context_managers.flush_events") as flush:
+            response = self.client.post(ITEMS_APPLY, {"ids": [self.item.pk]}, format="json", **self.header)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((response.data["applied"], response.data["failed"]), (0, 1))
+        self.assertFalse(Prefix.objects.exists())
+        self.assertEqual(created_prefixes(flush), [])
+
+    def test_failed_item_keeps_successful_item_events(self):
+        from users.models import ObjectPermission
+
+        self.add_permissions(ITEM, *(p for p in SCOPE_PERMISSIONS if p != "ipam.add_prefix"))
+        permission = ObjectPermission.objects.create(
+            name="first prefix only", actions=["add"], constraints={"prefix": "10.1.0.0/24"}
+        )
+        permission.object_types.add(ObjectType.objects.get_for_model(Prefix))
+        permission.users.add(self.user)
+        denied = ImportProposalItem.objects.create(
+            proposal=self.proposal,
+            sequence=self.item.sequence + 1,
+            action="create",
+            kind="scope",
+            key="10.2.0.0",
+            after={**self.item.after, "start_range": "10.2.0.10", "end_range": "10.2.0.200"},
+        )
+        with patch("netbox.context_managers.flush_events") as flush:
+            response = self.client.post(ITEMS_APPLY, {"ids": [self.item.pk, denied.pk]}, format="json", **self.header)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((response.data["applied"], response.data["failed"]), (1, 1))
+        self.assertEqual([str(prefix) for prefix in Prefix.objects.values_list("prefix", flat=True)], ["10.1.0.0/24"])
+        self.assertEqual(created_prefixes(flush), ["10.1.0.0/24"])
 
     def test_ids_are_required(self):
         self.add_permissions(ITEM)

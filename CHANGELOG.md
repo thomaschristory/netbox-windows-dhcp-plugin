@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- Failed import-proposal applications now discard events for rolled-back writes instead of dispatching actions for
+  rejected changes. Successful items retain their events, lazy serialization and pre-existing snapshots.
+
 ## [0.1.2] - 2026-10-29
 
 Three fixes backported from 0.2. 0.1.x stays on netbox-plugin-dhcp and gets fixes only.
