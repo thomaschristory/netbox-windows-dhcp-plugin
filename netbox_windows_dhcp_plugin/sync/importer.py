@@ -9,6 +9,7 @@ No Windows I/O here: the job reads the server and passes the ``WindowsState`` in
 import json
 import logging
 from contextlib import contextmanager, nullcontext
+from copy import copy
 from dataclasses import dataclass, field
 
 from django.core.exceptions import ValidationError
@@ -124,7 +125,12 @@ def _one_change():
     """
     from netbox.context import events_queue
 
-    queued = {key: dict(event) for key, event in events_queue.get().items()}
+    # EventContext lazily serializes data: converting it to dict loses that behavior. Coalescing an event also
+    # updates its snapshots in place, so those need their own copy.
+    queued = {key: copy(event) for key, event in events_queue.get().items()}
+    for event in queued.values():
+        if "snapshots" in event:
+            event["snapshots"] = dict(event["snapshots"])
     try:
         yield
     except APPLY_ERRORS:
@@ -318,7 +324,7 @@ def _apply_items(items, user):
         error = _stale(change, current)
         if error is None:
             try:
-                with transaction.atomic():
+                with _one_change(), transaction.atomic():
                     if not _already_done(change, current):
                         Writer(server, user=user).apply(change)
                     _record_managed(server, change)

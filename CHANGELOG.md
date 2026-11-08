@@ -85,6 +85,11 @@ The plugin is standalone: it no longer needs netbox-plugin-dhcp. This is a fresh
 - A Windows server's Import panel no longer says differences wait for review once the import proposal has been
   applied or dismissed; it shows the proposal's status.
 
+### Security
+
+- Failed import-proposal applications now discard events for rolled-back writes instead of dispatching actions for
+  rejected changes. Successful items retain their events, lazy serialization and pre-existing snapshots.
+
 ## [0.1.1] - 2026-10-29
 
 Two fixes found on Windows Server 2025. 0.1.x stays on netbox-plugin-dhcp and gets fixes only; new features go to
