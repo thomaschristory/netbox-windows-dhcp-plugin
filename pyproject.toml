@@ -29,7 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 kerberos = ["pypsrp[kerberos]>=0.9.1"]
-branching = ["netboxlabs-netbox-branching>=1.2.2", "netbox-change-control>=0.6"]
+branching = ["netboxlabs-netbox-branching>=1.2.3", "netbox-change-control>=0.6"]
 
 [project.urls]
 Homepage = "https://github.com/thomaschristory/netbox-windows-dhcp-plugin"
@@ -42,9 +42,9 @@ Issues = "https://github.com/thomaschristory/netbox-windows-dhcp-plugin/issues"
 netbox_windows_dhcp_plugin = "netbox_windows_dhcp_plugin:config"
 
 [dependency-groups]
-dev = ["pytest>=8.3", "ruff>=0.17.2", "pypsrp>=0.8", "paramiko>=5.1.0"]
+dev = ["pytest>=9.2.0", "ruff>=0.17.3", "pypsrp>=0.8", "paramiko>=5.1.0"]
 docs = [
-    "zensical>=0.0.72",
+    "zensical>=0.0.74",
 ]
 
 [tool.hatch.version]
