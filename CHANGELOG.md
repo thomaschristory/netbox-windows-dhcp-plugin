@@ -5,7 +5,7 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-## [0.1.3] - 2026-11-08
+## [0.1.3] - 2026-11-13
 
 A security fix backported from 0.2
 ([GHSA-5x5m-vqw4-wq85](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/security/advisories/GHSA-5x5m-vqw4-wq85)).
