@@ -29,7 +29,7 @@ dependencies = [
 
 [project.optional-dependencies]
 kerberos = ["pypsrp[kerberos]>=0.9.1"]
-branching = ["netboxlabs-netbox-branching>=1.2.3", "netbox-change-control>=0.6"]
+branching = ["netboxlabs-netbox-branching>=1.2.2", "netbox-change-control>=0.6"]
 
 [project.urls]
 Homepage = "https://github.com/thomaschristory/netbox-windows-dhcp-plugin"
