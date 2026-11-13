@@ -120,6 +120,7 @@ To stay on netbox-plugin-dhcp instead, pin `netbox-windows-dhcp-plugin<0.2`. The
 5. **Clean up content types** (optional): `python manage.py remove_stale_contenttypes` removes the entries of the
    dropped models (and of netbox-plugin-dhcp's, if you removed it). It can stop with an error on content types that
    old change log entries still point at; those leftovers are harmless and can stay.
+   With netbox-docker, see [the note below](#with-netbox-docker): the container runs this step itself.
 6. **Restart** NetBox and the worker.
 7. **Recreate the Windows servers** (**Windows DHCP > Windows servers > Add**, now with a name of their own), run
    **Test connection**, and **import each one**. Review and merge (or apply) the import. Import the primary of each
@@ -130,6 +131,31 @@ imports reuse the ones they find in the server's import VRF. Sync state starts e
 apply the import proposal (or import straight into main). After a branch import, the first push adopts the objects
 that are identical on both sides; until then a push deletes nothing (see [Managed objects](push.md#managed-objects)).
 Leave **Sync enabled** off and run a **Dry run** before the first push.
+
+#### With netbox-docker
+
+The netbox-docker image migrates the database itself when the container starts, then runs
+`remove_stale_contenttypes`, `clearsessions` and `reindex --lazy`. Its start script stops at the first error, so on
+the first start after the upgrade the NetBox container exits with a `ProtectedError` like this one:
+
+```text
+django.db.models.deletion.ProtectedError: ("Cannot delete some instances of model 'ContentType' because they are
+referenced through protected foreign keys: 'ObjectType.contenttype_ptr', 'ObjectChange.changed_object_type'.", ...)
+```
+
+The cause is the step 5 content type cleanup failing on old change log entries of the 0.1.x models. The migrations
+have already been applied at that point, so nothing is lost:
+
+1. Start the stack again (`docker compose up -d`; it also starts the worker, which waits for NetBox). With the
+   migrations done, the start script skips the cleanup steps and NetBox comes up.
+2. Run the two steps it skipped:
+
+    ```bash
+    docker compose exec netbox /opt/netbox/netbox/manage.py clearsessions
+    docker compose exec netbox /opt/netbox/netbox/manage.py reindex --lazy
+    ```
+
+The content types left behind are harmless, as in step 5.
 
 ## Removing it
 

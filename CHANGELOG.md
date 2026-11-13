@@ -5,6 +5,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Documentation
+
+- Upgrading from 0.1.x with netbox-docker: the first start after the upgrade exits with a `ProtectedError` from the
+  image's automatic `remove_stale_contenttypes` step. The upgrade notes now say why, that the migrations are already
+  applied, and how to finish (start again, then run `clearsessions` and `reindex --lazy`).
+
 ## [0.2.0] - 2026-11-13
 
 Release candidates 0.2.0rc1 (2026-10-29) and 0.2.0rc2 (2026-11-13) went to PyPI for testing; what testing
