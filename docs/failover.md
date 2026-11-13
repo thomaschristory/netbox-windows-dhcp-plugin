@@ -197,6 +197,23 @@ If a replication fails, the push is marked failed and the next push to the prima
 
 So edit failover scopes as scopes of the primary server in NetBox; the partner's copies follow through replication.
 
+```mermaid
+sequenceDiagram
+    participant Job as Push job (primary)
+    participant P as Primary server
+    participant S as Partner server
+
+    Job->>P: create, update, delete scopes and the relationship
+    Job->>P: which scopes are in the relationship?
+    Job->>P: Invoke-DhcpServerv4FailoverReplication for the changed scopes
+    P->>S: copy the scopes' configuration
+    alt replication fails, or a scope is not in the relationship yet
+        Job-->>Job: push marked failed, scopes kept as pending
+        Note over Job,S: the next push to the primary replicates them again
+    end
+    Note over S: a push to the partner leaves these scopes alone
+```
+
 ## Shared secret
 
 With message authentication, put the secret in a credential profile and name it in **Shared secret profile**:

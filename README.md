@@ -5,7 +5,7 @@ over WinRM or SSH.
 
 **Documentation: https://thomaschristory.github.io/netbox-windows-dhcp-plugin/**
 
-> **Status: 0.2.0rc2, release candidate.** The plugin no longer needs netbox-plugin-dhcp: it holds the whole Windows
+> **Status: 0.2.0.** The plugin no longer needs netbox-plugin-dhcp: it holds the whole Windows
 > DHCP configuration in its own models. 0.2.0 is a fresh start from 0.1.x (see the [upgrade
 > notes](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-01x)). Every v1
 > feature is built and tested against an in-memory fake server and PowerShell stubs. The Windows side (scripts,
@@ -43,7 +43,7 @@ over WinRM or SSH.
 | 0.2.x | 4.7 | not used | 1.2.2+ (optional) | 3.12 to 3.14 |
 | 0.1.x | 4.7 | 0.2.x (required) | 1.2.2+ (optional) | 3.12 to 3.14 |
 
-`main` is the 0.2 line. The 0.1.x line (latest 0.1.1, branch `release/0.1`) keeps getting bug fixes, but no new
+`main` is the 0.2 line. The 0.1.x line (latest 0.1.3, branch `release/0.1`) keeps getting bug fixes, but no new
 features, for installs that stay on netbox-plugin-dhcp: pin `netbox-windows-dhcp-plugin<0.2` to stay on it.
 
 Windows Server 2016 or later with the DHCP Server role.
@@ -51,7 +51,7 @@ Windows Server 2016 or later with the DHCP Server role.
 ## Quick start
 
 ```bash
-pip install --pre netbox-windows-dhcp-plugin   # or ==0.2.0rc2; 0.1.x stays the default until 0.2.0 is out
+pip install netbox-windows-dhcp-plugin   # pin "<0.2" to stay on the 0.1.x line (netbox-plugin-dhcp)
 # extras: [kerberos] for Kerberos (needs system GSSAPI libraries), [branching] for branching and change control
 ```
 

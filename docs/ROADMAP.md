@@ -5,7 +5,7 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
 Milestones 1 to 6 built the 0.1.x line, a sub-plugin of netbox-plugin-dhcp: the model names they mention
 (`WindowsReservation`, `WindowsVendorOption`...) are 0.1.x ones. Milestone 7 makes the plugin standalone for 0.2.0.
 `main` is the 0.2 line; the `release/0.1` branch keeps bug fixes, and no new features, for users who stay on
-netbox-plugin-dhcp (latest 0.1.1, 2026-10-29).
+netbox-plugin-dhcp (latest 0.1.3, 2026-11-13).
 
 1. **Done.** Repo scaffold, models, REST and GraphQL API, connection test.
 2. **Done.** PowerShell layer ported from terraform-provider-windowsddi, with fake server and pwsh stub tests.
@@ -72,7 +72,8 @@ netbox-plugin-dhcp (latest 0.1.1, 2026-10-29).
      ready) wait for the owner's go.
    - **Fixes from testing 0.1.0rc1:** CSRF tokens on the plugin's buttons (#19); no Edit, Clone or Add buttons
      leading to "None" on read-only pages (#23).
-7. **Release candidate (0.2.0rc1).** Standalone (0.2.0): drop netbox-plugin-dhcp.
+7. **Done: 0.2.0 (2026-11-13).** Standalone: drop netbox-plugin-dhcp. Release candidates 0.2.0rc1 (2026-10-29) and
+   0.2.0rc2 (2026-11-13, security fix GHSA-5x5m-vqw4-wq85 and fixes #73 to #79).
    - **Why:** netbox-plugin-dhcp models DHCP the way Kea does, so every Windows concept needed a side model or a
      workaround (`<server>/<scope id>` names, comma-escaped option values, covering prefixes for superscopes, subnet
      ID allocation across branches, upstream bugs such as netbox-plugin-dhcp issues #68 and #69).
