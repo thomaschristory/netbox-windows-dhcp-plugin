@@ -14,6 +14,31 @@ within the [safety rules](#what-a-push-will-not-do).
 | Without branching | Every save or delete of a DHCP object: one push per affected server, `push_debounce` seconds (10) after the change is committed, so a burst of edits becomes one push |
 | Always | **Sync now** on the Windows server page, or the REST action |
 
+```mermaid
+flowchart LR
+    save(["Save or delete in main<br/>(no branching, or a direct edit)"]) --> debounce["Wait for the commit,<br/>then push_debounce (10 s)"]
+    merged(["Branch merged<br/>or reverted"]) --> perserver["One push per server<br/>the branch touched"]
+    syncnow(["Sync now<br/>or REST action"]) --> enabled
+    debounce --> enabled{"Sync enabled<br/>on the server?"}
+    perserver --> enabled
+    enabled -- "yes" --> job(["Push job"])
+    enabled -- "no" --> skip(["Nothing pushed"])
+```
+
+A push job (and a dry run, which stops after planning) then does this:
+
+```mermaid
+flowchart TD
+    lock{"Server free?"} -- "import or push<br/>running" --> retry["Push: queued again in a minute,<br/>for up to two hours.<br/>Dry run: fails"]
+    lock -- "free" --> read["Read the whole<br/>Windows server"]
+    read --> plan["Plan: compare with NetBox,<br/>refuse unsafe changes<br/>(not_pushed)"]
+    plan -- "dry run" --> report(["Sync run lists planned<br/>and refused changes"])
+    plan -- "push" --> write["Apply one change at a time,<br/>parents first, deletes last"]
+    write --> state["Record what NetBox<br/>manages (sync state)"]
+    state --> replicate["Failover primary:<br/>replicate changed scopes<br/>to the partner"]
+    replicate --> run(["Sync run: applied,<br/>failed, not pushed"])
+```
+
 Nothing is pushed while **Sync enabled** is off on the Windows server. Turning it on does not push the changes made
 in the meantime by itself: run a dry run to see them, then **Sync now**.
 
@@ -27,7 +52,30 @@ A push queued while another for the same server is still waiting to start is not
 the latest NetBox data anyway.
 
 With netbox-branching, edit inside a branch, then merge it (after approval, with change control). The merge queues
-the push, and its sync run names the branch. Here the branch `rename-nas` renames the reservation `app01` to `nas01`:
+the push, and its sync run names the branch:
+
+```mermaid
+sequenceDiagram
+    actor Admin
+    participant Branch as Branch
+    participant CR as Change request
+    actor Reviewer
+    participant Main as NetBox main
+    participant Worker as Push job
+    participant Win as Windows DHCP
+
+    Admin->>Branch: edit scopes, reservations, options
+    Note over Branch,Win: nothing is pushed while the change sits in a branch
+    Admin->>CR: submit for review
+    Reviewer->>CR: approve
+    Admin->>Main: merge the branch
+    Main-->>Worker: after the merge commits: one push per server touched
+    Worker->>Win: read everything
+    Worker->>Win: create, update, delete what differs
+    Worker-->>Admin: sync run and notification
+```
+
+Here the branch `rename-nas` renames the reservation `app01` to `nas01`:
 
 ![Editing reservation 198.18.50.101 inside the branch rename-nas: the branch selector at the top shows the active
 branch](images/branching-edit-in-branch.webp)
@@ -133,6 +181,19 @@ managed when:
 
 Objects created by hand on Windows are not managed: a push leaves them alone (they count as `unmanaged` in the
 summary), and they come into NetBox with the next import.
+
+This is how a push decides about an object Windows holds and NetBox does not:
+
+```mermaid
+flowchart LR
+    obj(["On Windows, not in NetBox"]) --> managed{"Recorded as managed<br/>(sync state)?"}
+    managed -- "no: made by hand" --> keep(["Left alone, counted as unmanaged<br/>the next import brings it in"])
+    managed -- "yes" --> drift{"Changed on Windows<br/>since the last push?"}
+    drift -- "yes" --> refuse1(["Not pushed: delete it on Windows<br/>or import it back"])
+    drift -- "no" --> children{"Would the delete take<br/>unmanaged objects with it?"}
+    children -- "yes" --> refuse2(["Not pushed: those objects<br/>would be lost"])
+    children -- "no" --> delete(["Deleted"])
+```
 
 Option fingerprints recorded before type-aware comparison are not trusted for deletion: their old normalization
 could hide a change to a string value. A push that finds the option identical on both sides, or an accepted import,

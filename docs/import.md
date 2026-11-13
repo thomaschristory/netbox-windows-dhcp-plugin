@@ -33,6 +33,25 @@ other partner's imports leave it alone. Import the server you want to write to f
 
 ## Choosing where an import writes
 
+```mermaid
+flowchart TD
+    start(["Import now, Import menu,<br/>REST action or schedule"]) --> job["Import job in the worker<br/>(one job per server at a time)"]
+    job --> read["Read the whole Windows server"]
+    read --> diff{"Differences<br/>with NetBox?"}
+    diff -- "none" --> done(["Nothing written<br/>sync run says so"])
+    diff -- "some" --> branching{"netbox-branching<br/>installed?"}
+    branching -- "no" --> proposal["Import proposal<br/>one item per difference"]
+    proposal --> apply["Reviewer applies or<br/>dismisses items"]
+    apply --> managed(["Applied objects are in NetBox<br/>and recorded as managed, no push"])
+    branching -- "yes" --> dest{"Destination"}
+    dest -- "Import into branch<br/>(default, schedules)" --> ibranch["Open import branch of the server,<br/>or a new one + change request"]
+    ibranch --> merge["Review, approve, merge"]
+    merge --> push(["Merge queues a push that finds<br/>nothing to do and adopts the objects"])
+    dest -- "Import into this branch" --> mine["The branch you work in<br/>written with your permissions"]
+    mine --> merge
+    dest -- "Import directly" --> main(["Main, after a confirm page<br/>recorded as managed, no push"])
+```
+
 Without netbox-branching an import always writes an [import proposal](#without-branching-import-proposals). With it,
 the **Import** button on the Windows server page is a menu:
 
@@ -145,6 +164,22 @@ and the missing permission is reported; every other object it writes (prefixes a
 as it is saved, and a refusal rolls back the whole item and marks it failed. Failed items can be applied again
 later. Applied items do not
 trigger a push (NetBox and Windows then agree), and the applied objects are recorded as managed straight away.
+
+Each item moves through these states:
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: import finds a difference
+    pending --> applied: Apply (NetBox changed as you)
+    pending --> dismissed: Dismiss
+    pending --> failed: object changed since the import,<br/>or a save was refused
+    failed --> applied: Apply again
+    failed --> dismissed: Dismiss
+    pending --> [*]: next import replaces it
+    failed --> [*]: next import replaces it
+    dismissed --> pending: next import sees other<br/>Windows values
+    applied --> [*]
+```
 
 A repeated import updates the open proposal: pending and failed items are replaced by the new differences. A
 dismissed item stays dismissed, in later proposals too, as long as Windows still shows exactly the same values; if

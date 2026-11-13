@@ -28,15 +28,31 @@ up in IPAM too. It keeps that data and the real Windows servers in step:
   without branching it runs a few seconds after each save. A **dry run** shows what a push would change.
 - **Leases** are read live from Windows and shown on a Leases tab of the scope page.
 
-```
-NetBox (Windows DHCP models + IPAM)
-        |  push: reconcile, delete only what NetBox manages
-        v
-Windows DHCP server  ----  import: branch or proposal  ---->  NetBox
+```mermaid
+flowchart LR
+    user(["You: web UI,<br/>REST API, GraphQL"])
+    subgraph netbox["NetBox"]
+        direction TB
+        models["Windows DHCP objects<br/>+ IPAM prefixes<br/>and addresses"]
+        worker["Background jobs<br/>(NetBox worker)"]
+        review["Review: import branch<br/>or import proposal"]
+        models -- "save or merge<br/>queues a push" --> worker
+        worker -. "differences" .-> review
+        review -. "merge<br/>or apply" .-> models
+    end
+    windows[("Windows<br/>DHCP server")]
+
+    user -- "edit" --> models
+    worker == "push" ==> windows
+    windows -. "import" .-> worker
 ```
 
-All Windows I/O runs in NetBox background jobs, never in a web request. Credentials live in the plugin configuration,
-never in the database.
+The thick arrow is a push (NetBox to Windows), the dotted ones an import (Windows to NetBox, through review).
+
+The two directions never mix: a push only writes Windows, an import only writes NetBox, and what an import finds is
+reviewed before it reaches NetBox's main data (unless you choose to import straight into main). All Windows I/O runs
+in NetBox background jobs, never in a web request. Credentials live in the plugin configuration, never in the
+database.
 
 ## What is covered
 
@@ -72,7 +88,7 @@ pages for the rules that keep both sides safe.
 | 0.2.x | 4.7 | not used | 1.2.2 or later (optional) | 0.6 or later (optional) | 3.12 to 3.14 |
 | 0.1.x | 4.7 | 0.2.x (required) | 1.2.2 or later (optional) | 0.6 or later (optional) | 3.12 to 3.14 |
 
-The 0.1.x line (latest 0.1.1) keeps getting bug fixes, but no new features, for installs that stay on
+The 0.1.x line (latest 0.1.3) keeps getting bug fixes, but no new features, for installs that stay on
 netbox-plugin-dhcp; see [Upgrading from 0.1.x](installation.md#upgrading-from-01x).
 
 Windows Server 2016 or later with the DHCP Server role and its PowerShell module (`DhcpServer`).

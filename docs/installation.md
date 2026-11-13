@@ -22,11 +22,6 @@ Optional:
 
 Install it into NetBox's virtual environment, and add it to `local_requirements.txt` so NetBox upgrades keep it:
 
-!!! note "Release candidate"
-    Until 0.2.0 is out, PyPI has 0.2.0 only as a release candidate (0.2.0rc2), which pip skips by default. Ask for it
-    by version (`pip install netbox-windows-dhcp-plugin==0.2.0rc2`, and the same line in `local_requirements.txt`) or
-    add `--pre`. Without either, pip installs 0.1.x, which needs netbox-plugin-dhcp.
-
 ```bash
 source /opt/netbox/venv/bin/activate
 pip install netbox-windows-dhcp-plugin
@@ -109,7 +104,7 @@ while the plugin is below 1.0, a minor version can change behaviour.
 There is no data migration: **0.2.0 is a fresh start**, and the Windows servers themselves are the source to rebuild
 from. Nothing on Windows changes during the upgrade.
 
-To stay on netbox-plugin-dhcp instead, pin `netbox-windows-dhcp-plugin<0.2`. The 0.1.x line (latest 0.1.1, branch
+To stay on netbox-plugin-dhcp instead, pin `netbox-windows-dhcp-plugin<0.2`. The 0.1.x line (latest 0.1.3, branch
 `release/0.1` in the repository) keeps getting bug fixes, but no new features.
 
 1. **Merge or delete open import branches** (with netbox-branching). Their changes are written against the 0.1.x

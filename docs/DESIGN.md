@@ -366,6 +366,6 @@ Matches `netbox-ipam-treeview-plugin` and `netbox-opentelemetry-plugin`: hatchli
    needed workarounds for every Windows concept it lacked (section 3), so it was decided on 2026-10-27 that 0.2.0
    makes the plugin standalone, with a fresh start instead of a data migration: Windows is the source of truth, and
    an import rebuilds NetBox from it. Release lines (2026-10-29): `main` carries 0.2 and later; `release/0.1`
-   (0.1.1 and on) keeps bug fixes, and no new features, for users who stay on netbox-plugin-dhcp.
+   (0.1.1 to 0.1.3 so far) keeps bug fixes, and no new features, for users who stay on netbox-plugin-dhcp.
 5. **Device link.** A `WindowsServer` may point at the `dcim.Device` or `virtualization.VirtualMachine` it runs on,
    for reference. The connection always uses `host`, so the link cannot redirect credentials.

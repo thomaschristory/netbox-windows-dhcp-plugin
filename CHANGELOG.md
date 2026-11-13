@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-13
+
+Release candidates 0.2.0rc1 (2026-10-29) and 0.2.0rc2 (2026-11-13) went to PyPI for testing; what testing
+them found is listed under Fixed and Security.
+
 The plugin is standalone: it no longer needs netbox-plugin-dhcp. This is a fresh start, with no data migration from
 0.1.x: read the upgrade notes before upgrading. Installs that stay on netbox-plugin-dhcp keep the 0.1.x line.
 
@@ -38,6 +43,9 @@ The plugin is standalone: it no longer needs netbox-plugin-dhcp. This is a fresh
 
 ### Added
 
+- Documentation: diagrams of the workflows: how the pieces fit together (home page), where an import writes
+  and how proposal items move (Import), when a push runs, what it does and when it deletes, the branch review cycle
+  (Push), and failover replication (Failover).
 - Documentation: every NetBox screenshot retaken on 0.2.0 (Windows Server 2025 lab), and the step-by-step pages
   (new scope, reservations, failover, branching) walk through the 0.2.0 forms.
 - Lease durations, DHCPv6 lifetimes and T1/T2 show in days next to the seconds on scope and policy pages, for
@@ -91,8 +99,34 @@ The plugin is standalone: it no longer needs netbox-plugin-dhcp. This is a fresh
 
 ### Security
 
+- [GHSA-5x5m-vqw4-wq85](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/security/advisories/GHSA-5x5m-vqw4-wq85)
+  (fixed in 0.2.0rc2 and 0.1.3): failed import-proposal applications now discard events for rolled-back writes
+  instead of dispatching actions for rejected changes. Successful items retain their events, lazy serialization and pre-existing snapshots.
+
+## [0.1.3] - 2026-11-13
+
+A security fix backported from 0.2
+([GHSA-5x5m-vqw4-wq85](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/security/advisories/GHSA-5x5m-vqw4-wq85)).
+0.1.x stays on netbox-plugin-dhcp and gets fixes only.
+
+### Security
+
 - Failed import-proposal applications now discard events for rolled-back writes instead of dispatching actions for
   rejected changes. Successful items retain their events, lazy serialization and pre-existing snapshots.
+
+## [0.1.2] - 2026-10-29
+
+Three fixes backported from 0.2. 0.1.x stays on netbox-plugin-dhcp and gets fixes only.
+
+### Fixed
+
+- A push that failed on some changes logged "changed N object(s)" with the number planned. The job log now gives
+  what was applied, failed and not attempted.
+- A Windows server's Import panel no longer says differences wait for review once the import proposal has been
+  applied or dismissed; it shows the proposal's status.
+- A failover relationship whose scopes Windows already holds in another relationship (made by hand, or renamed on
+  Windows) made every push fail with the cmdlet's error. It is now left out with a reason ("not pushed") and the rest
+  of the push goes ahead.
 
 ## [0.1.1] - 2026-10-29
 
