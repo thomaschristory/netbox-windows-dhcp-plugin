@@ -9,6 +9,8 @@ All notable changes to this project are documented here. The format follows
 
 - New migration `0002`: run `manage.py migrate` when upgrading. It turns the sync key columns into text and adds
   an index; no data changes.
+- New migration `0003`: on a database upgraded from 0.1.x it deletes the content types of the 0.1.x models that
+  0.2.0 dropped, and the change log entries of their objects (see Fixed). On other databases it does nothing.
 - A reservation's client ID and DUID must be hex bytes (separated by `-`, `:`, `.` or spaces, or not at all) and are
   stored in the `aa-bb-cc` form Windows reports, so a saved value can differ in spelling from what was typed. The
   form and the REST API (400) refuse anything else, such as `printer-01`.
@@ -36,6 +38,17 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- On a database upgraded from 0.1.x, `remove_stale_contenttypes` stopped with a `ProtectedError` on the change log
+  entries of the 0.1.x models, and with netbox-docker (which runs it after every migration) the NetBox container
+  exited on the first start after each new migration, not only after the upgrade. Migration `0003` now removes the
+  plugin's own leftovers during `migrate`: the content types of the six 0.1.x models 0.2.0 dropped and what still
+  pointed at them. **This deletes the change log history of those 0.1.x objects** (their tables were already dropped
+  in 0.2.0), along with their permissions, search index rows and jobs. `migrate` prints how many content types and
+  change log entries it removed. A type is kept, with its change log, when removing it would leave a permission, tag,
+  custom field or change control policy with no object type, or when a bookmark, notification, subscription or open
+  branch still uses it; `migrate` names it. Content types of other apps, netbox-plugin-dhcp included, are not
+  touched. With netbox-branching, the migration is skipped on branch schemas (`fake_on_branch`): content types live
+  only in main.
 - Applying import proposal items while working in a netbox-branching branch wrote the objects into the branch while
   main recorded them as managed, so the next push from main could delete them on the Windows server. It is now
   refused, with an error in the UI and 409 from the REST API: switch to main to apply. Dismissing still works in a
@@ -126,9 +139,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Documentation
 
-- Upgrading from 0.1.x with netbox-docker: the first start after the upgrade exits with a `ProtectedError` from the
-  image's automatic `remove_stale_contenttypes` step. The upgrade notes now say why, that the migrations are already
-  applied, and how to finish (start again, then run `clearsessions` and `reindex --lazy`).
+- Upgrading from 0.1.x with netbox-docker: the upgrade notes explain the `ProtectedError` from the image's automatic
+  `remove_stale_contenttypes` step (on 0.2.0 it comes back after every new migration), what migration `0003` removes
+  and keeps, and how to start NetBox again by hand on 0.2.0 or for other apps' leftovers. The troubleshooting page
+  points there.
 
 ## [0.2.0] - 2026-11-13
 

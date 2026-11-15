@@ -117,9 +117,12 @@ To stay on netbox-plugin-dhcp instead, pin `netbox-windows-dhcp-plugin<0.2`. The
 4. **Migrate**: `python manage.py migrate`. The new migration drops the plugin's 0.1.x tables: the Windows servers'
    connection settings, sync state, sync runs and import proposals are lost, along with the 0.1.x Windows settings
    (scope and reservation settings, exclusion ranges, classes, policies, failover relationships, MAC filters).
-5. **Clean up content types** (optional): `python manage.py remove_stale_contenttypes` removes the entries of the
-   dropped models (and of netbox-plugin-dhcp's, if you removed it). It can stop with an error on content types that
-   old change log entries still point at; those leftovers are harmless and can stay.
+5. **Clean up content types** (optional): `python manage.py remove_stale_contenttypes` removes the entries NetBox
+   keeps for models that no longer exist. From 0.2.1, `migrate` already removes the plugin's own 0.1.x entries,
+   together with **the change log entries of the 0.1.x objects** (whose tables 0.2.0 dropped), so the command only
+   has other apps' leftovers to deal with. It skips the apps that are no longer installed (netbox-plugin-dhcp once
+   removed from `PLUGINS`) unless you add `--include-stale-apps`, and it can then stop on their change log entries;
+   those leftovers are harmless and can stay.
    With netbox-docker, see [the note below](#with-netbox-docker): the container runs this step itself.
 6. **Restart** NetBox and the worker.
 7. **Recreate the Windows servers** (**Windows DHCP > Windows servers > Add**, now with a name of their own), run
@@ -134,20 +137,41 @@ Leave **Sync enabled** off and run a **Dry run** before the first push.
 
 #### With netbox-docker
 
-The netbox-docker image migrates the database itself when the container starts, then runs
-`remove_stale_contenttypes`, `clearsessions` and `reindex --lazy`. Its start script stops at the first error, so on
-the first start after the upgrade the NetBox container exits with a `ProtectedError` like this one:
+The netbox-docker image migrates the database itself when the container starts and, whenever a migration was
+applied, then runs `remove_stale_contenttypes`, `clearsessions` and `reindex --lazy`. Its start script stops at the
+first error.
+
+**On 0.2.0**, on a database upgraded from 0.1.x, the content type cleanup fails on the change log entries of the
+0.1.x models, so the NetBox container exits with a `ProtectedError` like this one on the first start after the
+upgrade, and again on the first start after **every later migration** (of NetBox, of this plugin or of any other
+plugin):
 
 ```text
 django.db.models.deletion.ProtectedError: ("Cannot delete some instances of model 'ContentType' because they are
 referenced through protected foreign keys: 'ObjectType.contenttype_ptr', 'ObjectChange.changed_object_type'.", ...)
 ```
 
-The cause is the step 5 content type cleanup failing on old change log entries of the 0.1.x models. The migrations
-have already been applied at that point, so nothing is lost:
+**From 0.2.1**, migration `0003` removes the plugin's own leftovers during `migrate`: the content types of the six
+0.1.x models that 0.2.0 dropped (`WindowsScope`, `WindowsReservation`, `WindowsOptionDefinition`,
+`WindowsOptionQualifier`, `WindowsVendorOptionDefinition`, `WindowsVendorOption`) and everything that still pointed
+at them: the change log entries of those objects, their permissions, search index rows and jobs, and their place in
+lists of object types that keep at least one other type (permissions, tags, custom fields, change control policies).
+**That change log history is deleted**; the objects themselves were already gone since 0.2.0. `migrate` prints
+how many content types and change log entries it removed. Upgrading to 0.2.1 or later is therefore enough: the first
+start applies `0003`, the cleanup that follows succeeds and NetBox comes up.
+
+The migration leaves a type alone, change log included, when removing it would change something an administrator
+set up: when it is the last object type of a permission, tag, custom field, change control policy or similar (an
+empty list can mean "every type"), or when a bookmark, a notification, a subscription or an open branch's changes
+still use it. `migrate` then prints `Kept the old type ...` with the reason. Edit or delete what it names (merge or
+delete the old branch), then run `migrate netbox_windows_dhcp_plugin 0002` and `migrate` again to retry.
+
+If the container still exits, on 0.2.0 or because of another app's leftovers, the migrations have already been
+applied at that point, so nothing is lost:
 
 1. Start the stack again (`docker compose up -d`; it also starts the worker, which waits for NetBox). With the
-   migrations done, the start script skips the cleanup steps and NetBox comes up.
+   migrations done, the start script skips the cleanup steps and NetBox comes up. On 0.2.0 this happens again after
+   the next migration, until you upgrade.
 2. Run the two steps it skipped:
 
     ```bash
