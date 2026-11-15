@@ -274,6 +274,27 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
             self._merge(self.ipam_only)
         self.assertEqual(self._address(), before)
 
+    def test_squash_does_not_pass_a_hand_edit_off_as_the_import(self):
+        # Squash replays an object's changes under its last change's request ID. A hand edit of the address followed
+        # by an import write to the same object must still be checked at merge.
+        from ipam.models import IPAddress
+        from utilities.exceptions import AbortRequest
+
+        from netbox_windows_dhcp_plugin.ipam_guard import import_request_id
+
+        before = self._address()
+        self._edit_in_branch(self.editor)
+        with branching.writing(self.branch, self.editor, request_id=import_request_id()):
+            ip = IPAddress.objects.get(pk=Reservation.objects.get().ip_address_id)
+            ip.snapshot()
+            ip.description = "written by an import"
+            ip.save()
+        self.branch.merge_strategy = "squash"
+        self.branch.save(update_fields=["merge_strategy"])
+        with self.assertRaises(AbortRequest):
+            self._merge(self.ipam_only)
+        self.assertEqual(self._address(), before)
+
     def test_merge_by_a_user_with_the_permission(self):
         # The editor lost the permission since: the merging user's is what counts at merge time.
         address = self._edit_in_branch(self.editor)

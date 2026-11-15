@@ -124,7 +124,8 @@ it on does that.
 
 Merging needs no Windows DHCP permission for the import's own changes, even when they move a prefix, range, address
 or MAC that a scope or reservation uses: they only bring NetBox in line with Windows. An edit someone adds to the
-import branch by hand is checked like any other, when it is made and again at merge (see
+import branch by hand is checked like any other, when it is made and again at merge, and so is every change of an
+object it touched (see
 [Editing IPAM objects used by DHCP](ipam-edits.md#with-netbox-branching)).
 
 Writing into a branch needs a NetBox user: manual imports use the user who clicked, scheduled ones the `import_user`

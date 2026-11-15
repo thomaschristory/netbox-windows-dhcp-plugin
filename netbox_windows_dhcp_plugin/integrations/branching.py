@@ -182,6 +182,35 @@ def applying_branch():
     return (name, user) if Branch.objects.filter(pk=pk, status__in=busy).exists() else None
 
 
+def applying_request_ids(instance):
+    """
+    The request IDs of every change the branch being merged (or reverted) holds for this object: unmerged changes for
+    a merge, merged ones for a revert. Empty when no merge or revert runs.
+    """
+    mark = _applying.get()
+    if mark is None or not branching_installed():
+        return set()
+    from core.models import ObjectChange, ObjectType
+    from django.db import DEFAULT_DB_ALIAS
+    from netbox_branching.choices import BranchStatusChoices
+    from netbox_branching.models import Branch
+
+    branch = Branch.objects.filter(pk=mark[0]).first()
+    if branch is None:
+        return set()
+    # Not get_unmerged_changes() / get_merged_changes(): they return nothing while the branch is merging or reverting.
+    if branch.status == BranchStatusChoices.REVERTING:
+        changes = ObjectChange.objects.using(DEFAULT_DB_ALIAS).filter(application__branch=branch)
+    else:
+        changes = ObjectChange.objects.using(branch.connection_name)
+    object_type = ObjectType.objects.get_for_model(instance)
+    return set(
+        changes.filter(changed_object_type=object_type, changed_object_id=instance.pk).values_list(
+            "request_id", flat=True
+        )
+    )
+
+
 def _on_pre_revert(sender, branch, user=None, **kwargs):
     _on_pre_apply(sender, branch, user)
     # A revert that fails, or has nothing to revert, sends no post_revert: do not let those entries pile up.

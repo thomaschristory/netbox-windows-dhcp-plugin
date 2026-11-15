@@ -98,7 +98,8 @@ def dependents(instance):
 # under their original request ID (netbox-branching's iterative strategy; squash uses the last change's), and they
 # need no DHCP permission: they do not change what Windows has. The import's request IDs carry a keyed hash of
 # NetBox's SECRET_KEY, so they can be recognised without storing them and cannot be made up. An edit someone adds to
-# an import branch has its own request ID and is checked at merge like any other.
+# an import branch has its own request ID and is checked at merge like any other, and so is every change of an object
+# that such an edit touched (squash collapses them under one request ID).
 
 _IMPORT_SALT = "netbox_windows_dhcp_plugin.import-request"
 
@@ -219,8 +220,14 @@ def check_edit(sender, instance, raw=False, **kwargs):
         # may differ from what the branch held when the edit was made there. An import's own changes are not checked.
         from netbox.context import current_request
 
+        from .integrations.branching import applying_request_ids
+
+        # Only when every change the branch holds for this object is the import's: squash replays an object's changes
+        # under its last change's request ID, which must not pass a hand edit off as the import's.
         if is_import_request(getattr(current_request.get(), "id", None)):
-            return
+            request_ids = applying_request_ids(instance)
+            if request_ids and all(is_import_request(r) for r in request_ids):
+                return
         branch, user = applying
         # No merging user (a job whose user was deleted): fall back to the user the replay runs as.
         user = user or _request_user()
