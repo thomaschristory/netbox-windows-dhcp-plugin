@@ -55,7 +55,8 @@ Only the fields Windows receives count for the core objects: an IP address's des
 no push. Changing the fields that do count needs the plugin's permission on the scopes or reservations concerned, see
 [Permissions](permissions.md#editing-ipam-objects-that-windows-uses).
 
-**Triggered by.** Each push's sync run lists what queued it: every edit it carries (user, and a **Changes** link to
+**Triggered by** (see [Following a change from NetBox to Windows](ipam-edits.md#following-a-change-from-netbox-to-windows)).
+Each push's sync run lists what queued it: every edit it carries (user, and a **Changes** link to
 the change log entries of that request), a **Sync now** click, or a branch merge or revert. Edits made while a push
 is still waiting to start are added to that push, so several people's edits can share one sync run. Edits made once a
 push has started are listed on the next push, even when the running one already carried them (it reads NetBox after

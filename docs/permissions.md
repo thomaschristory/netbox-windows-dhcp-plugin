@@ -7,6 +7,9 @@ reservations point at keep NetBox's own permissions (`ipam.*`, `dcim.*`).
 
 ## Editing IPAM objects that Windows uses
 
+[Editing IPAM objects used by DHCP](ipam-edits.md) covers this in full: the rule, the messages, role recipes,
+branching and the push trail. In short:
+
 Changing some fields of those objects changes what the next push writes to Windows. Such an edit is a DHCP change,
 so besides NetBox's own `change` permission on the object it needs `change` on every scope or reservation that uses
 it:
@@ -75,6 +78,7 @@ Applying an item writes NetBox objects as the reviewing user, so the change log 
 | DHCP viewer | `view` on the plugin's models (and on prefixes, IP ranges, IP addresses and MAC addresses) |
 | DHCP operator | viewer, plus `change` on Windows servers (actions and leases) |
 | DHCP editor | operator, plus `add`, `change`, `delete` on the plugin's DHCP models, and on prefixes, IP ranges, IP addresses and MAC addresses |
+| IPAM editor (no DHCP changes) | `view` and `change` on prefixes, IP ranges, IP addresses and MAC addresses, `view` on the plugin's models; edits that would change Windows are refused (see [Editing IPAM objects used by DHCP](ipam-edits.md#recipes)) |
 | Import user (`import_user`) | `view` and `change` on Windows servers; with branching `netbox_branching.add_branch` (and `netbox_change_control.add_changerequest`) |
 
 With branching, NetBox's own branching and change control permissions govern who may merge, and so who triggers a

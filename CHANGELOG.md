@@ -18,7 +18,7 @@ All notable changes to this project are documented here. The format follows
   the range's start or end, the address, the MAC). Until now `ipam` / `dcim` permissions alone were enough to change
   production DHCP. The save is refused with a message naming the scope or reservation. Other fields (description,
   status, tags...) are not affected. Grant `change_scope` / `change_reservation` to users who renumber in IPAM (see
-  [Permissions](docs/permissions.md)). Issue #102.
+  [Editing IPAM objects used by DHCP](docs/ipam-edits.md)). Issue #102.
 - Edits of a prefix, IP range, IP address or MAC address that do not change what Windows receives (description,
   status, tags...) no longer queue a push.
 

@@ -62,6 +62,7 @@ nav:
       - Failover: failover.md
       - Leases: leases.md
       - Permissions: permissions.md
+      - Editing IPAM objects used by DHCP: ipam-edits.md
       - REST API and GraphQL: api.md
   - Operations:
       - Security: security.md
