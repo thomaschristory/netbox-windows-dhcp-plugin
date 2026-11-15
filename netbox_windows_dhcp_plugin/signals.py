@@ -173,6 +173,11 @@ def _changed(sender, instance, **kwargs):
     if label not in WATCHED or getattr(_local, "suppressed", False):
         return
     by_pk = label in _LOOKUP_BY_PK
+    if by_pk and "created" in kwargs and getattr(instance, "_nbwd_push_fields", None) == ():
+        # A save (post_save passes "created", pre_delete does not) whose pre_save guard found no change to a field a
+        # push reads (a description, tags, status...): nothing for Windows. A save the guard did not see (raw) has no
+        # mark and queues as before.
+        return
     if by_pk and kwargs.get("created"):
         # No scope or reservation can point yet at a prefix, range, address or MAC that was only just created:
         # spare the lookup, which a bulk import of IP addresses would otherwise run once per address.
