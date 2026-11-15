@@ -91,17 +91,34 @@ def _describe(codename, obj):
     return f"{obj.scope.server.name}/{obj.scope.scope_id}/{obj.ip_address.address.ip if obj.ip_address_id else obj}"
 
 
-def _refusal(fields, missing):
+def _refusal(fields, missing, user):
+    """
+    The message: each scope or reservation the user may not change, named only when the user may view it (the
+    message must not reveal objects hidden from them), the rest counted.
+    """
     names = ", ".join(fields)
+    visible, hidden = [], {}
+    for codename, obj, viewable in missing:
+        if viewable:
+            visible.append((codename, obj))
+        else:
+            hidden[codename] = hidden.get(codename, 0) + 1
     lines = []
-    for codename, obj in missing[:MESSAGE_LIMIT]:
+    for codename, obj in visible[:MESSAGE_LIMIT]:
         kind = _KIND[codename]
         lines.append(
             f'Changing {names} would change {kind} {_describe(codename, obj)} on Windows. You need the "change {kind}" '
             "permission on it."
         )
-    if len(missing) > MESSAGE_LIMIT:
-        lines.append(f"And {len(missing) - MESSAGE_LIMIT} more.")
+    if len(visible) > MESSAGE_LIMIT:
+        lines.append(f"And {len(visible) - MESSAGE_LIMIT} more.")
+    for codename, count in hidden.items():
+        kind = _KIND[codename]
+        what = f"{count} {kind}" if count == 1 else f"{count} {kind}s"
+        lines.append(
+            f'Changing {names} would change {what} you cannot view on Windows. You need the "change {kind}" '
+            "permission on them."
+        )
     return " ".join(lines)
 
 
@@ -113,12 +130,25 @@ def _request_user():
     return user if user is not None and user.is_authenticated else None
 
 
+def _missing(instance, user):
+    """[(codename, object, viewable)] for every dependent scope or reservation the user may not change."""
+    missing = []
+    for codename, queryset in dependents(instance):
+        allowed = set(queryset.restrict(user, "change").values_list("pk", flat=True))
+        refused = [obj for obj in queryset if obj.pk not in allowed]
+        if refused:
+            viewable = set(queryset.restrict(user, "view").values_list("pk", flat=True))
+            missing.extend((codename, obj, obj.pk in viewable) for obj in refused)
+    return missing
+
+
 def check_edit(sender, instance, raw=False, **kwargs):
     """
     pre_save receiver for the four watched models: refuse (AbortRequest) an edit that changes what a push writes to
     Windows when the user may not change every scope or reservation affected. NetBox's views and REST API turn the
     exception into an error message (or HTTP 400) and roll the request back.
     """
+    instance._nbwd_guard_user = None
     if raw:
         # Fixture loading: not an edit by anyone.
         return
@@ -139,18 +169,34 @@ def check_edit(sender, instance, raw=False, **kwargs):
         return
     from utilities.exceptions import AbortRequest
 
-    missing = []
-    for codename, queryset in dependents(instance):
-        allowed = set(queryset.restrict(user, "change").values_list("pk", flat=True))
-        missing.extend((codename, obj) for obj in queryset if obj.pk not in allowed)
-    if missing:
-        raise AbortRequest(_refusal(fields, missing))
+    if missing := _missing(instance, user):
+        raise AbortRequest(_refusal(fields, missing, user))
+    # Checked again after the save (recheck_edit): a permission constraint can depend on the edited value itself, for
+    # example reservations allowed in part of a subnet only.
+    instance._nbwd_guard_user = user
+
+
+def recheck_edit(sender, instance, raw=False, **kwargs):
+    """
+    post_save receiver: the same check against the saved values. Raising here rolls the save back, as NetBox's views,
+    REST API and scripts save inside a transaction (NetBox checks its own object permissions the same way).
+    """
+    user = getattr(instance, "_nbwd_guard_user", None)
+    if raw or user is None:
+        return
+    instance._nbwd_guard_user = None
+    from utilities.exceptions import AbortRequest
+
+    if missing := _missing(instance, user):
+        raise AbortRequest(_refusal(instance._nbwd_push_fields, missing, user))
 
 
 def connect():
     from dcim.models import MACAddress
-    from django.db.models.signals import pre_save
+    from django.db.models.signals import post_save, pre_save
     from ipam.models import IPAddress, IPRange, Prefix
 
     for model in (Prefix, IPRange, IPAddress, MACAddress):
-        pre_save.connect(check_edit, sender=model, dispatch_uid=f"{PLUGIN}.guard.{model._meta.label_lower}")
+        label = model._meta.label_lower
+        pre_save.connect(check_edit, sender=model, dispatch_uid=f"{PLUGIN}.guard.{label}")
+        post_save.connect(recheck_edit, sender=model, dispatch_uid=f"{PLUGIN}.guard.post.{label}")

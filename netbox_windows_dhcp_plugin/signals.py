@@ -158,6 +158,10 @@ def _flush():
 def _forget_pending(**kwargs):
     # Servers left pending by a rolled-back transaction belong to an earlier request: do not push them under this one.
     _local.pending = None
+    from .integrations.branching import clear_applying
+
+    # Likewise a merge or revert mark left by a failed merge in this thread.
+    clear_applying()
 
 
 def _pending_is_live():

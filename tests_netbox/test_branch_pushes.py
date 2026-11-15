@@ -237,3 +237,21 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
         with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
             self.branch.revert(user=self.ipam_only)
         self.assertNotEqual(str(Reservation.objects.get().ip_address.address), address)
+
+
+class ApplyingBranchMarkTest(TestCase):
+    """The merge/revert mark must not outlive the merge or revert that set it (a failed one sends no closing signal)."""
+
+    def test_cleared_after_merge_revert_and_request_start(self):
+        from types import SimpleNamespace
+
+        fake = SimpleNamespace(pk=99, name="x", get_merged_changes=lambda: [])
+        for close in (
+            lambda: branching._on_merge(None, branch=fake),
+            lambda: branching._on_revert(None, branch=fake),
+            signals._forget_pending,
+        ):
+            branching._on_pre_apply(None, branch=fake)
+            self.assertEqual(branching._applying.get(), 99)
+            close()
+            self.assertIsNone(branching._applying.get())

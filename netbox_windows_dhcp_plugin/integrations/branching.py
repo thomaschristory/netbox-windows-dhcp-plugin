@@ -143,6 +143,7 @@ def _queue(ids, user, branch, source):
 
 
 def _on_merge(sender, branch, user=None, **kwargs):
+    clear_applying()
     try:
         _queue(_affected_servers(branch), user, branch, "merge")
     except Exception:
@@ -157,6 +158,11 @@ _applying = ContextVar("netbox_windows_dhcp_plugin_applying_branch", default=Non
 
 def _on_pre_apply(sender, branch, user=None, **kwargs):
     _applying.set(branch.pk)
+
+
+def clear_applying():
+    """Forget the merge or revert mark: at its end, and when a new request starts (a failed one sends no signal)."""
+    _applying.set(None)
 
 
 def applying_branch():
@@ -183,6 +189,7 @@ def _on_pre_revert(sender, branch, user=None, **kwargs):
 
 
 def _on_revert(sender, branch, user=None, **kwargs):
+    clear_applying()
     try:
         _queue(_reverting.pop(branch.pk, set()), user, branch, "revert")
     except Exception:

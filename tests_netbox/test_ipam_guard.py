@@ -137,6 +137,7 @@ class GuardViewTest(_GuardMixin, utilities_testing.TestCase):
         return self.client.post(url, {"address": address, "status": "active", "description": description})
 
     def test_ui_edit_refused(self):
+        self.grant("view_reservation")
         response = self.edit("198.18.10.26/24")
         self.assertEqual(response.status_code, 200)
         self.assertIn("dhcp1/198.18.10.0/198.18.10.25", response.content.decode())
@@ -180,12 +181,33 @@ class GuardViewTest(_GuardMixin, utilities_testing.TestCase):
         other.prefix = self.scope.prefix
         other.save()
         self.grant("change_scope", {"server__name": "dhcp1"})
+        self.grant("view_scope")
         url = reverse("ipam:prefix_edit", args=[self.scope.prefix_id])
         response = self.client.post(url, {"prefix": "198.18.10.0/23", "status": "active", "scope_type": ""})
         self.assertEqual(response.status_code, 200)
         self.assertIn("dhcp2/", response.content.decode())
         self.scope.prefix.refresh_from_db()
         self.assertEqual(str(self.scope.prefix.prefix), "198.18.10.0/24")
+
+    def test_message_hides_what_the_user_cannot_view(self):
+        other = fixtures.scope(fixtures.windows_server("hidden-dhcp"), "198.18.12.0/24")
+        other.prefix = self.scope.prefix
+        other.save()
+        self.grant("change_scope", {"server__name": "dhcp1"})
+        self.grant("view_scope", {"server__name": "dhcp1"})
+        url = reverse("ipam:prefix_edit", args=[self.scope.prefix_id])
+        response = self.client.post(url, {"prefix": "198.18.10.0/23", "status": "active", "scope_type": ""})
+        content = response.content.decode()
+        self.assertNotIn("hidden-dhcp", content)
+        self.assertIn("1 scope you cannot view", content)
+        self.assertIn("change scope", content)
+
+    def test_constraint_checked_after_the_change_too(self):
+        # Allowed on reservations in the lower half of the subnet only: moving one out of it is refused.
+        self.grant("change_reservation", {"ip_address__address__net_host_contained": "198.18.10.0/25"})
+        self.assertEqual(self.edit("198.18.10.200/24").status_code, 200)
+        self.assertEqual(self.stored_address(), "198.18.10.25/24")
+        self.assertEqual(self.edit("198.18.10.30/24").status_code, 302)
 
 
 class GuardAPITest(_GuardMixin, utilities_testing.APITestCase):

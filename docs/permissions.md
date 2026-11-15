@@ -25,8 +25,11 @@ Changing address would change reservation dhcp01/198.18.10.0/198.18.10.25 on Win
 reservation" permission on it.
 ```
 
-Object permissions count: a permission limited to one Windows server (for example the constraint
-`{"scope__server__name": "dhcp01"}` on reservations) allows the edit only for that server's reservations. Every other
+Scopes and reservations the user may not view are counted, not named. Object permissions count, and are checked
+against the values before and after the edit: a permission limited to one Windows server (for example the constraint
+`{"scope__server__name": "dhcp01"}` on reservations) allows the edit only for that server's reservations, and one
+limited to part of a subnet (`{"ip_address__address__net_host_contained": "198.18.10.0/25"}`) does not let an
+address move out of it. Every other
 field (status, VRF, tenant, description, tags, DNS name, assigned interface) never reaches Windows, needs no plugin
 permission, and queues no push.
 
