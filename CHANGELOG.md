@@ -20,7 +20,9 @@ All notable changes to this project are documented here. The format follows
   status, tags...) are not affected. Grant `change_scope` / `change_reservation` to users who renumber in IPAM (see
   [Editing IPAM objects used by DHCP](docs/ipam-edits.md)). With netbox-branching the edit is checked in the branch,
   and again when the branch is merged or reverted, as the merging or reverting user: a merge that would change a scope
-  or reservation that user may not change is refused and nothing is merged. Issue #102.
+  or reservation that user may not change is refused and nothing is merged. The check reads the database the save
+  writes to (a merge started from code running in a branch, such as a script, is checked against main), and a save
+  is checked as the merging user only when it is one of the branch's replayed changes. Issues #102, #113.
 - Direct edits of a prefix, IP range, IP address or MAC address that do not change what Windows receives
   (description, status, tags...) no longer queue a push (a branch merge still queues one per server it touches).
 

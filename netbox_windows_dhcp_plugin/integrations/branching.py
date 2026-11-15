@@ -153,7 +153,7 @@ def _on_merge(sender, branch, user=None, **kwargs):
 
 # The branch whose merge or revert is replaying changes in this context, with its name and the user merging or
 # reverting it. netbox-branching sends no signal when a merge fails, so applying_branch() also checks that the branch
-# is still merging or reverting before trusting it.
+# is still merging or reverting, and that the save runs under one of the branch's request IDs, before trusting it.
 _applying = ContextVar("netbox_windows_dhcp_plugin_applying_branch", default=None)
 
 
@@ -166,49 +166,46 @@ def clear_applying():
     _applying.set(None)
 
 
-def applying_branch():
+def applying_branch(instance):
     """
-    While netbox-branching merges or reverts a branch in this context (its replayed saves land on main): the branch
-    name and the merging or reverting user, else None.
+    While netbox-branching merges or reverts a branch in this context and this save is one of its replayed changes:
+    (branch name, merging or reverting user, request IDs of every change the branch holds for this object), else None.
+
+    The mark alone is not enough: a failed, empty or dry-run merge sends no closing signal, so the mark can outlive it
+    (until the next request or merge in this process). A replayed save runs under the request ID of one of the
+    branch's own changes to this object (both strategies set it), which an ordinary save never has.
     """
     mark = _applying.get()
     if mark is None or not branching_installed():
         return None
+    from netbox.context import current_request
+
+    request_id = getattr(current_request.get(), "id", None)
+    if request_id is None:
+        return None
+    from core.models import ObjectType
     from netbox_branching.choices import BranchStatusChoices
     from netbox_branching.models import Branch
 
     pk, name, user = mark
-    busy = (BranchStatusChoices.MERGING, BranchStatusChoices.REVERTING)
-    return (name, user) if Branch.objects.filter(pk=pk, status__in=busy).exists() else None
-
-
-def applying_request_ids(instance):
-    """
-    The request IDs of every change the branch being merged (or reverted) holds for this object: unmerged changes for
-    a merge, merged ones for a revert. Empty when no merge or revert runs.
-    """
-    mark = _applying.get()
-    if mark is None or not branching_installed():
-        return set()
-    from core.models import ObjectChange, ObjectType
-    from django.db import DEFAULT_DB_ALIAS
-    from netbox_branching.choices import BranchStatusChoices
-    from netbox_branching.models import Branch
-
-    branch = Branch.objects.filter(pk=mark[0]).first()
+    branch = Branch.objects.filter(pk=pk).first()
     if branch is None:
-        return set()
-    # Not get_unmerged_changes() / get_merged_changes(): they return nothing while the branch is merging or reverting.
-    if branch.status == BranchStatusChoices.REVERTING:
-        changes = ObjectChange.objects.using(DEFAULT_DB_ALIAS).filter(application__branch=branch)
-    else:
-        changes = ObjectChange.objects.using(branch.connection_name)
+        return None
+    if branch.status not in (BranchStatusChoices.MERGING, BranchStatusChoices.REVERTING):
+        return None
+    # What Branch.merge() and Branch.revert() replay: every change in the branch schema (get_changes()). Not main's
+    # applied changes: a branch change that was a no-op on main at merge left none there, yet its undo is replayed.
+    changes = branch.get_changes()
     object_type = ObjectType.objects.get_for_model(instance)
-    return set(
+    request_ids = set(
         changes.filter(changed_object_type=object_type, changed_object_id=instance.pk).values_list(
             "request_id", flat=True
         )
     )
+    # request.id may be a UUID or its string form.
+    if str(request_id) not in {str(r) for r in request_ids}:
+        return None
+    return name, user, request_ids
 
 
 def _on_pre_revert(sender, branch, user=None, **kwargs):
