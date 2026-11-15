@@ -42,6 +42,9 @@ from netbox_windows_dhcp_plugin.windows.client import (
     ExclusionRange as WinExclusion,
 )
 from netbox_windows_dhcp_plugin.windows.client import (
+    FailoverRelationship as WinFailover,
+)
+from netbox_windows_dhcp_plugin.windows.client import (
     OptionDefinition as WinOptionDefinition,
 )
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
@@ -317,6 +320,10 @@ class ProposalImportTest(ImportTestMixin, TestCase):
         result = importer.import_to_proposal(partner, state, None)
         importer.apply_items(result.proposal.items.all())
         self.assertEqual(IPRange.objects.count(), 1)
+        # Only a failover pair moves a shared range together; two unrelated servers do not (see
+        # test_audit_g4_syncnetbox.F50SharedRangeTest).
+        self.client.add_failover(WinFailover(name="HA", partner_server="dhcp2.example.com", scope_ids=["10.1.0.0"]))
+        self.apply_all()
         self.client.set_scope(Scope(scope_id="10.1.0.0", name="LAN", start_range="10.1.0.10", end_range="10.1.0.99"))
         self.apply_all()
         self.assertEqual(IPRange.objects.count(), 1)

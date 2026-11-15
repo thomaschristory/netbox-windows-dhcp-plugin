@@ -5,6 +5,111 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- New migration `0002`: run `manage.py migrate` when upgrading. It turns the sync key columns into text and adds
+  an index; no data changes.
+- A reservation's client ID and DUID must be hex bytes (separated by `-`, `:`, `.` or spaces, or not at all) and are
+  stored in the `aa-bb-cc` form Windows reports, so a saved value can differ in spelling from what was typed. The
+  form and the REST API (400) refuse anything else, such as `printer-01`.
+- A DHCPv6 scope must be on a /64 prefix to be saved, and its lifetimes and timers must be in order when both
+  values of a pair are set (T1 < T2 < preferred lifetime <= valid lifetime). A T1 or T2 of 0 counts as empty.
+  Before, such a scope was saved and then not pushed, or refused by Windows. Existing scopes are not touched.
+- A Windows server's port must be between 1 and 65535. `0` is no longer accepted on save: leave the field empty for
+  the default port.
+- A connection test is not queued again while one for the same server is waiting to start: the button shows a
+  warning and the REST action answers 409 (it always answered 202). A looping script or repeated clicks could pile
+  up logons and lock the service account out. The warning names the waiting job, and the 409 body holds its id in
+  `job`, so a test that no worker picks up can be found and deleted; it stops counting after 15 minutes.
+- After a push that stopped early (lost connection, command timeout, unexpected error), failover replication is no
+  longer tried in the same run: the scopes wait in `replication_pending` and the next push replicates them.
+- Sync run summaries: the `not_pushed`, `errors` and `not_attempted` lists hold at most 1000 entries each, with a
+  `<list>_truncated` flag when cut and a new `not_pushed_count`. The run's error text is capped the same way. The
+  counts stay exact.
+- The Windows server CSV import accepts an `ssh_host_key` column.
+
+### Fixed
+
+- Applying import proposal items while working in a netbox-branching branch wrote the objects into the branch while
+  main recorded them as managed, so the next push from main could delete them on the Windows server. It is now
+  refused, with an error in the UI and 409 from the REST API: switch to main to apply. Dismissing still works in a
+  branch.
+- Importing one Windows server could move an IP range it shared with a scope of another server that is not its
+  failover partner; the next push then rewrote that other server's scope range. The scope change now fails with a
+  message naming the other scope. Import the failover relationship if the servers are partners, edit the shared IP
+  range in NetBox when both servers got the same change, or point one scope at its own prefix and IP range in
+  another VRF. A separate import VRF only keeps servers apart when set before their first import.
+- Reservation IP addresses and a scope's first IP range are created in the VRF of the scope's prefix, not the
+  server's import VRF, so a scope made by hand on a prefix in another VRF no longer attaches its reservations to an
+  unrelated address.
+- A scope that stayed in its failover relationship because it still had leases was treated as added by hand on
+  Windows by later pushes, and never deleted. It is now deleted by a later push once its leases are gone. A scope
+  already in that state must be removed from the relationship on Windows once.
+- A push that hit an unexpected error lost the record of what it had already written. It now stops, saves the sync
+  state and the summary, and reports the change as `unexpected error (<type>), see the worker log`.
+- A change inside a scope that failed after part of it may have reached Windows now has its scope replicated to
+  the failover partner (or kept in `replication_pending`). A failed server-level change (a class, an option
+  definition, a MAC filter, a server option) replicates nothing until it is applied, unless the push stopped on it
+  (lost connection, unexpected error): then all the relationship's scopes wait in `replication_pending` for the
+  next push. A failed failover change triggers no replication.
+- A scope delete no longer counts as done when only its removal from a failover relationship answered "not found":
+  the scope itself is then deleted, or reported as failed.
+- A missing PowerShell cmdlet was read as "object not found". It is now an error: a read no longer reports drift,
+  and a push no longer counts a delete as done, because a cmdlet does not exist on the server.
+- A WinRM command that never finishes is abandoned after ten times `command_timeout` (at least 10 minutes, so 20
+  minutes with the default) with `winrm: PowerShell did not finish within N s`, instead of holding the job until
+  the queue killed the worker.
+- Imports get the same one hour job timeout as pushes (or netbox-branching's `job_timeout` when that is longer), so
+  the first import of a large server no longer dies after five minutes.
+- A push waiting for a busy server no longer sends a "completed" notification every minute: only the attempt that
+  pushes, or the final failure, notifies. One exception: a waiting attempt that finds another push already queued
+  for the server stops there and notifies once with its own setting, since that other push carries its changes.
+- With netbox-branching, a scheduled import without a usable `import_user` fails before connecting to the Windows
+  server instead of after reading it.
+- An over-long or malformed name a server reports for itself no longer fails every connection test, import and push
+  of that server: such names are ignored, and at most 32 names are kept.
+- A connection that cannot be closed at the end of a job no longer leaves its sync run in the running state, and
+  an import no longer fails when the connection cannot be closed after the server was read: a warning is logged
+  instead.
+- The import scheduler goes on with the other servers when one cannot be queued, and logs "Queued an import" only
+  when one was queued.
+- An option definition whose Windows type was typed in another case (`string`, `Dword`) blocked every push with
+  "the type cannot change" and came back in every import. The type is now compared without case and stored in
+  Windows' spelling.
+- A policy whose IP ranges were not pairs of address strings (numbers, for example) could be saved and then stopped
+  every push and import of its server. Such ranges are now refused on save, as are IPv6 ranges and ranges outside
+  the policy's scope.
+- Very long class or policy names (a sync key over 255 characters) made a push or an import fail with a database
+  error. The key columns are now text (migration `0002`).
+- A reservation client ID or DUID written without leading zeros (`0:1b:21:a:b:c`) was pushed as a different,
+  shorter client ID. Each group is now padded to a byte, and ambiguous group widths are refused.
+- Creating a scope whose IP range is not inside the scope's prefix is refused before anything is sent to Windows,
+  instead of creating a different scope there.
+- A MAC filter update that fails halfway puts the old entry back instead of leaving the address out of its list.
+  If putting it back fails too, the error says that the address was left out and why.
+- When a scope range move fails and the old range cannot be put back, the error names the range the scope was left
+  at.
+- Malformed list output from a server is reported as a Windows output error instead of an empty object or a
+  traceback.
+- Two reviewers acting on the same proposal item, or a new import replacing it meanwhile, no longer overwrite each
+  other's decision or bring a replaced item back; the counts report only what the request changed. An item that
+  was dismissed or replaced while an apply request was running is no longer written to NetBox or recorded as
+  managed.
+- A value the database refuses while one import change is applied now fails that change with its message, instead
+  of stopping the import or answering HTTP 500.
+- The review item for deleting a duplicate policy, superscope, failover relationship or MAC filter (the same name
+  in another case) links and permission-checks the copy that is deleted.
+- **Apply selected** and **Dismiss selected** with "select all matching" on a list whose filter is no longer valid
+  (for example a deleted proposal) acted on every open item of every proposal. It now acts on nothing and says so.
+- A REST `PATCH` with `"scope": null` on a reservation's option value no longer detaches the value from the
+  reservation's scope.
+- Searching option definitions or option values for a character such as `²` answered HTTP 500.
+
+### Performance
+
+- A database index serves the "latest run of a server" lookups of the import scheduler and the server page
+  (migration `0002`).
+
 ### Documentation
 
 - Upgrading from 0.1.x with netbox-docker: the first start after the upgrade exits with a `ProtectedError` from the

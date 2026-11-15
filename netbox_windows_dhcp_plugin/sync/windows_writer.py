@@ -8,6 +8,7 @@ take. Every call goes through ``DhcpClient``, so values only ever reach PowerShe
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -30,7 +31,7 @@ from ..windows.client import (
     ScopeV6,
     Superscope,
 )
-from ..windows.psscript import WindowsLayerError
+from ..windows.psscript import NotFound, WindowsLayerError
 from ..windows.runner import RunnerError
 from .diff import CREATE, DELETE, UPDATE, Change
 from .windows_state import NO_BOOTP_LIMIT, ipv6, option6_key, option6_target, option_key, same_host
@@ -39,7 +40,15 @@ __all__ = ("PushRefused", "WindowsWriter", "option_target")
 
 
 class PushRefused(Exception):
-    """A change the push will not make on Windows, because it would destroy more than it says. Meant for the log."""
+    """
+    A change the push will not make on Windows, because it would destroy more than it says. Meant for the log.
+    ``wrote`` is True for the rare refusal raised after Windows was already changed (the push then still replicates
+    the scope to a failover partner).
+    """
+
+    def __init__(self, message: str, wrote: bool = False) -> None:
+        super().__init__(message)
+        self.wrote = wrote
 
 
 def option_target(parent: str) -> tuple[str, str]:
@@ -48,6 +57,10 @@ def option_target(parent: str) -> tuple[str, str]:
         return "", ""
     scope_id, _, ip = parent.partition("/")
     return scope_id, ip
+
+
+def _folded(value: Any) -> Any:
+    return value.casefold() if isinstance(value, str) else value
 
 
 def _option_name(v: Any) -> str:
@@ -121,7 +134,8 @@ class WindowsWriter:
         if change.action == UPDATE:
             before = change.before or {}
             for name in ("type", "multi_valued"):
-                if before.get(name) != f.get(name):
+                # The type is compared without case, as Windows reads it: "string" and "String" are one type.
+                if _folded(before.get(name)) != _folded(f.get(name)):
                     # Windows can only change these by removing the definition, which removes every value using it.
                     raise PushRefused(
                         f"option definition {change.key}: the {name.replace('_', ' ')} cannot change on Windows "
@@ -188,7 +202,12 @@ class WindowsWriter:
                     f"stays in failover relationship {relationships[0]}"
                 )
             for name in relationships:
-                self.client.remove_failover_scopes(name, [change.key])
+                # Not found here means the relationship went away, or the scope left it, since the list above (a
+                # change made on the partner, say): either way the scope is out of it. Whether the scope itself
+                # still exists is for remove_scope below to say, so a "not found" from this step must not pass for
+                # "scope already deleted".
+                with contextlib.suppress(NotFound):
+                    self.client.remove_failover_scopes(name, [change.key])
             # Never forced: a scope that still has leases fails with DHCP 20007, and that error is reported.
             self.client.remove_scope(change.key)
             return
@@ -297,7 +316,8 @@ class WindowsWriter:
         if failed:
             raise PushRefused(
                 f"reservation {ip} was updated, but Windows dropped option values and putting them back failed: "
-                + "; ".join(failed)
+                + "; ".join(failed),
+                wrote=True,
             )
 
     # -- option values -------------------------------------------------------------------------------------------

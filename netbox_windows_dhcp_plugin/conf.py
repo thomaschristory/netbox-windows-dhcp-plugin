@@ -33,7 +33,8 @@ DEFAULTS = {
     "push_debounce": 10,
     # Maximum number of PowerShell commands one job runs at the same time against a server.
     "max_concurrency": 4,
-    # Seconds before a single PowerShell command is abandoned.
+    # Seconds a single PowerShell command may stay silent before it is abandoned. Over WinRM this is one wait for
+    # output; a command that keeps the connection alive without finishing is abandoned after ten times this long.
     "command_timeout": 120,
 }
 
@@ -60,8 +61,19 @@ class Credentials:
         return f"Credentials(username={self.username!r})"
 
 
-def _resolve(profile_name, profile, key, environ):
+def _resolve(profile_name, profile, key, environ, needed):
     if key in profile:
+        if profile[key] is None:
+            if not needed:
+                # A key this connection does not use (a WinRM profile with "private_key": None, or a "secret" read
+                # from a variable that is only set where failover authentication is used) counts as not set, so
+                # it does not stop a profile that works without it.
+                return ""
+            # Typically "password": os.environ.get("X") with X missing. str(None) would log on as "None": a wrong
+            # password on every job (and an account lockout), or a guessable failover secret.
+            raise CredentialError(
+                f"credential profile {profile_name!r}: {key} is set to None (is an environment variable missing?)"
+            )
         return str(profile[key])
     if f"{key}_env" in profile:
         var = profile[f"{key}_env"]
@@ -77,8 +89,13 @@ def _resolve(profile_name, profile, key, environ):
     return ""
 
 
-def get_credentials(profile_name, profiles=None, environ=None):
-    """Resolve a credential profile from the plugin configuration."""
+def get_credentials(profile_name, profiles=None, environ=None, needed=("username", "password")):
+    """
+    Resolve a credential profile from the plugin configuration.
+
+    `needed` names the keys the caller is going to use: an inline None is an error for those, and reads as not set
+    for the others.
+    """
     profiles = get_setting("credentials") if profiles is None else profiles
     environ = os.environ if environ is None else environ
     if profile_name not in profiles:
@@ -86,7 +103,7 @@ def get_credentials(profile_name, profiles=None, environ=None):
     profile = profiles[profile_name]
     return Credentials(
         **{
-            key: _resolve(profile_name, profile, key, environ)
+            key: _resolve(profile_name, profile, key, environ, key in needed)
             for key in ("username", "password", "private_key", "secret")
         }
     )

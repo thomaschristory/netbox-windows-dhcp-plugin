@@ -53,6 +53,24 @@ proposes exactly the same values.
 **An applied item failed with a "changed since" message.** Someone changed the NetBox object after the import.
 Import again to get a fresh item.
 
+**"import proposals are applied to main: leave the branch (switch to main) and apply again".** Proposal items
+cannot be applied while you work in a netbox-branching branch; see
+[Import](import.md#without-branching-import-proposals). Dismissing works anywhere.
+
+**"IP range ... is shared with scope ... of Windows server ..., which is not a failover partner for this
+scope".** Two servers hold the same subnet and were imported into the same VRF, so their scopes share one IP range
+in NetBox. Pick the case that fits, then apply the failed item again (or run the import again):
+
+- The servers are failover partners: import the failover relationship first.
+- Both servers got the same range change on Windows: edit the shared IP range in NetBox to the new start and end.
+- Otherwise: edit one of the two scopes in NetBox and point it at its own prefix and IP range in another VRF
+  (NetBox refuses two overlapping ranges in one VRF).
+
+Do not delete the scope in NetBox to import it afresh: the next push would delete it on the Windows server.
+Setting a separate import VRF on a server does not help here, because a scope that exists keeps the VRF of its
+prefix; it only keeps servers apart when set before their first import. See
+[Limitations](limitations.md#operations).
+
 **Some Windows objects never show up.** Check the import's notes in the sync run: DHCPv6 vendor classes, DHCPv6
 exclusions and values of DHCPv6 codes that are not standard options are left out on purpose. A failover
 relationship imports from one partner only: the first one imported, which becomes its primary. A scope deleted on
@@ -87,6 +105,14 @@ The usual reasons a change is in `not_pushed`:
 | `NetBox holds more than one object for this Windows object` | Delete the extra object in NetBox (for example a class or policy whose name differs only in case) |
 | `option 1 is the subnet mask on Windows` / `option 51 is the lease time on Windows` | Remove the option value from NetBox; the scope's prefix length and lease duration set them |
 | `scope(s) ... are already in failover relationship ... on Windows` | Windows holds those scopes in a relationship NetBox does not have (made by hand, or renamed on Windows). Import it, or remove the scopes from it on Windows |
+
+**"unexpected error (<type>), see the worker log".** The push hit an error it did not expect on that change and
+stopped: what it had already written is recorded, and the changes after it are `not_attempted`. The traceback is in
+the NetBox worker's log (`netbox-worker`, or the `rqworker` service). Please open an issue with it.
+
+**A scope deleted in NetBox stays on Windows, in its failover relationship.** It had leases when the push first
+tried, so it was kept. A later push deletes it once the leases are gone. A scope left that way by 0.2.0 or an
+earlier version is taken for one added by hand: remove it from the relationship on Windows once.
 
 **DHCP 20007 when deleting a scope.** The scope still has leases. The plugin never forces the delete; it succeeds on a
 later push once the leases are gone, or delete the scope on Windows by hand.

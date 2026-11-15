@@ -96,7 +96,8 @@ def failover_secret_lookup(server):
         partner_hosts = (partner.host, partner.computer_name)
         try:
             check_host_allowed(profile, server.host, server.computer_name, *partner_hosts)
-            return get_credentials(profile).secret
+            # Only the secret is used here, so only an inline None for the secret is an error.
+            return get_credentials(profile, needed=("secret",)).secret
         except CredentialError as exc:
             # The push reports ValueError as a failed change, with this message (which never holds the secret).
             raise ValueError(f"failover {name}: {exc}") from None

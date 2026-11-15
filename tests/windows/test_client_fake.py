@@ -88,9 +88,11 @@ def test_scope_lifecycle(c: DhcpClient, fake: FakeDhcpServer) -> None:
         c.remove_scope("10.1.20.0")
 
 
-def test_add_scope_with_mismatched_scope_id_reads_back_not_found(c: DhcpClient) -> None:
-    with pytest.raises(NotFound):
+def test_add_scope_with_mismatched_scope_id_is_refused_before_it_is_sent(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    # Used to create scope 10.1.20.0 on the server and then fail reading 10.9.9.0 back, leaving a stray scope.
+    with pytest.raises(ValueError, match="not inside scope 10.9.9.0"):
         c.add_scope(scope(scope_id="10.9.9.0"))
+    assert fake.scopes == {}
 
 
 def test_remove_scope_with_leases_needs_force(c: DhcpClient, fake: FakeDhcpServer) -> None:

@@ -28,8 +28,10 @@ IPAM like any other.
 An import creates the core objects, or reuses the ones it finds, in the Windows server's **import VRF** (global when
 empty): the **Prefix** of each scope, the **IP Range** of each IPv4 scope, the **IP Address** of each reservation
 and the **MAC Address** of each IPv4 reservation identified by one. Failover partners share one IP range per scope
-this way. A prefix, IP range, IP address or MAC address that a scope or reservation points at cannot be deleted
-while it does.
+this way. When a scope's prefix sits in another VRF (a scope made by hand, or an import VRF changed later), its
+first IP range and its reservations' IP addresses follow the prefix's VRF. A prefix, IP range, IP address or MAC
+address that a scope or reservation points at cannot be deleted while it does: deleting a device, virtual machine
+or interface that holds such an address is refused until the reservation is deleted or the address unassigned.
 
 Parent edits must keep their existing children valid. A referenced class cannot change server, address family or
 class type while its definitions or values would become inconsistent; the same rule applies to a policy's server
@@ -93,7 +95,7 @@ way to change one, so a changed range is pushed as a remove and an add.
 | Windows | Reservation field |
 |---|---|
 | IP address | IP address (an IPAM IP address inside the scope's prefix) |
-| Client ID | MAC address (an IPAM MAC address), or **client ID** when the client is identified by something else |
+| Client ID | MAC address (an IPAM MAC address), or **client ID** when the client is identified by something else: hex bytes, stored as `aa-bb-cc` whatever separators were typed |
 | Name, description | Name, description |
 | Type (DHCP, BOOTP, Both) | Type (Both by default) |
 
@@ -109,8 +111,8 @@ An **Option definition** belongs to a server and an address family, and optional
 code, name, exact Windows type (`Byte`, `Word`, `DWord`, `DWordDword`, `IPv4Address`, `String`, `BinaryData`,
 `EncapsulatedData`, ...), the multi-valued flag and the default value. Windows' own definitions of the standard
 options (codes RFC 2132 and its successors assign) are not imported: Windows ships them, and a push never touches
-them. The type and the array flag of a definition cannot be changed in place on Windows, so a push refuses those
-changes.
+them. The type is compared without case and stored in Windows' spelling (`string` is saved as `String`). The type
+and the array flag of a definition cannot be changed in place on Windows, so a push refuses those changes.
 
 Option-definition descriptions are stored in full; they are not subject to the 200-character limit used by some
 other models' description fields.
@@ -153,7 +155,8 @@ A **Policy** is server level (no scope) or scope level (a scope). It holds:
   `client_id`, `relay_agent`, `circuit_id`, `remote_id`, `subscriber_id`, `fqdn`. Each is a list starting with the
   operator, for example `{"vendor_class": ["EQ", "MSFT"], "mac_address": ["EQ", "00-15-5d*"]}`;
 - the lease duration (seconds; empty keeps the Windows value);
-- for scope policies, the IP ranges, for example `[["10.1.0.10", "10.1.0.50"]]`.
+- for scope policies, the IP ranges, for example `[["10.1.0.10", "10.1.0.50"]]`: pairs of IPv4 addresses, as
+  strings, inside the policy's scope. Anything else is refused on save.
 
 Option values set for a policy name it in their **Policy** field, at the same level as the policy (a scope policy's
 values on its scope, a server policy's values on the server).

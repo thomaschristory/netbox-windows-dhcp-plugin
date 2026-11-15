@@ -20,7 +20,7 @@ state and device](images/servers-list.webp)
 | Virtual machine | empty | The same for a virtual machine. Set a device or a virtual machine, not both |
 | Host | | Host name or IP address to connect to. A plain name or address: no port, user or path |
 | Transport | WinRM | WinRM or SSH |
-| Port | empty | Empty means 5986 (WinRM over HTTPS), 5985 (WinRM over HTTP) or 22 (SSH) |
+| Port | empty | 1 to 65535. Empty means 5986 (WinRM over HTTPS), 5985 (WinRM over HTTP) or 22 (SSH) |
 | Credential profile | | Name of a [credential profile](configuration.md#credential-profiles). Its `allowed_hosts` must cover the host |
 | WinRM authentication | NTLM | NTLM, Basic, Kerberos or CredSSP (failover), see [Preparing Windows](windows-setup.md#authentication-methods) |
 | WinRM over HTTPS | on | Off uses HTTP; NTLM, Kerberos and CredSSP messages are still encrypted |
@@ -36,7 +36,8 @@ state and device](images/servers-list.webp)
 The form refuses a device and a virtual machine together, a host the credential profile does not allow, Basic over HTTP or without verification, Kerberos
 without a realm, and SSH without host verification.
 
-Windows servers can be created, edited and deleted in bulk, and imported from CSV, like other NetBox objects.
+Windows servers can be created, edited and deleted in bulk, and imported from CSV, like other NetBox objects. The
+CSV import takes the SSH host key in an `ssh_host_key` column.
 
 ## Actions
 
@@ -49,7 +50,7 @@ permission on the Windows server (see [Permissions](permissions.md)).
 Connects, checks that the `DhcpServer` PowerShell module is there, and counts the IPv4 scopes. Use it after every
 change to the connection settings. It also records the DHCP server's computer name, DNS name and addresses (**Reported names**),
 which imports and pushes record too: its failover partners use them to match it, see
-[Failover](failover.md#how-it-syncs).
+[Failover](failover.md#how-it-syncs). Refused while a test for the same server is already waiting to start.
 
 ### Import (Import now)
 
@@ -96,6 +97,10 @@ The summary of a **push** or **dry run** holds:
 - `unmanaged`: how many Windows objects NetBox does not manage and the push left alone;
 - `notes`: what the read of Windows left out (for example a scope deleted on Windows during the read);
 - for a push, `applied`, `failed` and `skipped` counts, and `errors` and `not_attempted` lists.
+
+The `not_pushed`, `errors` and `not_attempted` lists hold at most 1000 entries each; a list that was cut has a
+`<list>_truncated` flag next to it, and `not_pushed_count` gives the full number of refused changes. The counts are
+always exact. The **Error** field is cut the same way, ending with how many more changes failed.
 
 The summary of an **import** holds the number of differences by action and `notes` about what was left out. With
 branching it also holds how many changes were written into the branch. Without branching it also holds `review`

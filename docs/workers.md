@@ -52,15 +52,20 @@ transaction-pooling proxy (pgbouncer in transaction mode). Session pooling is fi
 ## Timeouts and concurrency
 
 - `command_timeout` (120 seconds) is the WinRM connection and operation timeout, and the longest an SSH command may
-  stay silent before it is abandoned. SSH connections must open within 30 seconds.
-- One job runs at most `max_concurrency` commands at once against a server (4). Reading a large server makes one
-  call per scope and per reservation list, so raise it for servers with many scopes, if the server copes.
-- A push or dry run job may run for an hour; an import uses netbox-branching's `job_timeout` when branching is
-  installed (provisioning a branch can be slow), RQ's default otherwise.
+  stay silent before it is abandoned. SSH connections must open within 30 seconds. Over WinRM it bounds one wait
+  for output, so a command that keeps the connection alive without finishing is abandoned after ten times that
+  long, and never before 10 minutes (20 minutes with the default).
+- A job sends its commands to a server one after another: `max_concurrency` (4) is only an upper bound and changing
+  it makes no difference. Reading a large server makes a few calls per scope, per policy and per reservation, so
+  the time grows with their number.
+- A push, dry run or import job may run for an hour; with netbox-branching an import may run as long as its
+  `job_timeout` when that is longer (provisioning a branch can be slow).
 
 ## Notifications
 
 A push started with **Sync now** or by a merge or revert always notifies the user who started it, through NetBox's
 job notifications. A push that follows an ordinary save only notifies when it fails, so a day of edits does not
-flood anyone's notifications. A push queued again because the server was busy keeps the setting of the first. Lease
-reads never notify: the page updates itself.
+flood anyone's notifications. A push queued again because the server was busy keeps the setting of the first, and
+the waiting attempts do not notify: only the attempt that pushes does, or the last one when it gives up. One
+exception: a waiting attempt that finds another push already queued for the server stops retrying and notifies with
+its own setting, since that other push carries the changes. Lease reads never notify: the page updates itself.

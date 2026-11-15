@@ -225,7 +225,8 @@ the Windows object is kept as it is.
 
 **NetBox data Windows cannot hold:**
 
-- an IPv4 scope without an IP range, or a DHCPv6 scope whose prefix is not a /64;
+- an IPv4 scope without an IP range, or a DHCPv6 scope whose prefix is not a /64 (NetBox refuses to save one, so
+  this only happens when the prefix length was changed in IPAM afterwards);
 - a reservation without a MAC address or client ID, or a DHCPv6 reservation without an address, a DUID or an IAID;
 - options 1 and 51 (they come from the prefix and the scope's lease duration), values of codes Windows has no
   definition for, and a definition of a code Windows defines itself;
@@ -274,6 +275,12 @@ push.
 ## Failover
 
 After pushing to the primary server of a failover relationship, the push replicates the changed scopes to the
-partner. A replication that fails is retried by the next push to the primary. An existing relationship may be left
+partner, including the scope of a change inside it that failed after part of it may have reached Windows. A
+replication that fails is retried by the next push to the primary. A push that stopped early (lost connection,
+command timeout, unexpected error) does not try to replicate in that run: the scopes wait in `replication_pending`
+for the next push. A failed server-level change (a class, an option definition, a MAC filter, a server option)
+replicates nothing until it is applied, unless the push stopped on it: then all the relationship's scopes wait. A
+failed failover change triggers no replication.
+An existing relationship may be left
 empty: clearing its last membership keeps the scope on the primary and removes it from the partner, subject to the
 same ownership and drift protections as other membership removals. See [Failover](failover.md).

@@ -50,7 +50,7 @@ or find its sync run with `GET /api/plugins/windows-dhcp/sync-runs/?windows_serv
 
 | Action | Request | Answers |
 |---|---|---|
-| Test connection | `POST windows-servers/<id>/test-connection/` | 202 |
+| Test connection | `POST windows-servers/<id>/test-connection/` | 202; 409 when a connection test is already waiting, with the waiting job's id in `job` next to `detail` (`null` if it started meanwhile) |
 | Import | `POST windows-servers/<id>/import/`, optionally with `{"destination": ...}` (below) | 202; 409 when an import is already queued or running; 400 for a destination not available here, or for `current` with no branch named or active; 403 when permissions are missing or the destination is refused |
 | Push (Sync now) | `POST windows-servers/<id>/push/` | 202; 409 when sync is disabled or a push is already waiting |
 | Dry run | `POST windows-servers/<id>/dry-run/` | 202; 409 when a dry run is already waiting |
@@ -78,8 +78,12 @@ curl -s -X POST https://netbox.example/api/plugins/windows-dhcp/windows-servers/
 | Dismiss some items | `POST import-proposal-items/dismiss/` with `{"ids": [14]}` |
 
 Applying answers `{"applied": ..., "failed": ..., "missing_permissions": [...]}`; dismissing answers
-`{"dismissed": ...}`. Failed items, and items left pending for a missing permission, can be applied again. The
-[permission rules](permissions.md#applying-proposal-items) are the same as in the UI.
+`{"dismissed": ...}`. The counts hold what this request changed: an item another reviewer decided, or a newer
+import replaced, in the meantime is not counted. Failed items, and items left pending for a missing permission, can
+be applied again. The [permission rules](permissions.md#applying-proposal-items) are the same as in the UI.
+
+Both apply actions answer `409` with a `detail` when the request is sent in a branch (the `X-NetBox-Branch`
+header): proposals are applied to main. Dismissing works either way.
 
 List the pending items of a proposal with `GET import-proposal-items/?proposal_id=<id>&status=pending`. Each item
 has its `action`, `kind`, `key`, `before` and `after` values, and the NetBox object it touches.

@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import logging
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -51,6 +52,8 @@ from .windows_writer import PushRefused, option_target
 
 __all__ = ("Plan", "Result", "Skip", "execute", "fingerprint", "parents", "plan")
 
+log = logging.getLogger(__name__)
+
 Key = tuple[str, str]
 
 # What Windows gives a scope created without a lease duration (8 days), and what a push then sends.
@@ -78,7 +81,9 @@ DUPLICATE = "_duplicate"
 # What Windows gives a failover relationship created without these settings.
 FAILOVER_DEFAULTS = {"load_balance_percent": 50, "reserve_percent": 5, "max_client_lead_time": 3600}
 
-# A dry run records at most this many planned changes in the sync run summary.
+# The sync run summary lists at most this many entries of each kind (planned changes, refused changes, errors, changes
+# not attempted): the summary is stored with the run and shown whole in the UI and the API, and one lost connection
+# early in a large push would otherwise store one entry per remaining change. The counts next to the lists stay exact.
 PLANNED_LIMIT = 1000
 
 DRIFTED = (
@@ -129,7 +134,9 @@ class Plan:
         if len(self.changes) > PLANNED_LIMIT:
             out["planned_truncated"] = True
         if self.skipped:
-            out["not_pushed"] = [_skip_dict(s.change, s.reason) for s in self.skipped]
+            _capped(out, "not_pushed", [(s.change, s.reason) for s in self.skipped])
+            # Not "skipped": the result of the push uses that name for the changes it did not attempt.
+            out["not_pushed_count"] = len(self.skipped)
         return out
 
 
@@ -141,8 +148,13 @@ class Result:
     # SyncState rows to write (key -> fingerprint) and to drop.
     upserts: dict[Key, str] = field(default_factory=dict)
     removals: set[Key] = field(default_factory=set)
-    # True when the connection failed and the remaining changes were not attempted.
+    # True when the push stopped early (the connection failed, or an unexpected error) and the remaining changes
+    # were not attempted.
     aborted: bool = False
+    # Failed changes that may have reached Windows all the same: the reply was lost, a later step of the change
+    # failed, or Windows reported an error part-way. Their scopes are replicated to a failover partner like the
+    # applied ones, since the next push may find nothing left to change there.
+    maybe_written: list[Change] = field(default_factory=list)
 
     def summary(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -151,14 +163,21 @@ class Result:
             "skipped": len(self.skipped),
         }
         if self.failed:
-            out["errors"] = [_skip_dict(c, msg) for c, msg in self.failed]
+            _capped(out, "errors", self.failed)
         if self.skipped:
-            out["not_attempted"] = [_skip_dict(c, msg) for c, msg in self.skipped]
+            _capped(out, "not_attempted", self.skipped)
         return out
 
 
 def _skip_dict(change: Change, reason: str) -> dict[str, str]:
     return {"action": change.action, "kind": change.kind, "key": change.key, "reason": reason}
+
+
+def _capped(out: dict[str, Any], name: str, items: list[tuple[Change, str]]) -> None:
+    """Put the first PLANNED_LIMIT changes (each with its reason) in the summary, and say so when some were left out."""
+    out[name] = [_skip_dict(c, reason) for c, reason in items[:PLANNED_LIMIT]]
+    if len(items) > PLANNED_LIMIT:
+        out[f"{name}_truncated"] = True
 
 
 # -- fingerprints --------------------------------------------------------------------------------------------------
@@ -822,10 +841,11 @@ def execute(plan: Plan, writer: Any) -> Result:
     pending = {c.key for c in plan.changes if c.action == DELETE and c.kind == "scope"}
     refused: dict[str, str] = {}
 
+    stopped = ""
     for change in plan.changes:
         key = (change.kind, change.key)
         if result.aborted:
-            result.skipped.append((change, "not attempted: the connection to the server failed"))
+            result.skipped.append((change, f"not attempted: {stopped}"))
             continue
         if change.action == DELETE and change.kind == "scope":
             pending.discard(change.key)
@@ -855,11 +875,29 @@ def execute(plan: Plan, writer: Any) -> Result:
             # Already gone: the delete is done.
         except RunnerError as exc:
             result.failed.append((change, str(exc)))
-            result.aborted = True
+            result.maybe_written.append(change)
+            result.aborted, stopped = True, "the connection to the server failed"
             block(change)
             continue
         except (PushRefused, WindowsLayerError, ValueError) as exc:
             result.failed.append((change, str(exc)))
+            # An error from Windows can come after part of the change was made (a policy created, then its address
+            # range refused). A refusal of ours and a bad value come before any write, unless the refusal says so.
+            if getattr(exc, "wrote", False) or isinstance(exc, WindowsLayerError):
+                result.maybe_written.append(change)
+            block(change)
+            continue
+        except Exception as exc:
+            # A bug, or an answer from Windows nothing here expected. Stop, but keep the record of what was already
+            # written: without it the caller could not save which objects NetBox now manages, nor which scopes still
+            # need replicating to a failover partner. Only the type goes in the run (the message could hold
+            # anything); the traceback goes to the log. This also catches the job timeout of the queue worker (an
+            # ordinary exception there, raised once): on purpose, since what follows an aborted push is only local
+            # bookkeeping, with no further call to the server.
+            log.exception("Unexpected error applying %s %s %s", change.action, change.kind, change.key)
+            result.failed.append((change, f"unexpected error ({type(exc).__name__}), see the worker log"))
+            result.maybe_written.append(change)
+            result.aborted, stopped = True, "the push stopped on an unexpected error"
             block(change)
             continue
         result.applied.append(change)
@@ -907,4 +945,8 @@ def _keep_undeleted_scopes(
             stay.append(sid)
     if not stay:
         return change
-    return Change(change.action, change.kind, change.key, change.before, {**change.after, "scope_ids": [*after, *stay]})
+    # In address order, as Windows reports the list: the fingerprint recorded from this change is compared with what
+    # Windows holds on the next push, and a list in another order would never match (the kept scope would then pass for
+    # one added on Windows by hand, and stay in the relationship for good).
+    scope_ids = windows_scope_ids([*after, *stay])
+    return Change(change.action, change.kind, change.key, change.before, {**change.after, "scope_ids": scope_ids})

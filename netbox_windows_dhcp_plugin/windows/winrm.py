@@ -20,11 +20,12 @@ This module must not import Django or NetBox.
 from __future__ import annotations
 
 import contextlib
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .runner import ExecResult, RunnerError, execute
+from .runner import MAX_OUTPUT, ExecResult, RunnerError, execute
 
 __all__ = ["AUTH_BASIC", "AUTH_CREDSSP", "AUTH_KERBEROS", "AUTH_NTLM", "WinRMConfig", "WinRMRunner", "kerberos_user"]
 
@@ -34,6 +35,10 @@ AUTH_KERBEROS = "kerberos"
 AUTH_CREDSSP = "credssp"
 AUTHS = (AUTH_NTLM, AUTH_BASIC, AUTH_KERBEROS, AUTH_CREDSSP)
 _STDIN_CHUNK = 64 * 1024
+# A command that never finishes is abandoned after this many times the per-wait timeout, and never sooner than the
+# minimum, so that slow but healthy commands (a large lease list, failover replication) still pass.
+_TOTAL_TIMEOUT_FACTOR = 10
+_MIN_TOTAL_TIMEOUT = 600
 
 
 @dataclass
@@ -47,7 +52,8 @@ class WinRMConfig:
     auth: str = AUTH_NTLM  # ntlm, basic, kerberos or credssp
     kerberos_realm: str = ""  # appended to the user name as user@REALM
     kerberos_spn: str = ""  # e.g. HTTP/dhcp01.example.com; default WSMAN/<host> (pypsrp default)
-    timeout: int = 60  # seconds: connection/read timeout and WS-Man operation timeout
+    timeout: int = 60  # seconds: connection/read timeout and WS-Man operation timeout (one wait for output)
+    total_timeout: float = 0  # seconds one command may run in all; 0 means 10 x timeout, at least 10 minutes
     path: str = "wsman"
 
     @property
@@ -55,6 +61,12 @@ class WinRMConfig:
         if self.port:
             return self.port
         return 5986 if self.https else 5985
+
+    @property
+    def effective_total_timeout(self) -> float:
+        if self.total_timeout:
+            return float(self.total_timeout)
+        return float(max(_TOTAL_TIMEOUT_FACTOR * int(self.timeout), _MIN_TOTAL_TIMEOUT))
 
 
 def kerberos_user(username: str, realm: str = "") -> str:
@@ -117,7 +129,7 @@ class WinRMRunner:
 
     def _exec(self, argv: list[str], stdin: str) -> ExecResult:
         try:
-            from pypsrp.shell import Process, SignalCode, WinRS
+            from pypsrp.shell import CommandState, Process, SignalCode, WinRS
             from pypsrp.wsman import WSMan
         except ImportError as e:  # pragma: no cover - dependency is declared
             raise RunnerError("winrm: the pypsrp package is not installed") from e
@@ -137,12 +149,33 @@ class WinRMRunner:
             chunks = [data[i : i + _STDIN_CHUNK] for i in range(0, len(data), _STDIN_CHUNK)] or [b""]
             for i, chunk in enumerate(chunks):
                 proc.send(chunk, end=i == len(chunks) - 1)
-            proc.end_invoke()
+            self._wait(proc, CommandState.DONE, SignalCode.TERMINATE)
             # Best-effort cleanup; the shell is deleted next anyway.
             with contextlib.suppress(Exception):
                 proc.signal(SignalCode.TERMINATE)
             rc = -1 if proc.rc is None else int(proc.rc)
             return ExecResult(stdout=proc.stdout, stderr=proc.stderr, exit_code=rc)
+
+    def _wait(self, proc: Any, done: Any, terminate: Any) -> None:
+        """Collect output until the command ends, like pypsrp's ``end_invoke`` but with an end.
+
+        pypsrp treats the WS-Man operation timeout as "no output yet" and polls again for ever, so ``timeout`` only
+        bounds one wait: a cmdlet that hangs on the server would hold the job (and the server's lock) until the job
+        queue kills the worker. The total is generous on purpose, because a command that is still working must not
+        be cut off. A write abandoned here may still complete on the server; the next run sees what is there.
+        """
+        total = self.cfg.effective_total_timeout
+        deadline = time.monotonic() + total
+        while proc.state != done:
+            if time.monotonic() > deadline:
+                with contextlib.suppress(Exception):
+                    proc.signal(terminate)
+                raise RunnerError(f"winrm: PowerShell did not finish within {total:g} s")
+            proc.poll_invoke()
+            if len(proc.stdout) + len(proc.stderr) > MAX_OUTPUT:
+                with contextlib.suppress(Exception):
+                    proc.signal(terminate)
+                raise RunnerError(f"winrm: PowerShell sent more than {MAX_OUTPUT // (1024 * 1024)} MiB of output")
 
     def close(self) -> None:
         """Nothing to close: connections are per call."""

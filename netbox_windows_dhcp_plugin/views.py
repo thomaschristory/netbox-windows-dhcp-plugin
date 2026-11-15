@@ -27,13 +27,14 @@ from .choices import ClassTypeChoices, ImportDestinationChoices
 from .integrations import branching
 from .jobs import (
     ImportRefused,
-    TestConnectionJob,
     enqueue_import,
     enqueue_leases,
     enqueue_push,
+    enqueue_test,
     import_refusal,
     lease_jobs,
     lease_read_in_progress,
+    waiting_test_job,
 )
 from .models import (
     ExclusionRange,
@@ -244,8 +245,22 @@ class WindowsServerTestConnectionView(GetReturnURLMixin, BaseObjectView):
 
     def post(self, request, pk):
         server = self._server(request, pk)
-        job = TestConnectionJob.enqueue(instance=server, user=request.user)
-        messages.success(request, _("Queued connection test (job #{id}) for {server}").format(id=job.pk, server=server))
+        job = enqueue_test(server, request.user)
+        if job is None:
+            waiting = waiting_test_job(server)
+            if waiting is None:
+                # It started between the two lookups: nothing to point at.
+                text = _("A connection test for {server} is already queued").format(server=server)
+            else:
+                text = _(
+                    "A connection test for {server} is already queued (job #{id}). If no worker picks it up, "
+                    "check that netbox-worker runs, or delete that job."
+                ).format(server=server, id=waiting.pk)
+            messages.warning(request, text)
+        else:
+            messages.success(
+                request, _("Queued connection test (job #{id}) for {server}").format(id=job.pk, server=server)
+            )
         return redirect(self.get_return_url(request, server))
 
 
@@ -679,6 +694,9 @@ class _ReviewView(GetReturnURLMixin, BaseObjectView):
         if self.dismiss:
             count = review.dismiss(request.user, items)
             messages.success(request, _("Dismissed {count} item(s)").format(count=count))
+        elif refusal := review.apply_refusal():
+            # In a branch the objects would go to the branch and the sync state to main: say so and apply nothing.
+            messages.error(request, refusal)
         else:
             applied, failed, denied = review.apply(request.user, items)
             messages.success(request, _("Applied {applied} item(s)").format(applied=applied))
@@ -709,8 +727,15 @@ class _BulkReviewView(_ReviewView):
     def _items(self, request, obj):
         qs = ImportProposalItem.objects.restrict(request.user, "change")
         if request.POST.get("_all"):
-            return self.filterset(request.GET, qs, request=request).qs
-        return qs.filter(pk__in=[pk for pk in request.POST.getlist("pk") if pk.isdigit()])
+            # "Select all matching": the items of the list the user was looking at. django-filter leaves out a
+            # filter whose value is not valid (a deleted proposal, for example), which would widen this to every
+            # open item of every proposal. NetBox shows an empty list for such a filter, so act on nothing.
+            filterset = self.filterset(request.GET, qs, request=request)
+            if not filterset.is_valid():
+                messages.error(request, _("The list filter is not valid: nothing was selected"))
+                return qs.none()
+            return filterset.qs
+        return qs.filter(pk__in=[pk for pk in request.POST.getlist("pk") if pk.isascii() and pk.isdigit()])
 
 
 for _dismiss, _verb in ((False, "apply"), (True, "dismiss")):

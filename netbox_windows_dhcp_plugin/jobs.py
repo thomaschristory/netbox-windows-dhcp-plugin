@@ -15,6 +15,11 @@ from .integrations.branching import job_kwargs as branching_job_kwargs
 from .models import SyncRun, WindowsServer
 from .windows.psscript import WindowsLayerError
 
+# The most names kept for one server, and the longest (the column's width). An honest server reports its computer
+# name, its DNS name and a handful of addresses.
+REPORTED_NAMES_LIMIT = 32
+REPORTED_NAME_LENGTH = 255
+
 
 def record_names(server, client, logger):
     """
@@ -27,10 +32,40 @@ def record_names(server, client, logger):
         # Only partner matching uses the names, so this does not fail the job that is reading the server.
         logger.warning(f"Could not read the names of {server.host}: {exc}")
         return
+    # The server says what it is called, and the update below skips validation: a name the column cannot hold (too
+    # long, or with a control character) would otherwise fail every test, import and push of this server.
+    names = [n for n in names if len(n) <= REPORTED_NAME_LENGTH and n.isprintable()][:REPORTED_NAMES_LIMIT]
     if names and names != server.reported_names:
         # An update, not save(): the names are read from Windows, not an edit worth a change log entry.
         WindowsServer.objects.filter(pk=server.pk).update(reported_names=names)
         server.reported_names = names
+
+
+def _close(client, logger):
+    """Close the connection to the server; a failure is logged, never raised."""
+    try:
+        client.close()
+    except Exception as exc:
+        # A connection that will not close must not leave the run "running" for ever, hide the job's own error, nor
+        # throw away what was already read. Only the type: a transport's message is not worth a place in the job
+        # log here.
+        logger.warning(f"Could not close the connection: {type(exc).__name__}")
+
+
+def _finish(sync_run, client, logger):
+    """
+    The end of every job that keeps a SyncRun, whatever happened: close the connection and save the run with a final
+    status. Called from ``finally``, so it must not raise before the run is saved.
+    """
+    if sync_run.status == SyncStatusChoices.RUNNING:
+        # Neither completed nor failed in a way the job expects: a bug. Say so here and let the traceback reach the
+        # job log.
+        sync_run.status = SyncStatusChoices.FAILED
+        sync_run.error = "unexpected error, see the job log"
+    if client is not None:
+        _close(client, logger)
+    sync_run.completed = timezone.now()
+    sync_run.save()
 
 
 class TestConnectionJob(JobRunner):
@@ -69,14 +104,7 @@ class TestConnectionJob(JobRunner):
             sync_run.summary = {"ipv4_scopes": len(scopes), "reported_names": server.reported_names}
             self.logger.info(f"Connected to {server.host}: {len(scopes)} IPv4 scopes")
         finally:
-            if sync_run.status == SyncStatusChoices.RUNNING:
-                # Anything else is a bug; record the type only and let the traceback reach the job log.
-                sync_run.status = SyncStatusChoices.FAILED
-                sync_run.error = "unexpected error, see the job log"
-            if client is not None:
-                client.close()
-            sync_run.completed = timezone.now()
-            sync_run.save()
+            _finish(sync_run, client, self.logger)
         if sync_run.status == SyncStatusChoices.FAILED:
             raise JobFailed(sync_run.error)
 
@@ -242,6 +270,10 @@ class ImportJob(JobRunner):
             refusal = import_refusal(destination, user, branch)
             if refusal:
                 raise ImportRefused(refusal)
+            if destination == ImportDestinationChoices.BRANCH and user is None:
+                # A scheduled import with no (or an inactive) import_user. The importer refuses it too, but only
+                # after the whole server was read: fail before connecting, at every interval.
+                raise branching.BranchError("imports into a branch need a user: set import_user for scheduled imports")
             target = None
             if destination == ImportDestinationChoices.CURRENT:
                 target, _ = branching.chosen_branch(branch, user)
@@ -249,7 +281,9 @@ class ImportJob(JobRunner):
                 client = build_client(server, runner=runner)
                 state = windows_state.read(client)
                 record_names(server, client, self.logger)
-                client.close()
+                # Everything is read: a connection that will not close (an SSH transport already torn down) is no
+                # reason to fail the import.
+                _close(client, self.logger)
                 client = None
                 if destination in (ImportDestinationChoices.BRANCH, ImportDestinationChoices.CURRENT):
                     result = importer.import_to_branch(
@@ -294,13 +328,7 @@ class ImportJob(JobRunner):
                 message += f", {result.dismissed} already dismissed (not proposed again)"
             self.logger.info(message)
         finally:
-            if sync_run.status == SyncStatusChoices.RUNNING:
-                sync_run.status = SyncStatusChoices.FAILED
-                sync_run.error = "unexpected error, see the job log"
-            if client is not None:
-                client.close()
-            sync_run.completed = timezone.now()
-            sync_run.save()
+            _finish(sync_run, client, self.logger)
         if sync_run.status == SyncStatusChoices.FAILED:
             raise JobFailed(sync_run.error)
 
@@ -352,7 +380,7 @@ class PushJob(JobRunner):
             if self.dry_run or attempt >= PUSH_ATTEMPTS:
                 raise JobFailed(f"{exc}; giving up after {attempt} attempt(s)") from None
             # An import (or another push) is running. Try again shortly rather than lose a merge's changes.
-            enqueue_push(
+            retry = enqueue_push(
                 server,
                 self.job.user,
                 delay=PUSH_RETRY,
@@ -360,7 +388,15 @@ class PushJob(JobRunner):
                 notify_always=self.job.notifications != JobNotificationChoices.NOTIFICATION_ON_FAILURE,
                 attempt=attempt + 1,
             )
+            if retry is None:
+                # Queued by someone else, with its own user and notification setting, so this job keeps its own
+                # and tells its user now. It queues nothing more, so that happens once, not every minute.
+                self.logger.info(f"{exc}; another push is already waiting, it will carry these changes")
+                return
             self.logger.info(f"{exc}; push queued again in {PUSH_RETRY} seconds")
+            # This job pushed nothing: the attempt that does (or the last one, which fails) tells the user, with the
+            # setting passed on above. Without this a merge's push waiting for an import notifies every minute.
+            self.job.notifications = JobNotificationChoices.NOTIFICATION_NEVER
 
     def _run(self, server, branch):
         from .sync import pusher
@@ -397,13 +433,7 @@ class PushJob(JobRunner):
                 sync_run.status = SyncStatusChoices.COMPLETED
             self.logger.info(push_log_line(server.host, outcome, self.dry_run))
         finally:
-            if sync_run.status == SyncStatusChoices.RUNNING:
-                sync_run.status = SyncStatusChoices.FAILED
-                sync_run.error = "unexpected error, see the job log"
-            if client is not None:
-                client.close()
-            sync_run.completed = timezone.now()
-            sync_run.save()
+            _finish(sync_run, client, self.logger)
         if sync_run.status == SyncStatusChoices.FAILED:
             raise JobFailed(sync_run.error)
 
@@ -427,7 +457,7 @@ PUSH_ATTEMPTS = 120
 ORPHANED_JOB = timedelta(minutes=15)
 
 # RQ's default timeout is 300 seconds; reading a large server takes one PowerShell call per scope and per
-# reservation, so allow more.
+# reservation, so allow more. Imports read the same way (and then write), so they get at least as long.
 PUSH_TIMEOUT = 3600
 
 # Advisory lock (with the server's key) taken while deciding whether to queue a push, so two saves at the same
@@ -473,6 +503,31 @@ def enqueue_push(server, user=None, delay=0, branch="", dry_run=False, notify_al
             branch=branch,
             attempt=attempt,
         )
+
+
+def enqueue_test(server, user):
+    """
+    Queue a connection test for the server unless one is already waiting to start. Every test is a logon with the
+    profile's account, so a double click or a looping script must not pile them up: with a wrong or expired
+    password that could lock the account out. Returns the job, or None.
+    """
+    from django.db import transaction
+
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_QUEUE_LOCK_CLASS, server.pk])
+        if _waiting(server, TestConnectionJob).exists():
+            return None
+        return TestConnectionJob.enqueue(instance=server, user=user)
+
+
+def waiting_test_job(server):
+    """
+    The connection test that stops a new one from being queued for the server, or None. Naming it lets an admin
+    find and delete a test that no worker will ever run (worker down, or Redis lost the queue entry), instead of
+    seeing only "already queued" until it stops counting.
+    """
+    return _waiting(server, TestConnectionJob).first()
 
 
 class ServerBusy(Exception):
@@ -553,7 +608,12 @@ def enqueue_import(server, user, destination=None, branch=""):
     # will write before the worker has picked it up.
     with transaction.atomic():
         job = ImportJob.enqueue(
-            instance=server, user=user, destination=destination, branch=branch, **branching_job_kwargs()
+            instance=server,
+            user=user,
+            destination=destination,
+            branch=branch,
+            # The longer of ours and netbox-branching's own (provisioning a branch can be slow too).
+            job_timeout=max(PUSH_TIMEOUT, branching_job_kwargs().get("job_timeout") or 0),
         )
         job.data = {"destination": destination, **({"branch": branch} if branch else {})}
         job.save(update_fields=["data"])
@@ -580,12 +640,19 @@ class ScheduleImportsJob(JobRunner):
     def run(self, *args, **kwargs):
         user = _import_user()
         for server in due_servers():
-            enqueue_import(server, user)
-            self.logger.info(f"Queued an import for {server}")
+            # One server that cannot be queued must not keep the servers after it from their imports.
+            try:
+                job = enqueue_import(server, user)
+            except Exception as exc:
+                self.logger.error(f"Could not queue an import for {server}: {exc}")
+                continue
+            if job is not None:
+                self.logger.info(f"Queued an import for {server}")
 
 
 # A job still "running" after this long was abandoned (for example its worker was killed), so it no longer counts as
-# busy. Longer than netbox-branching's default job timeout, which an import can use for provisioning.
+# busy. Longer than PUSH_TIMEOUT, the longest an import normally runs (netbox-branching's job_timeout when that is
+# set even higher).
 ABANDONED_JOB = timedelta(hours=2)
 
 
@@ -608,13 +675,22 @@ def _busy_jobs(now=None, name=None):
 
 def due_servers(now=None):
     """Servers with an import interval whose last import started at least that long ago, and none queued."""
+    from django.db.models import Max, Q
+
     from .models import WindowsServer
 
     now = now or timezone.now()
     busy = set(_busy_jobs(now).values_list("object_id", flat=True))
-    for server in WindowsServer.objects.filter(import_interval__isnull=False).exclude(import_interval=0):
+    # One query for every server's newest import run: this runs every minute. Django drops the model's default
+    # ordering from a query that aggregates, so ask for it.
+    servers = (
+        WindowsServer.objects.filter(import_interval__isnull=False)
+        .exclude(import_interval=0)
+        .annotate(last_import=Max("sync_runs__created", filter=Q(sync_runs__kind=SyncKindChoices.IMPORT)))
+        .order_by(*WindowsServer._meta.ordering)
+    )
+    for server in servers:
         if server.pk in busy:
             continue
-        last = server.sync_runs.filter(kind=SyncKindChoices.IMPORT).order_by("-created").first()
-        if last is None or last.created <= now - timedelta(minutes=server.import_interval):
+        if server.last_import is None or server.last_import <= now - timedelta(minutes=server.import_interval):
             yield server

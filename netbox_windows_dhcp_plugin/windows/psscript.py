@@ -281,6 +281,10 @@ class PSNotFoundError(PSError, NotFound):
 
 
 def _is_not_found(category: str, err_id: str) -> bool:
+    # PowerShell files a missing cmdlet (the DHCP module is not installed, or a typo) under ObjectNotFound too.
+    # That is a broken server, not a missing DHCP object: a push must not record a delete as done because of it.
+    if err_id == "CommandNotFoundException" or err_id.startswith("CommandNotFoundException,"):
+        return False
     if category == "ObjectNotFound":
         return True
     return any(err_id == i or err_id.startswith(i + ",") for i in NOT_FOUND_IDS)

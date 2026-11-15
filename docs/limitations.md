@@ -63,5 +63,14 @@ DHCP 20135 and 20136). A push of such a policy fails the same way, so fix it in 
 ## Operations
 
 - The worker's database connection must not go through pgbouncer in transaction mode (advisory locks).
-- Reading a large server takes one PowerShell call per scope and per reservation list; a push or an import of a
-  server with thousands of scopes takes minutes.
+- Reading a large server takes a few PowerShell calls per scope, per policy and per reservation, sent one after
+  another; a push or an import of a server with thousands of scopes or reservations takes minutes.
+- Two Windows servers that hold the same subnet without being failover partners share one IP range in NetBox when
+  they are imported into the same VRF, and an import will not move that range for one of them: the scope change
+  fails and names the other scope. To avoid the sharing, give each server its own import VRF before its first
+  import; a scope that already exists keeps the VRF of its prefix, so for those see
+  [Troubleshooting](troubleshooting.md#import). Import the failover relationship if they are partners. A range
+  change and a brand new failover relationship in the same import need a second run (or the failed item applied
+  again).
+- Deleting a device, virtual machine or interface whose IP address or MAC address a reservation uses is refused by
+  NetBox. Delete the reservation, or unassign the address, first.

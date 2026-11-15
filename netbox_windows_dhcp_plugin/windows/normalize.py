@@ -93,15 +93,29 @@ def canonical_duration(value: str | int | timedelta) -> str:
 
 
 _MAC_SEPARATORS = str.maketrans("", "", ":-. ")
+_MAC_SEPARATOR_RE = re.compile(r"[:\-. ]+")
 
 
-def canonical_mac(value: str) -> str:
+def canonical_mac(value: str, *, pad_groups: bool = True) -> str:
     """Canonicalise a MAC address or DHCP client identifier to ``aa-bb-cc-...``.
 
     Accepts ``:``, ``-``, ``.`` and space separators or bare hex, any even length
     (client identifiers can be longer than six bytes).
+
+    Some systems print a MAC address without leading zeros (``0:1b:21:a:b:c``). When the
+    value has separators and every group is one or two digits, each group is one byte and
+    is padded to two digits. Groups of even width (``aabb.ccdd.eeff``) are read as written.
+    Any other mix is refused, because joining the digits would give a different, shorter
+    client ID without any warning. ``pad_groups=False`` keeps the plain "drop the
+    separators" reading.
     """
-    clean = str(value).strip().translate(_MAC_SEPARATORS)
+    text = str(value).strip()
+    groups = [g for g in _MAC_SEPARATOR_RE.split(text) if g]
+    if pad_groups and len(groups) > 1 and any(len(g) % 2 for g in groups):
+        if any(len(g) > 2 for g in groups):
+            raise ValueError(f"invalid client ID {value!r}: ambiguous groups, write every byte as two hex digits")
+        text = "-".join(g.zfill(2) for g in groups)
+    clean = text.translate(_MAC_SEPARATORS)
     if not clean:
         raise ValueError(f"invalid client ID {value!r}: empty")
     if len(clean) % 2:
@@ -131,7 +145,8 @@ def canonical_mac_pattern(value: str) -> str:
     Windows Server 2025 reads ``02-4e-42-ab*`` back as ``02-4e-42-ab-*``: whole bytes in
     ``aa-bb`` form, then a separator before the trailing wildcard. Hex digits are compared
     without case. Anything else (half a byte, a wildcard elsewhere) is returned as written,
-    since how Windows treats it is not known.
+    since how Windows treats it is not known. For the same reason single-digit groups are
+    not padded here: in ``02-4e-42-a*`` the ``a`` is half a byte, not the byte ``0a``.
     """
     s = str(value).strip()
     wildcard = s.endswith("*")
@@ -139,7 +154,7 @@ def canonical_mac_pattern(value: str) -> str:
     if not body:
         return s
     try:
-        mac = canonical_mac(body)
+        mac = canonical_mac(body, pad_groups=False)
     except ValueError:
         return s
     return f"{mac}-*" if wildcard else mac

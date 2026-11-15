@@ -16,8 +16,8 @@ environment variables and the files they name exist for both.
 | `import_direct` | `True` | With netbox-branching, offer **Import directly** (an import written straight into main). `False` allows branch imports only. Change control's `protect_main` applies either way |
 | `import_user` | `None` | User name [scheduled imports](import.md#scheduled-imports) run as. With branching, scheduled imports fail without it |
 | `push_debounce` | `10` | Seconds to wait after a save before pushing, so a burst of edits becomes one push (saves outside branching) |
-| `max_concurrency` | `4` | PowerShell commands one job runs at the same time against a server |
-| `command_timeout` | `120` | Seconds: the WinRM connection and operation timeout, and the longest silence allowed while an SSH command runs (SSH connects within 30 seconds) |
+| `max_concurrency` | `4` | Upper bound on the PowerShell commands one job runs at the same time against a server. A job sends its commands one after another, so changing it makes no difference |
+| `command_timeout` | `120` | Seconds: the WinRM connection and operation timeout (one wait for output), and the longest silence allowed while an SSH command runs (SSH connects within 30 seconds). A WinRM command that never finishes is abandoned after ten times this long, and never before 10 minutes |
 
 ## Credential profiles
 
@@ -71,7 +71,10 @@ PLUGINS_CONFIG = {
 ```
 
 A missing environment variable or unreadable file fails the job that needed it, with a message naming the profile
-and the variable or file, never the value.
+and the variable or file, never the value. So does an inline value of `None`, which is what
+`"password": os.environ.get("X")` gives when `X` is missing: use `password_env` instead. That holds for the keys the
+job uses: `username` and `password`, and `secret` when a failover relationship reads it from the profile. A key that
+is not used and set to `None` reads as not set.
 
 ### allowed_hosts
 

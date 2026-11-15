@@ -48,7 +48,7 @@ One plugin model per Windows concept, named and shaped the way Windows sees it. 
 
 **Naming.** Objects keep their Windows names. Uniqueness follows Windows, per server (classes, policies per level, superscopes, failover relationships). A scope's `__str__` is `<server>/<scope id>` so lists tell servers apart.
 
-**Core objects.** Import creates or reuses the NetBox `Prefix`, `IPRange`, `IPAddress` and `MACAddress` objects in a VRF chosen per server (`import_vrf`, default global). Failover partners therefore share one IP range per scope.
+**Core objects.** Import creates or reuses the NetBox `Prefix`, `IPRange`, `IPAddress` and `MACAddress` objects in a VRF chosen per server (`import_vrf`, default global). Failover partners therefore share one IP range per scope. A scope's first IP range and its reservations' addresses follow the VRF of the scope's prefix, which differs from the import VRF only for a scope made by hand elsewhere. An import never moves an IP range that a scope of another server uses unless the two are failover partners for it in NetBox: that scope change fails and names the other scope.
 
 **From 0.1.x.** 0.1.x stored servers, scopes, reservations, definitions and options in netbox-plugin-dhcp (its DHCP server, subnet and pool, shared network, host reservation, option definition and option models) with our Windows-only settings beside them (`WindowsScope`, `WindowsReservation`, `WindowsOptionDefinition`, `WindowsOptionQualifier`, `WindowsVendorOptionDefinition`, `WindowsVendorOption`). netbox-plugin-dhcp is modelled on Kea, which forced workarounds: names unique across servers (`<server>/<scope id>` naming templates), option values as one comma-separated string (`\,` escape, values with surrounding spaces skipped), a covering prefix for each superscope, subnet ID allocation across branches, no uniqueness on option values, `save()` side effects lost on branch merges, and upstream bugs (netbox-plugin-dhcp issues #68 and #69). 0.2.0 replaced all of it with the models above. There is no data migration: the single 0.2.0 migration (`0001_standalone`) drops the 0.1.x tables and users re-import from Windows (see `installation.md`). The record kinds, keys and fields the sync works on did not change, so the diff engine, the push planner and the Windows layer kept their logic; only the comma-escaping workaround went.
 
@@ -85,7 +85,7 @@ sync engine  ->  client (one function per cmdlet operation)  ->  psscript (envel
   not ask in the Normal state, and when the partner is unreachable `-Force` removes on this server only (split
   relationship), while without it Windows refuses ("not in NORMAL state"). Windows keeps a relationship whose last scope left, empty, on both partners.
 - **Normalisation:** scope ID from start and mask, MAC canonical form, lease durations, `InActive`/`Inactive` casing. Numeric option types compare hex-or-decimal; string and binary values compare exactly.
-- **runner.** WinRM through pypsrp with a new connection per call, as the Go code learned the hard way with NTLM. SSH through paramiko with pinned host key or known_hosts. Concurrency is capped per job (`max_concurrency`), and a PostgreSQL advisory lock per server lets only one import or push talk to a server at a time, across all workers. The lock is held by the database session, so the workers' database connection must not go through a transaction-pooling proxy (pgbouncer in transaction mode).
+- **runner.** WinRM through pypsrp with a new connection per call, as the Go code learned the hard way with NTLM. SSH through paramiko with pinned host key or known_hosts. A job sends its commands one after another (`max_concurrency` is an upper bound that nothing reaches today), a WinRM command that never finishes is abandoned after ten times `command_timeout` (at least 10 minutes), and a PostgreSQL advisory lock per server lets only one import or push talk to a server at a time, across all workers. The lock is held by the database session, so the workers' database connection must not go through a transaction-pooling proxy (pgbouncer in transaction mode).
 - **New cmdlets** beyond the provider: DHCPv6 scopes, reservations and options, superscopes, option definitions, classes, policies, failover, MAC filters, server settings. These follow the same patterns and get the same fixture tests.
 
 ## 6. Push: NetBox to Windows
@@ -137,7 +137,7 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   #51), limited to scopes in the relationship on Windows (one missing there would make Windows refuse the whole call;
   it waits instead). Scopes whose replication failed or waits are kept in the push's
   `SyncRun.summary["replication_pending"]`; the next push to the primary (skipping runs that never reached Windows)
-  replicates them again, even with no changes, restricted to scopes still in the relationship. A push to a partner leaves the relationship's scopes to the primary.
+  replicates them again, even with no changes, restricted to scopes still in the relationship. A failed change that may have reached Windows has its scopes replicated too. A push that stopped early (lost connection, command timeout, unexpected error) replicates nothing in that run: its scopes go to `replication_pending`. A push to a partner leaves the relationship's scopes to the primary.
 
 **Remaining objects (milestone 5).** Every kind goes through the same records, diff, plan and writers. Dependency
 order: classes, option definitions, scopes, superscopes, exclusions, reservations, policies, option values, failover
@@ -217,15 +217,17 @@ values holding IPv6 addresses compare the same way.
   many it left out. A push never touches them, and they count as children of their scope or reservation, so a scope
   holding any of them is never deleted. NetBox values of other DHCPv6 definitions and DHCPv6 vendor classes held in
   NetBox are left out the same way, so neither side proposes or pushes them.
-- **Scopes.** Windows DHCPv6 scopes are /64: a NetBox scope with another prefix length is not pushed, and keeps its
-  Windows counterpart. Lifetimes left empty in NetBox keep the Windows values (a new scope gets Windows' defaults:
+- **Scopes.** Windows DHCPv6 scopes are /64: NetBox refuses to save a DHCPv6 scope with another prefix length, and
+  one whose prefix length changed in IPAM afterwards is not pushed, and keeps its Windows counterpart. Lifetimes
+  left empty in NetBox keep the Windows values (a new scope gets Windows' defaults:
   preferred 8 days, valid 12 days, T1 4 days, T2 6.4 days = 552960 s, read back from Windows Server 2025 in #16 and
   matching the cmdlet documentation). T1 and T2 left empty follow the preferred lifetime (`push.v6_timers`: half and
   80 %, which gives exactly those defaults for 8 days): a new scope gets them, and an existing scope keeps its
   Windows timers unless they would break T1 < T2 < preferred lifetime, which the cmdlet documentation asks for. When
   NetBox sets only one of them, the empty one is worked out against it (`push._derive_timers`): the default if it
   still falls on the right side, otherwise T1 = 5/8 of T2 or T2 halfway between T1 and the preferred lifetime. A timer
-  NetBox sets is never changed; one that leaves no room is sent as is and Windows refuses it. What
+  NetBox sets is never changed. Two values both set in NetBox and out of order (T1 < T2 < preferred <= valid) are
+  refused on save; a half-set case that leaves no room is sent as is and Windows refuses it. What
   Windows itself picks for a short preferred lifetime without timers is unverified (lab test
   `test_v6_scope_timers_with_a_short_preferred_lifetime`); the push sends explicit values either way. The fake server
   refuses timers outside T1 < T2 < preferred (as Windows does, with WIN32 87), so tests catch a push that would send
@@ -288,13 +290,17 @@ while queued) and `SyncRun.destination`. Without branching the only destination 
   show up as deletes; the reviewer dismisses them.
 - **Branch mode.** The diff is taken against the open import branch when there is one (matched on the full name, and
   never a stale one), so a repeated run only adds what changed. A new branch is created and provisioned
-  synchronously in the job, with netbox-branching's `job_timeout`, only when there are differences; one that fails
+  synchronously in the job, only when there are differences (an import job may run for an hour like a push, or
+  as long as netbox-branching's `job_timeout` when that is longer); one that fails
   to provision is deleted, and `max_working_branches` refusals fail the run. The change request is created and submitted for review; if that fails, the branch is still recorded on the sync run.
   Branch writes need a real user (NetBox's change log records one).
 - **Proposal mode.** A repeated run replaces pending and failed items. A dismissal holds, across proposals, while
   Windows proposes exactly the same values; a run with nothing new to review opens no proposal, and the run summary
   counts the differences a dismissal kept out (`dismissed`) next to those sent to review (`review`). Applying checks the
-  object still matches the item's "before" values and fails the item otherwise. Every object an apply writes
+  object still matches the item's "before" values and fails the item otherwise. Items are applied to main only (an
+  apply sent in a branch is refused: the objects would go to the branch and the sync state to main), and an item's
+  status is decided on its locked row, so concurrent reviewers or a newer import do not overwrite each other.
+  Every object an apply writes
   (prefixes and addresses included) is checked against the reviewer's permissions and constraints, and a refusal
   rolls the item back.
 - **Who imports.** Manual imports run as the user who asked, who needs change on the server, plus add on branches

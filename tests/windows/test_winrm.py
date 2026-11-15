@@ -58,19 +58,27 @@ class FakePypsrp:
                 self.stdout = b""
                 self.stderr = b""
                 self.rc: int | None = None
+                self.state = CommandState.PENDING
 
             def begin_invoke(self) -> None:
-                pass
+                self.state = CommandState.RUNNING
 
             def send(self, data: bytes, end: bool = True) -> None:
                 fake.sent.append((data, end))
                 self.stdin += data
 
-            def end_invoke(self) -> None:
+            def poll_invoke(self) -> None:
+                # The runner polls for output itself (it adds an overall time limit), as pypsrp's end_invoke does.
                 self.stdout, self.stderr, self.rc = fake.respond(self.argv, self.stdin)
+                self.state = CommandState.DONE
 
             def signal(self, code: str) -> None:
                 fake.signals.append(code)
+
+        class CommandState:
+            DONE = "Done"
+            PENDING = "Pending"
+            RUNNING = "Running"
 
         class SignalCode:
             TERMINATE = "http://schemas.microsoft.com/wbem/wsman/1/windows/shell/signal/Terminate"
@@ -81,6 +89,8 @@ class FakePypsrp:
         self.shell_mod.WinRS = WinRS  # type: ignore[attr-defined]
         self.shell_mod.Process = Process  # type: ignore[attr-defined]
         self.shell_mod.SignalCode = SignalCode  # type: ignore[attr-defined]
+        self.shell_mod.CommandState = CommandState  # type: ignore[attr-defined]
+        self.process_cls = Process
 
 
 @pytest.fixture

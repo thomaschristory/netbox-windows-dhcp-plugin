@@ -42,10 +42,22 @@ class WindowsServerViewSet(
 
     @action(detail=True, methods=["post"], url_path="test-connection")
     def test_connection(self, request, pk):
-        """Queue a connection test and return the job."""
-        from ..jobs import TestConnectionJob
+        """Queue a connection test and return the job (409 naming the waiting job if one has yet to start)."""
+        from ..jobs import enqueue_test, waiting_test_job
 
-        job = TestConnectionJob.enqueue(instance=self._changeable_server(request), user=request.user)
+        server = self._changeable_server(request)
+        job = enqueue_test(server, request.user)
+        if job is None:
+            # Name the waiting job, so a client can look at it (or delete it when no worker will ever run it). It
+            # is null when that job started between the two lookups.
+            waiting = waiting_test_job(server)
+            return Response(
+                {
+                    "detail": "a connection test for this server is already queued",
+                    "job": waiting.pk if waiting else None,
+                },
+                status=409,
+            )
         return Response(JobSerializer(job, context={"request": request}).data, status=202)
 
     @action(detail=True, methods=["post"], url_path="import")
@@ -145,6 +157,9 @@ class _ReviewActionsMixin:
         items = review.open_items(items)
         if dismiss:
             return Response({"dismissed": review.dismiss(request.user, items)})
+        # In a branch the objects would go to the branch and the sync state to main (see review.apply_refusal).
+        if refusal := review.apply_refusal():
+            return Response({"detail": refusal}, status=409)
         applied, failed, denied = review.apply(request.user, items)
         return Response({"applied": applied, "failed": failed, "missing_permissions": denied})
 

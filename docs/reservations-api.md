@@ -320,6 +320,7 @@ records the branch name. Follow it the same way, with `created__gte` set to the 
 | `400` on the reservation, `ip_address` | The address is outside the scope's prefix |
 | `400` on the reservation, `mac_address` | Neither a MAC address nor a client ID (IPv4) |
 | `400` on the reservation, `duid` or `iaid` | A DHCPv6 reservation without its DUID or IAID |
+| `400` on the reservation, `client_id` or `duid` | The value is not hex bytes (`printer-01`, for example). An accepted value is stored as `aa-bb-cc`, so the answer can spell it differently from the request |
 | `400` on the reservation | The scope already has a reservation for that address, a MAC address and a client ID together, or DUID and IAID on an IPv4 reservation |
 | `400` on the option value | The value is not a non-empty list of strings, the scope, reservation or class belongs to another server, the family does not match the scope or the class, the reservation is in another scope than the one given, the policy does not fit (with a user class, on a reservation, or from another server or scope), or the server already holds a value for that code at that level (with the same classes and policy) |
 | `409` from `push/`, `already queued` | A push is waiting to run (sync enabled queued it): wait for its sync run |
