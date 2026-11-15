@@ -1,15 +1,16 @@
 """Audit g3-syncpure, the Django side of a push: replication after a failed change, and SyncState bookkeeping."""
 
 from core.exceptions import JobFailed
-from django.test import override_settings
+from django.test import TestCase, override_settings
 
 from netbox_windows_dhcp_plugin.choices import SyncKindChoices
-from netbox_windows_dhcp_plugin.models import MacFilter, SyncRun
+from netbox_windows_dhcp_plugin.models import MacFilter, SyncRun, SyncState
+from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
 from netbox_windows_dhcp_plugin.windows.runner import RunnerError
 
 from .test_jobs import CREDENTIALS
-from .test_push import FailoverPushTest
+from .test_push import FailoverPushTest, PushTestMixin
 
 
 @override_settings(PLUGINS_CONFIG=CREDENTIALS)
@@ -132,3 +133,41 @@ class FailedChangeReplicationTest(FailoverPushTest):
 # The inherited FailoverPushTest tests are not collected a second time.
 for _name in [n for n in dir(FailoverPushTest) if n.startswith("test_")]:
     setattr(FailedChangeReplicationTest, _name, None)
+
+
+@override_settings(PLUGINS_CONFIG=CREDENTIALS)
+class SyncStateBookkeepingTest(PushTestMixin, TestCase):
+    def test_first_push_records_every_object_with_its_push_time(self):
+        # F59/F60: new rows are written in bulk; each still gets its fingerprint and last_pushed.
+        self.target = FakeDhcpServer()
+        SyncState.objects.filter(windows_server=self.server).delete()
+        run = self._run()
+        rows = SyncState.objects.filter(windows_server=self.server)
+        self.assertEqual(rows.count(), run.summary["create"])
+        self.assertFalse(rows.filter(last_pushed__isnull=True).exists())
+        self.assertFalse(rows.filter(fingerprint="").exists())
+        # Nothing to record twice: a second push finds every row and adds none.
+        before = set(rows.values_list("pk", flat=True))
+        self._run()
+        self.assertEqual(set(rows.values_list("pk", flat=True)), before)
+
+    def test_removed_object_loses_its_row_and_a_changed_one_gets_a_new_fingerprint(self):
+        from netbox_windows_dhcp_plugin.models import Reservation, Scope
+
+        self._run()
+        scope_row = SyncState.objects.get(windows_server=self.server, kind="scope")
+        old = (scope_row.fingerprint, scope_row.last_pushed)
+        reservations = SyncState.objects.filter(windows_server=self.server, kind="reservation")
+        count = reservations.count()
+        self.assertGreater(count, 0)
+        Reservation.objects.first().delete()
+        scope = Scope.objects.get()
+        scope.snapshot()
+        scope.name = "changed"
+        scope.save()
+        run = self._run()
+        self.assertEqual(run.summary["failed"], 0, run.error)
+        self.assertEqual(reservations.count(), count - 1)
+        scope_row.refresh_from_db()
+        self.assertNotEqual(scope_row.fingerprint, old[0])
+        self.assertGreater(scope_row.last_pushed, old[1])

@@ -122,22 +122,33 @@ class WindowsServerViewSet(
 
 SuperscopeViewSet = _viewset(models.Superscope, models.Superscope.objects.select_related("server"))
 ScopeViewSet = _viewset(models.Scope, models.Scope.objects.select_related("server", "prefix", "ip_range", "superscope"))
+# A nested scope shows its name ("<server>/<scope id>"), which reads the scope's server and prefix, and a nested
+# reservation shows its IP address. Load them with the rows, or every row of a list costs extra queries.
 ReservationViewSet = _viewset(
-    models.Reservation, models.Reservation.objects.select_related("scope__server", "ip_address", "mac_address")
+    models.Reservation,
+    models.Reservation.objects.select_related("scope__server", "scope__prefix", "ip_address", "mac_address"),
 )
-ExclusionRangeViewSet = _viewset(models.ExclusionRange, models.ExclusionRange.objects.select_related("scope"))
+ExclusionRangeViewSet = _viewset(
+    models.ExclusionRange, models.ExclusionRange.objects.select_related("scope__server", "scope__prefix")
+)
 WindowsClassViewSet = _viewset(models.WindowsClass, models.WindowsClass.objects.select_related("server"))
 OptionDefinitionViewSet = _viewset(
     models.OptionDefinition, models.OptionDefinition.objects.select_related("server", "vendor_class")
 )
-WindowsPolicyViewSet = _viewset(models.WindowsPolicy, models.WindowsPolicy.objects.select_related("server", "scope"))
+WindowsPolicyViewSet = _viewset(
+    models.WindowsPolicy, models.WindowsPolicy.objects.select_related("server", "scope__server", "scope__prefix")
+)
 OptionValueViewSet = _viewset(
     models.OptionValue,
-    models.OptionValue.objects.select_related("server", "scope", "reservation", "vendor_class", "user_class", "policy"),
+    models.OptionValue.objects.select_related(
+        "server", "scope__server", "scope__prefix", "reservation__ip_address", "vendor_class", "user_class", "policy"
+    ),
 )
 FailoverRelationshipViewSet = _viewset(
     models.FailoverRelationship,
-    models.FailoverRelationship.objects.select_related("primary_server", "partner_server").prefetch_related("scopes"),
+    models.FailoverRelationship.objects.select_related("primary_server", "partner_server").prefetch_related(
+        "scopes__server", "scopes__prefix"
+    ),
 )
 MacFilterViewSet = _viewset(models.MacFilter, models.MacFilter.objects.select_related("server"))
 MacFilterListsViewSet = _viewset(models.MacFilterLists, models.MacFilterLists.objects.select_related("server"))

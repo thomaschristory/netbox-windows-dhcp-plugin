@@ -544,7 +544,8 @@ _register(
 
 _register(
     WindowsPolicy,
-    WindowsPolicy.objects.select_related("server", "scope"),
+    # The Scope column shows "<server>/<scope id>", which reads the scope's server and prefix.
+    WindowsPolicy.objects.select_related("server", "scope__server", "scope__prefix"),
     table=tables.WindowsPolicyTable,
     filterset=filtersets.WindowsPolicyFilterSet,
     filterset_form=forms.WindowsPolicyFilterForm,
@@ -561,7 +562,7 @@ _register(
 _register(
     OptionValue,
     OptionValue.objects.select_related(
-        "server", "scope", "reservation__ip_address", "vendor_class", "user_class", "policy"
+        "server", "scope__server", "scope__prefix", "reservation__ip_address", "vendor_class", "user_class", "policy"
     ),
     table=tables.OptionValueTable,
     filterset=filtersets.OptionValueFilterSet,
@@ -579,7 +580,9 @@ _register(
 
 _register(
     FailoverRelationship,
-    FailoverRelationship.objects.select_related("primary_server", "partner_server").prefetch_related("scopes"),
+    FailoverRelationship.objects.select_related("primary_server", "partner_server").prefetch_related(
+        "scopes__server", "scopes__prefix"
+    ),
     table=tables.FailoverRelationshipTable,
     filterset=filtersets.FailoverRelationshipFilterSet,
     filterset_form=forms.FailoverRelationshipFilterForm,

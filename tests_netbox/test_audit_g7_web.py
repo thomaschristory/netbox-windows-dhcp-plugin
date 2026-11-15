@@ -7,6 +7,8 @@ from datetime import timedelta
 from unittest import mock
 
 from core.models import Job
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 from django.utils import timezone
 from utilities.testing import APITestCase, TestCase
@@ -15,11 +17,14 @@ from netbox_windows_dhcp_plugin import filtersets, forms
 from netbox_windows_dhcp_plugin.choices import ClassTypeChoices, ProposalItemStatusChoices
 from netbox_windows_dhcp_plugin.jobs import TestConnectionJob
 from netbox_windows_dhcp_plugin.models import (
+    ExclusionRange,
+    FailoverRelationship,
     ImportProposalItem,
     OptionDefinition,
     OptionValue,
     SyncState,
     WindowsClass,
+    WindowsPolicy,
     WindowsServer,
 )
 from netbox_windows_dhcp_plugin.models import Scope as NetBoxScope
@@ -183,6 +188,81 @@ class F66ConnectionTestViewTest(_TestJobsMixin, TestCase):
         self._jobs().update(status="completed")
         self.client.post(self.url)
         self.assertEqual(self._jobs().count(), 2)
+
+
+# -- F09 and F67 -------------------------------------------------------------------------------------------------
+
+
+def _rows(server, partner, start, count):
+    """One exclusion, policy, reservation, two option values and a failover relationship on each of ``count`` scopes."""
+    for i in range(start, start + count):
+        net = scope(server, f"10.{i}.0.0/24")
+        ExclusionRange.objects.create(scope=net, start_address=f"10.{i}.0.20", end_address=f"10.{i}.0.25")
+        WindowsPolicy.objects.create(server=server, scope=net, name=f"p{i}", processing_order=1)
+        host = reservation(net, f"10.{i}.0.50/24", client_id=f"aa{i:02x}")
+        OptionValue.objects.create(server=server, scope=net, code=3, value=[f"10.{i}.0.1"])
+        OptionValue.objects.create(server=server, scope=net, reservation=host, code=6, value=["10.0.0.53"])
+        relationship = FailoverRelationship.objects.create(name=f"ha{i}", primary_server=server, partner_server=partner)
+        relationship.scopes.add(net)
+
+
+class _ScalingMixin:
+    """The number of queries of a list must not grow with the number of rows (each on a scope of its own)."""
+
+    urls = ()
+
+    def setUp(self):
+        super().setUp()
+        _superuser(self)
+        self.server = windows_server()
+        self.partner = windows_server("dhcp2")
+        _rows(self.server, self.partner, 1, 2)
+
+    def _count(self, url):
+        with CaptureQueriesContext(connection) as queries:
+            response = self._get(url)
+        self.assertEqual(response.status_code, 200)
+        return len(queries)
+
+    def test_query_count_does_not_grow_with_rows(self):
+        for url in self.urls:
+            self._count(url)  # warm caches (content types, permissions)
+        before = {url: self._count(url) for url in self.urls}
+        _rows(self.server, self.partner, 3, 4)
+        after = {url: self._count(url) for url in self.urls}
+        self.assertEqual(after, before)
+
+
+class F09NestedScopeAPITest(_ScalingMixin, PluginAPIMixin, APITestCase):
+    urls = tuple(
+        f"{API}/{name}/?limit=100"
+        for name in ("exclusion-ranges", "reservations", "windows-policies", "option-values", "failover-relationships")
+    )
+
+    def _get(self, url):
+        return self.client.get(url, **self.header)
+
+    def test_rows_show_their_scope(self):
+        response = self._get(f"{API}/option-values/?limit=100")
+        self.assertEqual(
+            sorted({row["scope"]["display"] for row in response.json()["results"]}),
+            ["dhcp1/10.1.0.0", "dhcp1/10.2.0.0"],
+        )
+
+
+class F67ScopeColumnViewTest(_ScalingMixin, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.urls = tuple(
+            reverse(f"plugins:netbox_windows_dhcp_plugin:{name}_list") + "?per_page=100"
+            for name in ("optionvalue", "windowspolicy", "failoverrelationship")
+        )
+
+    def _get(self, url):
+        return self.client.get(url)
+
+    def test_the_scope_column_is_shown(self):
+        self.assertContains(self._get(self.urls[0]), "dhcp1/10.2.0.0")
 
 
 # -- F17 ---------------------------------------------------------------------------------------------------------

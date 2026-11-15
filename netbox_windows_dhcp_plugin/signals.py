@@ -81,6 +81,9 @@ _RESOLVERS = {
 
 WATCHED = frozenset(_RESOLVERS)
 
+# The core models above: their resolvers look the object up by primary key and ignore its field values.
+_LOOKUP_BY_PK = frozenset({"ipam.prefix", "ipam.iprange", "ipam.ipaddress", "dcim.macaddress"})
+
 
 def servers_for(label, pk, data):
     """Primary keys of the WindowsServers a change to this object affects."""
@@ -164,14 +167,20 @@ def _changed(sender, instance, **kwargs):
     label = sender._meta.label_lower
     if label not in WATCHED or getattr(_local, "suppressed", False):
         return
+    by_pk = label in _LOOKUP_BY_PK
+    if by_pk and kwargs.get("created"):
+        # No scope or reservation can point yet at a prefix, range, address or MAC that was only just created:
+        # spare the lookup, which a bulk import of IP addresses would otherwise run once per address.
+        return
     from .integrations.branching import save_belongs_to_branching
 
     if save_belongs_to_branching():
         return
     ids = servers_for(label, instance.pk, _data(instance))
     # NetBox snapshots an object before editing it: the servers it belonged to before count too.
+    # Not for the core models: the same primary key would only give the same answer a second time.
     snapshot = getattr(instance, "_prechange_snapshot", None)
-    if snapshot:
+    if snapshot and not by_pk:
         ids |= servers_for(label, instance.pk, snapshot)
     if not ids:
         return

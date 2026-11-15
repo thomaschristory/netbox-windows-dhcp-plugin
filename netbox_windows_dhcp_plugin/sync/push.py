@@ -709,13 +709,36 @@ def _order_policies(
     levels |= {_policy_level(c.before or {}) for c in changes if c.kind == "policy" and c.action == DELETE}
     if not levels:
         return changes
-    ordered = [c for level in sorted(levels) for c in _order_level(level, upserts, deleted, source, target, plan)]
+    # Grouped once: filtering every record again for each level made a plan with policy changes in many scopes take
+    # time growing with scopes x records.
+    windows, wanted = _policies_by_level(target), _policies_by_level(source)
+    level_changes: defaultdict[str, list[Change]] = defaultdict(list)
+    for c in upserts.values():
+        level_changes[_policy_level(c.after or {})].append(c)
+    ordered = [
+        c
+        for level in sorted(levels)
+        for c in _order_level(level, upserts, deleted, wanted[level], windows[level], level_changes[level], plan)
+    ]
     rest = [c for c in changes if not (c.kind == "policy" and c.action != DELETE)]
     # Back where the diff put policies: after the deletes, before the kinds that come after them.
     last_delete = max((i for i, c in enumerate(rest) if c.action == DELETE), default=-1)
     rank = KIND_ORDER.index("policy")
     at = next((i for i in range(last_delete + 1, len(rest)) if _kind_rank(rest[i].kind) > rank), len(rest))
     return rest[:at] + ordered + rest[at:]
+
+
+def _policies_by_level(records: Mapping[Key, Record]) -> defaultdict[str, list[Record]]:
+    """The policies among ``records``, by level, each level in processing order (policies without a number last)."""
+    out: defaultdict[str, list[Record]] = defaultdict(list)
+    for (kind, _), r in records.items():
+        if kind == "policy":
+            out[_policy_level(r.fields)].append(r)
+    for policies in out.values():
+        policies.sort(
+            key=lambda r: (r.fields.get("processing_order") is None, r.fields.get("processing_order") or 0, r.key)
+        )
+    return out
 
 
 def _kind_rank(kind: str) -> int:
@@ -726,20 +749,15 @@ def _order_level(
     level: str,
     upserts: Mapping[str, Change],
     deleted: set[str],
-    source: Mapping[Key, Record],
-    target: Mapping[Key, Record],
+    wanted: list[Record],
+    windows: list[Record],
+    level_changes: list[Change],
     plan: Plan,
 ) -> list[Change]:
-    """The policy creates and updates of one level, as ``_order_policies`` describes."""
-    windows = sorted(
-        (r for (kind, _), r in target.items() if kind == "policy" and _policy_level(r.fields) == level),
-        key=lambda r: (r.fields.get("processing_order") is None, r.fields.get("processing_order") or 0, r.key),
-    )
-    wanted = sorted(
-        (r for (kind, _), r in source.items() if kind == "policy" and _policy_level(r.fields) == level),
-        key=lambda r: (r.fields.get("processing_order") is None, r.fields.get("processing_order") or 0, r.key),
-    )
-    level_changes = [c for c in upserts.values() if _policy_level(c.after or {}) == level]
+    """
+    The policy creates and updates of one level, as ``_order_policies`` describes. ``wanted`` (NetBox) and ``windows``
+    are the policies of that level in processing order, ``level_changes`` its creates and updates.
+    """
     if [r.fields.get("processing_order") for r in windows] != list(range(1, len(windows) + 1)):
         # Not numbered the way this models Windows (it never should be): only put the changes in ascending order.
         return sorted(level_changes, key=lambda c: ((c.after or {}).get("processing_order") or 0, c.key))

@@ -205,19 +205,33 @@ def _replicate(windows_server, client, written, logger, aborted=False):
     return errors, still_pending
 
 
+# Rows per statement when SyncState is written in bulk.
+STATE_BATCH = 1000
+
+
 @transaction.atomic
 def _save_state(windows_server, result):
-    if result.removals:
-        for kind, key in result.removals:
-            SyncState.objects.filter(windows_server=windows_server, kind=kind, key=key).delete()
+    """
+    Record what the push left on Windows: drop the rows of removed objects, add the new ones, update the changed
+    fingerprints. SyncState is a plain table (no change log, no signals), so removals and new rows go in batches: the
+    first push after a large import records every object at once. Updates stay one by one; each follows a change
+    this push made on Windows, so there are never many.
+    """
     existing = {(s.kind, s.key): s for s in SyncState.objects.filter(windows_server=windows_server)}
+    # Removals first, as before: a key both removed and recorded again ends up recorded.
+    gone = [existing.pop(key).pk for key in result.removals if key in existing]
+    for start in range(0, len(gone), STATE_BATCH):
+        SyncState.objects.filter(pk__in=gone[start : start + STATE_BATCH]).delete()
+    new = []
     for (kind, key), fp in result.upserts.items():
         row = existing.get((kind, key))
         if row is None:
-            SyncState.objects.create(windows_server=windows_server, kind=kind, key=key, fingerprint=fp)
+            new.append(SyncState(windows_server=windows_server, kind=kind, key=key, fingerprint=fp))
         elif row.fingerprint != fp:
             row.fingerprint = fp
             row.save()
+    # bulk_create fills last_pushed (auto_now) like a plain save does.
+    SyncState.objects.bulk_create(new, batch_size=STATE_BATCH)
 
 
 def run(windows_server, client, dry_run=False, logger=log):

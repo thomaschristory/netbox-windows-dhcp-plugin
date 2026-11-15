@@ -217,11 +217,12 @@ def import_to_proposal(windows_server, state, sync_run):
     changes, notes = compute(windows_server, state)
     result = ImportResult(changes=changes, notes=notes)
     # Dismissals hold across proposals: closing a proposal must not bring back what a reviewer already turned down.
+    # Only the four fields compared: the history of a server can hold many dismissed items.
     dismissed = {
-        (i.action, i.kind, i.key, _frozen(i.after))
-        for i in ImportProposalItem.objects.filter(
+        (action, kind, key, _frozen(after))
+        for action, kind, key, after in ImportProposalItem.objects.filter(
             proposal__windows_server=windows_server, status=ProposalItemStatusChoices.DISMISSED
-        )
+        ).values_list("action", "kind", "key", "after")
     }
     to_review = [
         (sequence, change)
@@ -334,18 +335,28 @@ def apply_items(items, user=None):
 
 
 def _apply_items(items, user):
-    items = sorted(items, key=lambda i: (i.proposal_id, i.sequence, i.pk))
+    items = sorted(
+        (i for i in items if i.status in _OPEN),
+        key=lambda i: (i.proposal_id, i.sequence, i.pk),
+    )
     applied = failed = 0
     proposals = {}
-    current_by_server = {}
+    # What NetBox holds now, per server, for the kinds of object the items are about: applying one scope must not
+    # load every reservation of the server into the request.
+    kinds_by_server = {}
     for item in items:
-        if item.status not in (ProposalItemStatusChoices.PENDING, ProposalItemStatusChoices.FAILED):
-            continue
+        kinds_by_server.setdefault(item.proposal.windows_server_id, set()).add(item.kind)
+    current_by_server = {}
+    # One writer per server: each item carries its own copy of the server, and a writer reads the server's VRF.
+    writers = {}
+    for item in items:
         proposal = item.proposal
         proposals[proposal.pk] = proposal
         server = proposal.windows_server
         if server.pk not in current_by_server:
-            current_by_server[server.pk] = index(netbox_state.read(server, for_import=True))
+            kinds = frozenset(kinds_by_server[server.pk])
+            current_by_server[server.pk] = index(netbox_state.read(server, for_import=True, kinds=kinds))
+            writers[server.pk] = Writer(server, user=user)
         current = current_by_server[server.pk].get((item.kind, item.key))
         change = _item_change(item)
         error = _stale(change, current)
@@ -359,7 +370,7 @@ def _apply_items(items, user):
                     if not ImportProposalItem.objects.select_for_update().filter(pk=item.pk, status__in=_OPEN).exists():
                         continue
                     if not _already_done(change, current):
-                        Writer(server, user=user).apply(change)
+                        writers[server.pk].apply(change)
                     _record_managed(server, change)
                     applied += _set_item(item, ProposalItemStatusChoices.APPLIED)
                 continue
