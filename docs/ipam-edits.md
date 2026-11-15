@@ -228,7 +228,9 @@ The check runs twice for a branch:
 
 The merging user is checked, not each change's author, so the same person is checked whatever the merge strategy
 (netbox-branching's iterative strategy replays changes as their authors, squash as the merging user), and someone who
-lost access since making an edit does not block the merge. The check covers the four IPAM fields only: creating,
+lost access since making an edit does not block the merge. One exception: a merge or revert with no user (a merge
+job whose user was deleted before it ran) is checked as each change's author with the iterative strategy and not at
+all with squash. The check covers the four IPAM fields only: creating,
 changing or deleting scopes and reservations themselves in a branch is governed by branching's own rules, as for any
 other object.
 
