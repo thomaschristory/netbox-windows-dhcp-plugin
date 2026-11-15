@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-15
+
+0.3.0 is the result of a code audit. It tightens validation and the matching of `allowed_hosts`, so some setups
+that 0.2.0 accepted are now refused: `allowed_hosts` address patterns no longer match DNS names (and short ones such
+as `10.*` match nothing), hosts written as numbers (`127.1`, `2130706433`) are refused, a new failover partner must be
+in the primary's `allowed_hosts`, and a reservation client ID or DUID must be hex bytes (see Changed and Security).
+It adds migrations `0002` and `0003`, and fixes the netbox-docker start failure on databases upgraded from 0.1.x.
+
 ### Security
 
 - `allowed_hosts`: an address pattern such as `10.20.*.*` also matched DNS names like `10.20.evil.example`. Address
@@ -172,6 +180,34 @@ All notable changes to this project are documented here. The format follows
   `remove_stale_contenttypes` step (on 0.2.0 it comes back after every new migration), what migration `0003` removes
   and keeps, and how to start NetBox again by hand on 0.2.0 or for other apps' leftovers. The troubleshooting page
   points there.
+
+## [0.1.4] - 2026-11-15
+
+Security fixes backported from 0.3.0. 0.1.x stays on netbox-plugin-dhcp and gets fixes only.
+
+### Security
+
+- `allowed_hosts`: an address pattern such as `10.20.*.*` also matched DNS names like `10.20.evil.example`. Address
+  patterns (four parts of digits and wildcards, or anything with a `:`) now match IP addresses only, and name
+  patterns match names only. Check your profiles: a bare `*` no longer covers IPv6 addresses, and `*.*.*.*` is read
+  as an IPv4 pattern, so it no longer matches four-label names. A shorter pattern of digits and wildcards that
+  holds a number (`10.*`, `192.168.*`) is read as an address pattern too and matches nothing: an IPv4 pattern needs
+  all four parts (`10.*.*.*`).
+- Hosts written as numbers that a resolver reads as an IPv4 address (`2130706433`, `0x7f.1`, `127.1`, or any name
+  whose last label is a number) are refused as `host` and `computer_name`, on save and before every connection. A
+  Windows server already saved with such a host stops connecting until the host is corrected.
+- A push refuses to create a failover relationship whose partner is outside the `allowed_hosts` of the primary
+  server's credential profile: creating it makes the primary contact the partner as the plugin's account. If the
+  profile lists only the primary, add the partner (its `computer_name` when set, else its `host`). Existing
+  relationships, their updates and deletes, and profiles without `allowed_hosts` are not affected.
+- An unexpected error while applying an import proposal item no longer sends change events (event rules, webhooks)
+  for objects that were rolled back. This completes the fix for GHSA-5x5m-vqw4-wq85.
+- WinRM no longer follows HTTP redirects, so the logon only goes to the host that was checked. A redirect is now
+  an error.
+- SSH: when the profile's `password` is the passphrase of an encrypted private key and the server refuses the key,
+  the passphrase is no longer offered to the server as an account password. An encrypted key whose passphrase is
+  also the account password loses that fallback.
+- Hardening: the transport settings keep passwords and private keys out of their Python `repr`.
 
 ## [0.2.0] - 2026-11-13
 

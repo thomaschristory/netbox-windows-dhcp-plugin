@@ -179,6 +179,6 @@ is tagged.
    (the `pypi` environment only accepts `v*` tags, with no manual approval); the docs workflow publishes the site.
    Started by hand, the workflow is a rehearsal: it checks and builds, and publishes nothing.
 
-`main` is the 0.2 line. The `release/0.1` branch keeps bug fixes, and no new features, for those who stay on 0.1.x
+`main` is the standalone line (0.2 and later). The `release/0.1` branch keeps bug fixes, and no new features, for those who stay on 0.1.x
 with netbox-plugin-dhcp: fixes reach it through pull requests into `release/0.1`, and a `v0.1.Z` tag there publishes
 to PyPI without touching the documentation site, which describes main.

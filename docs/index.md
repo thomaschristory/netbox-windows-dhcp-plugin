@@ -85,10 +85,10 @@ pages for the rules that keep both sides safe.
 
 | Plugin | NetBox | netbox-plugin-dhcp | netbox-branching | netbox-change-control | Python |
 |---|---|---|---|---|---|
-| 0.2.x | 4.7 | not used | 1.2.2 or later (optional) | 0.6 or later (optional) | 3.12 to 3.14 |
+| 0.2.x, 0.3.x | 4.7 | not used | 1.2.2 or later (optional) | 0.6 or later (optional) | 3.12 to 3.14 |
 | 0.1.x | 4.7 | 0.2.x (required) | 1.2.2 or later (optional) | 0.6 or later (optional) | 3.12 to 3.14 |
 
-The 0.1.x line (latest 0.1.3) keeps getting bug fixes, but no new features, for installs that stay on
+The 0.1.x line (latest 0.1.4) keeps getting bug fixes, but no new features, for installs that stay on
 netbox-plugin-dhcp; see [Upgrading from 0.1.x](installation.md#upgrading-from-01x).
 
 Windows Server 2016 or later with the DHCP Server role and its PowerShell module (`DhcpServer`).

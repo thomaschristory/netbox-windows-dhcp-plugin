@@ -5,7 +5,7 @@ Milestones from [DESIGN.md](DESIGN.md#11-milestones).
 Milestones 1 to 6 built the 0.1.x line, a sub-plugin of netbox-plugin-dhcp: the model names they mention
 (`WindowsReservation`, `WindowsVendorOption`...) are 0.1.x ones. Milestone 7 makes the plugin standalone for 0.2.0.
 `main` is the 0.2 line; the `release/0.1` branch keeps bug fixes, and no new features, for users who stay on
-netbox-plugin-dhcp (latest 0.1.3, 2026-11-13).
+netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
 
 1. **Done.** Repo scaffold, models, REST and GraphQL API, connection test.
 2. **Done.** PowerShell layer ported from terraform-provider-windowsddi, with fake server and pwsh stub tests.
@@ -102,3 +102,7 @@ netbox-plugin-dhcp (latest 0.1.3, 2026-11-13).
      branching; branching and change control from the dev stack pointed at the lab servers).
    - **Lab (2026-10-29):** fresh Windows Server 2025 lab, plugin 1a2108a: `make test-lab` 31 passed, `make lab-e2e`
      passed (failover phase included), seeded import of both servers applied with dry runs at 0 changes.
+8. **Done: 0.3.0 (2026-11-15).** Code audit: correctness, performance, simplification, CI and packaging fixes
+   (#92 to #96) and security fixes; stricter validation and `allowed_hosts` matching; migrations `0002` (text sync
+   keys, sync run index) and `0003` (removes the 0.1.x content types left on upgraded databases). Security fixes
+   backported to the 0.1.x line as 0.1.4.
