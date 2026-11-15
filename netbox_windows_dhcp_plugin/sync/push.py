@@ -189,22 +189,14 @@ def fingerprint(record: Record) -> str:
     types hash in decimal; String/Binary values remain exact. A policy's processing order is left out: Windows
     renumbers policies itself whenever one is added, moved or removed.
     """
-    return _fingerprint(record, keep_order=False)
-
-
-def _fingerprint(record: Record, keep_order: bool) -> str:
     fields = canonical_option_fields(record.kind, record.fields)
-    if record.kind == "policy" and not keep_order:
+    if record.kind == "policy":
         fields.pop("processing_order", None)
     # Windows names are not case sensitive.
     for kind, name in NAME_FIELDS:
         if kind == record.kind and isinstance(fields.get(name), str):
             fields[name] = fields[name].lower()
-    # Policy conditions as Windows stores them, so the NetBox spelling and the one read back hash the same. Fingerprints
-    # recorded before this rule (0.1.0rc1) still match for conditions already in that form. One recorded from another
-    # spelling (a MAC prefix "02-4e-42-ab*") no longer does: until the next push records it again, deleting that policy
-    # in NetBox is reported as changed on Windows and skipped. It cannot be matched the old way, since the old hash was
-    # of the NetBox spelling, which a deleted policy no longer has.
+    # Policy conditions as Windows stores them, so the NetBox spelling and the one read back hash the same.
     if record.kind == "policy" and isinstance(fields.get("criteria"), dict):
         fields["criteria"] = canonical_criteria(fields["criteria"])
     data = {"kind": record.kind, "key": record.key, "fields": fields}
@@ -218,14 +210,11 @@ def _fingerprint(record: Record, keep_order: bool) -> str:
 
 def unchanged(stored: str, record: Record) -> bool:
     """
-    Whether ``record`` (as Windows has it now) still matches the fingerprint recorded for it. Policy fingerprints
-    recorded before the processing order was left out (0.1.0rc1) included it: they still match while the policy keeps
-    the number it had then. Every push records the new form for the policies it finds in step, so this only matters
-    for a policy deleted in NetBox before any push since the upgrade.
+    Whether ``record`` (as Windows has it now) still matches the fingerprint recorded for it: the check that allows
+    deleting a Windows object. 0.2 starts from empty SyncState tables (its first migration drops the 0.1.x ones), so
+    only fingerprints in the current form exist.
     """
-    if stored == fingerprint(record):
-        return True
-    return record.kind == "policy" and stored == _fingerprint(record, keep_order=True)
+    return stored == fingerprint(record)
 
 
 # -- dependencies --------------------------------------------------------------------------------------------------

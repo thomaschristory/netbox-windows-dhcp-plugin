@@ -561,8 +561,7 @@ class ReadOnlyAPITest(PluginAPIMixin, APITestCase):
         self.assertEqual(response.status_code, 405)
 
     def test_import_proposals_list(self):
-        # The list annotates an item count; an aggregate drops the model's default ordering, which the
-        # paginator refuses.
+        # The paginator refuses an unordered queryset: the list relies on the model's default ordering.
         server = windows_server()
         ImportProposal.objects.create(windows_server=server)
         ImportProposal.objects.create(windows_server=server)

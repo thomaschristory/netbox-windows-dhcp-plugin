@@ -48,6 +48,27 @@ def _job(server, job_class, **kwargs):
     )
 
 
+class F19BranchHelpersTest(TestCase):
+    """in_branch() is active_branch_name() said another way; the save check keeps its own fail-safe."""
+
+    def test_in_branch_follows_the_active_branch_name(self):
+        with mock.patch(f"{BRANCHING}.active_branch_name", return_value="feature"):
+            self.assertTrue(branching.in_branch())
+        with mock.patch(f"{BRANCHING}.active_branch_name", return_value=None):
+            self.assertFalse(branching.in_branch())
+
+    def test_nothing_is_a_branch_without_branching(self):
+        with mock.patch(f"{BRANCHING}.branching_installed", return_value=False):
+            self.assertFalse(branching.in_branch())
+            self.assertIsNone(branching.active_branch_name())
+            self.assertFalse(branching.save_belongs_to_branching())
+
+    def test_main_is_not_a_branch(self):
+        # Whatever is installed: no branch is active in a test.
+        self.assertFalse(branching.in_branch())
+        self.assertFalse(branching.save_belongs_to_branching())
+
+
 class F20AffectedServersTest(ImportTestMixin, TestCase):
     """The merge receivers read only the changes a push cares about, and stop once every server is found."""
 

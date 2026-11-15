@@ -29,7 +29,7 @@ def open_items(queryset):
 
 def missing_permission(user, item):
     """The permission the user lacks to apply this item, or None."""
-    model = importer.kind_model(item.kind, item.after or item.before)
+    model = importer.kind_model(item.kind)
     if model is None:
         return f"cannot apply {item.kind} items"
     action = _PERMISSION[item.action]

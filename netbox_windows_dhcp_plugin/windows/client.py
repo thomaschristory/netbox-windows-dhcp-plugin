@@ -662,11 +662,10 @@ function Get-WdOption {
 }
 """
 
-S_OPTION_GET = Script("option.get", _HELPERS + _OPTION_FUNC + "\n$out = Get-WdOption\n")
+S_OPTION_GET = Script("option.get", _OPTION_FUNC + "\n$out = Get-WdOption\n")
 S_OPTION_LIST = Script(
     "option.list",
-    _HELPERS
-    + _OPTION_FUNC
+    _OPTION_FUNC
     + r"""
 if ($p.all) { $sel['All'] = $true }
 $out = @(Get-DhcpServerv4OptionValue @cn @sel | ForEach-Object { ConvertTo-WdOption $_ })
@@ -677,8 +676,7 @@ $out = @(Get-DhcpServerv4OptionValue @cn @sel | ForEach-Object { ConvertTo-WdOpt
 # ("is not a valid DNS server"), which NetBox has no way to know. The DHCP console offers the same skip.
 S_OPTION_SET = Script(
     "option.set",
-    _HELPERS
-    + _OPTION_FUNC
+    _OPTION_FUNC
     + r"""
 Set-DhcpServerv4OptionValue @cn @sel -OptionId $p.option_id -Value ([string[]]@($p.value)) -Force
 $out = Get-WdOption
@@ -686,8 +684,7 @@ $out = Get-WdOption
 )
 S_OPTION_REMOVE = Script(
     "option.remove",
-    _HELPERS
-    + _OPTION_FUNC
+    _OPTION_FUNC
     + r"""
 Remove-DhcpServerv4OptionValue @cn @sel -OptionId $p.option_id -Confirm:$false
 """,
@@ -747,19 +744,17 @@ function Get-WdOptionDef {
 }
 """
 
-S_OPTIONDEF_GET = Script("optiondef.get", _HELPERS + _OPTIONDEF_FUNC + "\n$out = Get-WdOptionDef\n")
+S_OPTIONDEF_GET = Script("optiondef.get", _OPTIONDEF_FUNC + "\n$out = Get-WdOptionDef\n")
 S_OPTIONDEF_LIST = Script(
     "optiondef.list",
-    _HELPERS
-    + _OPTIONDEF_FUNC
+    _OPTIONDEF_FUNC
     + r"""
 $out = @(Get-DhcpServerv4OptionDefinition @cn -All | ForEach-Object { ConvertTo-WdOptionDef $_ })
 """,
 )
 S_OPTIONDEF_ADD = Script(
     "optiondef.add",
-    _HELPERS
-    + _OPTIONDEF_FUNC
+    _OPTIONDEF_FUNC
     + r"""
 $a = @{ OptionId = $p.option_id; Name = $p.name; Type = $p.type }
 if ($p.description) { $a['Description'] = $p.description }
@@ -771,8 +766,7 @@ $out = Get-WdOptionDef
 )
 S_OPTIONDEF_SET = Script(
     "optiondef.set",
-    _HELPERS
-    + _OPTIONDEF_FUNC
+    _OPTIONDEF_FUNC
     + r"""
 $a = @{ OptionId = $p.option_id; Name = $p.name; Description = "$($p.description)" }
 if (@($p.default_value).Count -gt 0) { $a['DefaultValue'] = [string[]]@($p.default_value) }
@@ -1393,11 +1387,10 @@ function Get-WdOptionV6 {
 }
 """
 
-S_V6OPTION_GET = Script("v6option.get", _HELPERS + _V6OPTION_FUNC + "\n$out = Get-WdOptionV6\n")
+S_V6OPTION_GET = Script("v6option.get", _V6OPTION_FUNC + "\n$out = Get-WdOptionV6\n")
 S_V6OPTION_LIST = Script(
     "v6option.list",
-    _HELPERS
-    + _V6OPTION_FUNC
+    _V6OPTION_FUNC
     + r"""
 if ($p.all) { $sel['All'] = $true }
 $out = @(Get-DhcpServerv6OptionValue @cn @sel | ForEach-Object { ConvertTo-WdOptionV6 $_ })
@@ -1405,8 +1398,7 @@ $out = @(Get-DhcpServerv6OptionValue @cn @sel | ForEach-Object { ConvertTo-WdOpt
 )
 S_V6OPTION_SET = Script(
     "v6option.set",
-    _HELPERS
-    + _V6OPTION_FUNC
+    _V6OPTION_FUNC
     + r"""
 # -Force: no DNS server check (option 23), as for IPv4.
 Set-DhcpServerv6OptionValue @cn @sel -OptionId $p.option_id -Value ([string[]]@($p.value)) -Force
@@ -1415,8 +1407,7 @@ $out = Get-WdOptionV6
 )
 S_V6OPTION_REMOVE = Script(
     "v6option.remove",
-    _HELPERS
-    + _V6OPTION_FUNC
+    _V6OPTION_FUNC
     + r"""
 Remove-DhcpServerv6OptionValue @cn @sel -OptionId $p.option_id -Confirm:$false
 """,

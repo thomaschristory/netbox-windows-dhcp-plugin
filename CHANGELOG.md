@@ -27,6 +27,7 @@ All notable changes to this project are documented here. The format follows
   `<list>_truncated` flag when cut and a new `not_pushed_count`. The run's error text is capped the same way. The
   counts stay exact.
 - The Windows server CSV import accepts an `ssh_host_key` column.
+- Removed unused parameters from internal sync helpers (`sync.diff.diff`, `sync.windows_state.hidden_records`).
 
 ### Fixed
 

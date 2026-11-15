@@ -31,7 +31,8 @@ DEFAULTS = {
     "import_user": None,
     # Seconds to wait after a save before pushing, so a burst of edits becomes one push (without branching).
     "push_debounce": 10,
-    # Maximum number of PowerShell commands one job runs at the same time against a server.
+    # Upper bound on the PowerShell commands one job runs at the same time against a server. It has no effect today:
+    # a job sends its commands one after another, and jobs for the same server wait for each other.
     "max_concurrency": 4,
     # Seconds a single PowerShell command may stay silent before it is abandoned. Over WinRM this is one wait for
     # output; a command that keeps the connection alive without finishing is abandoned after ten times this long.

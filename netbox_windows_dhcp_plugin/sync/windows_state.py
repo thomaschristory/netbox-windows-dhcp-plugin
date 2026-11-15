@@ -857,16 +857,15 @@ def equal(kind: str, name: str, a: Any, b: Any) -> bool:
 
 def hidden_records(
     state: WindowsState,
-    skipped_option_ids: Iterable[int] = SKIPPED_OPTION_IDS,
-    partner_failovers: Iterable[str] = (),
     *,
+    partner_failovers: Iterable[str] = (),
     standard_codes6: Iterable[int] | None = None,
 ) -> list[Record]:
     """
     Windows objects ``to_records`` leaves out (relationships synced from the partner, DHCPv6 values and exclusions it
     does not sync), as records whose parents can be worked out. A push never touches them, but removing their parent
-    on Windows would remove them too, so they stop the parent from being deleted. Options 1 and 51 are not here
-    (``skipped_option_ids`` is kept for callers): every scope has them, and they mean nothing without it.
+    on Windows would remove them too, so they stop the parent from being deleted. Options 1 and 51 are not here:
+    every scope has them, and they mean nothing without it.
     """
     partners = {n.lower() for n in partner_failovers}
     out = [failover_record(f) for f in state.failovers if f.name.lower() in partners]

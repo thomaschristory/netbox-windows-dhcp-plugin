@@ -14,21 +14,17 @@ from __future__ import annotations
 
 import ipaddress
 import re
-from collections.abc import Sequence
 from datetime import timedelta
 
 __all__ = [
     "canonical_duid",
-    "canonical_duration",
     "canonical_ipv6",
     "canonical_mac",
     "canonical_mac_pattern",
     "canonical_policy_criterion",
     "enum_of",
     "format_duration",
-    "is_mac",
     "network_address",
-    "option_values_equivalent",
     "parse_duration",
     "parse_ipv4",
     "parse_mask",
@@ -88,10 +84,6 @@ def format_duration(seconds: int | timedelta) -> str:
     return f"{days}.{rest // 3600:02d}:{(rest % 3600) // 60:02d}:{rest % 60:02d}"
 
 
-def canonical_duration(value: str | int | timedelta) -> str:
-    return format_duration(parse_duration(value))
-
-
 _MAC_SEPARATORS = str.maketrans("", "", ":-. ")
 _MAC_SEPARATOR_RE = re.compile(r"[:\-. ]+")
 
@@ -125,14 +117,6 @@ def canonical_mac(value: str, *, pad_groups: bool = True) -> str:
     except ValueError:
         raise ValueError(f"invalid client ID {value!r}: not hexadecimal") from None
     return "-".join(f"{b:02x}" for b in raw)
-
-
-def is_mac(value: str) -> bool:
-    try:
-        canonical_mac(value)
-    except ValueError:
-        return False
-    return True
 
 
 # DHCPv6 DUIDs are written the same way as client identifiers.
@@ -245,22 +229,3 @@ def parse_option_number(value: str) -> int:
     if not s.isascii() or not s.isdigit():
         raise ValueError(f"not a number: {value!r}")
     return int(s, 10)
-
-
-def option_values_equivalent(a: Sequence[str], b: Sequence[str]) -> bool:
-    """Compare option value lists element by element.
-
-    Elements are equal when they match ignoring case, or both parse as the same
-    unsigned number in decimal or hex (``"0x0A" == "10"``). Order matters.
-    """
-    if len(a) != len(b):
-        return False
-    for x, y in zip(a, b, strict=True):
-        if str(x).casefold() == str(y).casefold():
-            continue
-        try:
-            if parse_option_number(x) != parse_option_number(y):
-                return False
-        except ValueError:
-            return False
-    return True

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pytest
 
 from netbox_windows_dhcp_plugin.windows import normalize as n
-from netbox_windows_dhcp_plugin.windows.client import DhcpClient, MacFilter, Scope
+from netbox_windows_dhcp_plugin.windows.client import ALL_SCRIPTS, DhcpClient, MacFilter, Scope
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 from netbox_windows_dhcp_plugin.windows.psscript import OutputError, PSError
 
@@ -21,6 +22,28 @@ class DataRunner:
 
     def run(self, script: str, params: Any = None) -> bytes:
         return json.dumps({"ok": True, "data": self.data}).encode()
+
+
+# -- F72: helper functions are only sent with the scripts that call them ---------------------------------
+
+
+@pytest.mark.parametrize("helper", ["ConvertTo-WdSeconds", "ConvertTo-WdTimeSpan"])
+def test_a_script_that_calls_a_duration_helper_defines_it(helper: str) -> None:
+    for s in ALL_SCRIPTS:
+        defined = f"function {helper}(" in s.body
+        called = len(re.findall(re.escape(helper), s.body)) > (1 if defined else 0)
+        assert defined or not called, f"{s.op} calls {helper} without defining it"
+
+
+def test_option_scripts_carry_no_duration_helpers() -> None:
+    # The helpers travel together: a script that has them must use at least one of them.
+    for s in ALL_SCRIPTS:
+        if "function ConvertTo-WdSeconds(" in s.body:
+            uses = len(re.findall("ConvertTo-WdSeconds|ConvertTo-WdTimeSpan", s.body))
+            assert uses > 2, f"{s.op} carries the duration helpers without calling them"
+    ops = {s.op for s in ALL_SCRIPTS if "ConvertTo-WdSeconds" in s.body}
+    assert not {o for o in ops if o.startswith(("option.", "optiondef.", "v6option."))}
+    assert {"failover.get", "policy.get", "v6scope.get"} <= ops
 
 
 # -- F74: filter.set puts the old entry back when the add is refused ------------------------------------
@@ -165,3 +188,12 @@ def test_mac_pattern_does_not_pad_half_a_byte() -> None:
     assert n.canonical_policy_criterion("mac_address", "02-4e-42-a*") == "02-4e-42-a*"
     assert n.canonical_mac_pattern("02-4e-42-ab*") == "02-4e-42-ab-*"
     assert n.canonical_mac_pattern("02:4E:42:AB:00:01") == "02-4e-42-ab-00-01"
+
+
+# -- F78: the number rules the deleted option_values_equivalent test covered ----------------------------
+
+
+def test_parse_option_number_hex_and_leading_zero() -> None:
+    assert n.parse_option_number("0X0a") == n.parse_option_number("10") == n.parse_option_number("010") == 10
+    for gone in ("canonical_duration", "is_mac", "option_values_equivalent"):
+        assert not hasattr(n, gone) and gone not in n.__all__

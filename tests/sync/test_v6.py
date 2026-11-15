@@ -395,11 +395,6 @@ def test_user_class_names_are_not_case_sensitive_on_windows(client):
     assert value.value == ["2001:db8::2"]
 
 
-def test_hidden_records_keeps_its_positional_parameters(client):
-    # standard_codes6 is keyword only, so existing positional callers keep their meaning.
-    assert ws.hidden_records(ws.read(client), ws.SKIPPED_OPTION_IDS) == []
-
-
 def test_reservation_description_change_keeps_its_option_values(client, fake):
     """Issue #42, DHCPv6: the update only shows the reservation, and its option 24 survives."""
     source = [*wanted(), option6(f"{PREFIX}/2001:db8:1::10", 24, ["host.example"])]

@@ -14,6 +14,7 @@ from django.utils import timezone
 from utilities.testing import APITestCase, TestCase
 
 from netbox_windows_dhcp_plugin import filtersets, forms
+from netbox_windows_dhcp_plugin.api.views import ImportProposalViewSet
 from netbox_windows_dhcp_plugin.choices import ClassTypeChoices, ProposalItemStatusChoices
 from netbox_windows_dhcp_plugin.jobs import TestConnectionJob
 from netbox_windows_dhcp_plugin.models import (
@@ -263,6 +264,24 @@ class F67ScopeColumnViewTest(_ScalingMixin, TestCase):
 
     def test_the_scope_column_is_shown(self):
         self.assertContains(self._get(self.urls[0]), "dhcp1/10.2.0.0")
+
+
+# -- F10 ---------------------------------------------------------------------------------------------------------
+
+
+class F10ProposalListTest(PluginAPIMixin, APITestCase):
+    def test_the_list_counts_nothing_it_does_not_return(self):
+        self.assertEqual(dict(ImportProposalViewSet.queryset.query.annotations), {})
+        self.assertTrue(ImportProposalViewSet.queryset.ordered)
+
+    def test_newest_first(self):
+        _superuser(self)
+        _, old = make_proposal("dhcp1", "10.1.0")
+        _, new = make_proposal("dhcp2", "10.2.0")
+        response = self.client.get(f"{API}/import-proposals/", **self.header)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.json()["results"]], [new.pk, old.pk])
+        self.assertNotIn("item_count", response.json()["results"][0])
 
 
 # -- F17 ---------------------------------------------------------------------------------------------------------

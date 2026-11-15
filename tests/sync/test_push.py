@@ -502,18 +502,6 @@ def test_policies_renumbered_by_windows_can_still_be_deleted(client, fake):
     assert orders(fake) == []
 
 
-def test_policy_fingerprints_recorded_with_the_order_still_match():
-    """0.1.0rc1 hashed the processing order: those SyncState rows still allow a delete while the order holds."""
-    record = Record("policy", "10.1.0.0/a", lab_policy("A", 1).fields)
-    legacy = push._fingerprint(record, keep_order=True)
-    assert legacy != push.fingerprint(record)
-    p = push.plan([scope()], [scope(), record], {("policy", record.key): legacy})
-    assert [(c.action, c.key) for c in p.changes] == [("delete", record.key)] and not p.skipped
-    moved = Record("policy", record.key, {**record.fields, "processing_order": 2})
-    p = push.plan([scope()], [scope(), moved], {("policy", record.key): legacy})
-    assert p.changes == [] and "changed on Windows" in p.skipped[0].reason
-
-
 def test_new_policy_past_the_end_leaves_the_others_alone(client, fake):
     """Only a create is past the end: the policies already on Windows are still set as NetBox says."""
     _, first = run(client, [scope(), lab_policy("A", 1), lab_policy("B", 2)])
