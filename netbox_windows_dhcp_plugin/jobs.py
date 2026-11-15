@@ -412,9 +412,15 @@ class PushJob(JobRunner):
             branch_name=branch[:255],
         )
         if not self.dry_run:
-            # Under the server lock: every trigger recorded until now is carried by this push. Later ones wait for the
-            # next push, which their own enqueue_push call queued (no push was waiting any more).
-            PushTrigger.objects.filter(windows_server=server, sync_run=None).update(sync_run=sync_run)
+            # Every trigger recorded until now is carried by this push. Under the queue lock enqueue_push takes, so a
+            # trigger being recorded right now (which saw this job still waiting, and so queued none) is either
+            # committed before the claim or sees this job as started and queues the next push.
+            from django.db import transaction
+
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_QUEUE_LOCK_CLASS, server.pk])
+                PushTrigger.objects.filter(windows_server=server, sync_run=None).update(sync_run=sync_run)
         runner = self.runner_factory(server) if self.runner_factory else None
         client = None
         try:
@@ -495,15 +501,19 @@ def _record_triggers(server, triggers):
             "request_id": t.get("request_id"),
             "branch": (t.get("branch") or "")[:255],
         }
-        # One row per request: a request saving many objects of a server is one edit.
-        if (
-            fields["request_id"]
-            and PushTrigger.objects.filter(
-                windows_server=server, sync_run=None, request_id=fields["request_id"]
-            ).exists()
-        ):
-            continue
-        PushTrigger.objects.create(windows_server=server, **fields)
+        # Keep the waiting list short: one row per request (a request saving many objects is one edit), one per user
+        # for Sync now (repeated clicks), and one for all saves made without a request (an nbshell loop).
+        waiting = PushTrigger.objects.filter(windows_server=server, sync_run=None)
+        if fields["source"] == "sync_now":
+            same = waiting.filter(source="sync_now", user=fields["user"])
+        elif fields["request_id"]:
+            same = waiting.filter(request_id=fields["request_id"])
+        else:
+            same = waiting.filter(
+                source=fields["source"], user=fields["user"], request_id=None, branch=fields["branch"]
+            )
+        if not same.exists():
+            PushTrigger.objects.create(windows_server=server, **fields)
 
 
 def enqueue_push(server, user=None, delay=0, branch="", dry_run=False, notify_always=True, attempt=1, triggers=()):

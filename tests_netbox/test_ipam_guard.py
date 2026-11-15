@@ -3,6 +3,7 @@ Edits of the core objects scopes and reservations point at (issue #102): which f
 objects depend on them, and the refusal for users without the DHCP permission.
 """
 
+import contextlib
 import uuid
 from unittest import mock
 
@@ -18,6 +19,7 @@ from utilities.exceptions import AbortRequest
 from utilities.request import NetBoxFakeRequest
 
 from netbox_windows_dhcp_plugin import ipam_guard
+from netbox_windows_dhcp_plugin.models import Reservation
 from netbox_windows_dhcp_plugin.signals import push_suppressed
 
 from . import fixtures
@@ -112,6 +114,8 @@ class _GuardMixin:
             "ipam.add_ipaddress",
             "ipam.view_prefix",
             "ipam.change_prefix",
+            "ipam.view_iprange",
+            "ipam.change_iprange",
             "dcim.view_macaddress",
             "dcim.change_macaddress",
             "ipam.view_vrf",
@@ -163,10 +167,69 @@ class GuardViewTest(_GuardMixin, utilities_testing.TestCase):
         self.assertEqual(self.edit("198.18.10.26/24").status_code, 200)
         self.assertEqual(self.stored_address(), "198.18.10.25/24")
 
-    def test_csv_import_update_refused(self):
+    def _import(self, rows):
         url = reverse("ipam:ipaddress_bulk_import")
-        data = f"id,address,status\n{self.ip.pk},198.18.10.26/24,active"
-        self.client.post(url, {"data": data, "format": "csv", "csv_delimiter": ","})
+        data = "id,address,status\n" + "\n".join(f"{pk},{address},active" for pk, address in rows)
+        return self.client.post(url, {"data": data, "format": "csv", "csv_delimiter": ","})
+
+    def test_csv_import_update_refused(self):
+        response = self._import([(self.ip.pk, "198.18.10.26/24")])
+        self.assertIn("change reservation", response.content.decode())
+        self.assertEqual(self.stored_address(), "198.18.10.25/24")
+
+    def test_csv_import_update_allowed_with_permission(self):
+        self.grant("change_reservation")
+        self._import([(self.ip.pk, "198.18.10.26/24")])
+        self.assertEqual(self.stored_address(), "198.18.10.26/24")
+
+    def test_csv_import_is_all_or_nothing(self):
+        # An unused address first (allowed), then the reserved one (refused): neither is saved.
+        free = fixtures.ip_address("198.18.10.77/24")
+        self._import([(free.pk, "198.18.10.78/24"), (self.ip.pk, "198.18.10.26/24")])
+        self.assertEqual(str(IPAddress.objects.get(pk=free.pk).address), "198.18.10.77/24")
+        self.assertEqual(self.stored_address(), "198.18.10.25/24")
+
+    def test_range_edit_refused(self):
+        rng = self.scope.ip_range
+        url = reverse("ipam:iprange_edit", args=[rng.pk])
+        response = self.client.post(
+            url, {"start_address": "198.18.10.30/24", "end_address": "198.18.10.200/24", "status": "active"}
+        )
+        self.assertIn("change scope", response.content.decode())
+        rng.refresh_from_db()
+        self.assertEqual(str(rng.start_address), "198.18.10.10/24")
+
+    def test_range_edit_allowed_with_permission(self):
+        self.grant("change_scope")
+        rng = self.scope.ip_range
+        url = reverse("ipam:iprange_edit", args=[rng.pk])
+        response = self.client.post(
+            url, {"start_address": "198.18.10.30/24", "end_address": "198.18.10.200/24", "status": "active"}
+        )
+        self.assertEqual(response.status_code, 302)
+        rng.refresh_from_db()
+        self.assertEqual(str(rng.start_address), "198.18.10.30/24")
+
+    def test_prefix_bulk_edit_length_refused(self):
+        # Bulk edit can change a prefix's length, which Windows receives as the subnet mask.
+        url = reverse("ipam:prefix_bulk_edit")
+        self.client.post(url, {"pk": [self.scope.prefix_id], "prefix_length": 23, "_apply": True})
+        self.scope.prefix.refresh_from_db()
+        self.assertEqual(str(self.scope.prefix.prefix), "198.18.10.0/24")
+
+    def test_failover_shared_address_needs_both_reservations(self):
+        # Failover partners' reservations point at the same IP address object.
+        partner = fixtures.scope(fixtures.windows_server("dhcp2"), "198.18.10.0/24")
+        partner.prefix = self.scope.prefix
+        partner.ip_range = self.scope.ip_range
+        partner.save()
+        Reservation.objects.create(scope=partner, ip_address=self.ip)
+        self.grant("change_reservation", {"scope__server__name": "dhcp1"})
+        self.grant("view_reservation")
+        response = self.edit("198.18.10.26/24")
+        content = response.content.decode()
+        self.assertIn("dhcp2/198.18.10.0/198.18.10.25", content)
+        self.assertNotIn("dhcp1/198.18.10.0/198.18.10.25", content)
         self.assertEqual(self.stored_address(), "198.18.10.25/24")
 
     def test_bulk_edit_mask_only_allowed(self):
@@ -186,6 +249,7 @@ class GuardViewTest(_GuardMixin, utilities_testing.TestCase):
         response = self.client.post(url, {"prefix": "198.18.10.0/23", "status": "active", "scope_type": ""})
         self.assertEqual(response.status_code, 200)
         self.assertIn("dhcp2/", response.content.decode())
+        self.assertNotIn("dhcp1/", response.content.decode())
         self.scope.prefix.refresh_from_db()
         self.assertEqual(str(self.scope.prefix.prefix), "198.18.10.0/24")
 
@@ -199,7 +263,8 @@ class GuardViewTest(_GuardMixin, utilities_testing.TestCase):
         response = self.client.post(url, {"prefix": "198.18.10.0/23", "status": "active", "scope_type": ""})
         content = response.content.decode()
         self.assertNotIn("hidden-dhcp", content)
-        self.assertIn("1 scope you cannot view", content)
+        # Not how many: the count alone would tell the user how many hidden scopes use the prefix.
+        self.assertIn("one or more scopes on Windows that you may not view", content)
         self.assertIn("change scope", content)
 
     def test_constraint_checked_after_the_change_too(self):
@@ -215,7 +280,13 @@ class GuardAPITest(_GuardMixin, utilities_testing.APITestCase):
         url = f"/api/ipam/ip-addresses/{self.ip.pk}/"
         response = self.client.patch(url, {"address": "198.18.10.26/24"}, format="json", **self.header)
         self.assertEqual(response.status_code, 400)
-        self.assertIn("change reservation", response.content.decode())
+        self.assertEqual(
+            response.json(),
+            {
+                "detail": "Changing address would change one or more reservations on Windows that you may not "
+                'view. You need the "change reservation" permission on them.'
+            },
+        )
         self.assertEqual(self.stored_address(), "198.18.10.25/24")
 
     def test_api_mac_patch_refused(self):
@@ -285,7 +356,7 @@ class GuardContextTest(_GuardMixin, utilities_testing.TestCase):
         ip.save()
 
     def test_no_user_allowed(self):
-        # nbshell, management commands: nobody to check, the change log records the edit.
+        # nbshell, management commands: nobody to check.
         self._save()
         self.assertEqual(self.stored_address(), "198.18.10.26/24")
 
@@ -298,6 +369,50 @@ class GuardContextTest(_GuardMixin, utilities_testing.TestCase):
             self.assertRaises(AbortRequest),
         ):
             self._save()
+
+    def _request(self):
+        return NetBoxFakeRequest({"user": self.user, "id": uuid.uuid4(), "META": {}, "COOKIES": {}, "POST": {}})
+
+    def test_upsert_by_primary_key_checked(self):
+        # An instance built with an existing primary key saves as an UPDATE: it must be checked like an edit.
+        stored = IPAddress.objects.get(pk=self.ip.pk)
+        ip = IPAddress(pk=stored.pk, address=IPNetwork("198.18.10.26/24"), status=stored.status)
+        with (
+            mock.patch("netbox.context_managers.flush_events"),
+            event_tracking(self._request()),
+            self.assertRaises(AbortRequest),
+        ):
+            ip.save()
+
+    def test_caught_post_save_refusal_still_undoes_the_edit(self):
+        # A script catching the refusal must not keep the edit: the transaction it runs in would commit it.
+        self.grant("change_reservation", {"ip_address__address__net_host_contained": "198.18.10.0/25"})
+        ip = IPAddress.objects.get(pk=self.ip.pk)
+        ip.address = IPNetwork("198.18.10.200/24")
+        with (
+            mock.patch("netbox.context_managers.flush_events"),
+            event_tracking(self._request()),
+            contextlib.suppress(AbortRequest),
+        ):
+            ip.save()
+        self.assertEqual(self.stored_address(), "198.18.10.25/24")
+
+    def test_update_fields_without_watched_field_allowed(self):
+        ip = IPAddress.objects.get(pk=self.ip.pk)
+        ip.address = IPNetwork("198.18.10.26/24")
+        ip.description = "only this is saved"
+        with mock.patch("netbox.context_managers.flush_events"), event_tracking(self._request()):
+            ip.save(update_fields=["description"])
+        self.assertEqual(self.stored_address(), "198.18.10.25/24")
+        self.assertEqual(IPAddress.objects.get(pk=self.ip.pk).description, "only this is saved")
+
+    def test_raw_save_does_not_reuse_an_earlier_mark(self):
+        ip = IPAddress.objects.get(pk=self.ip.pk)
+        ip.description = "x"
+        ip.save()
+        self.assertEqual(ip._nbwd_push_fields, ())
+        ipam_guard.check_edit(IPAddress, ip, raw=True)
+        self.assertIsNone(getattr(ip, "_nbwd_push_fields", None))
 
     def test_push_suppressed_allowed(self):
         request = NetBoxFakeRequest({"user": self.user, "id": uuid.uuid4(), "META": {}, "COOKIES": {}, "POST": {}})

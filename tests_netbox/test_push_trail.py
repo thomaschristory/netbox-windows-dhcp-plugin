@@ -5,6 +5,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 from core.choices import JobStatusChoices, ObjectChangeActionChoices
+from core.exceptions import JobFailed
 from core.models import Job
 from django.contrib.auth import get_user_model
 from django.db import connection
@@ -107,6 +108,36 @@ class PushTrailTest(PushTestMixin, TestCase):
         self._run()
         self.assertFalse(PushTrigger.objects.exists())
 
+    def test_saves_without_a_request_share_one_trigger(self):
+        # nbshell or a management command saving many objects: one row, not one per save.
+        for name in ("a", "b", "c"):
+            with STANDALONE, self.captureOnCommitCallbacks(execute=True):
+                scope = NetBoxScope.objects.get()
+                scope.name = name
+                scope.save()
+        trigger = PushTrigger.objects.get()
+        self.assertIsNone(trigger.user)
+        self.assertIsNone(trigger.request_id)
+
+    def test_repeated_sync_now_shares_one_trigger(self):
+        from netbox_windows_dhcp_plugin.jobs import enqueue_push
+
+        for _ in range(3):
+            trigger = {"source": "sync_now", "user": self.alice, "request_id": uuid.uuid4()}
+            enqueue_push(self.server, self.alice, triggers=[trigger])
+        self.assertEqual(PushTrigger.objects.filter(sync_run=None).count(), 1)
+
+    def test_failed_push_keeps_its_triggers(self):
+        self.edit(self.alice, "renamed")
+        with (
+            mock.patch("netbox_windows_dhcp_plugin.jobs.build_client", side_effect=ValueError("boom")),
+            self.assertRaises(JobFailed),
+        ):
+            self._run()
+        run = SyncRun.objects.get(kind="push")
+        self.assertEqual(run.status, "failed")
+        self.assertEqual(run.triggers.get().user, self.alice)
+
     def test_sync_disabled_records_nothing(self):
         self.server.sync_enabled = False
         self.server.save()
@@ -162,6 +193,14 @@ class SyncNowTrailTest(ViewTestCase):
         response = self.client.get(run.get_absolute_url())
         self.assertContains(response, f"request_id={request_id}")
         self.assertContains(response, self.user.username)
+
+    def test_panel_lists_at_most_fifty(self):
+        run = SyncRun.objects.create(windows_server=self.server, kind="push", status="completed")
+        for _ in range(55):
+            PushTrigger.objects.create(windows_server=self.server, sync_run=run, source="edit", request_id=uuid.uuid4())
+        response = self.client.get(run.get_absolute_url())
+        self.assertContains(response, "request_id=", count=50)
+        self.assertContains(response, "And 5 more")
 
     def test_sync_run_api_has_triggers(self):
         run = SyncRun.objects.create(windows_server=self.server, kind="push", status="completed")

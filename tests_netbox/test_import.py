@@ -527,6 +527,16 @@ class BranchImportTest(ImportTestMixin, TransactionTestCase):
             self.assertEqual(NetBoxReservation.objects.count(), 1)
         self.assertGreater(result.branch.get_unmerged_changes().count(), 0)
 
+    def test_branch_import_is_not_refused_by_the_ipam_guard(self):
+        # Imports write what Windows holds: an import user without change_scope must still move a scope's range.
+        from dataclasses import replace
+
+        self.apply_all()
+        client = DhcpClient(self.fake)
+        client.set_scope(replace(client.get_scope("10.1.0.0"), start_range="10.1.0.30"))
+        result = importer.import_to_branch(self.server, self.state(), self.user)
+        self.assertEqual(result.failed, [])
+
     def test_repeated_import_reuses_the_branch(self):
         first = importer.import_to_branch(self.server, self.state(), self.user)
         self.client.remove_reservation("10.1.0.50")

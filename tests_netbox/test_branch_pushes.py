@@ -144,12 +144,22 @@ class BranchMergeIntegrationTest(ImportTestMixin, TransactionTestCase):
         with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes") as pushes:
             self.branch.merge(user=self.user)
         self.assertEqual(Scope.objects.get().name, "merged")
-        pushes.assert_called_once_with({self.server.pk}, self.user, branch=self.branch.name, triggers=mock.ANY)
+        pushes.assert_called_once_with(
+            {self.server.pk},
+            self.user,
+            branch=self.branch.name,
+            triggers=[{"source": "merge", "user": self.user, "branch": self.branch.name}],
+        )
         self.branch.can_revert = True
         with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes") as pushes:
             self.branch.revert(user=self.user)
         self.assertEqual(Scope.objects.get().name, "LAN")
-        pushes.assert_called_once_with({self.server.pk}, self.user, branch=self.branch.name, triggers=mock.ANY)
+        pushes.assert_called_once_with(
+            {self.server.pk},
+            self.user,
+            branch=self.branch.name,
+            triggers=[{"source": "revert", "user": self.user, "branch": self.branch.name}],
+        )
 
     def test_aborted_merge_queues_nothing(self):
         from utilities.exceptions import AbortTransaction
@@ -255,3 +265,16 @@ class ApplyingBranchMarkTest(TestCase):
             self.assertEqual(branching._applying.get(), 99)
             close()
             self.assertIsNone(branching._applying.get())
+
+
+@skipUnless(apps.is_installed("netbox_branching"), "netbox-branching is not installed")
+class ApplyingBranchStatusTest(TestCase):
+    def test_mark_of_a_branch_no_longer_merging_is_ignored(self):
+        # A failed merge sends no closing signal: its mark must not exempt later edits once the branch is READY.
+        from netbox_branching.models import Branch
+
+        branch = Branch(name="stale-mark")
+        branch.save(provision=False)
+        branching._on_pre_apply(None, branch=branch)
+        self.addCleanup(branching.clear_applying)
+        self.assertFalse(branching.applying_branch())

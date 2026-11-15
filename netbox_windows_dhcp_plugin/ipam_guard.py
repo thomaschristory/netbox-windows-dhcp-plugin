@@ -36,11 +36,18 @@ def push_value(label, field, value):
     return str(network.ip)
 
 
-def changed_fields(instance):
-    """The watched fields whose pushed value differs from the stored row; () for new or unwatched objects."""
+def changed_fields(instance, update_fields=None):
+    """
+    The watched fields whose pushed value differs from the stored row; () for new or unwatched objects. With
+    ``update_fields`` (a save of some fields only), the other fields are not written, so they cannot change.
+    """
     label = instance._meta.label_lower
     fields = WATCHED.get(label)
-    if not fields or instance._state.adding or instance.pk is None:
+    if fields and update_fields is not None:
+        fields = tuple(f for f in fields if f in update_fields)
+    # Not instance._state.adding: an instance built with the primary key of an existing row saves as an UPDATE, and
+    # the stored row below is what tells a new object from an edit.
+    if not fields or instance.pk is None:
         return ()
     stored = type(instance).objects.filter(pk=instance.pk).values(*fields).first()
     if stored is None:
@@ -96,15 +103,15 @@ def _describe(codename, obj):
 def _refusal(fields, missing, user):
     """
     The message: each scope or reservation the user may not change, named only when the user may view it (the
-    message must not reveal objects hidden from them), the rest counted.
+    message must not reveal objects hidden from them, not even how many there are).
     """
     names = ", ".join(fields)
-    visible, hidden = [], {}
+    visible, hidden = [], []
     for codename, obj, viewable in missing:
         if viewable:
             visible.append((codename, obj))
-        else:
-            hidden[codename] = hidden.get(codename, 0) + 1
+        elif codename not in hidden:
+            hidden.append(codename)
     lines = []
     for codename, obj in visible[:MESSAGE_LIMIT]:
         kind = _KIND[codename]
@@ -114,12 +121,12 @@ def _refusal(fields, missing, user):
         )
     if len(visible) > MESSAGE_LIMIT:
         lines.append(f"And {len(visible) - MESSAGE_LIMIT} more.")
-    for codename, count in hidden.items():
+    for codename in hidden:
+        # Not how many: the number alone would tell the user how many hidden objects use this one.
         kind = _KIND[codename]
-        what = f"{count} {kind}" if count == 1 else f"{count} {kind}s"
         lines.append(
-            f'Changing {names} would change {what} you cannot view on Windows. You need the "change {kind}" '
-            "permission on them."
+            f"Changing {names} would change one or more {kind}s on Windows that you may not view. You need the "
+            f'"change {kind}" permission on them.'
         )
     return " ".join(lines)
 
@@ -151,10 +158,12 @@ def check_edit(sender, instance, raw=False, **kwargs):
     exception into an error message (or HTTP 400) and roll the request back.
     """
     instance._nbwd_guard_user = None
+    # Reset first: a mark left by an earlier save of this instance must not decide this one.
+    instance._nbwd_push_fields = None
     if raw:
         # Fixture loading: not an edit by anyone.
         return
-    fields = changed_fields(instance)
+    fields = changed_fields(instance, kwargs.get("update_fields"))
     # Read by signals._changed after the save: no push for edits Windows never sees.
     instance._nbwd_push_fields = fields
     if not fields:
@@ -165,7 +174,7 @@ def check_edit(sender, instance, raw=False, **kwargs):
     # Import apply writes what Windows already has; a merge or revert replays edits checked when they were made.
     if pushes_suppressed() or applying_branch():
         return
-    # nbshell and management commands have no user: nothing to check, the change log still records the edit.
+    # nbshell and management commands have no user: nothing to check (NetBox writes no change log entry either).
     user = _request_user()
     if user is None:
         return
@@ -190,12 +199,11 @@ def recheck_edit(sender, instance, raw=False, **kwargs):
     from utilities.exceptions import AbortRequest
 
     if missing := _missing(instance, user):
-        from django.db import transaction
-
-        if not transaction.get_connection(kwargs.get("using")).in_atomic_block:
-            # Saved outside any transaction (not a NetBox view, API or script): the row is already written and the
-            # exception rolls nothing back, so put the stored values back ourselves, without signals.
-            type(instance).objects.filter(pk=instance.pk).update(**instance._nbwd_stored)
+        # The row is already written. Put the stored values back (without signals) before raising: outside a
+        # transaction the exception rolls nothing back, and inside one a caller catching it (a script's try/except)
+        # would commit the edit.
+        stored = {f: v for f, v in instance._nbwd_stored.items() if f in instance._nbwd_push_fields}
+        type(instance).objects.filter(pk=instance.pk).update(**stored)
         raise AbortRequest(_refusal(instance._nbwd_push_fields, missing, user))
 
 

@@ -128,16 +128,23 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   IPRange, IPAddress and MACAddress compares the fields a push reads (prefix; range start and end, address part;
   address, address part; MAC) with the stored row. When one changed and a scope or reservation uses the object, the
   request user needs `change` on every such scope or reservation (object permissions and constraints count), or
-  NetBox's `AbortRequest` refuses the save with a message naming them (edit view, bulk import, REST API, scripts and
-  background requests, which carry their user). Not checked: saves with no user (nbshell, management commands),
-  import apply (`push_suppressed`, it writes what Windows has) and netbox-branching merges and reverts, which replay
+  NetBox's `AbortRequest` refuses the save with a message naming the ones the user may view (others are neither
+  named nor counted). The same check runs again in `post_save` (`recheck_edit`) against the saved values, so a
+  constraint on the edited value cannot be escaped; a refusal there writes the stored values back with `update()`
+  before raising, so a caller catching the exception (a script) or a save outside a transaction does not keep the
+  edit. `update_fields` saves compare only the fields written; an instance built with an existing primary key is
+  checked like an edit. Covered: edit view, bulk edit (prefix length), bulk import, REST API, scripts and background
+  requests, which carry their user. Not checked: saves with no user (nbshell, management commands; NetBox writes no
+  change log entry for them either), imports (proposal apply, into a branch, into main: all under
+  `push_suppressed`, they write what Windows has) and netbox-branching merges and reverts, which replay
   edits already checked in the branch (`integrations.branching.applying_branch()`: a context variable set by
   `pre_merge`/`pre_revert`, trusted only while the branch is still merging or reverting, since a failed merge sends
   no closing signal). It is NetBox's documented plugin mechanism (`docs/plugins/development/exceptions.md`);
   `CUSTOM_VALIDATORS` belong to the admin's configuration.
 - **Push trail.** `enqueue_push(triggers=...)` records `PushTrigger` rows (source: edit, sync_now, merge, revert;
   user; request ID; branch) for the server, whether it queues a job or a waiting one will carry the change. A push
-  claims every unclaimed row of its server with one UPDATE once it holds the server lock, so edits made during the
+  claims every unclaimed row of its server with one UPDATE once it holds the server lock (and, for that UPDATE, the
+  queue lock enqueue_push takes, so a row being recorded is claimed or gets its own push), so edits made during the
   debounce land on that push and busy retries need to pass nothing on; dry runs claim nothing. Not `job.data`:
   NetBox's `Job.start()` saves the whole row from the copy RQ pickled at enqueue time. `PushTrigger` is not
   branchable (`NON_BRANCHABLE`). For the four core models, `_changed` queues only when the guard saw a watched field

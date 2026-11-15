@@ -51,8 +51,8 @@ configuration. Applying import proposal items does not push.
 A push queued while another for the same server is still waiting to start is not queued twice: the waiting one reads
 the latest NetBox data anyway.
 
-Only the fields Windows receives count for the core objects: an IP address's description or a prefix's status queues
-no push. Changing the fields that do count needs the plugin's permission on the scopes or reservations concerned, see
+Only the fields Windows receives count for the core objects: editing an IP address's description or a prefix's status
+directly queues no push (a branch merge still queues one per server it touches). Changing the fields that do count needs the plugin's permission on the scopes or reservations concerned, see
 [Permissions](permissions.md#editing-ipam-objects-that-windows-uses).
 
 **Triggered by** (see [Following a change from NetBox to Windows](ipam-edits.md#following-a-change-from-netbox-to-windows)).
@@ -60,7 +60,8 @@ Each push's sync run lists what queued it: every edit it carries (user, and a **
 the change log entries of that request), a **Sync now** click, or a branch merge or revert. Edits made while a push
 is still waiting to start are added to that push, so several people's edits can share one sync run. Edits made once a
 push has started are listed on the next push, even when the running one already carried them (it reads NetBox after
-it starts), and a push that fails keeps its list: the retry that succeeds shows none. The same list is in the REST API as the sync run's `triggers`.
+it starts), and a push that fails keeps its list: nothing retries it, so the push that later applies the change (Sync now, or the
+next edit's push) lists only its own trigger. The same list is in the REST API as the sync run's `triggers`.
 
 With netbox-branching, edit inside a branch, then merge it (after approval, with change control). The merge queues
 the push, and its sync run names the branch:

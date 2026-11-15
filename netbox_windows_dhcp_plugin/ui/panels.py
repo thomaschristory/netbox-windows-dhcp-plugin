@@ -252,6 +252,10 @@ class ImportProposalItemPanel(panels.ObjectAttributesPanel):
     error = attrs.TextAttr("error", style="font-monospace")
 
 
+# The panel lists this many triggers of a push, then counts the rest (the REST API lists them all).
+TRIGGERS_SHOWN = 50
+
+
 class PushTriggersPanel(panels.ObjectPanel):
     """On a push's sync run page: what queued it (see models.PushTrigger)."""
 
@@ -262,7 +266,9 @@ class PushTriggersPanel(panels.ObjectPanel):
         from django.urls import reverse
 
         ctx = super().get_context(context)
-        ctx["triggers"] = list(ctx["object"].triggers.select_related("user"))
+        triggers = ctx["object"].triggers.select_related("user")
+        ctx["triggers"] = list(triggers[:TRIGGERS_SHOWN])
+        ctx["more"] = max(triggers.count() - TRIGGERS_SHOWN, 0) if len(ctx["triggers"]) == TRIGGERS_SHOWN else 0
         ctx["changelog_url"] = reverse("core:objectchange_list")
         return ctx
 

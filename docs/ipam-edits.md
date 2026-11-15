@@ -62,31 +62,36 @@ reports it as protected); delete or re-point the scope or reservation first.
 flowchart TD
     save([Someone saves a prefix, IP range,<br/>IP address or MAC address]) --> fields{Did a field Windows<br/>receives change?}
     fields -- no --> ok1([Saved. No push queued])
-    fields -- yes --> used{Does a scope or<br/>reservation use it?}
-    used -- no --> ok2([Saved. No push queued])
-    used -- yes --> who{Is there a user<br/>behind the save?}
-    who -- "no (nbshell, management command)" --> ok3([Saved, recorded in the change log,<br/>push queued])
-    who -- yes --> skip{Import apply, or a<br/>branch merge or revert?}
-    skip -- yes --> ok4([Saved])
-    skip -- no --> perm{Before AND after the change:<br/>may the user change every<br/>scope or reservation concerned?}
-    perm -- yes --> ok5([Saved, push queued,<br/>edit listed on the push])
+    fields -- yes --> skip{An import, or a<br/>branch merge or revert?}
+    skip -- import --> ok2([Saved. No push: NetBox<br/>now matches Windows])
+    skip -- "merge or revert" --> ok3([Saved. The merge or revert<br/>queues its own push])
+    skip -- no --> who{Is there a user<br/>behind the save?}
+    who -- "no (nbshell, management command)" --> ok4([Saved, push queued.<br/>NetBox writes no change log entry])
+    who -- yes --> used{Does a scope or<br/>reservation use it?}
+    used -- no --> ok5([Saved. No push:<br/>nothing on Windows uses it])
+    used -- yes --> perm{Before AND after the change:<br/>may the user change every<br/>scope or reservation concerned?}
+    perm -- yes --> ok6([Saved, push queued,<br/>edit listed on the push])
     perm -- no --> refused([Refused: nothing saved,<br/>message names what is in the way])
 ```
 
 Some details matter in practice:
 
 - **Every** dependent object must pass. A prefix shared by scopes on two servers needs `change_scope` on both.
-  **Failover partners share their IP addresses**: a reservation in a failover scope exists on both servers, both
-  pointing at the same IP address object, so renumbering it needs `change_reservation` on the reservation of each
-  server.
+- **Failover partners share their IPAM objects.** When both servers import into the same VRF, a failover scope
+  exists on both servers and both scopes point at the same prefix and IP range; each of its reservations exists on
+  both, pointing at the same IP address and MAC address. Resizing such a scope needs `change_scope` on both servers'
+  scopes, and renumbering a reservation or changing its MAC needs `change_reservation` on both reservations. A MAC
+  address object is also shared by every reservation for that MAC, on any server.
 - **Object permission constraints count**, and they are evaluated twice: against the values before the edit and
   against the values after it. A permission limited to part of a subnet therefore lets an address move inside that
   part but not out of it (see [Recipes](#recipes)).
-- The check runs for every way a person can save: the edit form, CSV/JSON/YAML import (updates by `id`), the REST
-  API (also `?background=true` requests), and custom scripts, which run as the user who started them. NetBox's bulk
-  edit forms cannot change any of the four fields, so they never trigger it.
-- A refused save is rolled back as a whole. In the UI the form comes back with the message; in bulk import nothing
-  of that import is saved; the REST API answers HTTP 400.
+- The check runs for every way a person can save: the edit form, bulk edit, CSV/JSON/YAML import (updates by `id`),
+  the REST API (also `?background=true` requests), and custom scripts, which run as the user who started them (a
+  script started by an event rule runs as the user whose change fired the rule). Of the four fields, NetBox's bulk
+  edit can change only a prefix's length (the **Prefix length** field), which is checked like any other edit; it
+  cannot change range bounds, addresses (only their mask, which does not count) or MAC addresses.
+- A refused save is rolled back as a whole. In the UI the form comes back with the message; in a bulk edit or bulk
+  import nothing of that request is saved, even the objects that would have passed; the REST API answers HTTP 400.
 
 ## What the user sees
 
@@ -99,7 +104,8 @@ is also used by the failover partner's reservation, so the save is refused and t
 dhcp02/198.18.30.0/198.18.30.11](images/ipam-edit-refused.webp)
 
 The message names, for each scope or reservation in the way, the Windows server, the scope ID and (for a
-reservation) the address, the way the plugin's pages show them, and the permission missing:
+reservation) the address, the way the plugin's pages show them, and the permission missing. For a user with no
+reservation permission at all, both partners' reservations are named:
 
 ```text
 Changing address would change reservation dhcp01/198.18.30.0/198.18.30.11 on Windows. You need the "change
@@ -107,15 +113,15 @@ reservation" permission on it. Changing address would change reservation dhcp02/
 Windows. You need the "change reservation" permission on it.
 ```
 
-Scopes and reservations the user may not even view are **counted, not named**, so the message never reveals objects
-hidden from them:
+Scopes and reservations the user may not even view are **not named, nor counted**, so the message reveals nothing
+about objects hidden from them beyond the fact that some exist:
 
 ```text
-Changing address would change 1 reservation you cannot view on Windows. You need the "change reservation"
-permission on them.
+Changing address would change one or more reservations on Windows that you may not view. You need the "change
+reservation" permission on them.
 ```
 
-At most five objects are named; the rest are counted ("And 3 more.").
+At most five visible objects are named; the rest are counted ("And 3 more.").
 
 ### In the REST API
 
@@ -129,12 +135,15 @@ HTTP/1.1 400 Bad Request
 {"detail": "Changing address would change reservation dhcp01/198.18.50.0/198.18.50.101 on Windows. You need the \"change reservation\" permission on it."}
 ```
 
-With `?background=true`, the job records the same error for the object, and the object is unchanged.
+Bulk requests sent to the list endpoint with `?background=true` run as a job, as the same user: the job fails with
+the same message (its error, and `data.detail` with `status_code` 400), and nothing of the request is saved.
 
 ### In a custom script
 
-The save raises NetBox's `AbortRequest` with the same message; the script fails and, as scripts run in a
-transaction, nothing it did is kept.
+The save raises NetBox's `AbortRequest` with the same message. A script that does not catch it fails and, as
+scripts run in a transaction, nothing it did is kept. A script that catches it carries on, but the refused object is
+left as it was. A script run with **Commit changes** unticked is not checked (NetBox gives it no user context) and
+saves nothing anyway.
 
 ## Recipes
 
@@ -154,8 +163,7 @@ They can still edit everything Windows does not receive (descriptions, statuses,
 and create new prefixes and addresses. An edit that would change DHCP is refused and tells them which scope or
 reservation is involved, so they can ask the DHCP team.
 
-Give them `view` on scopes, reservations and Windows servers too, so the refusal can name the objects instead of
-counting them.
+Give them `view` on scopes, reservations and Windows servers too, so the refusal can name the objects in the way.
 
 ### One team per Windows server (or site)
 
@@ -166,8 +174,9 @@ Constrain the permission to the server:
 | Windows DHCP > reservation | change | `{"scope__server__name": "dhcp01"}` |
 | Windows DHCP > scope | change | `{"server__name": "dhcp01"}` |
 
-The team can renumber reservations and resize scopes of `dhcp01` only. An IP address used by a reservation in a
-failover scope is shared with the partner server, so renumbering it also needs the permission for the partner.
+The team can renumber reservations and resize scopes that exist on `dhcp01` only. Scopes in a failover relationship,
+and their reservations, share their prefix, range, addresses and MACs with the partner, so those edits also need the
+permission for the partner server, for example `{"scope__server__name__in": ["dhcp01", "dhcp02"]}`.
 
 ### Part of a subnet only
 
@@ -181,6 +190,11 @@ Constraints can use the address itself:
 Because the check runs before and after the edit, a reservation inside `198.18.50.96/28` can move to another address
 inside it, but not to `198.18.50.200`; a scope can be resized only while it stays inside `198.18.0.0/16`.
 
+!!! warning "Constrain on what the guard checks"
+    Base constraints on the server, the scope or the four fields above. A constraint on another field of a core
+    object (for example `{"ip_address__tenant__name": "lab"}`) can be met by editing that field, which needs no
+    plugin permission, before making the DHCP edit.
+
 ### Restoring the 0.3.x behaviour
 
 Give every role that edits IPAM objects `change` on scopes and reservations. Their IPAM edits then reach Windows as
@@ -190,11 +204,13 @@ before; they still show on each push's trail.
 
 | Situation | Checked? | Why |
 |---|---|---|
-| Edit form, bulk import, REST API, background API requests | yes | a user is behind the save |
-| Custom scripts | yes | they run as the user who started them |
-| `nbshell`, management commands | no | there is no user to check; the change log still records the save |
+| Edit form, bulk edit (prefix length), bulk import, REST API, background API requests | yes | a user is behind the save |
+| Custom scripts, also `manage.py runscript` and scripts started by event rules | yes | they run as a user (`runscript --user`, else the first superuser; for event rules, the user whose change fired the rule) |
+| Scripts run with **Commit changes** unticked | no | NetBox gives them no user context; they save nothing |
+| `nbshell`, other management commands | no | there is no user to check. NetBox writes no change log entry for such saves; the push lists an **Edit** with no user and no **Changes** link |
 | Applying import proposal items, imports into a branch or main | no | they write what Windows already holds |
 | netbox-branching merge and revert | no | the edits were checked when made in the branch, see below |
+| netbox-branching sync | no | it copies into a branch edits already made on main |
 | Creating a new prefix, range, address or MAC | no | nothing can use an object that did not exist |
 
 ### With netbox-branching
@@ -233,6 +249,9 @@ To trace a change on Windows back to NetBox:
    created, updated and deleted on Windows).
 2. In **Triggered by**, click **Changes** next to the edit: NetBox's change log shows every object that request
    saved, with before and after values and the user.
+3. If that push lists no edit for the change, look at the run before it for the same server: a failed push, or a
+   push that was already running when the edit was made, keeps the entry. An edit with no user and no **Changes**
+   link came from `nbshell` or a management command, which NetBox does not record in its change log.
 
 Which edits land on which push:
 
@@ -240,7 +259,11 @@ Which edits land on which push:
   to that push, so several people's edits can share one sync run, each listed.
 - Edits made **once a push has started** are listed on the next push, even if the running one already carried them
   (it reads NetBox after it starts).
-- A push that **fails** keeps its list; the retry that succeeds shows none.
+- A push that **fails** keeps its list. Nothing retries it automatically: the push that later applies the change
+  (**Sync now**, or the next edit's push) lists only its own trigger, so look for the edit on the failed run.
+- Several saves of one request share one entry, and so do repeated **Sync now** clicks by one user, or saves made
+  without a request (an `nbshell` loop), while the push waits. The panel shows the first 50 entries and counts the
+  rest; the REST API lists them all.
 - A push that finds **sync disabled** on its server does nothing and drops its list; edits made while sync is
   disabled are not recorded.
 - Dry runs never take the list.
@@ -263,8 +286,9 @@ The REST API returns the same list as `triggers` on each sync run (`/api/plugins
 
 On a test system with a Windows server imported:
 
-1. Create a user `ipam-only` with `view` and `change` on IP addresses, prefixes, IP ranges and MAC addresses, and
-   `view` on Windows servers, scopes, reservations and sync runs.
+1. Create a user `ipam-only` with `view` and `change` on IP addresses, prefixes, IP ranges and MAC addresses,
+   `view` on Windows servers, scopes, reservations and sync runs, and `view` on **Core > object change** (to follow
+   the **Changes** link in step 5).
 2. As `ipam-only`, edit the IP address of a reservation and change the address: refused, the message names the
    reservation.
 3. Change only its description: saved, and no push appears on the Windows server.
@@ -280,11 +304,12 @@ On a test system with a Windows server imported:
 changed one of the four fields too: compare the address (or prefix, range bounds, MAC) in the form with the saved
 object. The mask of an IP address does not count.
 
-**"The message says 1 reservation you cannot view."** A scope or reservation you may not view depends on the object.
-Ask an administrator for `view` on it (to see which one) or for `change` (to make the edit).
+**"The message says one or more reservations that you may not view."** Scopes or reservations you may not view
+depend on the object. Ask an administrator for `view` on them (to see which) or for `change` (to make the edit).
 
 **"The same IP address needs two reservation permissions."** The address is used by a failover scope: each partner
-server has its own reservation pointing at it. You need `change_reservation` on both.
+server has its own reservation pointing at it. You need `change_reservation` on both. The same goes for the prefix
+and range of a failover scope (`change_scope` on both scopes) and for a MAC address used by several reservations.
 
 **"A script that worked before 0.4.0 now fails."** Scripts run as the user who started them; give that user the
 plugin permission, or run the change as a user who has it.
@@ -292,6 +317,9 @@ plugin permission, or run the change as a user who has it.
 **"An import or a merge changed an address without the permission."** By design: imports write what Windows already
 holds, and merges were checked when the edits were made in the branch (see
 [With netbox-branching](#with-netbox-branching)).
+
+**"A push ran after a merge, although the branch only changed descriptions."** Direct edits of fields Windows does
+not receive queue no push, but a merge queues one push per server it touches. That push finds nothing to change.
 
 **"I want to delete an IP address but NetBox says it is protected."** A reservation uses it. Delete the reservation,
 or point it at another address, first.

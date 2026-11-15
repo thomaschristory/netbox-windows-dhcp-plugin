@@ -19,8 +19,8 @@ All notable changes to this project are documented here. The format follows
   production DHCP. The save is refused with a message naming the scope or reservation. Other fields (description,
   status, tags...) are not affected. Grant `change_scope` / `change_reservation` to users who renumber in IPAM (see
   [Editing IPAM objects used by DHCP](docs/ipam-edits.md)). Issue #102.
-- Edits of a prefix, IP range, IP address or MAC address that do not change what Windows receives (description,
-  status, tags...) no longer queue a push.
+- Direct edits of a prefix, IP range, IP address or MAC address that do not change what Windows receives
+  (description, status, tags...) no longer queue a push (a branch merge still queues one per server it touches).
 
 ## [0.3.0] - 2026-11-15
 
