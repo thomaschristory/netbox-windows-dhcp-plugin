@@ -5,6 +5,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Each push's sync run lists what queued it ("Triggered by"): the edits it carries, with the user and a link to the
+  change log entries of that request, a Sync now click, or a branch merge or revert. Edits made while a push waits to
+  start are added to that push. Also in the REST API (`triggers` on sync runs). Adds migration `0004`.
+
 ### Changed
 
 - Editing a prefix, IP range, IP address or MAC address that a scope or reservation uses now needs the plugin's
@@ -13,6 +19,8 @@ All notable changes to this project are documented here. The format follows
   production DHCP. The save is refused with a message naming the scope or reservation. Other fields (description,
   status, tags...) are not affected. Grant `change_scope` / `change_reservation` to users who renumber in IPAM (see
   [Permissions](docs/permissions.md)). Issue #102.
+- Edits of a prefix, IP range, IP address or MAC address that do not change what Windows receives (description,
+  status, tags...) no longer queue a push.
 
 ## [0.3.0] - 2026-11-15
 

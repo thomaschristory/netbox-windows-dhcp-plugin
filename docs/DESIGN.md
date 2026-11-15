@@ -135,6 +135,13 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   `pre_merge`/`pre_revert`, trusted only while the branch is still merging or reverting, since a failed merge sends
   no closing signal). It is NetBox's documented plugin mechanism (`docs/plugins/development/exceptions.md`);
   `CUSTOM_VALIDATORS` belong to the admin's configuration.
+- **Push trail.** `enqueue_push(triggers=...)` records `PushTrigger` rows (source: edit, sync_now, merge, revert;
+  user; request ID; branch) for the server, whether it queues a job or a waiting one will carry the change. A push
+  claims every unclaimed row of its server with one UPDATE once it holds the server lock, so edits made during the
+  debounce land on that push and busy retries need to pass nothing on; dry runs claim nothing. Not `job.data`:
+  NetBox's `Job.start()` saves the whole row from the copy RQ pickled at enqueue time. `PushTrigger` is not
+  branchable (`NON_BRANCHABLE`). For the four core models, `_changed` queues only when the guard saw a watched field
+  change.
 - **Triggers.** `signals.servers_for` maps a changed object (from its saved fields or a change log entry) to the
   Windows servers it affects: our models, and the prefixes, IP ranges, IP addresses and MAC addresses scopes and
   reservations point at. With branching, `post_merge` reads the branch's merged changes (before and after values, so

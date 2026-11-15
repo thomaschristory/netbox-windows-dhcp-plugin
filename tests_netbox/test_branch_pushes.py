@@ -105,7 +105,9 @@ class BranchSaveTest(ImportTestMixin, TestCase):
             scope.snapshot()
             scope.name = "main edit"
             scope.save()
-        pushes.assert_called_once_with({self.server.pk}, self.user, delay=mock.ANY, notify_always=False)
+        pushes.assert_called_once_with(
+            {self.server.pk}, self.user, delay=mock.ANY, notify_always=False, triggers=mock.ANY
+        )
 
 
 @skipUnless(apps.is_installed("netbox_branching"), "netbox-branching is not installed")
@@ -142,12 +144,12 @@ class BranchMergeIntegrationTest(ImportTestMixin, TransactionTestCase):
         with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes") as pushes:
             self.branch.merge(user=self.user)
         self.assertEqual(Scope.objects.get().name, "merged")
-        pushes.assert_called_once_with({self.server.pk}, self.user, branch=self.branch.name)
+        pushes.assert_called_once_with({self.server.pk}, self.user, branch=self.branch.name, triggers=mock.ANY)
         self.branch.can_revert = True
         with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes") as pushes:
             self.branch.revert(user=self.user)
         self.assertEqual(Scope.objects.get().name, "LAN")
-        pushes.assert_called_once_with({self.server.pk}, self.user, branch=self.branch.name)
+        pushes.assert_called_once_with({self.server.pk}, self.user, branch=self.branch.name, triggers=mock.ANY)
 
     def test_aborted_merge_queues_nothing(self):
         from utilities.exceptions import AbortTransaction

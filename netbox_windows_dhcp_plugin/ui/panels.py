@@ -252,6 +252,24 @@ class ImportProposalItemPanel(panels.ObjectAttributesPanel):
     error = attrs.TextAttr("error", style="font-monospace")
 
 
+class PushTriggersPanel(panels.ObjectPanel):
+    """On a push's sync run page: what queued it (see models.PushTrigger)."""
+
+    title = _("Triggered by")
+    template_name = "netbox_windows_dhcp_plugin/inc/push_triggers.html"
+
+    def get_context(self, context):
+        from django.urls import reverse
+
+        ctx = super().get_context(context)
+        ctx["triggers"] = list(ctx["object"].triggers.select_related("user"))
+        ctx["changelog_url"] = reverse("core:objectchange_list")
+        return ctx
+
+    def should_render(self, context):
+        return bool(context["triggers"])
+
+
 class ImportStatusPanel(panels.ObjectPanel):
     """Where the latest import went (server page) or where this one went (sync run page), see import_status.py."""
 

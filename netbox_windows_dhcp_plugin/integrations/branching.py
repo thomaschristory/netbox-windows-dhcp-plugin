@@ -13,7 +13,7 @@ from django.apps import apps
 log = logging.getLogger(__name__)
 
 # Bookkeeping models that must always live on main (see models/sync.py).
-NON_BRANCHABLE = {"windowsserver", "syncstate", "syncrun", "importproposal", "importproposalitem"}
+NON_BRANCHABLE = {"windowsserver", "syncstate", "syncrun", "pushtrigger", "importproposal", "importproposalitem"}
 
 
 def branching_installed():
@@ -130,7 +130,7 @@ def _affected_servers(branch):
     return ids
 
 
-def _queue(ids, user, branch):
+def _queue(ids, user, branch, source):
     from django.db import transaction
 
     from ..signals import queue_pushes
@@ -138,12 +138,13 @@ def _queue(ids, user, branch):
     if not ids:
         return
     name = branch.name
-    transaction.on_commit(lambda: queue_pushes(ids, user, branch=name), robust=True)
+    triggers = [{"source": source, "user": user, "branch": name}]
+    transaction.on_commit(lambda: queue_pushes(ids, user, branch=name, triggers=triggers), robust=True)
 
 
 def _on_merge(sender, branch, user=None, **kwargs):
     try:
-        _queue(_affected_servers(branch), user, branch)
+        _queue(_affected_servers(branch), user, branch, "merge")
     except Exception:
         # Never break a merge that already happened; the push can be run by hand.
         log.exception("could not queue Windows DHCP pushes after merging %s", branch)
@@ -183,7 +184,7 @@ def _on_pre_revert(sender, branch, user=None, **kwargs):
 
 def _on_revert(sender, branch, user=None, **kwargs):
     try:
-        _queue(_reverting.pop(branch.pk, set()), user, branch)
+        _queue(_reverting.pop(branch.pk, set()), user, branch, "revert")
     except Exception:
         log.exception("could not queue Windows DHCP pushes after reverting %s", branch)
 

@@ -117,14 +117,17 @@ def _data(instance):
 # -- queueing ------------------------------------------------------------------------------------------------------
 
 
-def queue_pushes(server_ids, user=None, delay=0, branch="", notify_always=True):
-    """Queue one push per Windows server (with sync enabled) of these primary keys. Returns the jobs queued."""
+def queue_pushes(server_ids, user=None, delay=0, branch="", notify_always=True, triggers=()):
+    """
+    Queue one push per Windows server (with sync enabled) of these primary keys. Returns the jobs queued. ``triggers``
+    (see jobs.enqueue_push) record why, on the push that carries the change.
+    """
     from .jobs import enqueue_push
     from .models import WindowsServer
 
     jobs = []
     for server in WindowsServer.objects.filter(pk__in=server_ids, sync_enabled=True):
-        job = enqueue_push(server, user, delay=delay, branch=branch, notify_always=notify_always)
+        job = enqueue_push(server, user, delay=delay, branch=branch, notify_always=notify_always, triggers=triggers)
         if job is not None:
             jobs.append(job)
     return jobs
@@ -142,13 +145,14 @@ def _flush():
     replayed = {
         request_id: request_applied_by_branch(request_id) for request_id in {rid for _, rid in pending.values()}
     }
-    by_user = {}
+    by_request = {}
     for server_id, (user, request_id) in pending.items():
         if replayed[request_id]:
             continue
-        by_user.setdefault(user, set()).add(server_id)
-    for user, ids in by_user.items():
-        queue_pushes(ids, user, delay=get_setting("push_debounce"), notify_always=False)
+        by_request.setdefault((user, request_id), set()).add(server_id)
+    for (user, request_id), ids in by_request.items():
+        trigger = {"source": "edit", "user": user, "request_id": request_id}
+        queue_pushes(ids, user, delay=get_setting("push_debounce"), notify_always=False, triggers=[trigger])
 
 
 def _forget_pending(**kwargs):

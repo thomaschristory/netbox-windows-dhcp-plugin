@@ -102,7 +102,8 @@ class WindowsServerViewSet(
         server = self._changeable_server(request)
         if not dry_run and not server.sync_enabled:
             return Response({"detail": "sync is disabled for this server"}, status=409)
-        job = enqueue_push(server, request.user, dry_run=dry_run)
+        triggers = [{"source": "sync_now", "user": request.user, "request_id": getattr(request, "id", None)}]
+        job = enqueue_push(server, request.user, dry_run=dry_run, triggers=triggers)
         if job is None:
             what = "a dry run" if dry_run else "a push"
             return Response({"detail": f"{what} for this server is already queued"}, status=409)
@@ -151,7 +152,11 @@ FailoverRelationshipViewSet = _viewset(
 )
 MacFilterViewSet = _viewset(models.MacFilter, models.MacFilter.objects.select_related("server"))
 MacFilterListsViewSet = _viewset(models.MacFilterLists, models.MacFilterLists.objects.select_related("server"))
-SyncRunViewSet = _viewset(models.SyncRun, models.SyncRun.objects.all(), base=NetBoxReadOnlyModelViewSet)
+SyncRunViewSet = _viewset(
+    models.SyncRun,
+    models.SyncRun.objects.prefetch_related("triggers__user"),
+    base=NetBoxReadOnlyModelViewSet,
+)
 
 
 class _ReviewActionsMixin:

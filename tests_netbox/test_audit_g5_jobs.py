@@ -452,7 +452,8 @@ class F38CoreSaveLookupTest(ImportTestMixin, TestCase):
     def test_editing_a_reserved_address_looks_it_up_once_and_pushes(self):
         address = Reservation.objects.get().ip_address
         address.snapshot()
-        address.description = "edited"
+        # The address itself: an edit Windows sees (a description edit queues no push, see #102).
+        address.address = f"{address.address.ip + 1}/{address.address.prefixlen}"
         with (
             mock.patch.object(signals, "servers_for", wraps=signals.servers_for) as resolve,
             self.captureOnCommitCallbacks(execute=True),
