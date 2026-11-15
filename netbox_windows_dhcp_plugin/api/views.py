@@ -1,5 +1,4 @@
 from core.api.serializers import JobSerializer
-from django.db.models import Count
 from netbox.api.authentication import TokenWritePermission
 from netbox.api.viewsets import NetBoxModelViewSet, NetBoxReadOnlyModelViewSet
 from rest_framework.decorators import action
@@ -175,15 +174,9 @@ class _ReviewActionsMixin:
         return Response({"applied": applied, "failed": failed, "missing_permissions": denied})
 
 
-# The item count is an aggregate, and Django drops Meta.ordering on aggregate queries, so order explicitly
-# (the API paginator rejects an unordered queryset).
 class ImportProposalViewSet(
     _ReviewActionsMixin,
-    _viewset(
-        models.ImportProposal,
-        models.ImportProposal.objects.annotate(item_count=Count("items")).order_by("-created"),
-        base=NetBoxReadOnlyModelViewSet,
-    ),
+    _viewset(models.ImportProposal, models.ImportProposal.objects.all(), base=NetBoxReadOnlyModelViewSet),
 ):
     def _proposal(self, request):
         # NetBox has already restricted the queryset to "add" (what POST maps to); start again from "change".

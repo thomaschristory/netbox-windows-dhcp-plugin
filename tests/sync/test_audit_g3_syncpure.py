@@ -4,7 +4,7 @@ import pytest
 
 from netbox_windows_dhcp_plugin.sync import push
 from netbox_windows_dhcp_plugin.sync import windows_state as ws
-from netbox_windows_dhcp_plugin.sync.diff import Change, Record
+from netbox_windows_dhcp_plugin.sync.diff import Change, Record, diff
 from netbox_windows_dhcp_plugin.sync.windows_writer import PushRefused, WindowsWriter
 from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
@@ -114,6 +114,17 @@ def test_summary_caps_the_errors():
     summary = push.Result(failed=[(c, "boom") for c in many_changes(over)]).summary()
     assert summary["failed"] == over
     assert len(summary["errors"]) == push.PLANNED_LIMIT and summary["errors_truncated"] is True
+
+
+# -- F54: one fingerprint form ------------------------------------------------------------------------------------
+
+
+def test_policy_fingerprint_leaves_the_processing_order_out():
+    one = Record("policy", "10.1.0.0/a", {"name": "A", "scope_id": "10.1.0.0", "processing_order": 1})
+    two = Record("policy", "10.1.0.0/a", {**one.fields, "processing_order": 2})
+    assert push.fingerprint(one) == push.fingerprint(two)
+    assert push.unchanged(push.fingerprint(one), two)
+    assert not push.unchanged(push.fingerprint(one), Record("policy", one.key, {**one.fields, "name": "B"}))
 
 
 # -- F55: policies are grouped by level once ----------------------------------------------------------------------
@@ -231,6 +242,27 @@ def test_push_refused_says_whether_it_wrote():
     assert PushRefused("no").wrote is False
     assert PushRefused("partly", wrote=True).wrote is True
     assert str(PushRefused("partly", wrote=True)) == "partly"
+
+
+# -- F64: dead parameters removed --------------------------------------------------------------------------------
+
+
+def test_hidden_records_takes_its_options_by_keyword_only(client):
+    state = ws.read(client)
+    assert ws.hidden_records(state, partner_failovers={"HA"}, standard_codes6=None) == []
+    # The removed positional slot must fail loudly rather than be read as the partner relationships.
+    with pytest.raises(TypeError):
+        ws.hidden_records(state, ws.SKIPPED_OPTION_IDS)
+
+
+def test_diff_compares_whole_records_by_default_or_with_the_callers_rule():
+    a, b = [Record("class", "user/x", {"name": "X"})], [Record("class", "user/x", {"name": "x"})]
+    assert [c.action for c in diff(a, b)] == ["update"]
+    assert diff(a, b, equal_records=ws.records_equal) == []
+    # A field missing on one side is a difference, even when the other side holds None.
+    assert len(diff([Record("scope", "a", {"name": "x", "delay": None})], [Record("scope", "a", {"name": "x"})])) == 1
+    with pytest.raises(TypeError):
+        diff(a, b, kinds={"class"})
 
 
 # -- F65: "not found" while leaving a failover relationship is not "scope deleted" -------------------------------

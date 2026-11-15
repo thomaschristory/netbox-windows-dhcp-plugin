@@ -72,6 +72,7 @@ def build_client(server, runner=None):
     """Return a DhcpClient for the server. Pass `runner` to substitute a fake in tests."""
     check_connection_allowed(server)
     runner = runner if runner is not None else build_runner(server)
+    # The limit is never reached today: a job sends its commands one after another.
     return DhcpClient(limit(runner, get_setting("max_concurrency")), computer_name=server.computer_name)
 
 

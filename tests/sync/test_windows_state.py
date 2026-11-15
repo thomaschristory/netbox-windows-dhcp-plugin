@@ -257,7 +257,7 @@ def test_policy_criteria_compare_as_windows_stores_them():
         processing_order=1,
         criteria={"mac_address": ["EQ", "02-4e-42-ab-*"], "fqdn": ["EQ", "*.example.test"]},
     )
-    assert diff([ws.policy_record(sent, [])], [ws.policy_record(read, [])], equal=ws.equal) == []
+    assert diff([ws.policy_record(sent, [])], [ws.policy_record(read, [])], equal_records=ws.records_equal) == []
     assert ws.equal("policy", "criteria", {"mac_address": ["eq", "AA-BB*"]}, {"mac_address": ["EQ", "aa-bb-*"]})
     # A different prefix, a different operator, or a case change in a class name is still a change.
     assert not ws.equal("policy", "criteria", {"mac_address": ["EQ", "aa-bb*"]}, {"mac_address": ["EQ", "aa-bc-*"]})

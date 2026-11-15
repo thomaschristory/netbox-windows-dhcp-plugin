@@ -29,6 +29,8 @@ def save_belongs_to_branching():
     try:
         from netbox_branching.contextvars import active_branch
     except ImportError:
+        # Fail safe, unlike active_branch_name(): when the branch cannot be read, queue no push rather than push
+        # what may be a save inside a branch.
         return True
     return active_branch.get() is not None
 
@@ -44,13 +46,7 @@ def request_applied_by_branch(request_id):
 
 def in_branch():
     """True while the request works inside a netbox-branching branch (not main)."""
-    if not branching_installed():
-        return False
-    try:
-        from netbox_branching.contextvars import active_branch
-    except ImportError:
-        return False
-    return active_branch.get() is not None
+    return active_branch_name() is not None
 
 
 def active_branch_name():

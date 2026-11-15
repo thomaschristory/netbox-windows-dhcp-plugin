@@ -31,6 +31,7 @@ from ..models import (
     Reservation,
     Scope,
     Superscope,
+    SyncState,
     WindowsClass,
     WindowsPolicy,
 )
@@ -72,8 +73,8 @@ KIND_MODELS = {
 }
 
 
-def kind_model(kind, fields=None):
-    """The model a change writes. ``fields`` is unused now that vendor class objects share their models."""
+def kind_model(kind):
+    """The model a change of this kind writes, or None for a kind this version does not know."""
     return KIND_MODELS.get(kind)
 
 
@@ -224,13 +225,13 @@ def import_to_proposal(windows_server, state, sync_run):
             proposal__windows_server=windows_server, status=ProposalItemStatusChoices.DISMISSED
         ).values_list("action", "kind", "key", "after")
     }
-    to_review = [
-        (sequence, change)
-        for sequence, change in enumerate(changes)
-        if (change.action, change.kind, change.key, _frozen(change.after)) not in dismissed
-    ]
+    to_review = []
+    for sequence, change in enumerate(changes):
+        if (change.action, change.kind, change.key, _frozen(change.after)) in dismissed:
+            result.dismissed += 1
+        else:
+            to_review.append((sequence, change))
     result.review = len(to_review)
-    result.dismissed = len(changes) - len(to_review)
     proposal = (
         ImportProposal.objects.select_for_update()
         .filter(windows_server=windows_server, status=ProposalStatusChoices.OPEN)
@@ -389,7 +390,6 @@ def _record_managed(server, change):
     NetBox and Windows now agree on this object, so later pushes manage it: deleting it in NetBox deletes it on
     Windows. The fingerprint is of the Windows values, as a push would record them.
     """
-    from ..models import SyncState
     from .push import fingerprint
 
     if change.action == DELETE:
@@ -404,7 +404,7 @@ def _record_managed(server, change):
 
 
 def _same(kind, a, b):
-    return not diff([Record(kind, "x", a)], [Record(kind, "x", b)], equal_records=windows_state.records_equal)
+    return windows_state.records_equal(kind, a, b)
 
 
 def _already_done(change, current):

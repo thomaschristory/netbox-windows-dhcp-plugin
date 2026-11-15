@@ -45,24 +45,6 @@ def test_kind_order_is_dependency_order():
     assert KIND_ORDER.index("scope") < KIND_ORDER.index("reservation") < KIND_ORDER.index("option")
 
 
-def test_kinds_filter_ignores_other_kinds():
-    source = [rec("scope", "10.1.0.0", name="a"), rec("class", "user/x", data="x")]
-    assert [c.kind for c in diff(source, [], kinds={"scope"})] == ["scope"]
-
-
-def test_custom_equality_per_field():
-    source = [rec("option", "server/46", value=["0x8"])]
-    target = [rec("option", "server/46", value=["8"])]
-
-    def equal(kind, field, a, b):
-        if field == "value":
-            return [int(x, 0) for x in a] == [int(x, 0) for x in b]
-        return a == b
-
-    assert diff(source, target, equal=equal) == []
-    assert len(diff(source, target)) == 1
-
-
 def test_record_equality_has_type_context_and_preserves_original_fields():
     source = [rec("option", "server/46", type="number", value=["0x8"])]
     target = [rec("option", "server/46", type="number", value=["8"])]

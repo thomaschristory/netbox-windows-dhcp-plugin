@@ -47,8 +47,6 @@ def test_format_duration() -> None:
     assert n.format_duration(8 * 3600) == "0.08:00:00"
     assert n.format_duration(90 * 60 + 5) == "0.01:30:05"
     assert n.format_duration(timedelta(days=1)) == "1.00:00:00"
-    assert n.canonical_duration("08:00:00") == "0.08:00:00"
-    assert n.canonical_duration(691200) == "8.00:00:00"
 
 
 @pytest.mark.parametrize(
@@ -68,7 +66,6 @@ def test_canonical_mac_client_identifier() -> None:
 def test_canonical_mac_rejects(value: str) -> None:
     with pytest.raises(ValueError):
         n.canonical_mac(value)
-    assert not n.is_mac(value)
 
 
 def test_ipv4_helpers() -> None:
@@ -104,25 +101,6 @@ def test_enum_of() -> None:
     assert n.enum_of("active", *n.SCOPE_STATES) == "Active"
     assert n.enum_of("both", *n.SCOPE_TYPES) == "Both"
     assert n.enum_of("weird", *n.SCOPE_STATES) == "weird"
-
-
-@pytest.mark.parametrize(
-    ("a", "b", "want"),
-    [
-        (["10"], ["0x0A"], True),
-        (["0X0a"], ["10"], True),
-        (["010"], ["10"], True),  # leading zero is not octal
-        (["contoso.COM"], ["contoso.com"], True),
-        (["10.0.0.53", "10.0.1.53"], ["10.0.0.53", "10.0.1.53"], True),
-        (["10.0.0.53", "10.0.1.53"], ["10.0.1.53", "10.0.0.53"], False),  # order matters
-        (["1"], ["1", "2"], False),
-        (["0x"], ["0"], False),
-        (["abc"], ["0xabc"], False),
-        ([], [], True),
-    ],
-)
-def test_option_values_equivalent(a: list[str], b: list[str], want: bool) -> None:
-    assert n.option_values_equivalent(a, b) is want
 
 
 def test_parse_option_number() -> None:
