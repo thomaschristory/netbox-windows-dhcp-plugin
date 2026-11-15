@@ -32,6 +32,8 @@ Safety rules, enforced by ``Lab`` below:
 from __future__ import annotations
 
 import json
+import os
+import warnings
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -40,11 +42,36 @@ import pytest
 
 from netbox_windows_dhcp_plugin.windows import client as wc
 
-from .labkit import REPO, Lab, lab_env, make_runner, skip_reason
+from .labkit import REPO, Lab, TrackedSecretError, check_tracked_env, lab_env, make_runner, skip_reason
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    """Deal with a lab secret in the tracked dev/env/netbox.env before any lab module is imported.
+
+    Some lab modules read the lab settings while they are imported, so the refusal has to come before collection
+    reaches them. This hook also runs for `make test`, which collects tests/lab only to skip it: there the lab
+    modules are left out (the warning below says why) and the unit tests run as usual. A lab run stops with a
+    collection error that pytest prints as the message alone, without a traceback.
+    """
+    try:
+        check_tracked_env()
+    except TrackedSecretError as exc:
+        if os.environ.get("WINDOWS_DHCP_LAB") == "1":
+            raise pytest.Collector.CollectError(str(exc)) from None
+        return True
+    return None
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    reason = skip_reason(lab_env())
+    try:
+        env = lab_env()
+    except TrackedSecretError as exc:
+        # A lab run has already reported this as a collection error (see pytest_ignore_collect). A unit run says
+        # it once here, so the secret is moved before a commit.
+        if os.environ.get("WINDOWS_DHCP_LAB") != "1":
+            warnings.warn(pytest.PytestWarning(f"lab tests not collected: {exc}"), stacklevel=1)
+        return
+    reason = skip_reason(env)
     if not reason:
         return
     here = Path(__file__).parent

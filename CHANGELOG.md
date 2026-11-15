@@ -28,6 +28,11 @@ All notable changes to this project are documented here. The format follows
   counts stay exact.
 - The Windows server CSV import accepts an `ssh_host_key` column.
 - Removed unused parameters from internal sync helpers (`sync.diff.diff`, `sync.windows_state.hidden_records`).
+- Development: the dev stack listens on 127.0.0.1 only; `make test-lab`, `make lab-seed` and `make lab-wipe` read
+  lab settings from `dev/env/lab.env`, and they and `make lab-e2e` refuse to run when the tracked
+  `dev/env/netbox.env` holds a lab password or failover secret (`make test` warns and leaves the lab tests out);
+  release builds take the build backend and twine from `uv.lock`, checked by hash, and a tag publishes only after
+  lint and the unit tests pass.
 
 ### Fixed
 
