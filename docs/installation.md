@@ -118,7 +118,7 @@ To stay on netbox-plugin-dhcp instead, pin `netbox-windows-dhcp-plugin<0.2`. The
    connection settings, sync state, sync runs and import proposals are lost, along with the 0.1.x Windows settings
    (scope and reservation settings, exclusion ranges, classes, policies, failover relationships, MAC filters).
 5. **Clean up content types** (optional): `python manage.py remove_stale_contenttypes` removes the entries NetBox
-   keeps for models that no longer exist. From 0.2.1, `migrate` already removes the plugin's own 0.1.x entries,
+   keeps for models that no longer exist. From 0.3.0, `migrate` already removes the plugin's own 0.1.x entries,
    together with **the change log entries of the 0.1.x objects** (whose tables 0.2.0 dropped), so the command only
    has other apps' leftovers to deal with. It skips the apps that are no longer installed (netbox-plugin-dhcp once
    removed from `PLUGINS`) unless you add `--include-stale-apps`, and it can then stop on their change log entries;
@@ -151,13 +151,13 @@ django.db.models.deletion.ProtectedError: ("Cannot delete some instances of mode
 referenced through protected foreign keys: 'ObjectType.contenttype_ptr', 'ObjectChange.changed_object_type'.", ...)
 ```
 
-**From 0.2.1**, migration `0003` removes the plugin's own leftovers during `migrate`: the content types of the six
+**From 0.3.0**, migration `0003` removes the plugin's own leftovers during `migrate`: the content types of the six
 0.1.x models that 0.2.0 dropped (`WindowsScope`, `WindowsReservation`, `WindowsOptionDefinition`,
 `WindowsOptionQualifier`, `WindowsVendorOptionDefinition`, `WindowsVendorOption`) and everything that still pointed
 at them: the change log entries of those objects, their permissions, search index rows and jobs, and their place in
 lists of object types that keep at least one other type (permissions, tags, custom fields, change control policies).
 **That change log history is deleted**; the objects themselves were already gone since 0.2.0. `migrate` prints
-how many content types and change log entries it removed. Upgrading to 0.2.1 or later is therefore enough: the first
+how many content types and change log entries it removed. Upgrading to 0.3.0 or later is therefore enough: the first
 start applies `0003`, the cleanup that follows succeeds and NetBox comes up.
 
 The migration leaves a type alone, change log included, when removing it would change something an administrator
