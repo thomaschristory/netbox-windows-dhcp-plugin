@@ -97,10 +97,27 @@ Restart the worker as well as the web service: the worker runs every job, and it
 Install the new version, run `migrate`, and restart NetBox and the worker. Read the [changelog](changelog.md) first:
 while the plugin is below 1.0, a minor version can change behaviour.
 
-The first version after 0.2.0 brings migration `0002` (text columns for sync keys and an index on sync runs). It
-changes no data and needs nothing but `migrate`. That version also reads `allowed_hosts` more strictly: an address
-pattern only matches IP addresses and a name pattern only matches names, so check your credential profiles (see
-[Configuration](configuration.md#allowed_hosts)).
+### Upgrading from 0.2.0 to 0.3.0
+
+0.3.0 brings two migrations, applied by `migrate`:
+
+- `0002` turns the sync key columns into text and adds an index on sync runs. It changes no data.
+- `0003` only does something on a database upgraded from 0.1.x: it removes the content types of the 0.1.x models
+  that 0.2.0 dropped, and the change log entries of their objects (see [With netbox-docker](#with-netbox-docker)).
+
+0.3.0 also refuses some settings that 0.2.0 accepted. Check these before upgrading (the
+[changelog](changelog.md) has the full list, under Changed and Security):
+
+- **`allowed_hosts`** is read more strictly: an address pattern only matches IP addresses and a name pattern only
+  matches names. A bare `*` no longer covers IPv6 addresses, `*.*.*.*` no longer matches four-label names, and an
+  IPv4 pattern needs all four parts (`10.*.*.*`, not `10.*`). See [Configuration](configuration.md#allowed_hosts).
+- **Hosts written as numbers** that a resolver reads as an IPv4 address (`127.1`, `2130706433`, or a name whose last
+  label is a number) are refused as `host` and `computer_name`; a server saved with one stops connecting until the
+  host is corrected.
+- **Failover partners**: a push only creates a failover relationship when the partner is in the `allowed_hosts` of
+  the primary server's credential profile (when that profile has `allowed_hosts`).
+- **Credential values set to `None`** (for example `os.environ.get()` of a missing variable) are a configuration
+  error instead of the text `None`.
 
 ### Upgrading from 0.1.x
 
@@ -109,7 +126,7 @@ pattern only matches IP addresses and a name pattern only matches names, so chec
 There is no data migration: **0.2.0 is a fresh start**, and the Windows servers themselves are the source to rebuild
 from. Nothing on Windows changes during the upgrade.
 
-To stay on netbox-plugin-dhcp instead, pin `netbox-windows-dhcp-plugin<0.2`. The 0.1.x line (latest 0.1.3, branch
+To stay on netbox-plugin-dhcp instead, pin `netbox-windows-dhcp-plugin<0.2`. The 0.1.x line (latest 0.1.4, branch
 `release/0.1` in the repository) keeps getting bug fixes, but no new features.
 
 1. **Merge or delete open import branches** (with netbox-branching). Their changes are written against the 0.1.x
