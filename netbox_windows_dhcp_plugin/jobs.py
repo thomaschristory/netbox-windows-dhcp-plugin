@@ -372,6 +372,8 @@ class PushJob(JobRunner):
         server = self.job.object
         if not self.dry_run and not server.sync_enabled:
             self.logger.info(f"Sync is disabled for {server}: nothing pushed")
+            # Their edits are not pushed by anyone now: they must not show on a push weeks later, once sync is back on.
+            PushTrigger.objects.filter(windows_server=server, sync_run=None).delete()
             return
         try:
             with server_lock(server):

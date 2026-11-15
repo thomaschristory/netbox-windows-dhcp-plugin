@@ -224,10 +224,12 @@ def _changed(sender, instance, **kwargs):
 
 
 def connect():
+    from . import ipam_guard
+
+    # The guard first: its post_save check can still refuse the save, which must happen before _changed queues a push
+    # (outside a transaction its on-commit callback would run at once).
+    ipam_guard.connect()
     post_save.connect(_changed, dispatch_uid=f"{PLUGIN}.push.save")
     # Before the delete, while the rows the object points at (and that point at it) are still there.
     pre_delete.connect(_changed, dispatch_uid=f"{PLUGIN}.push.delete")
     request_started.connect(_forget_pending, dispatch_uid=f"{PLUGIN}.push.request")
-    from . import ipam_guard
-
-    ipam_guard.connect()

@@ -45,6 +45,8 @@ def changed_fields(instance):
     stored = type(instance).objects.filter(pk=instance.pk).values(*fields).first()
     if stored is None:
         return ()
+    # Kept for recheck_edit, which may have to put these values back.
+    instance._nbwd_stored = stored
     return tuple(f for f in fields if push_value(label, f, getattr(instance, f)) != push_value(label, f, stored[f]))
 
 
@@ -188,6 +190,12 @@ def recheck_edit(sender, instance, raw=False, **kwargs):
     from utilities.exceptions import AbortRequest
 
     if missing := _missing(instance, user):
+        from django.db import transaction
+
+        if not transaction.get_connection(kwargs.get("using")).in_atomic_block:
+            # Saved outside any transaction (not a NetBox view, API or script): the row is already written and the
+            # exception rolls nothing back, so put the stored values back ourselves, without signals.
+            type(instance).objects.filter(pk=instance.pk).update(**instance._nbwd_stored)
         raise AbortRequest(_refusal(instance._nbwd_push_fields, missing, user))
 
 

@@ -57,8 +57,9 @@ no push. Changing the fields that do count needs the plugin's permission on the 
 
 **Triggered by.** Each push's sync run lists what queued it: every edit it carries (user, and a **Changes** link to
 the change log entries of that request), a **Sync now** click, or a branch merge or revert. Edits made while a push
-is still waiting to start are added to that push, so several people's edits can share one sync run; edits made once a
-push has started go to the next one. The same list is in the REST API as the sync run's `triggers`.
+is still waiting to start are added to that push, so several people's edits can share one sync run. Edits made once a
+push has started are listed on the next push, even when the running one already carried them (it reads NetBox after
+it starts), and a push that fails keeps its list: the retry that succeeds shows none. The same list is in the REST API as the sync run's `triggers`.
 
 With netbox-branching, edit inside a branch, then merge it (after approval, with change control). The merge queues
 the push, and its sync run names the branch:

@@ -56,3 +56,7 @@ class Migration(migrations.Migration):
             },
         ),
     ]
+
+
+# PushTrigger lives on main only (not branchable): netbox-branching must not create its table in branch schemas.
+fake_on_branch = True

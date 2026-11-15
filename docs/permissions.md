@@ -35,8 +35,9 @@ permission, and queues no push.
 
 Custom scripts and background API requests are checked like any request, as the user who started them. Not checked:
 saves with no user behind them (`nbshell`, management commands), imports (they write what Windows already has) and
-netbox-branching merges and reverts. With branching, the edit is checked when it is made in the branch; who
-may merge is decided by branching's own permissions and change control.
+netbox-branching merges and reverts. With branching, the edit is checked when it is made in the branch, against
+the scopes and reservations the branch holds; who may merge is decided by branching's own permissions and change
+control. A scope or reservation added on main after the branch was created is not part of that check.
 
 Actions that connect to Windows need more than viewing:
 

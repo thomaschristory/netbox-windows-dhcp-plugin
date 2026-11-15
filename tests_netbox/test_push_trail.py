@@ -99,6 +99,14 @@ class PushTrailTest(PushTestMixin, TestCase):
             other.close()
         self.assertEqual(PushTrigger.objects.filter(sync_run=None).count(), 1)
 
+    def test_triggers_dropped_when_sync_was_turned_off(self):
+        # Sync turned off after the edit: the push does nothing, and its triggers must not attach to a push weeks later.
+        self.edit(self.alice, "renamed")
+        self.server.sync_enabled = False
+        self.server.save()
+        self._run()
+        self.assertFalse(PushTrigger.objects.exists())
+
     def test_sync_disabled_records_nothing(self):
         self.server.sync_enabled = False
         self.server.save()

@@ -8,7 +8,7 @@ from unittest import mock
 
 from core.models import ObjectType
 from dcim.models import MACAddress
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django.urls import reverse
 from ipam.models import IPAddress
 from netaddr import IPNetwork
@@ -230,6 +230,54 @@ class GuardAPITest(_GuardMixin, utilities_testing.APITestCase):
         self.assertEqual(response.status_code, 200)
 
 
+class GuardAPIPostCheckTest(_GuardMixin, utilities_testing.APITestCase):
+    def test_api_patch_out_of_constraint_refused(self):
+        self.grant("change_reservation", {"ip_address__address__net_host_contained": "198.18.10.0/25"})
+        url = f"/api/ipam/ip-addresses/{self.ip.pk}/"
+        response = self.client.patch(url, {"address": "198.18.10.200/24"}, format="json", **self.header)
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.stored_address(), "198.18.10.25/24")
+
+
+class GuardOutsideTransactionTest(TransactionTestCase):
+    """A save outside any transaction (a third-party view, say): the post-save refusal must still undo the edit."""
+
+    serialized_rollback = True
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from users.models import ObjectPermission
+
+        self.server = fixtures.windows_server()
+        self.scope = fixtures.scope(self.server, "198.18.10.0/24")
+        self.ip = fixtures.reservation(self.scope, "198.18.10.25/24").ip_address
+        self.user = get_user_model().objects.create_user(username="guard-no-atomic")
+        permission = ObjectPermission.objects.create(
+            name="lower half",
+            actions=["change"],
+            constraints={"ip_address__address__net_host_contained": "198.18.10.0/25"},
+        )
+        permission.object_types.add(ObjectType.objects.get(app_label=fixtures.PLUGIN, model="reservation"))
+        permission.users.add(self.user)
+
+    def test_refused_save_is_undone(self):
+        from netbox_windows_dhcp_plugin.jobs import PushJob
+
+        # Outside a transaction, creating the reservation in setUp already queued a push: start from none.
+        PushJob.get_jobs(self.server).delete()
+        request = NetBoxFakeRequest({"user": self.user, "id": uuid.uuid4(), "META": {}, "COOKIES": {}, "POST": {}})
+        ip = IPAddress.objects.get(pk=self.ip.pk)
+        ip.address = IPNetwork("198.18.10.200/24")
+        with (
+            mock.patch("netbox.context_managers.flush_events"),
+            event_tracking(request),
+            self.assertRaises(AbortRequest),
+        ):
+            ip.save()
+        self.assertEqual(str(IPAddress.objects.get(pk=self.ip.pk).address), "198.18.10.25/24")
+        self.assertFalse(PushJob.get_jobs(self.server).exists())
+
+
 class GuardContextTest(_GuardMixin, utilities_testing.TestCase):
     def _save(self):
         ip = IPAddress.objects.get(pk=self.ip.pk)
@@ -256,3 +304,12 @@ class GuardContextTest(_GuardMixin, utilities_testing.TestCase):
         with mock.patch("netbox.context_managers.flush_events"), event_tracking(request), push_suppressed():
             self._save()
         self.assertEqual(self.stored_address(), "198.18.10.26/24")
+
+
+class MigrationTest(TestCase):
+    def test_push_trigger_migration_is_faked_on_branches(self):
+        # PushTrigger is not branchable: its table must not be created in every branch schema.
+        import importlib
+
+        migration = importlib.import_module("netbox_windows_dhcp_plugin.migrations.0004_push_trigger")
+        self.assertIs(getattr(migration, "fake_on_branch", False), True)
