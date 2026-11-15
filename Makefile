@@ -13,7 +13,10 @@ test-lab:
 	WINDOWS_DHCP_LAB=1 uv run pytest -v -p no:cacheprovider tests/lab
 
 # Opt-in: Windows -> NetBox -> Windows on the dev stack against the lab server (see dev/scripts/lab_e2e.py).
+# The first line runs on the host: the script itself runs in the dev container, where the tracked dev/env/netbox.env
+# is not mounted, so it could not see a lab secret typed there.
 lab-e2e:
+	@uv run python -c "import sys, tests.lab.labkit as k; sys.tracebacklimit = 0; k.check_tracked_env()"
 	$(EXEC) netbox $(PY) shell -c "exec(open('/plugin/dev/scripts/lab_e2e.py').read())"
 
 # Opt-in: a realistic configuration on the two lab servers, to import into NetBox (see dev/scripts/lab_seed.py).
@@ -26,14 +29,21 @@ lab-wipe:
 BASELINE = netbox_windows_dhcp_plugin/tests/query_counts.json
 BRANCHING_BASELINE = tests_netbox/query_counts.branching.json
 
-# The dev stack runs in branching mode, which adds queries to every page. Like CI, put the branching
-# baselines in place for the run, copy them back (so UPDATE_QUERY_COUNTS=1 refreshes the branching file),
-# then restore the standalone file.
+# The dev stack runs in branching mode, which adds queries to every page. Like CI, put the branching baselines in
+# place for the run, then put the standalone file back. The restore runs from a shell trap, so an interrupted run
+# (Ctrl-C, closed terminal) cleans up as well. A leftover .standalone file means an earlier run was killed before it
+# could restore: starting again would overwrite the only copy of the standalone baseline, so the target refuses.
+# The container mounts the plugin read-only, so this target cannot refresh a baseline: see docs/development.md.
 test-netbox:
-	@cp $(BASELINE) $(BASELINE).standalone && cp $(BRANCHING_BASELINE) $(BASELINE); \
-	$(EXEC) -e DEBUG=false -e UPDATE_QUERY_COUNTS netbox $(PY) test --keepdb --noinput --parallel 1 \
-		/plugin/tests_netbox; status=$$?; \
-	cp $(BASELINE) $(BRANCHING_BASELINE); mv $(BASELINE).standalone $(BASELINE); exit $$status
+	@if [ -e $(BASELINE).standalone ]; then \
+		echo "$(BASELINE).standalone exists: an earlier run was interrupted (or one is still running)."; \
+		echo "Put it back first: mv $(BASELINE).standalone $(BASELINE)"; \
+		exit 1; \
+	fi
+	@cp $(BASELINE) $(BASELINE).standalone || exit 1; \
+	trap 'mv -f $(BASELINE).standalone $(BASELINE)' EXIT; trap 'exit 130' INT TERM HUP; \
+	cp $(BRANCHING_BASELINE) $(BASELINE) && \
+	$(EXEC) -e DEBUG=false netbox $(PY) test --keepdb --noinput --parallel 1 /plugin/tests_netbox
 
 lint:
 	uv run ruff check .
@@ -55,10 +65,16 @@ restart:
 logs:
 	$(COMPOSE) logs -f netbox
 
+# The build backend (hatchling) and twine come from the `release` group in uv.lock, so a build uses the versions
+# and hashes recorded there instead of whatever PyPI serves that day. CI and the release workflow run this target.
+BUILD_CONSTRAINTS = build/build-constraints.txt
+
 dist:
 	rm -rf dist
-	uv build
-	uvx twine check --strict dist/*
+	mkdir -p build
+	uv export --quiet --locked --only-group release --no-emit-project -o $(BUILD_CONSTRAINTS)
+	uv build --build-constraints $(BUILD_CONSTRAINTS) --require-hashes
+	uv run --locked --isolated --only-group release twine check --strict dist/*
 	python3 dev/scripts/check_dist.py dist
 
 # Zensical publishes every file under docs_dir and has no exclude setting, so the site is built from a staging copy

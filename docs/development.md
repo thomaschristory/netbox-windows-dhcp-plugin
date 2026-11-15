@@ -16,12 +16,12 @@ uv sync
 | `make lint` | `ruff check` and `ruff format --check` (line length 120) |
 | `make format` | Fix what ruff can and format |
 | `make test` | Unit tests (`tests/`): the Windows layer, the diff engine, the docs. No NetBox needed |
-| `make dev` | Start the dev stack: NetBox 4.7 with netbox-branching and netbox-change-control, at http://localhost:8000 |
+| `make dev` | Start the dev stack: NetBox 4.7 with netbox-branching and netbox-change-control, at http://localhost:8000 (bound to 127.0.0.1 only) |
 | `make test-netbox` | NetBox integration tests (`tests_netbox/`) inside the dev stack |
 | `make restart` | Restart NetBox and the worker after Python changes (the source is mounted into the containers) |
 | `make logs` | Follow the NetBox log |
 | `make down` | Stop the dev stack |
-| `make dist` | Build the wheel and sdist and check them |
+| `make dist` | Build the wheel and sdist and check them, with the build backend and twine from the `release` group in `uv.lock` |
 | `make docs` | Build this site into `site/` with Zensical (strict) |
 | `make docs-serve` | Serve the site with live reload |
 | `make test-lab` | Opt-in lab tests against a real Windows server, see [below](#lab-tests) |
@@ -29,7 +29,8 @@ uv sync
 | `make lab-seed`, `make lab-wipe` | Opt-in: fill two lab servers with a configuration to import, or remove it, see [below](#seed-data-to-import) |
 
 The dev stack runs in branching mode. Its first start migrates a fresh database and takes several minutes. Log in as
-`admin` with the `SUPERUSER_PASSWORD` from `dev/env/netbox.env`.
+`admin` with the `SUPERUSER_PASSWORD` from `dev/env/netbox.env`. That password is public and the stack may hold lab
+credentials, so NetBox only listens on 127.0.0.1: use an SSH tunnel to open it from another machine.
 
 ## Code layout
 
@@ -54,6 +55,11 @@ Rules worth knowing before a change:
 - A new cmdlet gets an implementation in `windows/fake.py`, a JSON fixture under `tests/windows/testdata/` and a
   `pwsh` stub test; mark it `# unverified:` until it has run against a real server.
 - Model changes need a migration and refreshed query-count baselines in both standalone and branching modes.
+  `make test-netbox` cannot refresh a baseline (the container mounts the plugin read-only): run the view and API
+  tests from a writable copy of the plugin in the container with `UPDATE_QUERY_COUNTS=1` and without `--parallel`,
+  once per mode. The target swaps the branching baseline in for the run and puts the standalone one back; it
+  refuses to start while `netbox_windows_dhcp_plugin/tests/query_counts.json.standalone` exists (an interrupted
+  run), until you `mv` that file back over `query_counts.json`.
 - Update `CHANGELOG.md` under Unreleased with every user-visible change, and these pages when behaviour changes.
 
 ## Testing tiers
@@ -94,7 +100,11 @@ It installs the DHCP role, creates a local account `nbwd-lab` in DHCP Administra
 ### Running them
 
 Put the connection settings in `dev/env/lab.env` (gitignored; the dev stack loads it too, so run `make dev` after
-changing it: `make restart` does not reload it, nor install new dependencies) or the environment:
+changing it: `make restart` does not reload it, nor install new dependencies) or the environment. Keep them out of
+`dev/env/netbox.env`, which git tracks: `make test-lab`, `make lab-seed` and `make lab-wipe` do not read that file.
+They and `make lab-e2e` stop with an error when it holds a lab password (`WINDOWS_DHCP_PASSWORD`) or failover secret
+(`WINDOWS_DHCP_LAB_FAILOVER_SECRET`); `make test` prints a warning and leaves the lab tests out. The dev containers
+still load that file, so a secret typed there would work until someone commits it.
 
 | Variable | Meaning |
 |---|---|
@@ -111,6 +121,7 @@ changing it: `make restart` does not reload it, nor install new dependencies) or
 | `WINDOWS_DHCP_LAB_SSH_HOST_KEY` | Optional with `ssh`: the server's host key (`ssh-ed25519 AAAA...`), else `~/.ssh/known_hosts` |
 | `WINDOWS_DHCP_LAB_PARTNER_SSH_HOST_KEY` | Optional with `ssh`: the same for the failover partner |
 | `WINDOWS_DHCP_LAB_RECORD` | `1` saves every raw PowerShell answer under `.lab/record/`, to turn into fixtures after scrubbing |
+| `WINDOWS_DHCP_DEV_ALLOWED_HOSTS` | Optional, dev stack only: comma-separated hosts or patterns that become the `allowed_hosts` of its `lab` credential profile. Leave it unset while running `make test-netbox`, whose servers use made-up hosts |
 
 Then:
 
@@ -163,9 +174,10 @@ is tagged.
 1. Update `netbox_windows_dhcp_plugin/version.py` and move the Unreleased section of `CHANGELOG.md` under the new
    version and date.
 2. `make dist`, merge to main.
-3. Tag `vX.Y.Z` on main and push the tag. The release workflow checks the tag is on main, builds, and publishes to
-   PyPI through trusted publishing (the `pypi` environment only accepts `v*` tags, with no manual approval); the docs
-   workflow publishes the site.
+3. Tag `vX.Y.Z` on main and push the tag. The release workflow checks the tag is on main, runs lint and the unit
+   tests, builds with `make dist`, and publishes to PyPI through trusted publishing only when all of that passed
+   (the `pypi` environment only accepts `v*` tags, with no manual approval); the docs workflow publishes the site.
+   Started by hand, the workflow is a rehearsal: it checks and builds, and publishes nothing.
 
 `main` is the 0.2 line. The `release/0.1` branch keeps bug fixes, and no new features, for those who stay on 0.1.x
 with netbox-plugin-dhcp: fixes reach it through pull requests into `release/0.1`, and a `v0.1.Z` tag there publishes

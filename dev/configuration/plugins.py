@@ -3,18 +3,29 @@ import os
 
 from netbox_branching.utilities import DynamicSchemaDict
 
+# Lab servers often only have the HTTP listener; CredSSP (failover) needs allow_insecure_credssp there. Never in
+# production.
+_lab_profile = {
+    "username_env": "WINDOWS_DHCP_USERNAME",
+    "password_env": "WINDOWS_DHCP_PASSWORD",
+    "allow_insecure_credssp": True,
+}
+# A production profile should always carry "allowed_hosts", so its credentials can only be sent to the DHCP servers
+# (see docs/configuration.md). Here it is opt-in: set WINDOWS_DHCP_DEV_ALLOWED_HOSTS in dev/env/lab.env to a comma
+# separated list of host names, addresses or patterns ("10.20.0.*,dhcp*.example.com") when the stack holds real
+# lab credentials. It is not on by default because the NetBox tests (make test-netbox) create servers with made-up
+# host names under this same profile name, and they would all be refused.
+_lab_hosts = [h.strip() for h in os.environ.get("WINDOWS_DHCP_DEV_ALLOWED_HOSTS", "").split(",") if h.strip()]
+if _lab_hosts:
+    _lab_profile["allowed_hosts"] = _lab_hosts
+
 # netbox-branching must come last.
 PLUGINS = ["netbox_windows_dhcp_plugin", "netbox_change_control", "netbox_branching"]
 PLUGINS_CONFIG = {
     "netbox_windows_dhcp_plugin": {
         # Set WINDOWS_DHCP_USERNAME and WINDOWS_DHCP_PASSWORD in dev/env/lab.env to test against a lab server.
         "credentials": {
-            # Lab servers often only have the HTTP listener; CredSSP (failover) needs this there. Never in production.
-            "lab": {
-                "username_env": "WINDOWS_DHCP_USERNAME",
-                "password_env": "WINDOWS_DHCP_PASSWORD",
-                "allow_insecure_credssp": True,
-            },
+            "lab": _lab_profile,
             # The failover phase of make lab-e2e (WINDOWS_DHCP_LAB_PARTNER set).
             "lab-failover": {"secret_env": "WINDOWS_DHCP_LAB_FAILOVER_SECRET"},
         },

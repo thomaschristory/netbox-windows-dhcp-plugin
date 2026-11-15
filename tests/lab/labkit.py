@@ -17,8 +17,14 @@ from netbox_windows_dhcp_plugin.windows.ssh import SSHConfig, SSHRunner
 from netbox_windows_dhcp_plugin.windows.winrm import WinRMConfig, WinRMRunner
 
 REPO = Path(__file__).resolve().parents[2]
-# Older checkouts kept the lab settings in netbox.env, which is tracked: lab.env (gitignored) wins.
-ENV_FILES = (REPO / "dev" / "env" / "netbox.env", REPO / "dev" / "env" / "lab.env")
+# Lab settings live in lab.env only, which git ignores.
+ENV_FILES = (REPO / "dev" / "env" / "lab.env",)
+# netbox.env is tracked in a public repository, and the dev containers still load it, so a secret typed there would
+# keep working until someone commits it. lab_env() refuses to go on when it finds one. That only works on the host:
+# the file is not mounted in the dev container, so `make lab-e2e` (which runs there) calls check_tracked_env() on the
+# host first.
+TRACKED_ENV_FILE = REPO / "dev" / "env" / "netbox.env"
+SECRET_KEYS = ("WINDOWS_DHCP_PASSWORD", "WINDOWS_DHCP_LAB_FAILOVER_SECRET")
 
 PREFIX = "nbwd-test-"
 LAB_V4 = ipaddress.ip_network("198.18.0.0/15")
@@ -29,10 +35,14 @@ MAC_PREFIX = "02-4e-42-"
 FREE_OPTION_IDS = range(240, 255)
 
 
-def _load_env_file() -> dict[str, str]:
-    """WINDOWS_DHCP_* keys from dev/env/netbox.env and dev/env/lab.env (KEY=VALUE lines; no shell expansion)."""
+class TrackedSecretError(RuntimeError):
+    """A lab secret sits in a file that git tracks."""
+
+
+def _read_env(files: tuple[Path, ...]) -> dict[str, str]:
+    """WINDOWS_DHCP_* keys from env files (KEY=VALUE lines; no shell expansion)."""
     out: dict[str, str] = {}
-    lines = [line for f in ENV_FILES if f.is_file() for line in f.read_text().splitlines()]
+    lines = [line for f in files if f.is_file() for line in f.read_text().splitlines()]
     for line in lines:
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
@@ -44,7 +54,23 @@ def _load_env_file() -> dict[str, str]:
     return out
 
 
+def _load_env_file() -> dict[str, str]:
+    """WINDOWS_DHCP_* keys from dev/env/lab.env."""
+    return _read_env(ENV_FILES)
+
+
+def check_tracked_env() -> None:
+    """Refuse to run when the tracked dev/env/netbox.env holds a lab secret. Names the key, never the value."""
+    found = [key for key in SECRET_KEYS if _read_env((TRACKED_ENV_FILE,)).get(key)]
+    if found:
+        raise TrackedSecretError(
+            f"{', '.join(found)} is set in {TRACKED_ENV_FILE}, which git tracks: "
+            "move it to dev/env/lab.env (gitignored) before it gets committed"
+        )
+
+
 def lab_env() -> dict[str, str]:
+    check_tracked_env()
     env = _load_env_file()
     env.update({k: v for k, v in os.environ.items() if k.startswith("WINDOWS_DHCP_")})
     return env
