@@ -841,6 +841,10 @@ def equal(kind: str, name: str, a: Any, b: Any) -> bool:
     """
     if (kind, name) in NAME_FIELDS and isinstance(a, str) and isinstance(b, str):
         return a.casefold() == b.casefold()
+    if (kind, name) == ("optiondef", "type") and isinstance(a, str) and isinstance(b, str):
+        # Windows takes -Type without case and reports its own spelling ("string" reads back as "String"). Not in
+        # NAME_FIELDS on purpose: those are lowercased in fingerprints, which would change every stored one.
+        return a.casefold() == b.casefold()
     if (kind, name) == ("failover", "partner_server") and isinstance(a, str) and isinstance(b, str):
         return same_host(a, b)
     if (kind, name) == ("failover", "auth") and (a is None or b is None):

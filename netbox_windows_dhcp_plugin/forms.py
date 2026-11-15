@@ -208,6 +208,7 @@ class WindowsServerImportForm(PrimaryModelImportForm):
             "verify_tls",
             "kerberos_realm",
             "kerberos_spn",
+            "ssh_host_key",
             "computer_name",
             "import_vrf",
             "sync_enabled",
@@ -683,7 +684,7 @@ class OptionDefinitionImportForm(NetBoxModelImportForm):
     def __init__(self, data=None, *args, **kwargs):
         super().__init__(data, *args, **kwargs)
         _narrow_by_server(self, data, "vendor_class")
-        if data and str(data.get("family", "")).isdigit():
+        if data and str(data.get("family", "")).isdecimal():
             self.fields["vendor_class"].queryset = self.fields["vendor_class"].queryset.filter(family=data["family"])
 
 
@@ -864,10 +865,10 @@ class OptionValueImportForm(NetBoxModelImportForm):
     def __init__(self, data=None, *args, **kwargs):
         super().__init__(data, *args, **kwargs)
         _narrow_by_server(self, data, "vendor_class", "user_class", "policy")
-        if data and str(data.get("family", "")).isdigit():
+        if data and str(data.get("family", "")).isdecimal():
             for name in ("vendor_class", "user_class"):
                 self.fields[name].queryset = self.fields[name].queryset.filter(family=data["family"])
-        if data and str(data.get("scope", "")).isdigit():
+        if data and str(data.get("scope", "")).isdecimal():
             # Server and scope policies may share a name.
             self.fields["policy"].queryset = self.fields["policy"].queryset.filter(scope_id=data["scope"])
         elif data:

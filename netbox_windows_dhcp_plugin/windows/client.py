@@ -488,7 +488,17 @@ try {
     if ($null -ne $step) {
         # Put the old range back, so a failed update leaves the pool as it was (both directions from the first step
         # are one-way changes, which Windows accepts). The original error is what gets reported.
-        try { Set-DhcpServerv4Scope @cn -ScopeId $p.scope_id -StartRange $os -EndRange $oe } catch { }
+        try { Set-DhcpServerv4Scope @cn -ScopeId $p.scope_id -StartRange $os -EndRange $oe } catch {
+            # The pool is still at the in-between range of the first step. Say so next to the original error, and
+            # keep that error's ID and category so a scope that went away is still read as "not found". A rebuilt
+            # error loses the name of the cmdlet that failed, so the name goes in the text.
+            $msg = "$($err.InvocationInfo.MyCommand.Name): $($err.Exception.Message) " +
+                "The scope range was left at $($step.StartRange)-$($step.EndRange): " +
+                "putting the old range $os-$oe back failed: $($_.Exception.Message)"
+            throw [System.Management.Automation.ErrorRecord]::new(
+                [Exception]::new($msg, $err.Exception), "$($err.FullyQualifiedErrorId)", $err.CategoryInfo.Category,
+                $null)
+        }
     }
     throw $err
 }
@@ -1046,8 +1056,31 @@ S_FILTER_SET = Script(
     "filter.set",
     _FILTER_FUNC
     + r"""
+# There is no Set cmdlet: the entry is removed and added again. Remember the old one first, so a refused Add does not
+# leave the MAC address out of its list (a denied client would get leases, an allowed one would lose them).
+$cur = Get-DhcpServerv4Filter @cn | Where-Object { "$($_.MacAddress)" -eq $p.mac_address } | Select-Object -First 1
 Remove-DhcpServerv4Filter @cn -MacAddress $p.mac_address -Confirm:$false
-Add-WdFilter
+try {
+    Add-WdFilter
+} catch {
+    $err = $_
+    if ($cur) {
+        # Put the old entry back. The original error is what gets reported.
+        $old = @{ List = "$($cur.List)"; MacAddress = "$($cur.MacAddress)" }
+        if ("$($cur.Description)") { $old['Description'] = "$($cur.Description)" }
+        try { Add-DhcpServerv4Filter @cn @old } catch {
+            # The MAC address is now in neither list. Say so next to the original error, and keep that error's ID
+            # and category. A rebuilt error loses the name of the cmdlet that failed, so the name goes in the text.
+            $msg = "$($err.InvocationInfo.MyCommand.Name): $($err.Exception.Message) " +
+                "The MAC address was left out of the $($old.List) list: " +
+                "putting the old entry back failed: $($_.Exception.Message)"
+            throw [System.Management.Automation.ErrorRecord]::new(
+                [Exception]::new($msg, $err.Exception), "$($err.FullyQualifiedErrorId)", $err.CategoryInfo.Category,
+                $null)
+        }
+    }
+    throw $err
+}
 $out = Get-WdFilter
 """,
 )
@@ -1539,6 +1572,23 @@ def _scope_params(s: Scope) -> dict[str, Any]:
     }
 
 
+def _check_new_scope(p: Mapping[str, Any]) -> None:
+    """Refuse a new scope whose range, mask and scope ID do not belong together.
+
+    Add-DhcpServerv4Scope has no -ScopeId: Windows works the scope out from the start of the range and the mask. A
+    range from another subnet would therefore create a different scope than the one asked for, which nothing would
+    track or clean up afterwards. Better to stop before anything is sent.
+    """
+    scope_id, start, end, mask = p["scope_id"], p["start_range"], p["end_range"], p["subnet_mask"]
+    for ip in (start, end):
+        if normalize.network_address(ip, mask) != scope_id:
+            raise ValueError(f"the IP range {start}-{end} is not inside scope {scope_id} (mask {mask})")
+    if normalize.parse_ipv4(start) > normalize.parse_ipv4(end):
+        raise ValueError(f"the IP range {start}-{end} of scope {scope_id} ends before it starts")
+    if p["lease_seconds"] is None:
+        raise ValueError(f"a new scope needs a lease duration (scope {scope_id})")
+
+
 def _reservation_params(r: Reservation) -> dict[str, Any]:
     return {
         "scope_id": _ipv4(r.scope_id),
@@ -1641,8 +1691,18 @@ class DhcpClient:
         present, data = self._run(script, params)
         if not present:
             return []
-        if isinstance(data, dict):  # a single object that lost its array wrapper
-            data = [data]
+        if isinstance(data, dict):
+            # Windows PowerShell 5.1 can print an array as {"value": [...], "Count": n}. No object the scripts build
+            # has exactly these two fields, so this is never a real single object: refuse it instead of returning one
+            # object with every field at its default.
+            if set(data) == {"value", "Count"}:
+                raise OutputError(f"{script.op}: expected a list of objects, got an array wrapped as value/Count")
+            data = [data]  # a single object that lost its array wrapper
+        if not isinstance(data, list):
+            raise OutputError(f"{script.op}: expected a list of objects, got {type(data).__name__}")
+        for d in data:
+            if not isinstance(d, dict):
+                raise OutputError(f"{script.op}: expected a list of objects, got a list with {type(d).__name__}")
         return [cls.from_dict(d) for d in data if d != {}]
 
     def _do(self, script: Script, params: Mapping[str, Any] | None = None) -> None:
@@ -1659,6 +1719,8 @@ class DhcpClient:
             return []
         if isinstance(data, str):  # one name that lost its array wrapper
             data = [data]
+        if not isinstance(data, list):
+            raise OutputError(f"{S_SERVER_NAMES.op}: expected a list of names, got {type(data).__name__}")
         names = (n.strip().rstrip(".").lower() for n in data if isinstance(n, str))
         return list(dict.fromkeys(n for n in names if n))
 
@@ -1672,7 +1734,9 @@ class DhcpClient:
 
     def add_scope(self, scope: Scope) -> Scope:
         """Create a scope. The server derives the scope ID from start_range and subnet_mask."""
-        return self._get(S_SCOPE_ADD, _scope_params(scope), Scope)
+        params = _scope_params(scope)
+        _check_new_scope(params)
+        return self._get(S_SCOPE_ADD, params, Scope)
 
     def set_scope(self, scope: Scope) -> Scope:
         """Update a scope. The subnet mask cannot change (remove and re-add instead).

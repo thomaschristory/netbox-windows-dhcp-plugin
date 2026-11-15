@@ -150,6 +150,17 @@ function Set-DhcpServerv4Scope {
         [Parameter(Mandatory, ParameterSetName = 'WithRange')][ipaddress]$EndRange, [switch]$PassThru,
         [uint16]$Delay, [uint32]$MaxBootpClients, [bool]$ActivatePolicies, [string]$SuperscopeName)
     Record 'Set-DhcpServerv4Scope' $PSBoundParameters
+    # Test switch: $global:WdFailSetScopeFrom = N makes the Nth call and every later one fail the way a lost RPC
+    # connection does (nothing applied).
+    # $global:WdForgetScopeFrom = N: the scope is gone (removed by someone else) from the Nth call on.
+    $global:WdSetScopeCalls = [int]$global:WdSetScopeCalls + 1
+    if ($global:WdForgetScopeFrom -and $global:WdSetScopeCalls -ge $global:WdForgetScopeFrom) {
+        $global:Scopes.Remove("$ScopeId")
+    }
+    if ($global:WdFailSetScopeFrom -and $global:WdSetScopeCalls -ge $global:WdFailSetScopeFrom) {
+        Write-DhcpError $PSCmdlet 1722 NotSpecified "Failed to set scope $ScopeId. The RPC server is unavailable."
+        return
+    }
     if (-not $global:Scopes.Contains("$ScopeId")) {
         Write-DhcpError $PSCmdlet 20005 ObjectNotFound "Failed to set scope $ScopeId."
         return
@@ -529,6 +540,12 @@ function Add-DhcpServerv4Filter {
     param([string]$ComputerName, [Parameter(Mandatory)][ValidateSet('Allow', 'Deny')][string]$List,
         [Parameter(Mandatory)][string[]]$MacAddress, [string]$Description, [switch]$Force, [switch]$PassThru)
     Record 'Add-DhcpServerv4Filter' $PSBoundParameters
+    # Test switch: $global:WdFailAddFilter = N makes the next N calls fail (nothing added).
+    if ($global:WdFailAddFilter -gt 0) {
+        $global:WdFailAddFilter = $global:WdFailAddFilter - 1
+        Write-DhcpError $PSCmdlet 1722 NotSpecified "Failed to add MAC address filter. The RPC server is unavailable."
+        return
+    }
     foreach ($m in $MacAddress) {
         $global:Filters[$m.ToLower()] = [pscustomobject]@{ MacAddress = $m.ToLower(); List = $List; Description = $Description }
     }

@@ -171,7 +171,8 @@ class BranchError(Exception):
 def job_kwargs():
     """
     Extra arguments for enqueueing an import job. Provisioning a branch can take longer than RQ's default 300 second
-    timeout, so use the one netbox-branching uses for its own jobs.
+    timeout, so the import may run as long as netbox-branching lets its own jobs (jobs.enqueue_import takes the
+    longer of this and the plugin's own timeout).
     """
     if not branching_installed():
         return {}

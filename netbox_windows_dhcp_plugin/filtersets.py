@@ -272,7 +272,8 @@ class OptionDefinitionFilterSet(NetBoxModelFilterSet):
         if not value.strip():
             return queryset
         q = Q(name__icontains=value) | Q(description__icontains=value) | Q(vendor_class__name__icontains=value)
-        if value.strip().isdigit():
+        # isdecimal, not isdigit: "²" is a digit to isdigit() but not a number to int().
+        if value.strip().isdecimal():
             q |= Q(code=int(value.strip()))
         return queryset.filter(q)
 
@@ -339,7 +340,8 @@ class OptionValueFilterSet(NetBoxModelFilterSet):
             | Q(user_class__name__icontains=value)
             | Q(policy__name__icontains=value)
         )
-        if value.strip().isdigit():
+        # isdecimal, not isdigit: "²" is a digit to isdigit() but not a number to int().
+        if value.strip().isdecimal():
             q |= Q(code=int(value.strip()))
         return queryset.filter(q)
 

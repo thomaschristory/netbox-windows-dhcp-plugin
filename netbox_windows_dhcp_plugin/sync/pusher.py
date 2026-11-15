@@ -49,7 +49,10 @@ class PushOutcome:
 
     def errors(self):
         failed = self.result.failed if self.result else []
-        lines = [f"{c.action} {c.kind} {c.key}: {msg}" for c, msg in failed]
+        # Capped like the lists of the summary: these lines become the error text stored with the sync run.
+        lines = [f"{c.action} {c.kind} {c.key}: {msg}" for c, msg in failed[: push.PLANNED_LIMIT]]
+        if len(failed) > push.PLANNED_LIMIT:
+            lines.append(f"and {len(failed) - push.PLANNED_LIMIT} more failed change(s), see the counts in the summary")
         return lines + self.replication_errors
 
 
@@ -116,15 +119,44 @@ def _pending_replication(windows_server):
     return {name: set(ids) for name, ids in pending.items()}
 
 
-def _replicate(windows_server, client, applied, logger):
+def _to_replicate(result):
+    """
+    The changes whose scopes go to the failover partner: those applied, plus the failed ones that may have reached
+    Windows all the same.
+
+    A failed change inside a scope always counts: only that scope is copied. A failed server-level change (a class,
+    an option definition, a MAC filter, a server option) would select every scope of every relationship, and a
+    change Windows keeps refusing is planned again by each push: the partner would get all of them, every time,
+    for nothing new. Such a change is left out; once it goes through it is an applied change and replicates as
+    before. The exception is a push that stopped on it (lost connection, unexpected error): the change may be
+    complete on Windows, the next push then plans nothing for it, so this is the only chance to note the scopes.
+    A stopped push sends nothing more to the server, it only notes them.
+
+    A failed failover change never counts: Windows copies the scopes itself when it creates or extends a
+    relationship, and an unreachable partner (the usual reason) could not take a replication either.
+    """
+    maybe = [
+        c
+        for c in result.maybe_written
+        if _scope_of(c) or (result.aborted and c.kind != "failover" and _scope_of(c) == "")
+    ]
+    return [*result.applied, *maybe]
+
+
+def _replicate(windows_server, client, written, logger, aborted=False):
     """
     After writing to a failover primary, copy the changed scopes to the partner, plus those an earlier push failed
-    to copy. Returns the error lines and the scopes still to copy, by relationship name.
+    to copy. ``written`` are the changes that reached Windows, or may have. Returns the error lines and the scopes
+    still to copy, by relationship name.
+
+    ``aborted``: the push stopped early (lost connection, unexpected error). Nothing more is sent to the server then,
+    since each relationship would wait for its own timeout while the server stays locked for other jobs: the scopes
+    are only noted for the next push.
     """
     pending = _pending_replication(windows_server)
-    if not applied and not pending:
+    if not written and not pending:
         return [], {}
-    touched = {_scope_of(c) for c in applied} - {None}
+    touched = {_scope_of(c) for c in written} - {None}
     server_level = "" in touched
     errors, still_pending = [], {}
     for relationship in FailoverRelationship.objects.filter(primary_server=windows_server):
@@ -134,6 +166,9 @@ def _replicate(windows_server, client, applied, logger):
             (scopes if server_level else touched & scopes) | (pending.get(relationship.name, set()) & scopes)
         )
         if not changed:
+            continue
+        if aborted:
+            still_pending[relationship.name] = changed
             continue
         try:
             # Only scopes Windows already has in the relationship can be replicated: one that is not (its create or
@@ -164,6 +199,9 @@ def _replicate(windows_server, client, applied, logger):
             still_pending[relationship.name] = changed
         else:
             logger.info(f"Replicated {len(ready)} scope(s) to the partner of {relationship.name}")
+    if aborted and still_pending:
+        names = ", ".join(sorted(still_pending))
+        errors.append(f"failover replication {names}: not replicated, the push stopped early; the next push retries")
     return errors, still_pending
 
 
@@ -208,8 +246,9 @@ def run(windows_server, client, dry_run=False, logger=log):
     held = {r.key for r in source if r.kind in ("option", "option6") and (r.kind, r.key) not in skipped}
     writer = WindowsWriter(client, failover_secret=failover_secret_lookup(windows_server), held_options=held)
     outcome.result = push.execute(plan, writer)
-    _save_state(windows_server, outcome.result)
+    result = outcome.result
+    _save_state(windows_server, result)
     outcome.replication_errors, outcome.replication_pending = _replicate(
-        windows_server, client, outcome.result.applied, logger
+        windows_server, client, _to_replicate(result), logger, aborted=result.aborted
     )
     return outcome

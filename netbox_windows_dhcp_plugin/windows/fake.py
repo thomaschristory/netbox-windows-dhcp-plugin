@@ -23,6 +23,8 @@ Modelled server behaviour:
 * an option value on a reservation is named by the reserved IP alone: Set and Remove
   refuse a scope ID (DHCPv6: a prefix) next to it, as Windows does (issues #20, #17);
 * a policy condition with a wildcard anywhere but its start or end is refused (#18);
+* a MAC filter Set is remove then add; when the add is refused the old entry is put back
+  (``filter_add_fails`` forces that refusal);
 * ``empty_result_as_object`` prints ``{}`` instead of ``null`` for "nothing found", the
   shape Windows PowerShell 5.1 gave before the envelope fixed it (issue #15);
 * ``fail`` injects an error for any op; ``calls`` records every call.
@@ -166,6 +168,8 @@ class FakeDhcpServer:
         # did for a description change sent with the client ID and type (issue #42). Tests use it to check the push
         # puts the values back.
         self.reservation_set_drops_options = False
+        # True: the Add half of a filter Set (remove, then add) is refused, so tests can check the old entry survives.
+        self.filter_add_fails = False
         # What server.names reports: the computer name, the DNS name, then the addresses.
         self.server_names: list[str] = ["fake", "fake.example.test", "192.0.2.53"]
 
@@ -889,8 +893,17 @@ class FakeDhcpServer:
         return self._filter_add(p)
 
     def _op_filter_set(self, p: dict) -> Any:
+        # Remove and add again, as the script does; a refused Add puts the old entry back.
+        old = self.filters.get(_s(p, "mac_address").lower())
         self._op_filter_remove(p)
-        return self._filter_add(p)
+        try:
+            if self.filter_add_fails:
+                raise _invalid("Add-DhcpServerv4Filter", "Failed to add MAC address filter.")
+            return self._filter_add(p)
+        except _Fail:
+            if old is not None:
+                self.filters[old["mac_address"]] = old
+            raise
 
     def _op_filter_remove(self, p: dict) -> Any:
         mac = _s(p, "mac_address").lower()

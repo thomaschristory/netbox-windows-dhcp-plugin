@@ -165,6 +165,11 @@ as it is saved, and a refusal rolls back the whole item and marks it failed. Fai
 later. Applied items do not
 trigger a push (NetBox and Windows then agree), and the applied objects are recorded as managed straight away.
 
+Proposals are applied to main. If netbox-branching was installed after a proposal was written, its items cannot be
+applied while you work in a branch: nothing is written and the page says to switch to main (the REST API answers
+409). Dismissing still works. When change control's `protect_main` keeps you from writing to main, dismiss the old
+proposal and import into a branch instead.
+
 Each item moves through these states:
 
 ```mermaid
@@ -214,8 +219,12 @@ hand every day builds up one branch to review rather than one per run.
 - the server's scopes, superscopes, exclusion ranges, reservations, classes, option definitions, option values,
   policies, failover relationships, MAC filters and list switches, with their Windows names (see
   [How objects map](mapping.md#names));
-- the prefixes, IP ranges, IP addresses and MAC addresses the scopes and reservations point at, in the server's
-  import VRF. Existing ones are reused, so failover partners share one IP range per scope.
+- the prefixes, IP ranges, IP addresses and MAC addresses the scopes and reservations point at. A new scope's
+  prefix goes in the server's import VRF; a scope's first IP range and its reservations' IP addresses follow the VRF
+  of the scope's prefix, which only differs for a scope made by hand on a prefix elsewhere. Existing ones are
+  reused, so failover partners share one IP range per scope. An import does not move an IP range that a scope of
+  another server uses unless the two are failover partners for it in NetBox: see
+  [Limitations](limitations.md#operations).
 
 ![The scopes after an import: Windows scope name, server, prefix, IP range, state, superscope and
 description](images/import-subnets.webp)

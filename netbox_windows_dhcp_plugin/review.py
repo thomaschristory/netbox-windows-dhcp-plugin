@@ -5,12 +5,15 @@ Applying writes NetBox objects as that user, so on top of "change" on the items 
 delete permission on the objects each item writes. The main object's permission is checked up front (items the user
 may not apply are left pending); every object written, prefixes and addresses included, is then checked as it is
 saved, constraints included, and an item that breaks a permission is rolled back and marked failed.
+
+Nothing is applied while the request works in a netbox-branching branch (see ``apply_refusal``).
 """
 
 from .choices import ProposalItemStatusChoices
+from .integrations import branching
 from .sync import importer
 
-__all__ = ("apply", "dismiss", "missing_permission", "open_items")
+__all__ = ("apply", "apply_refusal", "dismiss", "missing_permission", "open_items")
 
 _PERMISSION = {"create": "add", "update": "change", "delete": "delete"}
 
@@ -41,8 +44,23 @@ def missing_permission(user, item):
     return None
 
 
+def apply_refusal():
+    """
+    Why nothing can be applied in this request, or None. Inside a netbox-branching branch the objects would be
+    written to the branch, while the items and the record that NetBox now manages those objects are kept in main:
+    the next push from main would then delete them on the Windows server. Dismissing only touches main, so it stays
+    possible.
+    """
+    return importer.IN_BRANCH if branching.in_branch() else None
+
+
 def apply(user, items):
-    """Apply what the user may apply. Returns (applied, failed, denied permission names)."""
+    """
+    Apply what the user may apply. Returns (applied, failed, denied permission names). While ``apply_refusal()``
+    gives a reason, nothing is applied and that reason is returned in place of the permission names.
+    """
+    if refusal := apply_refusal():
+        return 0, 0, [refusal]
     allowed, denied = [], set()
     for item in items:
         missing = missing_permission(user, item)

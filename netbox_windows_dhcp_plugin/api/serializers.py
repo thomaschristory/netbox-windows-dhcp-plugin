@@ -270,8 +270,10 @@ class OptionValueSerializer(NetBoxModelSerializer):
 
     def validate(self, data):
         # A reservation's value belongs to its scope too (OptionValue.clean() says so). The model is validated on a
-        # copy here, so set the scope on what gets saved as well, or filters by scope miss the value.
-        reservation = data.get("reservation")
+        # copy here, so set the scope on what gets saved as well, or filters by scope miss the value. A PATCH that
+        # leaves the reservation out still edits a reservation's value: without the fallback, {"scope": null}
+        # would detach the value from its scope.
+        reservation = data["reservation"] if "reservation" in data else getattr(self.instance, "reservation", None)
         if reservation is not None and data.get("scope") is None:
             data["scope"] = reservation.scope
         return super().validate(data)

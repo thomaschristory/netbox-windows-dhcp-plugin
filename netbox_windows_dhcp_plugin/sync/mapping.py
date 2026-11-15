@@ -10,6 +10,7 @@ import ipaddress
 import re
 
 from dcim.models import MACAddress
+from django.db.models import Q
 from ipam.models import IPAddress, IPRange, Prefix
 
 from ..models import (
@@ -53,6 +54,14 @@ def _duplicate_pk(key):
 
 def _name(obj):
     return obj.name if obj is not None else ""
+
+
+def _overlap(start, end, ip_range):
+    """Whether the addresses from ``start`` to ``end`` share any address with an existing IP range."""
+    first, last = ipaddress.ip_address(str(start)), ipaddress.ip_address(str(end))
+    low = ipaddress.ip_address(str(ip_range.start_address.ip))
+    high = ipaddress.ip_address(str(ip_range.end_address.ip))
+    return first <= high and low <= last
 
 
 class Writer:
@@ -198,28 +207,64 @@ class Writer:
         found = Prefix.objects.filter(prefix=str(network), vrf=self.vrf).first()
         return found or self._save(Prefix(prefix=str(network), vrf=self.vrf, description="Windows DHCP scope"))
 
-    def _ip_range(self, start, end, network, scope=None):
+    def _ip_range(self, start, end, network, scope, vrf):
         """
         The IP range a scope hands out. ``scope`` is the scope being updated, whose current range is moved when no
-        other scope needs it where it is.
+        other scope needs it where it is. ``vrf`` is the VRF of the scope's prefix, where a first range is looked up
+        and created; a scope that has a range keeps that range's VRF.
         """
         current = scope.ip_range if scope is not None else None
-        vrf = current.vrf if current is not None else self.vrf
+        vrf = current.vrf if current is not None else vrf
         found = IPRange.objects.filter(start_address__net_host=start, end_address__net_host=end, vrf=vrf).first()
         if found:
             return found
         prefixlen = network.prefixlen
-        others = current.netbox_windows_dhcp_plugin_scopes.exclude(pk=scope.pk) if current is not None else None
-        if current is not None and all(str(s.prefix.prefix) == str(network) for s in others.select_related("prefix")):
-            # The range only serves this scope (on this server, or also on its failover partner, which holds the same
-            # scope): move it. A second range would overlap it, which NetBox refuses.
-            return self._update(current, start_address=f"{start}/{prefixlen}", end_address=f"{end}/{prefixlen}")
+        others = (
+            list(current.netbox_windows_dhcp_plugin_scopes.exclude(pk=scope.pk).select_related("prefix", "server"))
+            if current is not None
+            else []
+        )
+        if current is not None and all(str(s.prefix.prefix) == str(network) for s in others):
+            # The range only serves this scope: on this server, or also on its failover partner, which holds the same
+            # scope and gets the same change from Windows. Move it: a second range would overlap it, which NetBox
+            # refuses.
+            foreign = [s for s in others if s.server_id != self.server.pk and not self._failover_twin(scope, s)]
+            if not foreign:
+                return self._update(current, start_address=f"{start}/{prefixlen}", end_address=f"{end}/{prefixlen}")
+            # Another Windows server that is not a failover partner for this scope (a split scope, or the old and new
+            # server of a migration) shares the range. Moving it would change that server's pool in NetBox, and the
+            # next push would then rewrite the pool on that server although nobody touched it.
+            if _overlap(start, end, current):
+                other = foreign[0]
+                raise ApplyError(
+                    f"IP range {current} is shared with scope {other} of Windows server {other.server}, which is not "
+                    "a failover partner for this scope: changing it here would change that server's pool too. If the "
+                    "two servers are failover partners, import the failover relationship first. If both servers got "
+                    "the same change, edit the shared IP range in NetBox to the new bounds. Otherwise point this "
+                    "scope at its own prefix and IP range in another VRF. Then apply or import again"
+                )
         return self._save(IPRange(start_address=f"{start}/{prefixlen}", end_address=f"{end}/{prefixlen}", vrf=vrf))
 
-    def _ip_address(self, ip, prefixlen):
-        found = IPAddress.objects.filter(address__net_host=ip, vrf=self.vrf).first()
+    def _failover_twin(self, scope, other):
+        """
+        Whether ``other`` (a scope of another Windows server) is this scope as the failover partner holds it: a
+        relationship between the two servers, in either direction, covers one of the two. A relationship lists the
+        scopes of its primary server only, so the partner's own scope object is never in it.
+        """
+        return (
+            FailoverRelationship.objects.filter(
+                Q(primary_server=self.server, partner_server=other.server_id)
+                | Q(primary_server=other.server_id, partner_server=self.server)
+            )
+            .filter(scopes__in=[scope.pk, other.pk])
+            .exists()
+        )
+
+    def _ip_address(self, ip, prefixlen, vrf):
+        """The IP address of a reservation, in ``vrf``: the VRF of its scope's prefix."""
+        found = IPAddress.objects.filter(address__net_host=ip, vrf=vrf).first()
         return found or self._save(
-            IPAddress(address=f"{ip}/{prefixlen}", vrf=self.vrf, description="Windows DHCP reservation")
+            IPAddress(address=f"{ip}/{prefixlen}", vrf=vrf, description="Windows DHCP reservation")
         )
 
     def _mac(self, client_id):
@@ -284,9 +329,11 @@ class Writer:
         network = ipaddress.IPv4Network(f"{change.key}/{prefixlen}")
         # Keep the prefix the scope already has (it may sit in another VRF) unless the mask changed.
         keep = scope is not None and str(scope.prefix.prefix) == str(network)
+        prefix = scope.prefix if keep else self._prefix(network)
         values = {
-            "prefix": scope.prefix if keep else self._prefix(network),
-            "ip_range": self._ip_range(fields["start_range"], fields["end_range"], network, scope),
+            "prefix": prefix,
+            # A first range goes in the VRF of the prefix, which is the import VRF unless the prefix was kept.
+            "ip_range": self._ip_range(fields["start_range"], fields["end_range"], network, scope, prefix.vrf),
             "name": fields["name"],
             "description": fields["description"],
             "state": fields["state"],
@@ -320,7 +367,9 @@ class Writer:
     def _apply_reservation(self, change):
         fields = change.after or change.before
         # The key, not the fields, so a "#<pk>" key reaches exactly the duplicate it names.
-        obj = self.reservation(*change.key.split("/", 1), required=False)
+        scope_key, ip = change.key.split("/", 1)
+        scope = self.scope(scope_key, required=False)
+        obj = self._find_reservation(scope, ip, False, "reservation")
         if change.action == DELETE:
             return self._delete(obj)
         mac = self._mac(fields["client_id"])
@@ -332,8 +381,10 @@ class Writer:
             "reservation_type": fields["reservation_type"],
         }
         if obj is None:
-            scope = self.scope(fields["scope_id"])
-            address = self._ip_address(fields["ip_address"], scope.prefix.prefix.prefixlen)
+            if scope is None or scope_key != fields["scope_id"]:
+                scope = self.scope(fields["scope_id"])
+            # In the VRF of the scope's prefix: a scope made by hand may sit outside the server's import VRF.
+            address = self._ip_address(fields["ip_address"], scope.prefix.prefix.prefixlen, scope.prefix.vrf)
             return self._save(Reservation(scope=scope, ip_address=address, **values))
         return self._update(obj, **values)
 
@@ -387,16 +438,55 @@ class Writer:
         scope = self.scope(scope_id, required=required) if scope_id else None
         if scope_id and scope is None:
             return None
+        return self._policy_in(scope, name, required)
+
+    def _policy_in(self, scope, name, required):
+        """This server's policy of that name on a scope, or (``scope`` None) at server level."""
         found = WindowsPolicy.objects.filter(server=self.server, scope=scope, name__iexact=name).first()
         if found is None and required:
             raise ApplyError(f"policy {name!r} is not in NetBox yet: apply it first")
         return found
 
+    # One lookup per kind for the objects that can exist twice under names differing only in case. The review queue
+    # uses the same lookups for its links and permission checks, so both always mean the object a change writes.
+
+    def find_policy(self, change):
+        """The policy a change updates or deletes, or None."""
+        return self._find_policy(change)[0]
+
+    def _find_policy(self, change):
+        """``find_policy()`` together with the policy's scope (None at server level, or when it is not in NetBox)."""
+        fields = change.after or change.before
+        scope = self.scope(fields["scope_id"], required=False) if fields["scope_id"] else None
+        marked = self._marked(change, WindowsPolicy.objects.filter(server=self.server))
+        if marked is not None:
+            return marked, scope
+        if fields["scope_id"] and scope is None:
+            return None, None
+        return self._policy_in(scope, fields["name"], required=False), scope
+
+    def find_superscope(self, change):
+        """The superscope a change updates or deletes, or None."""
+        fields = change.after or change.before
+        return self._marked(change, Superscope.objects.filter(server=self.server)) or self.superscope(fields["name"])
+
+    def find_failover(self, change):
+        """The failover relationship a change updates or deletes, or None."""
+        fields = change.after or change.before
+        return self._marked(change, FailoverRelationship.objects.filter(primary_server=self.server)) or self.failover(
+            fields["name"]
+        )
+
+    def find_macfilter(self, change):
+        """The MAC filter a change updates or deletes, or None."""
+        fields = change.after or change.before
+        return self._marked(change, MacFilter.objects.filter(server=self.server)) or self.mac_filter(
+            fields["mac_address"]
+        )
+
     def _apply_policy(self, change):
         fields = change.after or change.before
-        obj = self._marked(change, WindowsPolicy.objects.filter(server=self.server)) or self.windows_policy(
-            fields["scope_id"], fields["name"], required=False
-        )
+        obj, scope = self._find_policy(change)
         if change.action == DELETE:
             return self._delete(obj)
         values = {
@@ -410,7 +500,8 @@ class Writer:
             "ip_ranges": fields["ip_ranges"],
         }
         if obj is None:
-            scope = self.scope(fields["scope_id"]) if fields["scope_id"] else None
+            if fields["scope_id"] and scope is None:
+                scope = self.scope(fields["scope_id"])  # not in NetBox: says which scope to apply first
             return self._save(WindowsPolicy(server=self.server, scope=scope, **values))
         return self._update(obj, **values)
 
@@ -429,9 +520,7 @@ class Writer:
 
     def _apply_superscope(self, change):
         fields = change.after or change.before
-        superscope = self._marked(change, Superscope.objects.filter(server=self.server)) or self.superscope(
-            fields["name"]
-        )
+        superscope = self.find_superscope(change)
         if change.action == DELETE:
             # Its scopes stay, outside any superscope, as on Windows.
             return self._delete(superscope)
@@ -474,9 +563,7 @@ class Writer:
 
     def _apply_failover(self, change):
         fields = change.after or change.before
-        obj = self._marked(change, FailoverRelationship.objects.filter(primary_server=self.server)) or self.failover(
-            fields["name"]
-        )
+        obj = self.find_failover(change)
         if change.action == DELETE:
             return self._delete(obj)
         values = {
@@ -516,9 +603,7 @@ class Writer:
 
     def _apply_macfilter(self, change):
         fields = change.after or change.before
-        obj = self._marked(change, MacFilter.objects.filter(server=self.server)) or self.mac_filter(
-            fields["mac_address"]
-        )
+        obj = self.find_macfilter(change)
         if change.action == DELETE:
             return self._delete(obj)
         values = {"list": fields["list"], "description": fields["description"][:DESCRIPTION_LENGTH]}
@@ -621,7 +706,8 @@ class Writer:
         fields = change.after or change.before
         # The key, not the fields, so a "#<pk>" key reaches exactly the duplicate it names.
         prefix, _, ip = change.key.removeprefix("v6/").partition("/")
-        obj = self.reservation6(prefix, ip, required=False)
+        scope = self.scope6(prefix, required=False)
+        obj = self._find_reservation(scope, ip, False, "DHCPv6 reservation")
         if change.action == DELETE:
             return self._delete(obj)
         values = {
@@ -631,8 +717,9 @@ class Writer:
             "iaid": fields["iaid"],
         }
         if obj is None:
-            scope = self.scope6(fields["prefix"])
-            address = self._ip_address(fields["ip_address"], scope.prefix.prefix.prefixlen)
+            if scope is None or prefix != fields["prefix"]:
+                scope = self.scope6(fields["prefix"])
+            address = self._ip_address(fields["ip_address"], scope.prefix.prefix.prefixlen, scope.prefix.vrf)
             return self._save(Reservation(scope=scope, ip_address=address, **values))
         return self._update(obj, **values)
 

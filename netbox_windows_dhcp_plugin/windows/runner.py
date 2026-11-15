@@ -11,7 +11,6 @@ This module must not import Django or NetBox.
 from __future__ import annotations
 
 import html
-import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -21,6 +20,8 @@ from . import psscript
 
 __all__ = [
     "DEFAULT_MAX_CONCURRENCY",
+    "MAX_OUTPUT",
+    "MAX_STDERR",
     "ExecResult",
     "Limited",
     "Runner",
@@ -31,6 +32,13 @@ __all__ = [
 ]
 
 DEFAULT_MAX_CONCURRENCY = 4
+# The most output one script may send back before the transport gives up, so that a broken or hostile host cannot
+# fill the worker's memory. It is far above any real answer: a lease takes a few hundred bytes, so this is room for
+# several hundred thousand leases in one scope.
+MAX_OUTPUT = 256 * 1024 * 1024
+# Error output is only used for the error message, and a real PowerShell error is a few KB.
+MAX_STDERR = 1024 * 1024
+_MAX_ERROR_TEXT = 64 * 1024
 
 
 @runtime_checkable
@@ -48,7 +56,11 @@ class RunnerError(psscript.WindowsLayerError):
 
 
 class Limited:
-    """Caps the number of scripts in flight on the wrapped runner (a bounded semaphore)."""
+    """Caps the number of scripts in flight on the wrapped runner (a bounded semaphore).
+
+    Nothing in the plugin runs scripts from several threads yet (jobs send their commands one after another), so the
+    cap is never reached today. It is kept as the place where parallel reads would be limited.
+    """
 
     def __init__(self, runner: Runner, n: int = DEFAULT_MAX_CONCURRENCY, timeout: float | None = None) -> None:
         self.runner = runner
@@ -109,7 +121,8 @@ def execute(transport: str, exec_fn: ExecFunc, script: str, params: Mapping[str,
         raise RunnerError(f"{transport}: {e}") from e
 
 
-_CLIXML_STRING = re.compile(r'<S S="Error">(.*?)</S>', re.S)
+_CLIXML_OPEN = '<S S="Error">'
+_CLIXML_CLOSE = "</S>"
 
 
 def clean_stderr(s: str) -> str:
@@ -119,12 +132,15 @@ def clean_stderr(s: str) -> str:
     objects. Extract the ``<S S="Error">`` strings, decode ``_x000D__x000A_`` line
     breaks and XML entities. Plain text is returned trimmed.
     """
-    s = s.strip()
+    # The text comes from the remote host: bound it, and read it in one pass. A lazy regular expression here took
+    # minutes on a megabyte of opening tags without a closing one.
+    s = s[:MAX_STDERR].strip()
     if not s.startswith("#< CLIXML"):
-        return s or "(no error output)"
+        return s[:_MAX_ERROR_TEXT] or "(no error output)"
     parts = []
-    for m in _CLIXML_STRING.finditer(s):
-        part = m.group(1).replace("_x000D__x000A_", "\n")
-        parts.append(html.unescape(part))
+    for chunk in s.split(_CLIXML_OPEN)[1:]:
+        body, closed, _ = chunk.partition(_CLIXML_CLOSE)
+        if closed:
+            parts.append(html.unescape(body.replace("_x000D__x000A_", "\n")))
     out = "".join(parts).strip()
-    return out or "(no error output)"
+    return out[:_MAX_ERROR_TEXT] or "(no error output)"

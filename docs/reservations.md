@@ -39,7 +39,9 @@ Windows server after each change.
 MAC address, client ID and type sit under **IPv4 client**; DUID and IAID, under **DHCPv6 client**, are for DHCPv6
 reservations (see [DHCPv6](dhcpv6.md)). Windows matches a reservation on its client, so an IPv4 reservation needs a
 MAC address or a client ID (one of the two), and a DHCPv6 one a DUID and an IAID: NetBox refuses to save it without
-them. A scope holds one reservation per IP address.
+them. A scope holds one reservation per IP address. A client ID or DUID is a string of hex bytes: type it with
+`-`, `:` or `.` between the bytes, or without separators; NetBox stores it as `aa-bb-cc`, the form Windows reports,
+and refuses anything that is not hex. Groups written without leading zeros (`0:1b:21:a:b:c`) are padded per byte.
 
 ![The reservation form: server dhcp01, scope dhcp01/198.18.60.0, IP address 198.18.60.20, name printer01, MAC
 address 02:4E:42:60:00:20, type Both](images/reservation-form.webp)

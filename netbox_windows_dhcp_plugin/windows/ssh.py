@@ -28,7 +28,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .runner import ExecResult, RunnerError, execute
+from .runner import MAX_OUTPUT, MAX_STDERR, ExecResult, RunnerError, execute
 
 # Windows OpenSSH stalls on more input than this, waiting until the timeout (between 70 and 90 KB in the lab, Windows
 # Server 2022, whether the script is read as one line or to the end). The plugin's scripts send under 10 KB; refuse
@@ -293,7 +293,9 @@ class SSHRunner:
                         b = chan.recv_stderr(32768)
                         if not b:
                             return
-                        stderr.extend(b)
+                        # Keep reading past the cap so the remote side never blocks, but stop keeping it.
+                        if len(stderr) < MAX_STDERR:
+                            stderr.extend(b)
                 except Exception:  # noqa: BLE001, S110 - timeout or closed; stdout reader reports it
                     return
 
@@ -310,6 +312,8 @@ class SSHRunner:
                 if not b:
                     break
                 stdout.extend(b)
+                if len(stdout) > MAX_OUTPUT:
+                    raise RunnerError(f"ssh: PowerShell sent more than {MAX_OUTPUT // (1024 * 1024)} MiB of output")
             if not chan.status_event.wait(self.cfg.command_timeout):
                 raise RunnerError("ssh: timed out waiting for the exit status")
             code = chan.exit_status

@@ -30,8 +30,8 @@ way.
 
 ## Rules
 
-- **Scopes are /64.** A NetBox scope on another prefix length is not pushed. DHCPv6 scopes have no IP range and no
-  superscope.
+- **Scopes are /64.** NetBox refuses to save a DHCPv6 scope on another prefix length; one whose prefix length was
+  changed in IPAM afterwards is not pushed. DHCPv6 scopes have no IP range and no superscope.
 - **Lifetimes.** Left empty in NetBox, they keep the Windows values; a new scope gets Windows' defaults: preferred
   8 days and valid 12 days. Renewal (T1) and rebinding (T2) times left empty follow the preferred lifetime: a new
   scope gets half and 80 % of it (4 days and 6.4 days, that is 6 days 9:36, for the default 8 days, which is what
@@ -39,8 +39,10 @@ way.
   below the preferred lifetime (after you shorten it in NetBox), in which case they are worked out the same way.
   When you set only one of T1 and T2, the empty one is placed on the right side of it: T1 at 5/8 of T2, or T2
   halfway between T1 and the preferred lifetime, when the default would not fit.
-  Windows expects T1 < T2 < preferred lifetime. A scope without a name is named after its prefix.
-- **Reservations** need a DUID and an IAID, and no MAC address or client ID. Changing the address creates a new
+  Windows expects T1 < T2 < preferred lifetime <= valid lifetime: NetBox refuses to save two of these values that
+  are both set and out of order. A T1 or T2 of 0 counts as empty. A scope without a name is named after its prefix.
+- **Reservations** need a DUID and an IAID, and no MAC address or client ID. The DUID is hex bytes, stored as
+  `aa-bb-cc` whatever separators were typed. Changing the address creates a new
   reservation and removes the old one, since the address is part of its key.
 - **No policies.** Windows has none for DHCPv6: a DHCPv6 option value cannot have a policy.
 - **No failover.** Windows has none for DHCPv6, so DHCPv6 changes are never replicated.

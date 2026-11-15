@@ -1,5 +1,6 @@
 from django.contrib.postgres.fields import ArrayField
 from django.core.exceptions import ValidationError
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
@@ -65,6 +66,8 @@ class WindowsServer(JobsMixin, PrimaryModel):
         verbose_name=_("port"),
         blank=True,
         null=True,
+        # Refuse an impossible port at save time; otherwise it only fails later, inside a job, as a transport error.
+        validators=[MinValueValidator(1), MaxValueValidator(65535)],
         help_text=_("Defaults to 5986 (WinRM over HTTPS), 5985 (WinRM over HTTP) or 22 (SSH)"),
     )
     credential_profile = models.CharField(

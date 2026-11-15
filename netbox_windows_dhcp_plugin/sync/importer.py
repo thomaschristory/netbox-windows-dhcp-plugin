@@ -13,7 +13,7 @@ from copy import copy
 from dataclasses import dataclass, field
 
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, transaction
+from django.db import DataError, IntegrityError, transaction
 from utilities.exceptions import AbortRequest
 
 from ..choices import ProposalItemStatusChoices, ProposalStatusChoices
@@ -78,8 +78,9 @@ def kind_model(kind, fields=None):
 
 
 # Errors one change can raise without the rest of the import being wrong. AbortRequest is how a plugin's pre_save
-# receiver refuses a save, such as change control's protect_main.
-APPLY_ERRORS = (ApplyError, ValidationError, IntegrityError, ValueError, AbortRequest)
+# receiver refuses a save, such as change control's protect_main. DataError is a value the database column cannot
+# hold (too long, out of range): that one object fails, in its own transaction, instead of the whole run.
+APPLY_ERRORS = (ApplyError, ValidationError, IntegrityError, DataError, ValueError, AbortRequest)
 
 
 @dataclass
@@ -180,14 +181,16 @@ def _target(writer, change):
             return writer.definition(fields["option_id"], fields["vendor_class"], required=False)
         if change.kind == "option":
             return writer.option(change.key, fields)
+        # These four can exist twice in NetBox under names differing only in case: the writer's own lookups reach
+        # the copy a delete names, so the link and the permission check are for the object that will be written.
         if change.kind == "policy":
-            return writer.windows_policy(fields["scope_id"], fields["name"], required=False)
+            return writer.find_policy(change)
         if change.kind == "superscope":
-            return writer.superscope(fields["name"])
+            return writer.find_superscope(change)
         if change.kind == "failover":
-            return writer.failover(fields["name"])
+            return writer.find_failover(change)
         if change.kind == "macfilter":
-            return writer.mac_filter(fields["mac_address"])
+            return writer.find_macfilter(change)
         if change.kind == "filterlists":
             return writer.filter_lists()
         if change.kind == "class6":
@@ -280,13 +283,32 @@ def _item_change(item):
     return Change(item.action, item.kind, item.key, item.before, item.after)
 
 
+_OPEN = (ProposalItemStatusChoices.PENDING, ProposalItemStatusChoices.FAILED)
+
+
 def _set_item(item, status, error=""):
-    if not ImportProposalItem.objects.filter(pk=item.pk).exists():
-        return  # a new import replaced it meanwhile; saving would bring it back
-    item.snapshot()
+    """
+    Record the decision on an item that is still open, and say whether it was. The row is locked and read again:
+    the copy in hand was loaded when the request started, and since then a new import may have replaced the item
+    (saving the copy would bring it back) or another reviewer may have applied or dismissed it (their decision
+    stands).
+    """
+    with transaction.atomic():
+        locked = ImportProposalItem.objects.select_for_update().filter(pk=item.pk, status__in=_OPEN).first()
+        if locked is None:
+            return False
+        locked.snapshot()
+        locked.status = status
+        locked.error = error
+        # Never an INSERT: if the row went away after all, this fails instead of bringing it back.
+        locked.save(force_update=True)
     item.status = status
     item.error = error
-    item.save()
+    return True
+
+
+# Said to a reviewer who tries to apply items while working in a netbox-branching branch.
+IN_BRANCH = "import proposals are applied to main: leave the branch (switch to main) and apply again"
 
 
 def apply_items(items, user=None):
@@ -299,9 +321,14 @@ def apply_items(items, user=None):
     fails instead of overwriting their edit; running the import again proposes a fresh change.
 
     Saves made here queue no push: the objects then match Windows, so pushing them back would do nothing.
+
+    Refused inside a netbox-branching branch: the objects would be written to the branch while the record that
+    NetBox now manages them goes to main, and the next push from main would delete them on Windows.
     """
     from ..signals import push_suppressed
 
+    if branching.in_branch():
+        raise branching.BranchError(IN_BRANCH)
     with push_suppressed():
         return _apply_items(items, user)
 
@@ -325,17 +352,22 @@ def _apply_items(items, user):
         if error is None:
             try:
                 with _one_change(), transaction.atomic():
+                    # The item is locked before anything is written, and stays locked until its new status is
+                    # committed with the objects. The copy in hand was loaded when the request started: if another
+                    # reviewer dismissed the item since, or a new import replaced it, writing it now would put an
+                    # object in NetBox (and under push management) that the review queue says was turned down.
+                    if not ImportProposalItem.objects.select_for_update().filter(pk=item.pk, status__in=_OPEN).exists():
+                        continue
                     if not _already_done(change, current):
                         Writer(server, user=user).apply(change)
                     _record_managed(server, change)
+                    applied += _set_item(item, ProposalItemStatusChoices.APPLIED)
+                continue
             except APPLY_ERRORS as exc:
                 error = _message(exc)
-        if error:
-            failed += 1
-            _set_item(item, ProposalItemStatusChoices.FAILED, error)
-        else:
-            applied += 1
-            _set_item(item, ProposalItemStatusChoices.APPLIED)
+        # Counted only when this call made the decision: an item replaced by a new import, or decided by another
+        # reviewer meanwhile, keeps what was recorded there.
+        failed += _set_item(item, ProposalItemStatusChoices.FAILED, error)
     for proposal in proposals.values():
         update_status(proposal)
     return applied, failed
@@ -388,8 +420,8 @@ def dismiss_items(items):
     count = 0
     proposals = {}
     for item in items:
-        if item.status in (ProposalItemStatusChoices.PENDING, ProposalItemStatusChoices.FAILED):
-            _set_item(item, ProposalItemStatusChoices.DISMISSED)
+        # Counted only when this call made the decision: another reviewer may have applied the item meanwhile.
+        if item.status in _OPEN and _set_item(item, ProposalItemStatusChoices.DISMISSED):
             proposals[item.proposal_id] = item.proposal
             count += 1
     for proposal in proposals.values():

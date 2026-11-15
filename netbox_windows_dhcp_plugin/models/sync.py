@@ -41,7 +41,8 @@ class SyncState(models.Model):
         related_name="sync_states",
     )
     kind = models.CharField(max_length=50, help_text=_("Windows object kind, for example scope or reservation"))
-    key = models.CharField(max_length=255, help_text=_("Windows identity, for example 10.0.0.0 or 10.0.0.0/10.0.0.5"))
+    # Text, not varchar(255): a key strings together Windows names (class, policy) that can each be 255 characters.
+    key = models.TextField(help_text=_("Windows identity, for example 10.0.0.0 or 10.0.0.0/10.0.0.5"))
     object_type = models.ForeignKey(
         to="contenttypes.ContentType",
         on_delete=models.CASCADE,
@@ -115,6 +116,11 @@ class SyncRun(NetBoxModel):
         ordering = ("-created",)
         verbose_name = _("sync run")
         verbose_name_plural = _("sync runs")
+        indexes = (
+            # "The latest run of this kind for this server" is read by the import scheduler every minute and by each
+            # server page; runs are never pruned, so without this PostgreSQL sorts all of a server's runs each time.
+            models.Index(fields=("windows_server", "kind", "-created"), name="nbwd_syncrun_latest"),
+        )
 
     def __str__(self):
         return f"{self.get_kind_display()} {self.windows_server} #{self.pk}"
@@ -190,7 +196,8 @@ class ImportProposalItem(NetBoxModel):
         default=ProposalItemStatusChoices.PENDING,
     )
     kind = models.CharField(verbose_name=_("kind"), max_length=50)
-    key = models.CharField(verbose_name=_("Windows key"), max_length=255)
+    # Text for the same reason as SyncState.key: keys built from long Windows names do not fit 255 characters.
+    key = models.TextField(verbose_name=_("Windows key"))
     object_type = models.ForeignKey(
         to="contenttypes.ContentType",
         on_delete=models.CASCADE,

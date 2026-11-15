@@ -6,6 +6,7 @@ point at core NetBox objects (prefix, IP range, IP address, MAC address), so the
 """
 
 import ipaddress
+import re
 from copy import copy
 
 from django.core.exceptions import ValidationError
@@ -294,6 +295,17 @@ class Scope(_ParentMoveValidationMixin, NetBoxModel):
                 raise ValidationError({"ip_range": _("DHCPv6 scopes have no IP range.")})
             if self.superscope_id is not None:
                 raise ValidationError({"superscope": _("Windows has no DHCPv6 superscopes.")})
+            # The push refuses any other length too (the prefix can still change in IPAM later); saying it here
+            # saves a merge and a failed push. Windows only reports /64 scopes, so imports are not affected.
+            if network.prefixlen != 64:
+                raise ValidationError(
+                    {
+                        "prefix": _("Windows DHCPv6 scopes are /64 prefixes; this one is /{length}.").format(
+                            length=network.prefixlen
+                        )
+                    }
+                )
+            self._clean_v6_timers()
         if self.ip_range_id is not None:
             # NetBox holds netaddr objects; compare in the standard library's types.
             start = ipaddress.ip_address(str(self.ip_range.start_address.ip))
@@ -304,6 +316,31 @@ class Scope(_ParentMoveValidationMixin, NetBoxModel):
                 )
         if self.superscope_id is not None and self.server_id and self.superscope.server_id != self.server_id:
             raise ValidationError({"superscope": _("The superscope belongs to another server.")})
+
+    def _clean_v6_timers(self):
+        """
+        Windows wants T1 < T2 < preferred lifetime <= valid lifetime. Only pairs set in NetBox are judged: an empty
+        field keeps what Windows has, which is not known here, so that case is still left to Windows at push time.
+        """
+        rules = (
+            ("preferred_lifetime", "valid_lifetime", True, _("The preferred lifetime cannot exceed the valid one.")),
+            ("renew_timer", "rebind_timer", False, _("T1 must be lower than T2.")),
+            ("rebind_timer", "preferred_lifetime", False, _("T2 must be lower than the preferred lifetime.")),
+            ("renew_timer", "preferred_lifetime", False, _("T1 must be lower than the preferred lifetime.")),
+        )
+        # 0 in T1 or T2 means "let the server work it out": the sync reads it as empty, so it is not judged either.
+        # A lifetime of 0 is sent to Windows as a real value and stays judged.
+        timers = {"renew_timer", "rebind_timer"}
+        for low_field, high_field, may_be_equal, message in rules:
+            low, high = getattr(self, low_field), getattr(self, high_field)
+            if low_field in timers:
+                low = low or None
+            if high_field in timers:
+                high = high or None
+            if low is None or high is None:
+                continue
+            if low > high or (low == high and not may_be_equal):
+                raise ValidationError({low_field: message})
 
     def _clean_parent_move(self, changed):
         values = OptionValue.objects.filter(Q(scope_id=self.pk) | Q(reservation__scope_id=self.pk))
@@ -447,6 +484,7 @@ class Reservation(_ParentMoveValidationMixin, NetBoxModel):
             # Windows matches an IPv4 reservation on its client ID: without one the push cannot create it.
             if not (self.mac_address_id or self.client_id):
                 raise ValidationError({"mac_address": _("Set the client's MAC address, or a client ID.")})
+            self._clean_identity("client_id")
         elif self.mac_address_id or self.client_id:
             raise ValidationError(
                 _("DHCPv6 reservations are matched on DUID and IAID, not a MAC address or client ID.")
@@ -460,6 +498,26 @@ class Reservation(_ParentMoveValidationMixin, NetBoxModel):
                 missing["iaid"] = _("A DHCPv6 reservation needs the client's IAID.")
             if missing:
                 raise ValidationError(missing)
+            self._clean_identity("duid")
+
+    def _clean_identity(self, field):
+        """A client ID or DUID is a string of bytes: refuse anything else here, the push could never send it."""
+        value = getattr(self, field)
+        if not value:
+            return
+        canonical = _canonical_hex(value)
+        if canonical is None:
+            raise ValidationError(
+                {field: _("Use pairs of hex digits, optionally separated by '-', ':' or '.', for example 01-aa-bb-cc.")}
+            )
+        setattr(self, field, canonical)
+
+    def save(self, *args, **kwargs):
+        # The REST API saves without running clean() on this instance; keep the one spelling Windows reports, so
+        # filters find the reservation however the identity was typed. A value that is not hex is left as it is.
+        self.client_id = _canonical_hex(self.client_id) or self.client_id
+        self.duid = _canonical_hex(self.duid) or self.duid
+        return super().save(*args, **kwargs)
 
     def _clean_parent_move(self, changed):
         if (
@@ -649,6 +707,7 @@ class OptionDefinition(NetBoxModel):
 
     def clean(self):
         super().clean()
+        self.windows_type = _canonical_option_type(self.windows_type)
         if not _is_string_list(self.default_value):
             raise ValidationError({"default_value": _("Must be a list of strings.")})
         if self.vendor_class_id is None:
@@ -659,6 +718,11 @@ class OptionDefinition(NetBoxModel):
             raise ValidationError({"vendor_class": _("The vendor class belongs to another server.")})
         if self.vendor_class.family != self.family:
             raise ValidationError({"vendor_class": _("The vendor class is of another address family.")})
+
+    def save(self, *args, **kwargs):
+        # The REST API saves without running clean() on this instance: store the spelling Windows reports.
+        self.windows_type = _canonical_option_type(self.windows_type)
+        return super().save(*args, **kwargs)
 
 
 class WindowsPolicy(_ParentMoveValidationMixin, PrimaryModel):
@@ -735,15 +799,30 @@ class WindowsPolicy(_ParentMoveValidationMixin, PrimaryModel):
         self._clean_criteria()
         if not isinstance(self.ip_ranges, list):
             raise ValidationError({"ip_ranges": _("Must be a list of [start, end] pairs.")})
+        network = self.scope.network if self.scope_id is not None else None
         for pair in self.ip_ranges:
+            # Strings only: ip_address() also reads numbers (1 is 0.0.0.1), and the sync cannot read those back, so
+            # one such policy would stop every push and import of its server.
+            if not (isinstance(pair, (list, tuple)) and len(pair) == 2 and all(isinstance(a, str) for a in pair)):
+                raise ValidationError({"ip_ranges": _("Must be a list of [start, end] pairs.")})
             try:
                 start, end = (ipaddress.ip_address(a) for a in pair)
-            except (TypeError, ValueError) as exc:
+            except ValueError as exc:
                 raise ValidationError({"ip_ranges": _("Must be a list of [start, end] pairs.")}) from exc
             if start.version != end.version:
                 raise ValidationError({"ip_ranges": _("Start and end addresses must be of the same family.")})
+            if start.version != 4:
+                raise ValidationError({"ip_ranges": _("Policy IP ranges are IPv4 addresses.")})
             if start > end:
                 raise ValidationError({"ip_ranges": _("Range {start}-{end} is reversed.").format(start=start, end=end)})
+            if network is not None and (start not in network or end not in network):
+                raise ValidationError(
+                    {
+                        "ip_ranges": _("Range {start}-{end} is outside the scope {prefix}.").format(
+                            start=start, end=end, prefix=network
+                        )
+                    }
+                )
 
     def _clean_criteria(self):
         criteria = self.criteria
@@ -1149,3 +1228,47 @@ def _is_hex(value):
     except ValueError:
         return False
     return True
+
+
+_HEX_SEPARATORS = re.compile(r"[:\-. ]+")
+
+
+def _canonical_hex(value):
+    """
+    A client ID or DUID as Windows reports it (``aa-bb-cc``), or None when the text is not a string of bytes.
+
+    Reads what the push reads (windows/normalize.canonical_mac, which models must not import): ':', '-', '.' or
+    spaces between groups, and single digits padded when every group is one byte (``0:1b:21:a:b:c``).
+    """
+    groups = [g for g in _HEX_SEPARATORS.split(str(value).strip()) if g]
+    if len(groups) > 1 and any(len(g) % 2 for g in groups):
+        if any(len(g) > 2 for g in groups):
+            return None
+        groups = [g.zfill(2) for g in groups]
+    digits = "".join(groups)
+    if not digits or len(digits) % 2:
+        return None
+    try:
+        raw = bytes.fromhex(digits)
+    except ValueError:
+        return None
+    return "-".join(f"{b:02x}" for b in raw)
+
+
+# The spellings Windows reports for its option data types. The 64-bit type is left out on purpose: the code and
+# the documents disagree on its spelling.
+# unverified: how Windows spells the 64-bit option type (DWordDword or DWordDWord) when it reads one back.
+_OPTION_TYPES = {
+    name.lower(): name
+    for name in ("Byte", "Word", "DWord", "IPv4Address", "IPv6Address", "String", "BinaryData", "EncapsulatedData")
+}
+
+
+def _canonical_option_type(value):
+    """
+    A Windows option data type in the spelling Windows reports (``string`` becomes ``String``). Windows takes the
+    type without case and reads it back in its own spelling. A type not known here is kept as typed, so a type a
+    newer Windows adds can still be imported.
+    """
+    text = str(value or "").strip()
+    return _OPTION_TYPES.get(text.lower(), text)

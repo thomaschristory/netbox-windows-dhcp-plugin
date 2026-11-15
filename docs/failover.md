@@ -186,6 +186,11 @@ If a replication fails, the push is marked failed and the next push to the prima
   has in the relationship are replicated; one that is not yet (its addition failed) waits, so it cannot block the
   others. If replication fails, the push is marked failed. Either way the next push to the primary replicates those
   scopes again, even when it has nothing else to write: run **Sync now** on the primary once the cause is fixed.
+  The scope of a change inside it that failed after part of it may have reached Windows is replicated too. A push
+  that stopped early (lost connection, command timeout, unexpected error) replicates nothing in that run and leaves
+  its scopes pending for the next one. A failed server-level change (a class, an option definition, a MAC filter, a
+  server option) replicates nothing until it is applied, unless the push stopped on it: then all the relationship's
+  scopes are left pending. A failed change to the relationship itself triggers no replication.
 - A push to the partner server leaves the relationship's scopes alone: they belong to the primary.
 - **Primary server role** is set when the relationship is created. Windows cannot change it afterwards
   (`Set-DhcpServerv4Failover` has no role parameter), so a push that changes it in NetBox is refused. To change it,
@@ -245,7 +250,7 @@ authentication on or to send a new secret.
   The plugin only does that for a relationship it manages, unchanged on Windows since the last push, and never for a
   scope NetBox does not manage.
 - A scope deleted in NetBox leaves its relationship first, in the same push, after a lease check: a scope with leases
-  is refused before anything changes.
+  is refused before anything changes, and a later push deletes it once the leases are gone.
 - Removing a relationship removes its scopes from the partner, as Windows documents.
 
 Changing the partner is refused: Windows only allows it by removing the
