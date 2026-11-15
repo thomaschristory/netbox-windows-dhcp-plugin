@@ -356,6 +356,48 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
         self.branch.save(update_fields=["merge_strategy"])
         self._merge(self.editor)
         self.branch.can_revert = True
+        refused = self.assertRaisesMessage(AbortRequest, "Branch guard cannot be merged or reverted by guard-ipam-only")
+        with refused, mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            self.branch.revert(user=self.ipam_only)
+        self.assertEqual(self._address(), address)
+
+    def test_revert_of_a_change_that_was_a_no_op_at_merge_checks_the_reverting_user(self):
+        # Main already held the branch's new address, so the merge recorded nothing for it on main; the revert still
+        # undoes the branch change and puts the old address back.
+        from ipam.models import IPAddress
+        from netaddr import IPNetwork
+        from utilities.exceptions import AbortRequest
+
+        address = self._edit_in_branch(self.editor)
+        ip = IPAddress.objects.get(pk=Reservation.objects.get().ip_address_id)
+        ip.address = IPNetwork(address)
+        with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            ip.save()
+        self._merge(self.editor)
+        self.branch.can_revert = True
+        refused = self.assertRaisesMessage(AbortRequest, "Branch guard cannot be merged or reverted by guard-ipam-only")
+        with refused, mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            self.branch.revert(user=self.ipam_only)
+        self.assertEqual(self._address(), address)
+
+    def test_squash_revert_does_not_pass_a_hand_edit_off_as_the_import(self):
+        # Squash records one change per object on main, under the last (import) request ID: the revert must still see
+        # the hand edit among the branch's changes.
+        from ipam.models import IPAddress
+        from utilities.exceptions import AbortRequest
+
+        from netbox_windows_dhcp_plugin.ipam_guard import import_request_id
+
+        address = self._edit_in_branch(self.editor)
+        with branching.writing(self.branch, self.editor, request_id=import_request_id()):
+            ip = IPAddress.objects.get(pk=Reservation.objects.get().ip_address_id)
+            ip.snapshot()
+            ip.description = "written by an import"
+            ip.save()
+        self.branch.merge_strategy = "squash"
+        self.branch.save(update_fields=["merge_strategy"])
+        self._merge(self.editor)
+        self.branch.can_revert = True
         with self.assertRaises(AbortRequest), mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
             self.branch.revert(user=self.ipam_only)
         self.assertEqual(self._address(), address)
@@ -394,7 +436,7 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
         before = self._address()
         self._edit_in_branch(self.editor)
         self.editor_dhcp.delete()
-        with self.assertRaises(AbortRequest):
+        with self.assertRaisesMessage(AbortRequest, "Branch guard cannot be merged or reverted by guard-editor"):
             self._merge(None)
         self.assertEqual(self._address(), before)
 
@@ -402,6 +444,33 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
         address = self._edit_in_branch(self.editor)
         self._merge(None)
         self.assertEqual(self._address(), address)
+
+    def test_mark_of_a_branch_no_longer_merging_is_ignored_even_under_its_request_id(self):
+        # A failed merge resets the branch to ready but sends no closing signal: even a save under one of the branch's
+        # request IDs must not be taken for a replay.
+        from core.models import ObjectChange
+        from ipam.models import IPAddress
+
+        self._edit_in_branch(self.editor)
+        change = ObjectChange.objects.using(self.branch.connection_name).filter(
+            changed_object_id=Reservation.objects.get().ip_address_id
+        )
+        request = RequestFactory().get("/")
+        request.id = change.values_list("request_id", flat=True).first()
+        request.user = self.editor
+        branching._on_pre_apply(None, branch=self.branch, user=self.editor)
+        self.addCleanup(branching.clear_applying)
+        ip = IPAddress.objects.get(pk=Reservation.objects.get().ip_address_id)
+        with event_tracking(request):
+            self.assertIsNone(branching.applying_branch(ip))
+        # The same save while the branch is merging is a replay: only the status told them apart.
+        from netbox_branching.choices import BranchStatusChoices
+        from netbox_branching.models import Branch
+
+        Branch.objects.filter(pk=self.branch.pk).update(status=BranchStatusChoices.MERGING)
+        self.addCleanup(Branch.objects.filter(pk=self.branch.pk).update, status=BranchStatusChoices.READY)
+        with event_tracking(request):
+            self.assertEqual(branching.applying_branch(ip)[:2], ("guard", self.editor))
 
     def test_stale_mark_does_not_check_ordinary_saves_as_the_merging_user(self):
         # A mark left by a failed merge in this context while the same branch merges elsewhere (status MERGING): an
@@ -470,16 +539,3 @@ class ApplyingBranchMarkTest(TestCase):
             self.assertEqual(branching._applying.get()[0], 99)
             close()
             self.assertIsNone(branching._applying.get())
-
-
-@skipUnless(apps.is_installed("netbox_branching"), "netbox-branching is not installed")
-class ApplyingBranchStatusTest(TestCase):
-    def test_mark_of_a_branch_no_longer_merging_is_ignored(self):
-        # A failed merge sends no closing signal: its mark must not exempt later edits once the branch is READY.
-        from netbox_branching.models import Branch
-
-        branch = Branch(name="stale-mark")
-        branch.save(provision=False)
-        branching._on_pre_apply(None, branch=branch)
-        self.addCleanup(branching.clear_applying)
-        self.assertFalse(branching.applying_branch(branch))

@@ -140,14 +140,16 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   or reverting user (not each change's author, so the rule does not depend on the merge strategy), against main's
   scopes and reservations, which may include ones created after the branch: `integrations.branching.applying_branch()`
   returns the branch name, that user and the request IDs of the branch's changes to the object from a context
-  variable set by `pre_merge`/`pre_revert`, trusted only while the branch is still merging or reverting and when the
-  save runs under one of those request IDs (a failed, empty or dry-run merge sends no closing signal, so the mark can
-  outlive it; a replayed save always carries one of the branch's request IDs, an ordinary save never does); the
+  variable set by `pre_merge`/`pre_revert`, trusted only while the branch is still merging or reverting (a failed, empty or dry-run merge sends no closing
+  signal, so the mark can outlive it) and when the save runs under one of those request IDs (a replayed save always
+  carries one, an ordinary save never does: this covers a stale mark in a long-lived process while the same branch
+  merges elsewhere); the
   import's own branch changes are exempt (their request IDs come from `ipam_guard.import_request_id()`, a keyed hash
   of `SECRET_KEY`, and replays keep the original request ID), but only when every change the branch holds for that
   object is the import's (squash replays an object's changes under its last request ID). The guard reads the stored
   row and the dependents from the database the save writes to (the `using` of the save), not wherever the router
-  would read, so a merge run with a branch active is checked against main; a refusal aborts the merge,
+  would read, so a merge run with a branch active (custom code such as a script running in a branch; the merge job itself runs
+  with none) is checked against main; a refusal aborts the merge,
   which netbox-branching rolls back and leaves the branch ready (owner's decision after the adversarial review of
   #112). It is NetBox's documented plugin mechanism (`docs/plugins/development/exceptions.md`);
   `CUSTOM_VALIDATORS` belong to the admin's configuration.

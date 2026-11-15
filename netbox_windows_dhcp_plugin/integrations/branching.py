@@ -183,8 +183,7 @@ def applying_branch(instance):
     request_id = getattr(current_request.get(), "id", None)
     if request_id is None:
         return None
-    from core.models import ObjectChange, ObjectType
-    from django.db import DEFAULT_DB_ALIAS
+    from core.models import ObjectType
     from netbox_branching.choices import BranchStatusChoices
     from netbox_branching.models import Branch
 
@@ -192,13 +191,11 @@ def applying_branch(instance):
     branch = Branch.objects.filter(pk=pk).first()
     if branch is None:
         return None
-    # Not get_unmerged_changes() / get_merged_changes(): they return nothing while the branch is merging or reverting.
-    if branch.status == BranchStatusChoices.MERGING:
-        changes = ObjectChange.objects.using(branch.connection_name)
-    elif branch.status == BranchStatusChoices.REVERTING:
-        changes = ObjectChange.objects.using(DEFAULT_DB_ALIAS).filter(application__branch=branch)
-    else:
+    if branch.status not in (BranchStatusChoices.MERGING, BranchStatusChoices.REVERTING):
         return None
+    # What Branch.merge() and Branch.revert() replay: every change in the branch schema (get_changes()). Not main's
+    # applied changes: a branch change that was a no-op on main at merge left none there, yet its undo is replayed.
+    changes = branch.get_changes()
     object_type = ObjectType.objects.get_for_model(instance)
     request_ids = set(
         changes.filter(changed_object_type=object_type, changed_object_id=instance.pk).values_list(
