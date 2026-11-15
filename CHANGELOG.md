@@ -5,6 +5,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Each push's sync run lists what queued it ("Triggered by"): the edits it carries, with the user and a link to the
+  change log entries of that request, a Sync now click, or a branch merge or revert. Edits made while a push waits to
+  start are added to that push. Also in the REST API (`triggers` on sync runs). Adds migration `0004`.
+
+### Changed
+
+- Editing a prefix, IP range, IP address or MAC address that a scope or reservation uses now needs the plugin's
+  `change` permission on that scope or reservation when the edit changes what is pushed to Windows (the prefix,
+  the range's start or end, the address, the MAC). Until now `ipam` / `dcim` permissions alone were enough to change
+  production DHCP. The save is refused with a message naming the scope or reservation. Other fields (description,
+  status, tags...) are not affected. Grant `change_scope` / `change_reservation` to users who renumber in IPAM (see
+  [Editing IPAM objects used by DHCP](docs/ipam-edits.md)). With netbox-branching the edit is checked in the branch,
+  and again when the branch is merged or reverted, as the merging or reverting user: a merge that would change a scope
+  or reservation that user may not change is refused and nothing is merged. Issue #102.
+- Direct edits of a prefix, IP range, IP address or MAC address that do not change what Windows receives
+  (description, status, tags...) no longer queue a push (a branch merge still queues one per server it touches).
+
 ## [0.3.0] - 2026-11-15
 
 0.3.0 is the result of a code audit. It tightens validation and the matching of `allowed_hosts`, so some setups

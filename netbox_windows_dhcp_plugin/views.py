@@ -388,7 +388,14 @@ class WindowsServerPushView(WindowsServerTestConnectionView):
         what = _("dry run") if self.dry_run else _("push")
         if not self.dry_run and not server.sync_enabled:
             messages.error(request, _("Sync is disabled for {server}").format(server=server))
-        elif (job := enqueue_push(server, request.user, dry_run=self.dry_run)) is None:
+        elif (
+            job := enqueue_push(
+                server,
+                request.user,
+                dry_run=self.dry_run,
+                triggers=[{"source": "sync_now", "user": request.user, "request_id": getattr(request, "id", None)}],
+            )
+        ) is None:
             messages.warning(request, _("A {what} for {server} is already queued").format(what=what, server=server))
         else:
             messages.success(
@@ -627,7 +634,11 @@ _register(
     filterset_form=forms.SyncRunFilterForm,
     layout=layout.SimpleLayout(
         left_panels=[panels.SyncRunPanel()],
-        right_panels=[panels.ImportStatusPanel(title=_("Import result")), JSONPanel("summary", title="Summary")],
+        right_panels=[
+            panels.ImportStatusPanel(title=_("Import result")),
+            panels.PushTriggersPanel(),
+            JSONPanel("summary", title="Summary"),
+        ],
         bottom_panels=[
             ObjectsTablePanel(
                 model="netbox_windows_dhcp_plugin.ImportProposal",

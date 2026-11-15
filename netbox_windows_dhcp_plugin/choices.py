@@ -147,6 +147,20 @@ class PolicyConditionChoices(ChoiceSet):
     ]
 
 
+class PushTriggerSourceChoices(ChoiceSet):
+    EDIT = "edit"
+    SYNC_NOW = "sync_now"
+    MERGE = "merge"
+    REVERT = "revert"
+
+    CHOICES = [
+        (EDIT, _("Edit"), "blue"),
+        (SYNC_NOW, _("Sync now"), "green"),
+        (MERGE, _("Branch merge"), "purple"),
+        (REVERT, _("Branch revert"), "orange"),
+    ]
+
+
 class SyncKindChoices(ChoiceSet):
     PUSH = "push"
     DRY_RUN = "dry_run"

@@ -12,7 +12,7 @@ from .choices import ImportDestinationChoices, SyncKindChoices, SyncStatusChoice
 from .conf import CredentialError, get_setting
 from .connection import build_client
 from .integrations.branching import job_kwargs as branching_job_kwargs
-from .models import SyncRun, WindowsServer
+from .models import PushTrigger, SyncRun, WindowsServer
 from .windows.psscript import WindowsLayerError
 
 # The most names kept for one server, and the longest (the column's width). An honest server reports its computer
@@ -372,6 +372,8 @@ class PushJob(JobRunner):
         server = self.job.object
         if not self.dry_run and not server.sync_enabled:
             self.logger.info(f"Sync is disabled for {server}: nothing pushed")
+            # Their edits are not pushed by anyone now: they must not show on a push weeks later, once sync is back on.
+            PushTrigger.objects.filter(windows_server=server, sync_run=None).delete()
             return
         try:
             with server_lock(server):
@@ -409,6 +411,16 @@ class PushJob(JobRunner):
             started=timezone.now(),
             branch_name=branch[:255],
         )
+        if not self.dry_run:
+            # Every trigger recorded until now is carried by this push. Under the queue lock enqueue_push takes, so a
+            # trigger being recorded right now (which saw this job still waiting, and so queued none) is either
+            # committed before the claim or sees this job as started and queues the next push.
+            from django.db import transaction
+
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_QUEUE_LOCK_CLASS, server.pk])
+                PushTrigger.objects.filter(windows_server=server, sync_run=None).update(sync_run=sync_run)
         runner = self.runner_factory(server) if self.runner_factory else None
         client = None
         try:
@@ -477,10 +489,41 @@ def _waiting(server, job_class, now=None):
     )
 
 
-def enqueue_push(server, user=None, delay=0, branch="", dry_run=False, notify_always=True, attempt=1):
+def _record_triggers(server, triggers):
+    """Store why a push is wanted; the next push of the server to start claims the rows (PushJob._run)."""
+    from .models import PushTrigger
+
+    for t in triggers:
+        user = t.get("user")
+        fields = {
+            "source": t["source"],
+            "user": user if user is not None and getattr(user, "is_authenticated", False) else None,
+            "request_id": t.get("request_id"),
+            "branch": (t.get("branch") or "")[:255],
+        }
+        # Keep the waiting list short: one row per request (a request saving many objects is one edit), one per user
+        # for Sync now (repeated clicks), and one for all saves made without a request (an nbshell loop).
+        waiting = PushTrigger.objects.filter(windows_server=server, sync_run=None)
+        if fields["source"] == "sync_now":
+            same = waiting.filter(source="sync_now", user=fields["user"])
+        elif fields["request_id"]:
+            same = waiting.filter(request_id=fields["request_id"])
+        else:
+            same = waiting.filter(
+                source=fields["source"], user=fields["user"], request_id=None, branch=fields["branch"]
+            )
+        if not same.exists():
+            PushTrigger.objects.create(windows_server=server, **fields)
+
+
+def enqueue_push(server, user=None, delay=0, branch="", dry_run=False, notify_always=True, attempt=1, triggers=()):
     """
     Queue a push (or a dry run) for the server, ``delay`` seconds from now, unless one is already waiting to start:
     that one will see the latest NetBox data anyway. Returns the job, or None.
+
+    ``triggers`` are dicts with "source" (PushTriggerSourceChoices), and optionally "user", "request_id" and
+    "branch". They are recorded for pushes (not dry runs) of servers with sync enabled, whether this call queues a job
+    or a waiting one will carry the change.
     """
     from django.db import transaction
 
@@ -488,6 +531,8 @@ def enqueue_push(server, user=None, delay=0, branch="", dry_run=False, notify_al
     with transaction.atomic():
         with connection.cursor() as cursor:
             cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_QUEUE_LOCK_CLASS, server.pk])
+        if triggers and not dry_run and server.sync_enabled:
+            _record_triggers(server, triggers)
         if _waiting(server, job_class).exists():
             return None
         return job_class.enqueue(

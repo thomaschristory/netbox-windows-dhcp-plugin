@@ -122,6 +122,12 @@ request is approved). Merging queues a push (when **Sync enabled** is on), which
 matches Windows, and the push records the imported objects as managed. With sync off, the first push after you turn
 it on does that.
 
+Merging needs no Windows DHCP permission for the import's own changes, even when they move a prefix, range, address
+or MAC that a scope or reservation uses: they only bring NetBox in line with Windows. An edit someone adds to the
+import branch by hand is checked like any other, when it is made and again at merge, and so is every change of an
+object it touched (see
+[Editing IPAM objects used by DHCP](ipam-edits.md#with-netbox-branching)).
+
 Writing into a branch needs a NetBox user: manual imports use the user who clicked, scheduled ones the `import_user`
 setting. Starting an import also needs permission to add a branch, and to add a change request when one will be
 opened (see [Permissions](permissions.md)).

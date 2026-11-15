@@ -354,6 +354,7 @@ class SyncRunSerializer(NetBoxModelSerializer):
     status = ChoiceField(choices=SyncStatusChoices, read_only=True)
     destination = ChoiceField(choices=ImportDestinationChoices, read_only=True)
     job = JobSerializer(nested=True, read_only=True)
+    triggers = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = SyncRun
@@ -369,10 +370,15 @@ class SyncRunSerializer(NetBoxModelSerializer):
             "branch_name",
             "summary",
             "error",
+            "triggers",
             *TAIL,
         )
         read_only_fields = ("started", "completed", "branch_name", "summary", "error")
         brief_fields = ("id", "url", "display", "kind", "status")
+
+    def get_triggers(self, obj) -> list[dict]:
+        # What queued this push: edits (user, request ID for the change log), Sync now, branch merges and reverts.
+        return [t.as_dict() for t in obj.triggers.all()]
 
 
 class ImportProposalSerializer(NetBoxModelSerializer):

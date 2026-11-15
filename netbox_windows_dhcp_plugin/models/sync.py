@@ -3,6 +3,7 @@ Bookkeeping for pushes and imports. None of these models is branchable: they rec
 Windows servers, and must stay writable when netbox-change-control protects main.
 """
 
+from django.conf import settings
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.db import models
 from django.urls import reverse
@@ -15,6 +16,7 @@ from ..choices import (
     ProposalItemActionChoices,
     ProposalItemStatusChoices,
     ProposalStatusChoices,
+    PushTriggerSourceChoices,
     SyncKindChoices,
     SyncStatusChoices,
 )
@@ -22,6 +24,7 @@ from ..choices import (
 __all__ = (
     "ImportProposal",
     "ImportProposalItem",
+    "PushTrigger",
     "SyncRun",
     "SyncState",
 )
@@ -136,6 +139,63 @@ class SyncRun(NetBoxModel):
 
     def get_destination_color(self):
         return ImportDestinationChoices.colors.get(self.destination)
+
+
+class PushTrigger(models.Model):
+    """
+    Why a push was queued: an edit (user and request, which the change log can be filtered on), a Sync now click, or
+    a branch merge or revert. Rows wait with no sync run until a push of their server starts, which claims every
+    waiting row at once; edits made while a push is waiting to start therefore end up on that push.
+    """
+
+    windows_server = models.ForeignKey(
+        to="netbox_windows_dhcp_plugin.WindowsServer",
+        on_delete=models.CASCADE,
+        related_name="push_triggers",
+        verbose_name=_("Windows server"),
+    )
+    sync_run = models.ForeignKey(
+        to="netbox_windows_dhcp_plugin.SyncRun",
+        on_delete=models.CASCADE,
+        related_name="triggers",
+        blank=True,
+        null=True,
+        verbose_name=_("sync run"),
+    )
+    source = models.CharField(verbose_name=_("source"), max_length=10, choices=PushTriggerSourceChoices)
+    user = models.ForeignKey(
+        to=settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        related_name="+",
+        blank=True,
+        null=True,
+        verbose_name=_("user"),
+    )
+    request_id = models.UUIDField(verbose_name=_("request ID"), blank=True, null=True)
+    branch = models.CharField(verbose_name=_("branch"), max_length=255, blank=True)
+    created = models.DateTimeField(verbose_name=_("created"), auto_now_add=True)
+
+    objects = RestrictedQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("created", "pk")
+        verbose_name = _("push trigger")
+        verbose_name_plural = _("push triggers")
+
+    def __str__(self):
+        return f"{self.get_source_display()} {self.user or ''}".strip()
+
+    def get_source_color(self):
+        return PushTriggerSourceChoices.colors.get(self.source)
+
+    def as_dict(self):
+        return {
+            "source": self.source,
+            "user": self.user.username if self.user_id else None,
+            "request_id": str(self.request_id) if self.request_id else None,
+            "branch": self.branch,
+            "created": self.created.isoformat() if self.created else None,
+        }
 
 
 class ImportProposal(NetBoxModel):

@@ -12,7 +12,7 @@ from .dhcp import (
     WindowsPolicy,
 )
 from .servers import WindowsServer
-from .sync import ImportProposal, ImportProposalItem, SyncRun, SyncState
+from .sync import ImportProposal, ImportProposalItem, PushTrigger, SyncRun, SyncState
 
 __all__ = (
     "ExclusionRange",
@@ -23,6 +23,7 @@ __all__ = (
     "MacFilterLists",
     "OptionDefinition",
     "OptionValue",
+    "PushTrigger",
     "Reservation",
     "Scope",
     "Superscope",

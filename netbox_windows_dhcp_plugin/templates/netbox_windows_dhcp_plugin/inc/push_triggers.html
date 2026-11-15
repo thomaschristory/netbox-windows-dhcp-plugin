@@ -1,0 +1,34 @@
+{% load i18n %}
+{# What queued this push (#102): edits with a link to their change log entries, Sync now, branch merges and reverts. #}
+<div class="card">
+  <h2 class="card-header">{{ title }}</h2>
+  <table class="table table-hover attr-table">
+    <thead>
+      <tr>
+        <th scope="col">{% trans "Source" %}</th>
+        <th scope="col">{% trans "User" %}</th>
+        <th scope="col">{% trans "Details" %}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for trigger in triggers %}
+        <tr>
+          <td><span class="badge text-bg-{{ trigger.get_source_color }}">{{ trigger.get_source_display }}</span></td>
+          <td>{{ trigger.user.username|default:"-" }}</td>
+          <td>
+            {% if trigger.request_id %}
+              <a href="{{ changelog_url }}?request_id={{ trigger.request_id }}">{% trans "Changes" %}</a>
+            {% endif %}
+            {% if trigger.branch %}<span class="font-monospace">{{ trigger.branch }}</span>{% endif %}
+            <span class="text-muted">{{ trigger.created|date:"SHORT_DATETIME_FORMAT" }}</span>
+          </td>
+        </tr>
+      {% endfor %}
+      {% if more %}
+        <tr>
+          <td colspan="3" class="text-muted">{% blocktrans %}And {{ more }} more (all of them are in the REST API).{% endblocktrans %}</td>
+        </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>

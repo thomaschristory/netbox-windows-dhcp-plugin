@@ -669,6 +669,29 @@ class StandaloneTriggerTest(ImportTestMixin, TestCase):
             address.save()
         self.assertEqual(self.push_jobs().count(), 1)
 
+    def test_ip_description_edit_queues_no_push(self):
+        # Windows never sees an IP address's description: no push for nothing (#102).
+        address = NetBoxReservation.objects.get().ip_address
+        address.snapshot()
+        address.description = "printer"
+        with STANDALONE, self.captureOnCommitCallbacks(execute=True):
+            address.save()
+        self.assertFalse(self.push_jobs().exists())
+
+    def test_mac_edit_queues_push(self):
+        from dcim.models import MACAddress
+
+        reservation = NetBoxReservation.objects.get()
+        reservation.mac_address = MACAddress.objects.create(mac_address="aa:bb:cc:00:00:61")
+        with signals.push_suppressed():
+            reservation.save()
+        mac = MACAddress.objects.get(pk=reservation.mac_address_id)
+        mac.snapshot()
+        mac.mac_address = "aa:bb:cc:00:00:62"
+        with STANDALONE, self.captureOnCommitCallbacks(execute=True):
+            mac.save()
+        self.assertEqual(self.push_jobs().count(), 1)
+
 
 class _Changes(list):
     def select_related(self, *args):

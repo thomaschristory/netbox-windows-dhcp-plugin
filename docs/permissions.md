@@ -3,9 +3,45 @@
 Every model has the usual NetBox `view`, `add`, `change` and `delete` permissions, under the
 `netbox_windows_dhcp_plugin` app, for example `netbox_windows_dhcp_plugin.change_windowsserver` or
 `netbox_windows_dhcp_plugin.add_reservation`. The prefixes, IP ranges, IP addresses and MAC addresses that scopes and
-reservations point at keep NetBox's own permissions (`ipam.*`, `dcim.*`). Changing one of those objects changes what
-the next push writes to Windows, so `change` on them is in effect a DHCP permission for the scopes and reservations
-that use them.
+reservations point at keep NetBox's own permissions (`ipam.*`, `dcim.*`).
+
+## Editing IPAM objects that Windows uses
+
+[Editing IPAM objects used by DHCP](ipam-edits.md) covers this in full: the rule, the messages, role recipes,
+branching and the push trail. In short:
+
+Changing some fields of those objects changes what the next push writes to Windows. Such an edit is a DHCP change,
+so besides NetBox's own `change` permission on the object it needs `change` on every scope or reservation that uses
+it:
+
+| Object | Fields that reach Windows | Also needs |
+|---|---|---|
+| Prefix | the prefix (network and length) | `netbox_windows_dhcp_plugin.change_scope` on the scopes using it |
+| IP range | start and end address | `netbox_windows_dhcp_plugin.change_scope` on the scopes using it |
+| IP address | the address (not the mask) | `netbox_windows_dhcp_plugin.change_reservation` on the reservations using it |
+| MAC address | the MAC address | `netbox_windows_dhcp_plugin.change_reservation` on the reservations using it |
+
+Without it the save is refused, in the UI, bulk import and the REST API (HTTP 400) alike, with a message such as:
+
+```text
+Changing address would change reservation dhcp01/198.18.10.0/198.18.10.25 on Windows. You need the "change
+reservation" permission on it.
+```
+
+Scopes and reservations the user may not view are neither named nor counted. Object permissions count, and are checked
+against the values before and after the edit: a permission limited to one Windows server (for example the constraint
+`{"scope__server__name": "dhcp01"}` on reservations) allows the edit only for that server's reservations, and one
+limited to part of a subnet (`{"ip_address__address__net_host_contained": "198.18.10.0/25"}`) does not let an
+address move out of it. Every other
+field (status, VRF, tenant, description, tags, DNS name, assigned interface) never reaches Windows, needs no plugin
+permission, and queues no push.
+
+Custom scripts and background API requests are checked like any request, as the user who started them. Not checked:
+saves with no user behind them (`nbshell`, management commands) and imports (they write what Windows already has).
+With branching, the edit is checked when it is made in the branch, against
+the scopes and reservations the branch holds, and again when the branch is merged or reverted, as the merging or
+reverting user, against main: a merge that would change a scope or reservation that user may not change is refused
+and nothing is merged.
 
 Actions that connect to Windows need more than viewing:
 
@@ -43,6 +79,7 @@ Applying an item writes NetBox objects as the reviewing user, so the change log 
 | DHCP viewer | `view` on the plugin's models (and on prefixes, IP ranges, IP addresses and MAC addresses) |
 | DHCP operator | viewer, plus `change` on Windows servers (actions and leases) |
 | DHCP editor | operator, plus `add`, `change`, `delete` on the plugin's DHCP models, and on prefixes, IP ranges, IP addresses and MAC addresses |
+| IPAM editor (no DHCP changes) | `view` and `change` on prefixes, IP ranges, IP addresses and MAC addresses, `view` on the plugin's models; edits that would change Windows are refused (see [Editing IPAM objects used by DHCP](ipam-edits.md#recipes)) |
 | Import user (`import_user`) | `view` and `change` on Windows servers; with branching `netbox_branching.add_branch` (and `netbox_change_control.add_changerequest`) |
 
 With branching, NetBox's own branching and change control permissions govern who may merge, and so who triggers a

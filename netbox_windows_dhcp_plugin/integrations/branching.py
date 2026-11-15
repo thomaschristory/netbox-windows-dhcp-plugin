@@ -6,13 +6,14 @@ Everything that imports those plugins lives here, so the plugin keeps working wh
 
 import logging
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 from django.apps import apps
 
 log = logging.getLogger(__name__)
 
 # Bookkeeping models that must always live on main (see models/sync.py).
-NON_BRANCHABLE = {"windowsserver", "syncstate", "syncrun", "importproposal", "importproposalitem"}
+NON_BRANCHABLE = {"windowsserver", "syncstate", "syncrun", "pushtrigger", "importproposal", "importproposalitem"}
 
 
 def branching_installed():
@@ -129,7 +130,7 @@ def _affected_servers(branch):
     return ids
 
 
-def _queue(ids, user, branch):
+def _queue(ids, user, branch, source):
     from django.db import transaction
 
     from ..signals import queue_pushes
@@ -137,18 +138,81 @@ def _queue(ids, user, branch):
     if not ids:
         return
     name = branch.name
-    transaction.on_commit(lambda: queue_pushes(ids, user, branch=name), robust=True)
+    triggers = [{"source": source, "user": user, "branch": name}]
+    transaction.on_commit(lambda: queue_pushes(ids, user, branch=name, triggers=triggers), robust=True)
 
 
 def _on_merge(sender, branch, user=None, **kwargs):
+    clear_applying()
     try:
-        _queue(_affected_servers(branch), user, branch)
+        _queue(_affected_servers(branch), user, branch, "merge")
     except Exception:
         # Never break a merge that already happened; the push can be run by hand.
         log.exception("could not queue Windows DHCP pushes after merging %s", branch)
 
 
+# The branch whose merge or revert is replaying changes in this context, with its name and the user merging or
+# reverting it. netbox-branching sends no signal when a merge fails, so applying_branch() also checks that the branch
+# is still merging or reverting before trusting it.
+_applying = ContextVar("netbox_windows_dhcp_plugin_applying_branch", default=None)
+
+
+def _on_pre_apply(sender, branch, user=None, **kwargs):
+    _applying.set((branch.pk, branch.name, user))
+
+
+def clear_applying():
+    """Forget the merge or revert mark: at its end, and when a new request starts (a failed one sends no signal)."""
+    _applying.set(None)
+
+
+def applying_branch():
+    """
+    While netbox-branching merges or reverts a branch in this context (its replayed saves land on main): the branch
+    name and the merging or reverting user, else None.
+    """
+    mark = _applying.get()
+    if mark is None or not branching_installed():
+        return None
+    from netbox_branching.choices import BranchStatusChoices
+    from netbox_branching.models import Branch
+
+    pk, name, user = mark
+    busy = (BranchStatusChoices.MERGING, BranchStatusChoices.REVERTING)
+    return (name, user) if Branch.objects.filter(pk=pk, status__in=busy).exists() else None
+
+
+def applying_request_ids(instance):
+    """
+    The request IDs of every change the branch being merged (or reverted) holds for this object: unmerged changes for
+    a merge, merged ones for a revert. Empty when no merge or revert runs.
+    """
+    mark = _applying.get()
+    if mark is None or not branching_installed():
+        return set()
+    from core.models import ObjectChange, ObjectType
+    from django.db import DEFAULT_DB_ALIAS
+    from netbox_branching.choices import BranchStatusChoices
+    from netbox_branching.models import Branch
+
+    branch = Branch.objects.filter(pk=mark[0]).first()
+    if branch is None:
+        return set()
+    # Not get_unmerged_changes() / get_merged_changes(): they return nothing while the branch is merging or reverting.
+    if branch.status == BranchStatusChoices.REVERTING:
+        changes = ObjectChange.objects.using(DEFAULT_DB_ALIAS).filter(application__branch=branch)
+    else:
+        changes = ObjectChange.objects.using(branch.connection_name)
+    object_type = ObjectType.objects.get_for_model(instance)
+    return set(
+        changes.filter(changed_object_type=object_type, changed_object_id=instance.pk).values_list(
+            "request_id", flat=True
+        )
+    )
+
+
 def _on_pre_revert(sender, branch, user=None, **kwargs):
+    _on_pre_apply(sender, branch, user)
     # A revert that fails, or has nothing to revert, sends no post_revert: do not let those entries pile up.
     if len(_reverting) > 50:
         _reverting.clear()
@@ -159,18 +223,20 @@ def _on_pre_revert(sender, branch, user=None, **kwargs):
 
 
 def _on_revert(sender, branch, user=None, **kwargs):
+    clear_applying()
     try:
-        _queue(_reverting.pop(branch.pk, set()), user, branch)
+        _queue(_reverting.pop(branch.pk, set()), user, branch, "revert")
     except Exception:
         log.exception("could not queue Windows DHCP pushes after reverting %s", branch)
 
 
 def _connect_push_signals():
     try:
-        from netbox_branching.signals import post_merge, post_revert, pre_revert
+        from netbox_branching.signals import post_merge, post_revert, pre_merge, pre_revert
     except ImportError:
         log.warning("netbox-branching has no merge signals; Windows DHCP will not push after merges")
         return
+    pre_merge.connect(_on_pre_apply, dispatch_uid="netbox_windows_dhcp_plugin.guard.pre_merge")
     post_merge.connect(_on_merge, dispatch_uid="netbox_windows_dhcp_plugin.push.merge")
     pre_revert.connect(_on_pre_revert, dispatch_uid="netbox_windows_dhcp_plugin.push.pre_revert")
     post_revert.connect(_on_revert, dispatch_uid="netbox_windows_dhcp_plugin.push.revert")
@@ -448,7 +514,7 @@ def create_import_branch(windows_server, user, description):
     return branch
 
 
-def _request(user):
+def _request(user, request_id=None):
     """A stand-in request: NetBox records change log entries (and the branch its diff) only during a request."""
     import uuid
 
@@ -456,7 +522,7 @@ def _request(user):
     from django.urls import reverse
 
     request = RequestFactory().get(reverse("home"))
-    request.id = uuid.uuid4()
+    request.id = request_id or uuid.uuid4()
     request.user = user
     return request
 
@@ -471,13 +537,16 @@ def reading(branch):
 
 
 @contextmanager
-def writing(branch, user):
-    """Write into the branch with change tracking, so the changes show in its diff. Needs a real user."""
+def writing(branch, user, request_id=None):
+    """
+    Write into the branch with change tracking, so the changes show in its diff. Needs a real user. ``request_id``
+    sets the request ID the change log records (imports use ipam_guard.import_request_id()).
+    """
     from netbox.context_managers import event_tracking
     from netbox_branching.utilities import activate_branch
 
     # The branch must still be active when event_tracking exits and flushes its events, so it goes outside.
-    with activate_branch(branch), event_tracking(_request(user)):
+    with activate_branch(branch), event_tracking(_request(user, request_id)):
         yield
 
 

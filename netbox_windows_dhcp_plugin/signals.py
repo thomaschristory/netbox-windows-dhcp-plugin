@@ -37,6 +37,11 @@ def push_suppressed():
         _local.suppressed = previous
 
 
+def pushes_suppressed():
+    """Whether the current save is inside push_suppressed() (an import writing what Windows already has)."""
+    return getattr(_local, "suppressed", False)
+
+
 # -- which servers does a change affect? ---------------------------------------------------------------------------
 
 
@@ -112,14 +117,17 @@ def _data(instance):
 # -- queueing ------------------------------------------------------------------------------------------------------
 
 
-def queue_pushes(server_ids, user=None, delay=0, branch="", notify_always=True):
-    """Queue one push per Windows server (with sync enabled) of these primary keys. Returns the jobs queued."""
+def queue_pushes(server_ids, user=None, delay=0, branch="", notify_always=True, triggers=()):
+    """
+    Queue one push per Windows server (with sync enabled) of these primary keys. Returns the jobs queued. ``triggers``
+    (see jobs.enqueue_push) record why, on the push that carries the change.
+    """
     from .jobs import enqueue_push
     from .models import WindowsServer
 
     jobs = []
     for server in WindowsServer.objects.filter(pk__in=server_ids, sync_enabled=True):
-        job = enqueue_push(server, user, delay=delay, branch=branch, notify_always=notify_always)
+        job = enqueue_push(server, user, delay=delay, branch=branch, notify_always=notify_always, triggers=triggers)
         if job is not None:
             jobs.append(job)
     return jobs
@@ -137,18 +145,23 @@ def _flush():
     replayed = {
         request_id: request_applied_by_branch(request_id) for request_id in {rid for _, rid in pending.values()}
     }
-    by_user = {}
+    by_request = {}
     for server_id, (user, request_id) in pending.items():
         if replayed[request_id]:
             continue
-        by_user.setdefault(user, set()).add(server_id)
-    for user, ids in by_user.items():
-        queue_pushes(ids, user, delay=get_setting("push_debounce"), notify_always=False)
+        by_request.setdefault((user, request_id), set()).add(server_id)
+    for (user, request_id), ids in by_request.items():
+        trigger = {"source": "edit", "user": user, "request_id": request_id}
+        queue_pushes(ids, user, delay=get_setting("push_debounce"), notify_always=False, triggers=[trigger])
 
 
 def _forget_pending(**kwargs):
     # Servers left pending by a rolled-back transaction belong to an earlier request: do not push them under this one.
     _local.pending = None
+    from .integrations.branching import clear_applying
+
+    # Likewise a merge or revert mark left by a failed merge in this thread.
+    clear_applying()
 
 
 def _pending_is_live():
@@ -168,6 +181,11 @@ def _changed(sender, instance, **kwargs):
     if label not in WATCHED or getattr(_local, "suppressed", False):
         return
     by_pk = label in _LOOKUP_BY_PK
+    if by_pk and "created" in kwargs and getattr(instance, "_nbwd_push_fields", None) == ():
+        # A save (post_save passes "created", pre_delete does not) whose pre_save guard found no change to a field a
+        # push reads (a description, tags, status...): nothing for Windows. A save the guard did not see (raw) has no
+        # mark and queues as before.
+        return
     if by_pk and kwargs.get("created"):
         # No scope or reservation can point yet at a prefix, range, address or MAC that was only just created:
         # spare the lookup, which a bulk import of IP addresses would otherwise run once per address.
@@ -206,6 +224,11 @@ def _changed(sender, instance, **kwargs):
 
 
 def connect():
+    from . import ipam_guard
+
+    # The guard first: its post_save check can still refuse the save, which must happen before _changed queues a push
+    # (outside a transaction its on-commit callback would run at once).
+    ipam_guard.connect()
     post_save.connect(_changed, dispatch_uid=f"{PLUGIN}.push.save")
     # Before the delete, while the rows the object points at (and that point at it) are still there.
     pre_delete.connect(_changed, dispatch_uid=f"{PLUGIN}.push.delete")
