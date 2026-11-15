@@ -94,7 +94,7 @@ a new `SyncRun.triggers` field when the push runs.
     `pre_save.connect(check_edit, sender=<model>, dispatch_uid=f"{PLUGIN}.guard.<label>")` for the four models.
     Stores the result on `instance._nbwd_push_fields = changed_fields(instance)` before any early return except
     `raw` (Task 3 reads it).
-  - `integrations.branching.applying_branch() -> bool`: True while netbox-branching merges or reverts into main.
+  - `integrations.branching.applying_branch()`: while netbox-branching merges or reverts into main, the branch name and merging user, else None (was `-> bool` before the owner chose to check merges).
     Find how branching marks that (a contextvar or the merge job's request in `netbox_branching`); if it offers
     nothing, set a module-level `ContextVar` from the `pre_merge`/`pre_revert` signals already connected in
     `_connect_push_signals()` and reset it in `post_merge`/`post_revert` and on job start. False when branching is

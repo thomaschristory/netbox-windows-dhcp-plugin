@@ -7,6 +7,10 @@ the scope or reservation that uses the object. This module knows which fields a 
 depend on an object; the refusal itself is `check_edit`, a pre_save receiver.
 """
 
+import hmac
+import os
+import uuid
+
 from netaddr import EUI, IPNetwork
 
 PLUGIN = "netbox_windows_dhcp_plugin"
@@ -86,6 +90,38 @@ def dependents(instance):
     else:
         return []
     return [(codename, queryset) for codename, queryset in found if queryset.exists()]
+
+
+# -- the import's own changes ---------------------------------------------------------------------------------------
+#
+# An import into a branch writes what Windows already holds. When that branch is merged, its changes replay on main
+# under their original request ID (netbox-branching's iterative strategy; squash uses the last change's), and they
+# need no DHCP permission: they do not change what Windows has. The import's request IDs carry a keyed hash of
+# NetBox's SECRET_KEY, so they can be recognised without storing them and cannot be made up. An edit someone adds to
+# an import branch has its own request ID and is checked at merge like any other.
+
+_IMPORT_SALT = "netbox_windows_dhcp_plugin.import-request"
+
+
+def _tag(nonce):
+    from django.utils.crypto import salted_hmac
+
+    return salted_hmac(_IMPORT_SALT, nonce).digest()[:8]
+
+
+def import_request_id():
+    """A request ID for the change log entries an import writes into a branch."""
+    nonce = os.urandom(8)
+    return uuid.UUID(bytes=nonce + _tag(nonce))
+
+
+def is_import_request(value):
+    """Whether this request ID was made by import_request_id()."""
+    try:
+        raw = (value if isinstance(value, uuid.UUID) else uuid.UUID(str(value))).bytes
+    except (TypeError, ValueError, AttributeError):
+        return False
+    return hmac.compare_digest(raw[8:], _tag(raw[:8]))
 
 
 # The refusal names at most this many scopes or reservations, then counts the rest.
@@ -180,8 +216,14 @@ def check_edit(sender, instance, raw=False, **kwargs):
     if applying := applying_branch():
         # A merge or revert replays the branch's changes on main as their authors (iterative strategy) or as the
         # merging user (squash): check the merging or reverting user, against main's scopes and reservations, which
-        # may differ from what the branch held when the edit was made there.
+        # may differ from what the branch held when the edit was made there. An import's own changes are not checked.
+        from netbox.context import current_request
+
+        if is_import_request(getattr(current_request.get(), "id", None)):
+            return
         branch, user = applying
+        # No merging user (a job whose user was deleted): fall back to the user the replay runs as.
+        user = user or _request_user()
         instance._nbwd_branch = branch
     else:
         instance._nbwd_branch = None

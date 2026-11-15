@@ -485,7 +485,7 @@ def create_import_branch(windows_server, user, description):
     return branch
 
 
-def _request(user):
+def _request(user, request_id=None):
     """A stand-in request: NetBox records change log entries (and the branch its diff) only during a request."""
     import uuid
 
@@ -493,7 +493,7 @@ def _request(user):
     from django.urls import reverse
 
     request = RequestFactory().get(reverse("home"))
-    request.id = uuid.uuid4()
+    request.id = request_id or uuid.uuid4()
     request.user = user
     return request
 
@@ -508,13 +508,16 @@ def reading(branch):
 
 
 @contextmanager
-def writing(branch, user):
-    """Write into the branch with change tracking, so the changes show in its diff. Needs a real user."""
+def writing(branch, user, request_id=None):
+    """
+    Write into the branch with change tracking, so the changes show in its diff. Needs a real user. ``request_id``
+    sets the request ID the change log records (imports use ipam_guard.import_request_id()).
+    """
     from netbox.context_managers import event_tracking
     from netbox_branching.utilities import activate_branch
 
     # The branch must still be active when event_tracking exits and flushes its events, so it goes outside.
-    with activate_branch(branch), event_tracking(_request(user)):
+    with activate_branch(branch), event_tracking(_request(user, request_id)):
         yield
 
 

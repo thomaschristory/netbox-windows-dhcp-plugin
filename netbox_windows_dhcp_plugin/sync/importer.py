@@ -502,11 +502,13 @@ def _fill_branch(windows_server, user, branch, result, logger, on_branch, chosen
         if not branching.branch_ready(branch):
             raise branching.BranchError(f"branch {branch.name} is no longer ready: nothing was written")
 
+    from ..ipam_guard import import_request_id
     from ..signals import push_suppressed
 
     # push_suppressed: an import writes what Windows already holds, so the IPAM edit guard does not apply (and saves
-    # in a branch queue no push anyway).
-    with push_suppressed(), branching.writing(branch, user):
+    # in a branch queue no push anyway). The request ID marks these changes as the import's, so merging the branch
+    # does not check them either.
+    with push_suppressed(), branching.writing(branch, user, request_id=import_request_id()):
         writer = Writer(windows_server, user=user if chosen else None)
         for change in changes:
             try:

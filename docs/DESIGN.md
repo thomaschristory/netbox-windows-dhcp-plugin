@@ -140,7 +140,9 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   or reverting user (not each change's author, so the rule does not depend on the merge strategy), against main's
   scopes and reservations, which may include ones created after the branch: `integrations.branching.applying_branch()`
   returns the branch name and that user from a context variable set by `pre_merge`/`pre_revert`, trusted only while
-  the branch is still merging or reverting (a failed merge sends no closing signal); a refusal aborts the merge,
+  the branch is still merging or reverting (a failed merge sends no closing signal); the import's own branch changes
+  are exempt (their request IDs come from `ipam_guard.import_request_id()`, a keyed hash of `SECRET_KEY`, and
+  replays keep the original request ID); a refusal aborts the merge,
   which netbox-branching rolls back and leaves the branch ready (owner's decision after the adversarial review of
   #112). It is NetBox's documented plugin mechanism (`docs/plugins/development/exceptions.md`);
   `CUSTOM_VALIDATORS` belong to the admin's configuration.

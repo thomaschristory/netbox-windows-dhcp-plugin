@@ -428,3 +428,12 @@ class MigrationTest(TestCase):
 
         migration = importlib.import_module("netbox_windows_dhcp_plugin.migrations.0004_push_trigger")
         self.assertIs(getattr(migration, "fake_on_branch", False), True)
+
+
+class ImportRequestIdTest(TestCase):
+    def test_import_request_ids_are_recognised(self):
+        self.assertTrue(ipam_guard.is_import_request(ipam_guard.import_request_id()))
+
+    def test_other_request_ids_are_not(self):
+        for value in (uuid.uuid4(), None, "not-a-uuid", str(uuid.uuid4())):
+            self.assertFalse(ipam_guard.is_import_request(value))

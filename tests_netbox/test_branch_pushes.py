@@ -254,6 +254,26 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
         self.branch.refresh_from_db()
         self.assertEqual(self.branch.status, BranchStatusChoices.READY)
 
+    def test_refused_merge_leaves_nothing_applied(self):
+        from netbox_branching.models import AppliedChange
+        from utilities.exceptions import AbortRequest
+
+        self._edit_in_branch(self.editor)
+        with self.assertRaises(AbortRequest):
+            self._merge(self.ipam_only)
+        self.assertFalse(AppliedChange.objects.filter(branch=self.branch).exists())
+
+    def test_squash_merge_checks_the_merging_user(self):
+        from utilities.exceptions import AbortRequest
+
+        before = self._address()
+        self._edit_in_branch(self.editor)
+        self.branch.merge_strategy = "squash"
+        self.branch.save(update_fields=["merge_strategy"])
+        with self.assertRaises(AbortRequest):
+            self._merge(self.ipam_only)
+        self.assertEqual(self._address(), before)
+
     def test_merge_by_a_user_with_the_permission(self):
         # The editor lost the permission since: the merging user's is what counts at merge time.
         address = self._edit_in_branch(self.editor)
@@ -304,6 +324,8 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
         with self.assertRaises(AbortRequest), mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
             self.branch.revert(user=self.ipam_only)
         self.assertEqual(self._address(), address)
+        self.branch.refresh_from_db()
+        self.assertEqual(self.branch.status, "merged")
 
 
 class ApplyingBranchMarkTest(TestCase):
