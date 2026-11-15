@@ -5,7 +5,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Security fixes backported from 0.2, for 0.1.4. 0.1.x stays on netbox-plugin-dhcp and gets fixes only.
+## [0.1.4] - 2026-11-15
+
+A security release for the 0.1.x line, with fixes backported from 0.2. 0.3.0 is the current line; 0.1.x stays on
+netbox-plugin-dhcp and gets fixes only.
 
 ### Security
 
