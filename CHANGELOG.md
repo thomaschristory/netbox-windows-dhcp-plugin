@@ -5,6 +5,35 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- `allowed_hosts`: an address pattern such as `10.20.*.*` also matched DNS names like `10.20.evil.example`. Address
+  patterns (four parts of digits and wildcards, or anything with a `:`) now match IP addresses only, and name
+  patterns match names only. Check your profiles: a bare `*` no longer covers IPv6 addresses, and `*.*.*.*` is read
+  as an IPv4 pattern, so it no longer matches four-label names. A shorter pattern of digits and wildcards that
+  holds a number (`10.*`, `192.168.*`) is read as an address pattern too and matches nothing: an IPv4 pattern needs
+  all four parts (`10.*.*.*`).
+- Hosts written as numbers that a resolver reads as an IPv4 address (`2130706433`, `0x7f.1`, `127.1`, or any name
+  whose last label is a number) are refused as `host` and `computer_name`, on save and before every connection. A
+  Windows server already saved with such a host stops connecting until the host is corrected.
+- A push refuses to create a failover relationship whose partner is outside the `allowed_hosts` of the primary
+  server's credential profile: creating it makes the primary contact the partner as the plugin's account. If the
+  profile lists only the primary, add the partner (its `computer_name` when set, else its `host`). Existing
+  relationships, their updates and deletes, and profiles without `allowed_hosts` are not affected.
+- WinRM no longer follows HTTP redirects, so the logon only goes to the host that was checked. A redirect is now
+  an error.
+- SSH: when the profile's `password` is the passphrase of an encrypted private key and the server refuses the key,
+  the passphrase is no longer offered to the server as an account password. An encrypted key whose passphrase is
+  also the account password loses that fallback.
+- An inline credential set to `None` (for example `os.environ.get()` of a missing variable) was sent as the text
+  `None`: a wrong password on every job, or a guessable failover secret. It is now a configuration error naming the
+  profile and the key. This applies to the keys a job uses: `username` and `password`, and `secret` when a failover
+  relationship reads it. A key that is not used and set to `None` reads as not set.
+- An unexpected error while applying an import proposal item no longer sends change events (event rules, webhooks)
+  for objects that were rolled back. This completes the fix for GHSA-5x5m-vqw4-wq85.
+- Hardening: the output read from a server is bounded (256 MiB per command, 64 KiB of error text in messages), and
+  the transport settings keep passwords and private keys out of their Python `repr`.
+
 ### Changed
 
 - New migration `0002`: run `manage.py migrate` when upgrading. It turns the sync key columns into text and adds

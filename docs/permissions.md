@@ -3,7 +3,9 @@
 Every model has the usual NetBox `view`, `add`, `change` and `delete` permissions, under the
 `netbox_windows_dhcp_plugin` app, for example `netbox_windows_dhcp_plugin.change_windowsserver` or
 `netbox_windows_dhcp_plugin.add_reservation`. The prefixes, IP ranges, IP addresses and MAC addresses that scopes and
-reservations point at keep NetBox's own permissions (`ipam.*`, `dcim.*`).
+reservations point at keep NetBox's own permissions (`ipam.*`, `dcim.*`). Changing one of those objects changes what
+the next push writes to Windows, so `change` on them is in effect a DHCP permission for the scopes and reservations
+that use them.
 
 Actions that connect to Windows need more than viewing:
 

@@ -113,6 +113,11 @@ def get_credentials(profile_name, profiles=None, environ=None, needed=("username
 # One DNS label. Underscores appear in some Windows host names, so they are accepted.
 _LABEL = r"[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?"
 _HOSTNAME = re.compile(rf"{_LABEL}(?:\.{_LABEL})*")
+# A last label that is a number ("127.1", "2130706433", "0x7f.1", "010.1.1.1"): the resolver reads such a name as
+# an IPv4 address written the old way, so it would connect to an address the allowed_hosts check never saw as one.
+_NUMERIC_LABEL = re.compile(r"[0-9]+|0x[0-9a-f]*")
+# One part of an IPv4 pattern in allowed_hosts: digits and wildcards only.
+_IPV4_PATTERN_PART = re.compile(r"[0-9*?]+")
 
 
 def normalise_host(host):
@@ -129,9 +134,30 @@ def normalise_host(host):
             return str(ipaddress.ip_address(host))
         except ValueError:
             pass
-    if len(host) <= 253 and _HOSTNAME.fullmatch(host):
+    if len(host) <= 253 and _HOSTNAME.fullmatch(host) and not _NUMERIC_LABEL.fullmatch(host.rsplit(".", 1)[-1]):
         return host
     return None
+
+
+def _is_ip(value):
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_ip_pattern(pattern):
+    """Whether an allowed_hosts pattern describes IP addresses ("10.20.*.*", "2001:db8::*") rather than names."""
+    if ":" in pattern:
+        return True
+    parts = pattern.rstrip(".").split(".")
+    if not all(_IPV4_PATTERN_PART.fullmatch(part) for part in parts):
+        return False
+    # A shorter pattern holding a number ("10.*", "192.168.*") was meant as an address range too. It matches no
+    # address (an address has four parts), and classing it here stops it from allowing names such as "10.com".
+    # Wildcards alone ("*", "*.*.*") stay name patterns.
+    return len(parts) == 4 or any(part.isdigit() for part in parts)
 
 
 def _pattern(pattern):
@@ -152,7 +178,12 @@ def host_allowed(profile_name, profile, host):
         # A bare string would otherwise be matched one character at a time.
         raise CredentialError(f"credential profile {profile_name!r}: allowed_hosts must be a list")
     host = normalise_host(host)
-    return host is not None and any(_pattern(pattern).fullmatch(host) for pattern in patterns)
+    if host is None:
+        return False
+    # An address pattern only matches addresses and a name pattern only matches names: otherwise "10.20.*.*" would
+    # also allow the DNS name "10.20.evil.example", and "*" would allow every IPv6 address.
+    is_ip = _is_ip(host)
+    return any(_is_ip_pattern(pattern) == is_ip and _pattern(pattern).fullmatch(host) for pattern in patterns)
 
 
 def check_host_allowed(profile_name, *hosts, profiles=None):

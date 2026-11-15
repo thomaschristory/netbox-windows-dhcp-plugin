@@ -67,6 +67,9 @@ reservation page follows the same lab: [Reservations](reservations.md).
   `dhcp01.example.com` and `dhcp02.example.com`; in a domain, DNS does it.
 - The scopes to share exist on the primary and are pushed: here `198.18.60.0/24` with the reservation `printer01`.
   The partner does not need them; Windows copies them there when the relationship is created.
+- The primary server's credential profile covers the partner in its `allowed_hosts`, when it has the list: creating
+  the relationship makes the primary contact the partner as that account, and the push refuses to create it
+  otherwise.
 - For message authentication, a credential profile holds the shared secret and its `allowed_hosts` cover both
   partners (here `lab-failover`, see [Shared secret](#shared-secret)).
 
@@ -238,7 +241,9 @@ PLUGINS_CONFIG = {
 
 The secret goes to both servers, so `allowed_hosts` must cover both partners; it is checked when the relationship is
 saved and again whenever a push sends the secret. It is read from the profile only when a push needs it, goes
-straight to the cmdlet, and is never stored or logged. NetBox only records whether authentication is on, so a secret rotated on
+straight to the cmdlet, and is never stored or logged by the plugin. It travels inside the script sent to the DHCP
+server, so PowerShell script block logging, module logging or transcription there can record it: restrict who may
+read those logs. NetBox only records whether authentication is on, so a secret rotated on
 Windows is not noticed. Without a profile, NetBox does not manage authentication at all: an imported relationship
 keeps whatever Windows has (an import cannot read the secret), and pushes leave it alone. Set a profile to turn
 authentication on or to send a new secret.

@@ -40,7 +40,7 @@ from . import fixtures
 from .fixtures import PluginAPIMixin, windows_server
 from .test_import import ImportTestMixin
 from .test_remaining import seed_more
-from .test_review import ITEM, ITEMS_APPLY, SCOPE_PERMISSIONS, make_proposal
+from .test_review import ITEM, ITEMS_APPLY, SCOPE_PERMISSIONS, created_prefixes, make_proposal
 from .test_v6 import seed_v6
 
 needs_branching = skipUnless(apps.is_installed("netbox_branching"), "netbox-branching is not installed")
@@ -64,6 +64,59 @@ def import_and_apply(server, fake):
 
 def errors(proposal):
     return dict(proposal.items.exclude(error="").values_list("key", "error"))
+
+
+# -- F39 ---------------------------------------------------------------------------------------------------------
+
+
+class F39EventQueueTest(TestCase):
+    """The event queue is put back for any error, not only the ones the import expects."""
+
+    def test_an_unexpected_error_restores_the_queue(self):
+        from netbox.context import events_queue
+
+        token = events_queue.set({"kept": {"snapshots": {"postchange": {"a": 1}}}})
+        try:
+            with self.assertRaises(RuntimeError), importer._one_change():
+                events_queue.get()["rolled-back"] = {"snapshots": {}}
+                events_queue.get()["kept"]["snapshots"]["postchange"] = {"a": 2}
+                raise RuntimeError("deadlock detected")
+            self.assertEqual(list(events_queue.get()), ["kept"])
+            self.assertEqual(events_queue.get()["kept"]["snapshots"]["postchange"], {"a": 1})
+        finally:
+            events_queue.reset(token)
+
+    def test_success_keeps_what_was_queued(self):
+        from netbox.context import events_queue
+
+        token = events_queue.set({})
+        try:
+            with importer._one_change():
+                events_queue.get()["new"] = {"snapshots": {}}
+            self.assertEqual(list(events_queue.get()), ["new"])
+        finally:
+            events_queue.reset(token)
+
+
+def _create_a_prefix_then_crash(self, change):
+    Prefix(prefix="203.0.113.0/24").save()
+    raise RuntimeError("something nobody expected")
+
+
+class F39ViewTest(NetBoxTestCase):
+    def test_a_crashing_apply_sends_no_event_for_what_was_rolled_back(self):
+        server, proposal = make_proposal()
+        item = proposal.items.get(kind="scope")
+        self.add_permissions(ITEM, *SCOPE_PERMISSIONS)
+        self.client.raise_request_exception = False
+        with (
+            mock.patch("netbox.context_managers.flush_events") as flush,
+            mock.patch.object(Writer, "apply", _create_a_prefix_then_crash),
+        ):
+            response = self.client.post(f"/plugins/windows-dhcp/importproposalitems/{item.pk}/apply/")
+        self.assertEqual(response.status_code, 500)
+        self.assertFalse(Prefix.objects.exists())
+        self.assertEqual(created_prefixes(flush), [])
 
 
 # -- F40, F41 ----------------------------------------------------------------------------------------------------

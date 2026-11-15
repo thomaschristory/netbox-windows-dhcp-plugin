@@ -97,6 +97,11 @@ Restart the worker as well as the web service: the worker runs every job, and it
 Install the new version, run `migrate`, and restart NetBox and the worker. Read the [changelog](changelog.md) first:
 while the plugin is below 1.0, a minor version can change behaviour.
 
+The first version after 0.2.0 brings migration `0002` (text columns for sync keys and an index on sync runs). It
+changes no data and needs nothing but `migrate`. That version also reads `allowed_hosts` more strictly: an address
+pattern only matches IP addresses and a name pattern only matches names, so check your credential profiles (see
+[Configuration](configuration.md#allowed_hosts)).
+
 ### Upgrading from 0.1.x
 
 0.1.x kept scopes, reservations and options in netbox-plugin-dhcp and only added Windows settings next to them. From

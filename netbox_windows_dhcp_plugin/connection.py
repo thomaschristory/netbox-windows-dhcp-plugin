@@ -1,7 +1,14 @@
 """Build a Windows DHCP client for a WindowsServer, resolving its credential profile."""
 
 from .choices import TransportChoices, WinRMAuthChoices
-from .conf import CredentialError, check_host_allowed, get_credentials, get_setting, insecure_credssp_allowed
+from .conf import (
+    CredentialError,
+    check_host_allowed,
+    get_credentials,
+    get_setting,
+    host_allowed,
+    insecure_credssp_allowed,
+)
 from .windows import DhcpClient, limit
 
 
@@ -74,6 +81,37 @@ def build_client(server, runner=None):
     runner = runner if runner is not None else build_runner(server)
     # The limit is never reached today: a job sends its commands one after another.
     return DhcpClient(limit(runner, get_setting("max_concurrency")), computer_name=server.computer_name)
+
+
+def failover_partner_check(server):
+    """
+    A function for the push writer that refuses to create a failover relationship (by name) whose partner is outside
+    the allowed_hosts of the server's own credential profile. Add-DhcpServerv4Failover makes the server talk to the
+    partner as the calling account (with CredSSP, holding its password), so the partner is one more host the
+    profile's credentials reach, like computer_name. Only creation names a partner chosen in NetBox: changes and
+    deletes act on what Windows already has, and stay possible.
+    """
+
+    def check(name, partner):
+        # `partner` is the host the writer is about to send (the partner's DHCP host, not a management host in
+        # front of it). It is checked as given, not looked up again by name: the relationship may have been
+        # renamed, repointed or deleted in NetBox since the push planned this change.
+        profile = get_setting("credentials").get(server.credential_profile)
+        if profile is None:
+            # No profile: the connection itself is refused (or is a test's fake), there is nothing to protect.
+            return
+        try:
+            allowed = host_allowed(server.credential_profile, profile, partner)
+        except CredentialError as exc:
+            raise ValueError(f"failover {name}: {exc}") from None
+        if not allowed:
+            # The push reports ValueError as a failed change, with this message.
+            raise ValueError(
+                f"failover {name}: credential profile {server.credential_profile!r} may not be used with the "
+                f"partner host {partner!r}; add it to the profile's allowed_hosts"
+            )
+
+    return check
 
 
 def failover_secret_lookup(server):

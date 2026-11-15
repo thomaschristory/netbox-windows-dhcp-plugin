@@ -254,6 +254,9 @@ ordinary planned updates or deletes. The push refuses the change, goes on with t
   delete it in NetBox and push, then create it again (see [Failover](failover.md#how-it-syncs)).
 - Policy conditions and contents Windows refuses: a wildcard anywhere but at the start or the end of a condition
   value, and IP ranges (DHCP 20135) or ordinary option values (DHCP 20136) on a policy with an FQDN condition.
+- Creating a failover relationship whose partner is outside the `allowed_hosts` of the primary server's
+  credential profile: add the partner to that profile (see [Configuration](configuration.md#allowed_hosts)).
+- Creating an IPv4 scope whose IP range is not inside the scope's prefix: nothing is sent to Windows.
 - Turning failover message authentication on with a profile whose `allowed_hosts` does not cover both partners.
   Without a shared secret profile, a push leaves authentication as Windows has it (on or off).
 - Deleting a scope with active leases: Windows refuses it (error DHCP 20007), and the plugin never forces it. Its

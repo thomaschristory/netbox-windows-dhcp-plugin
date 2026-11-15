@@ -22,7 +22,7 @@ from __future__ import annotations
 import contextlib
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .runner import MAX_OUTPUT, ExecResult, RunnerError, execute
@@ -45,7 +45,7 @@ _MIN_TOTAL_TIMEOUT = 600
 class WinRMConfig:
     host: str
     username: str
-    password: str
+    password: str = field(repr=False)  # kept out of repr: error reporting tools print local variables
     port: int | None = None  # default 5986 with HTTPS, 5985 without
     https: bool = True
     cert_validation: bool = True  # False skips TLS certificate checks (lab use only)
@@ -74,6 +74,23 @@ def kerberos_user(username: str, realm: str = "") -> str:
     u = username.split("\\", 1)[1] if "\\" in username else username
     u = u.split("@", 1)[0]
     return f"{u}@{realm.upper()}" if realm else u
+
+
+def _forbid_redirects(wsman: Any) -> None:
+    """Make an HTTP redirect an error instead of following it.
+
+    The allowed_hosts check approved one host. The HTTP library would follow a redirect and answer the
+    authentication challenge of whatever host it points at; WinRM never redirects, so refusing costs nothing.
+    pypsrp builds its HTTP session on first use and offers no option for this, so build it now and set the limit.
+    """
+    transport = getattr(wsman, "transport", None)
+    build = getattr(transport, "_build_session", None)
+    if build is None:
+        # A pypsrp release that changed its internals: stop rather than run without the guard.
+        raise RunnerError("winrm: this pypsrp version does not let the plugin forbid HTTP redirects")
+    session = build()
+    session.max_redirects = 0
+    transport.session = session
 
 
 class WinRMRunner:
@@ -141,20 +158,22 @@ class WinRMRunner:
                 raise RunnerError("winrm: CredSSP needs the requests-credssp package (pypsrp[credssp])") from e
 
         wsman = WSMan(**self.wsman_kwargs())
-        with wsman, WinRS(wsman) as shell:
-            proc = Process(shell, argv[0], argv[1:])
-            proc.begin_invoke()
-            data = stdin.encode("ascii")
-            # Stay well below the default 150 KiB WS-Man envelope size per Send.
-            chunks = [data[i : i + _STDIN_CHUNK] for i in range(0, len(data), _STDIN_CHUNK)] or [b""]
-            for i, chunk in enumerate(chunks):
-                proc.send(chunk, end=i == len(chunks) - 1)
-            self._wait(proc, CommandState.DONE, SignalCode.TERMINATE)
-            # Best-effort cleanup; the shell is deleted next anyway.
-            with contextlib.suppress(Exception):
-                proc.signal(SignalCode.TERMINATE)
-            rc = -1 if proc.rc is None else int(proc.rc)
-            return ExecResult(stdout=proc.stdout, stderr=proc.stderr, exit_code=rc)
+        with wsman:
+            _forbid_redirects(wsman)
+            with WinRS(wsman) as shell:
+                proc = Process(shell, argv[0], argv[1:])
+                proc.begin_invoke()
+                data = stdin.encode("ascii")
+                # Stay well below the default 150 KiB WS-Man envelope size per Send.
+                chunks = [data[i : i + _STDIN_CHUNK] for i in range(0, len(data), _STDIN_CHUNK)] or [b""]
+                for i, chunk in enumerate(chunks):
+                    proc.send(chunk, end=i == len(chunks) - 1)
+                self._wait(proc, CommandState.DONE, SignalCode.TERMINATE)
+                # Best-effort cleanup; the shell is deleted next anyway.
+                with contextlib.suppress(Exception):
+                    proc.signal(SignalCode.TERMINATE)
+                rc = -1 if proc.rc is None else int(proc.rc)
+                return ExecResult(stdout=proc.stdout, stderr=proc.stderr, exit_code=rc)
 
     def _wait(self, proc: Any, done: Any, terminate: Any) -> None:
         """Collect output until the command ends, like pypsrp's ``end_invoke`` but with an end.

@@ -12,7 +12,8 @@ redirect clients. These are the guarantees it gives, and what is left to you.
   never includes them, so a traceback cannot print them.
 - Errors name the cmdlet and the PowerShell message, nothing more.
 - The failover shared secret is read when a push needs it and goes straight to the cmdlet; NetBox records only
-  whether authentication is on.
+  whether authentication is on. It travels inside the script the plugin sends, so PowerShell script block logging,
+  module logging or transcription on the DHCP server can record it: restrict who may read those logs.
 
 Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` readable only by the NetBox service.
 
@@ -22,13 +23,22 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
   saved and again before every connection, for `host` and `computer_name`; for a failover secret, against both
   partners when the relationship is saved and whenever a push sends the secret. Without it, a user who may edit a Windows server could point it at their own machine and receive the
   password; NetBox warns at startup about such profiles. See [Configuration](configuration.md#allowed_hosts).
+- An address pattern in `allowed_hosts` matches IP addresses only and a name pattern matches names only, so
+  `10.20.*.*` cannot be satisfied by a DNS name.
+- A failover partner is one more host the primary server's credentials reach: creating a relationship makes the
+  primary contact the partner as the plugin's account. A push refuses to create one whose partner the primary's
+  credential profile does not cover.
 - `host` and `computer_name` must be plain host names or IP addresses, so the check and the transport always agree on
-  the host.
+  the host. Names a resolver reads as numeric IPv4 spellings (`2130706433`, `127.1`) are refused.
+- An SSH host key pinned on a Windows server is only as trustworthy as the people who may edit that server.
 
 ## Transport
 
 - **WinRM** uses HTTPS with certificate verification by default. Over HTTP, NTLM, Kerberos and CredSSP still encrypt
-  every message. Turning verification off is possible for labs; the Windows server page shows it.
+  every message. Turning verification off is possible for labs; the Windows server page shows it. HTTP redirects
+  are refused, so the logon only goes to the host that was checked. A proxy set in the worker's environment
+  (`HTTPS_PROXY`, `HTTP_PROXY`) still applies to WinRM: set `NO_PROXY` for the DHCP servers unless the proxy is
+  meant to carry it.
 - **CredSSP** hands the account's password to the DHCP server, which can then act as that account towards other
   servers: that is what failover needs. Use it only for servers that are part of a failover pair, with an account
   that can do nothing but manage DHCP. Because the password goes to whoever answers, the plugin only allows CredSSP
@@ -37,7 +47,8 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
   answers at that name. A credential profile can set `allow_insecure_credssp` to lift this in a lab.
 - **Basic** authentication sends the password itself, so the plugin only allows it over HTTPS with verification on.
 - **SSH** always checks the host key, from the pinned key on the Windows server or the worker's `known_hosts`; an
-  unknown or changed key fails the connection. There is no way to turn this off.
+  unknown or changed key fails the connection. There is no way to turn this off. The passphrase of an encrypted
+  private key is never offered to the server as a password.
 - A new WinRM connection is made per command, as the terraform provider the plugin is ported from does: NTLM
   sessions shared between concurrent calls proved unreliable.
 

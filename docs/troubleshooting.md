@@ -10,7 +10,11 @@ error names the step, the cmdlet and the PowerShell message.
 | `credential profile 'x' is not defined in PLUGINS_CONFIG` | The Windows server names a profile that does not exist, in the worker's configuration at least. Check the spelling, and that the worker reads the same configuration |
 | `credential profile 'x': environment variable X is not set` | Set it for the worker as well as the web service, and restart them |
 | `credential profile 'x': cannot read /path: ...` | The file is missing or not readable by the worker's user |
-| `credential profile 'x' may not be used with host 'y'` | `allowed_hosts` does not cover the host (or `computer_name`). Fix the host or extend the list |
+| `credential profile 'x': password is set to None (is an environment variable missing?)` | An inline value is `None`, usually `os.environ.get()` of a variable that is not set. Use `password_env` (or `_file`), and set the variable for the worker |
+| `credential profile 'x' may not be used with host 'y'` | `allowed_hosts` does not cover the host (or `computer_name`). Fix the host or extend the list. An address pattern (`10.20.*.*`) only matches IP addresses and needs all four parts (`10.*` matches nothing), and a name pattern only matches names, see [Configuration](configuration.md#allowed_hosts) |
+| `failover x: credential profile 'y' may not be used with the partner host 'z'` | A push would create a failover relationship whose partner the primary server's profile does not cover. Add the partner to that profile's `allowed_hosts` |
+| `... is not a valid host name or IP address` | The host has a port, a user name, a path or spaces, or is a number a resolver would read as an IPv4 address (`2130706433`, `127.1`). Use a plain host name or IP address |
+| `A connection test for x is already queued (job #N)` | A test for that server has not started yet, so no second one is queued. If it never starts, check that `netbox-worker` runs, or delete that job under **Operations > Jobs**; it stops blocking new tests after 15 minutes |
 | `Basic authentication needs HTTPS with certificate verification` | Use NTLM or Kerberos, or HTTPS with verification |
 | `winrm: host, username and password are required` | The profile has no username or password |
 | `winrm: kerberos_realm is required with kerberos auth` | Set **Kerberos realm** on the Windows server (the form refuses Kerberos without one) |
@@ -23,9 +27,12 @@ error names the step, the cmdlet and the PowerShell message.
 | `winrm: ...` with `401`, `Unauthorized` or `credentials were rejected` | Wrong user name or password, or the account may not log in remotely: add it to **Remote Management Users** |
 | `winrm: ...` with `certificate verify failed` | The worker does not trust the server's certificate. Set `REQUESTS_CA_BUNDLE`, or check that `host` matches the certificate name |
 | `winrm: ...` with `Connection refused` or a timeout | No listener on that port, or a firewall. Check with `Test-WSMan` from another machine and `winrm enumerate winrm/config/listener` on the server |
+| `winrm: PowerShell did not finish within N s` | A command kept the connection alive without finishing for ten times `command_timeout` (at least 10 minutes). Check the DHCP service on the server; raise `command_timeout` only if the server is just slow |
+| `winrm: ...` with `Exceeded 0 redirects` | The WinRM endpoint answered with an HTTP redirect, which the plugin never follows. Point **Host** and **Port** at the real listener |
+| `PowerShell sent more than 256 MiB of output` | One command returned more than the plugin accepts. Please open an issue with the kind of object and how many the server holds |
 | `ssh: host ... is not in ...known_hosts; add it` | Paste the host key into **SSH host key**, or add it to the worker's `known_hosts` |
 | `ssh: host key mismatch ...` | The server's key changed, or another machine answers on that address. Check before updating the pinned key |
-| `ssh: authentication failed: ...` | Wrong user name, password or key, or the key is not authorised on the server |
+| `ssh: authentication failed: ...` | Wrong user name, password or key, or the key is not authorised on the server. The passphrase of an encrypted key is not tried as the account's password |
 | `ssh: parsing private_key: ...` | The key cannot be read: it must be an Ed25519, ECDSA or RSA key in PEM or OpenSSH format, and an encrypted key needs its passphrase as the profile's `password` |
 | `ssh: timed out waiting for the exit status` | The command stayed silent longer than `command_timeout`; raise it for very large servers |
 | `The DhcpServer PowerShell module is not available on this host. ...` | The DHCP Server role or its management tools are missing: `Install-WindowsFeature RSAT-DHCP` |

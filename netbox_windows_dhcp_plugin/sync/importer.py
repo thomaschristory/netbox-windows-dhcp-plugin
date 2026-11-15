@@ -124,6 +124,9 @@ def _one_change():
     """
     One change in its own transaction. If it fails, the change log events it queued are dropped too: the block that
     tracks events sends them when it ends, and event rules and webhooks must not hear of objects rolled back.
+
+    The queue is put back whatever the error is, not only for the errors callers expect: an unexpected one in a web
+    request becomes an error page, after which NetBox still sends what is queued (GHSA-5x5m-vqw4-wq85).
     """
     from netbox.context import events_queue
 
@@ -135,7 +138,7 @@ def _one_change():
             event["snapshots"] = dict(event["snapshots"])
     try:
         yield
-    except APPLY_ERRORS:
+    except BaseException:
         events_queue.set(queued)
         raise
 
