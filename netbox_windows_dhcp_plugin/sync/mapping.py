@@ -196,10 +196,14 @@ class Writer:
 
     def option(self, key, fields):
         """The IPv4 OptionValue for a record, or the extra copy a duplicate's ``<key>#<pk>`` key names."""
+        return self._option_and_target(key, fields)[0]
+
+    def _option_and_target(self, key, fields):
+        """``option()`` together with where the value lives, so creating it does not look its parent up again."""
         vendor, user, policy = fields["vendor_class"], fields["user_class"], fields.get("policy", "")
         base = windows_state.option_key(fields["parent"], fields["option_id"], vendor, user, policy)
         target = self._target(fields["parent"], required=False)
-        return self._find_option(key, base, 4, target, fields, vendor, user, policy)
+        return self._find_option(key, base, 4, target, fields, vendor, user, policy), target
 
     # -- core IPAM objects -------------------------------------------------------------------------------------------
 
@@ -388,23 +392,26 @@ class Writer:
             return self._save(Reservation(scope=scope, ip_address=address, **values))
         return self._update(obj, **values)
 
-    def _policy(self, fields):
-        """The policy an option value is for, at the level of its parent (server or scope)."""
+    def _policy(self, fields, scope):
+        """
+        The policy an option value is for, at the level of its parent: ``scope`` is the scope of that parent, None
+        for a server-level value.
+        """
         name = fields.get("policy", "")
         if not name:
             return None
-        scope_id = fields["parent"].split("/", 1)[0] if fields["parent"] != "server" else ""
-        return self.windows_policy(scope_id, name, required=True)
+        return self._policy_in(scope, name, required=True)
 
     def _apply_option(self, change):
         fields = change.after or change.before
-        obj = self.option(change.key, fields)
+        obj, target = self._option_and_target(change.key, fields)
         if change.action == DELETE:
             return self._delete(obj)
         value = list(fields["value"])
         if obj is not None:
             return self._update(obj, value=value)
-        scope, reservation = self._target(fields["parent"])
+        # A parent that is not in NetBox raises here, saying which object to apply first.
+        scope, reservation = target if target is not None else self._target(fields["parent"])
         vendor = fields["vendor_class"]
         # A value of a code Windows does not define could not be written back: the definition comes first.
         if vendor or fields["option_id"] not in STANDARD_V4:
@@ -418,7 +425,7 @@ class Writer:
                 code=fields["option_id"],
                 vendor_class=self.windows_class("vendor", vendor) if vendor else None,
                 user_class=self.windows_class("user", fields["user_class"]) if fields["user_class"] else None,
-                policy=self._policy(fields),
+                policy=self._policy(fields, scope),
                 value=value,
             )
         )
@@ -663,10 +670,14 @@ class Writer:
 
     def option6(self, key, fields):
         """The DHCPv6 OptionValue for a record, or the extra copy a duplicate's ``<key>#<pk>`` key names."""
+        return self._option6_and_target(key, fields)[0]
+
+    def _option6_and_target(self, key, fields):
+        """As ``_option_and_target``, for a DHCPv6 option value."""
         user = fields["user_class"]
         base = windows_state.option6_key(fields["parent"], fields["option_id"], user)
         target = self._target6(fields["parent"], required=False)
-        return self._find_option(key, base, 6, target, fields, "", user, fields.get("policy", ""))
+        return self._find_option(key, base, 6, target, fields, "", user, fields.get("policy", "")), target
 
     def _apply_class6(self, change):
         fields = change.after or change.before
@@ -725,7 +736,7 @@ class Writer:
 
     def _apply_option6(self, change):
         fields = change.after or change.before
-        obj = self.option6(change.key, fields)
+        obj, target = self._option6_and_target(change.key, fields)
         if change.action == DELETE:
             return self._delete(obj)
         value = list(fields["value"])
@@ -734,7 +745,7 @@ class Writer:
         if fields["option_id"] not in STANDARD_V6:
             # DHCPv6 option definitions are not synced: only standard codes have a known meaning on both sides.
             raise ApplyError(f"option {fields['option_id']} has no standard DHCPv6 definition")
-        scope, reservation = self._target6(fields["parent"])
+        scope, reservation = target if target is not None else self._target6(fields["parent"])
         return self._save(
             OptionValue(
                 server=self.server,

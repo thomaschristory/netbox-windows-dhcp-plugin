@@ -2,20 +2,22 @@
 
 import uuid
 from datetime import timedelta
+from types import SimpleNamespace
 from unittest import mock
 
-from core.choices import JobNotificationChoices, JobStatusChoices
+from core.choices import JobNotificationChoices, JobStatusChoices, ObjectChangeActionChoices
 from core.exceptions import JobFailed
-from core.models import Job
+from core.models import Job, ObjectChange
 from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
-from extras.models import Notification
+from extras.models import Notification, Tag
 
-from netbox_windows_dhcp_plugin import jobs
+from netbox_windows_dhcp_plugin import jobs, signals
 from netbox_windows_dhcp_plugin.choices import ImportDestinationChoices, SyncKindChoices, SyncStatusChoices
+from netbox_windows_dhcp_plugin.integrations import branching
 from netbox_windows_dhcp_plugin.jobs import (
     _LOCK_CLASS,
     PUSH_TIMEOUT,
@@ -26,11 +28,11 @@ from netbox_windows_dhcp_plugin.jobs import (
     due_servers,
     enqueue_import,
 )
-from netbox_windows_dhcp_plugin.models import Reservation, SyncRun
+from netbox_windows_dhcp_plugin.models import Reservation, Scope, SyncRun
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
-from .fixtures import windows_server
+from .fixtures import ip_address, windows_server
 from .test_import import ImportTestMixin
 from .test_jobs import CREDENTIALS
 from .test_push import PushTestMixin
@@ -44,6 +46,69 @@ def _job(server, job_class, **kwargs):
     return Job.objects.create(
         object=server, name=job_class.name, status=JobStatusChoices.STATUS_RUNNING, job_id=uuid.uuid4(), **kwargs
     )
+
+
+class F20AffectedServersTest(ImportTestMixin, TestCase):
+    """The merge receivers read only the changes a push cares about, and stop once every server is found."""
+
+    def setUp(self):
+        super().setUp()
+        self.apply_all()
+        self.request_id = uuid.uuid4()
+        self.user = get_user_model().objects.create_user(username="audit-g5-changes")
+
+    def _change(self, instance, action=ObjectChangeActionChoices.ACTION_UPDATE):
+        instance.snapshot()
+        change = instance.to_objectchange(action)
+        change.request_id = self.request_id
+        change.user = self.user
+        change.save()
+        return change
+
+    def _branch(self):
+        changes = ObjectChange.objects.filter(request_id=self.request_id).order_by("pk")
+        return SimpleNamespace(pk=1, name="feature", get_merged_changes=lambda: changes)
+
+    def test_unrelated_changes_are_left_in_the_database(self):
+        unrelated = self._change(Tag.objects.create(name="audit-g5", slug="audit-g5"))
+        watched = self._change(Scope.objects.get())
+        with mock.patch.object(signals, "servers_for_change", wraps=signals.servers_for_change) as resolve:
+            ids = branching._affected_servers(self._branch())
+        self.assertEqual(ids, {self.server.pk})
+        seen = [call.args[0].pk for call in resolve.call_args_list]
+        self.assertEqual(seen, [watched.pk])
+        self.assertNotIn(unrelated.pk, seen)
+
+    def test_stops_once_every_pushable_server_is_found(self):
+        for reservation in (Reservation.objects.get(), Reservation.objects.get(), Reservation.objects.get()):
+            self._change(reservation)
+        with mock.patch.object(signals, "servers_for_change", wraps=signals.servers_for_change) as resolve:
+            ids = branching._affected_servers(self._branch())
+        self.assertEqual(ids, {self.server.pk})
+        self.assertEqual(resolve.call_count, 1)
+
+    def test_every_server_of_the_branch_is_still_found(self):
+        other = windows_server("dhcp2")
+        scope = Scope.objects.get()
+        self._change(Reservation.objects.get())
+        scope.snapshot()
+        scope.server = other
+        change = scope.to_objectchange(ObjectChangeActionChoices.ACTION_UPDATE)
+        change.request_id = self.request_id
+        change.user = self.user
+        change.save()
+        self.assertEqual(branching._affected_servers(self._branch()), {self.server.pk, other.pk})
+
+    def test_no_server_to_push_reads_no_change(self):
+        type(self.server).objects.update(sync_enabled=False)
+        self._change(Scope.objects.get())
+        branch = self._branch()
+        branch.get_merged_changes = mock.Mock(side_effect=AssertionError("not needed"))
+        self.assertEqual(branching._affected_servers(branch), set())
+
+    def test_watched_content_types_cover_every_watched_label(self):
+        labels = {f"{ct.app_label}.{ct.model}" for ct in branching._watched_content_types()}
+        self.assertEqual(labels, set(signals.WATCHED))
 
 
 @override_settings(PLUGINS_CONFIG=CREDENTIALS)
@@ -336,3 +401,66 @@ class F27SchedulerTest(TestCase):
         self.assertEqual(due, [self.second, third])
         # The busy jobs and the servers, however many servers there are (the content type may add one).
         self.assertLessEqual(len(queries), 3, [q["sql"] for q in queries])
+
+
+class F38CoreSaveLookupTest(ImportTestMixin, TestCase):
+    def setUp(self):
+        super().setUp()
+        self.apply_all()
+        self.addCleanup(signals._forget_pending)
+
+    def _plugin_queries(self, queries):
+        return [q["sql"] for q in queries if PLUGIN_TABLES in q["sql"]]
+
+    def test_creating_core_objects_looks_nothing_up(self):
+        from dcim.models import MACAddress
+        from ipam.models import IPRange, Prefix
+        from netaddr import IPNetwork
+
+        with (
+            mock.patch.object(signals, "servers_for", wraps=signals.servers_for) as resolve,
+            CaptureQueriesContext(connection) as queries,
+        ):
+            ip_address("10.99.0.1/24")
+            Prefix.objects.create(prefix=IPNetwork("10.99.0.0/24"))
+            IPRange.objects.create(start_address=IPNetwork("10.99.0.10/24"), end_address=IPNetwork("10.99.0.20/24"))
+            MACAddress.objects.create(mac_address="AA:BB:CC:00:99:01")
+        resolve.assert_not_called()
+        self.assertEqual(self._plugin_queries(queries), [])
+
+    def test_editing_a_reserved_address_looks_it_up_once_and_pushes(self):
+        address = Reservation.objects.get().ip_address
+        address.snapshot()
+        address.description = "edited"
+        with (
+            mock.patch.object(signals, "servers_for", wraps=signals.servers_for) as resolve,
+            self.captureOnCommitCallbacks(execute=True),
+            CaptureQueriesContext(connection) as queries,
+        ):
+            address.save()
+        self.assertEqual(resolve.call_count, 1)
+        self.assertEqual(len([sql for sql in self._plugin_queries(queries) if RESERVATION_TABLE in sql]), 1)
+        self.assertEqual(PushJob.get_jobs(self.server).count(), 1)
+
+    def test_deleting_a_reserved_mac_still_pushes(self):
+        mac = Reservation.objects.get().mac_address
+        self.assertIsNotNone(mac)
+        with self.captureOnCommitCallbacks(execute=True):
+            signals._changed(type(mac), mac)
+        self.assertEqual(PushJob.get_jobs(self.server).count(), 1)
+
+    def test_plugin_models_still_count_the_server_they_left(self):
+        other = windows_server("dhcp7")
+        scope = Scope.objects.get()
+        scope.snapshot()
+        scope.server = other
+        with mock.patch.object(signals, "queue_pushes") as pushes, self.captureOnCommitCallbacks(execute=True):
+            signals._changed(Scope, scope)
+        pushes.assert_called_once()
+        self.assertEqual(pushes.call_args.args[0], {self.server.pk, other.pk})
+
+    def test_creating_a_plugin_object_still_pushes(self):
+        scope = Scope.objects.get()
+        with mock.patch.object(signals, "queue_pushes") as pushes, self.captureOnCommitCallbacks(execute=True):
+            signals._changed(Scope, scope, created=True)
+        pushes.assert_called_once()

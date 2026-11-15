@@ -99,12 +99,37 @@ def register():
 _reverting = {}
 
 
+def _watched_content_types():
+    """Content types of the models a push reads (signals.WATCHED). A label with no content type simply drops out."""
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Q
+
+    from ..signals import WATCHED
+
+    wanted = Q()
+    for label in WATCHED:
+        app_label, model = label.split(".")
+        wanted |= Q(app_label=app_label, model=model)
+    return ContentType.objects.filter(wanted)
+
+
 def _affected_servers(branch):
+    from ..models import WindowsServer
     from ..signals import servers_for_change
 
+    # Only servers with sync enabled get a push (signals.queue_pushes), so once they are all found the rest of the
+    # branch cannot add one: an import branch with thousands of reservations of one server stops at its first change.
+    pushable = set(WindowsServer.objects.filter(sync_enabled=True).values_list("pk", flat=True))
     ids = set()
-    for change in branch.get_merged_changes().select_related("changed_object_type"):
+    if not pushable:
+        return ids
+    # This runs for every merge and revert in NetBox, DHCP related or not: let the database drop the changes a push
+    # does not read, and do not keep the rest (with their before and after data) in memory.
+    changes = branch.get_merged_changes().filter(changed_object_type__in=_watched_content_types())
+    for change in changes.select_related("changed_object_type").iterator():
         ids |= servers_for_change(change)
+        if ids >= pushable:
+            break
     return ids
 
 

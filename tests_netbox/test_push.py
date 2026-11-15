@@ -674,6 +674,12 @@ class _Changes(list):
     def select_related(self, *args):
         return self
 
+    def filter(self, *args, **kwargs):
+        return self
+
+    def iterator(self):
+        return iter(self)
+
 
 class BranchTriggerTest(ImportTestMixin, TestCase):
     """The merge and revert receivers, with a stand-in branch (merging a real one is covered by netbox-branching)."""

@@ -107,6 +107,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Performance
 
+- Applying proposal items reads only the kinds of NetBox objects the selected items are about and repeats fewer
+  lookups, so applying a few items on a large server is much lighter.
+- Option value, policy, exclusion range, reservation and failover lists (UI and REST) no longer run extra queries
+  per row for the scope's server and prefix; the import proposal REST list no longer counts items it does not
+  return.
+- Branch merges and reverts read only the DHCP-related changes of the branch; creating a prefix, IP range, IP
+  address or MAC address no longer runs a plugin lookup, and editing one runs one instead of two.
+- Sync state rows are written in batches, which speeds up the first push after a large import.
 - A database index serves the "latest run of a server" lookups of the import scheduler and the server page
   (migration `0002`).
 

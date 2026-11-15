@@ -8,9 +8,10 @@ from unittest import mock, skipUnless
 
 from django.apps import apps
 from django.contrib.auth import get_user_model
-from django.db import DataError
+from django.db import DataError, connection
 from django.test import TestCase, TransactionTestCase
-from ipam.models import VRF, IPAddress, IPRange
+from django.test.utils import CaptureQueriesContext
+from ipam.models import VRF, IPAddress, IPRange, Prefix
 from netaddr import IPNetwork
 from utilities.testing import APITestCase
 from utilities.testing import TestCase as NetBoxTestCase
@@ -37,7 +38,10 @@ from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 
 from . import fixtures
 from .fixtures import PluginAPIMixin, windows_server
+from .test_import import ImportTestMixin
+from .test_remaining import seed_more
 from .test_review import ITEM, ITEMS_APPLY, SCOPE_PERMISSIONS, make_proposal
+from .test_v6 import seed_v6
 
 needs_branching = skipUnless(apps.is_installed("netbox_branching"), "netbox-branching is not installed")
 IN_BRANCH = "netbox_windows_dhcp_plugin.integrations.branching.in_branch"
@@ -107,6 +111,40 @@ class F41DuplicateTargetTest(TestCase):
         item = self.items()["policy", f"10.1.0.0/printers#{extra.pk}"]
         self.assertEqual(importer.apply_items([item]), (1, 0), item.error)
         self.assertEqual(list(WindowsPolicy.objects.values_list("pk", flat=True)), [original.pk])
+
+
+# -- F42 ---------------------------------------------------------------------------------------------------------
+
+
+class F42QueriesTest(ImportTestMixin, TestCase):
+    def test_permission_checks_do_not_read_the_content_type_per_item(self):
+        self.apply_all()
+        for name in ("one", "two", "three"):
+            self.client.set_scope(
+                Scope(scope_id="10.1.0.0", name=name, start_range="10.1.0.10", end_range="10.1.0.200")
+            )
+            self.propose()
+        user = get_user_model().objects.create_user(username="f42", is_superuser=True)
+        items = list(review.open_items(ImportProposalItem.objects.filter(action="update")))
+        self.assertTrue(items)
+        self.assertIsNone(review.missing_permission(user, items[0]))  # warms Django's content type cache
+        with CaptureQueriesContext(connection) as queries:
+            for item in items * 3:
+                self.assertIsNone(review.missing_permission(user, item))
+        self.assertFalse([q["sql"] for q in queries if "django_content_type" in q["sql"]])
+
+    def test_option_definitions_are_read_once(self):
+        self.apply_all()
+        with CaptureQueriesContext(connection) as queries:
+            netbox_state.read(self.server, for_import=True)
+        reads = [q for q in queries if 'FROM "netbox_windows_dhcp_plugin_optiondefinition"' in q["sql"]]
+        self.assertEqual(len(reads), 1)
+
+    def test_dismissed_history_still_hides_the_same_change(self):
+        proposal = self.propose().proposal
+        self.assertEqual(importer.dismiss_items(list(proposal.items.all())), proposal.items.count())
+        result = self.propose()
+        self.assertEqual((result.review, result.dismissed), (0, len(result.changes)))
 
 
 # -- F43 ---------------------------------------------------------------------------------------------------------
@@ -203,6 +241,83 @@ class F44ItemStatusTest(TestCase):
         self.assertEqual((stored.status, stored.error), (ProposalItemStatusChoices.FAILED, "why"))
         # A failed item is still open: it can be applied again.
         self.assertEqual(importer.apply_items([stored]), (1, 0))
+
+
+# -- F46 (and the cheap part of F45) -----------------------------------------------------------------------------
+
+
+class F46PartialReadTest(ImportTestMixin, TestCase):
+    """Reading some kinds only gives exactly the records a full read gives for those kinds."""
+
+    def setUp(self):
+        self.partner = windows_server("dhcp2")
+        super().setUp()
+        seed_more(self.fake)
+        seed_v6(self.fake)
+        self.apply_all()
+        # What Windows cannot hold: the same thing twice. These get "#<pk>" keys.
+        scope = NetBoxScope.objects.get(name="LAN")
+        vrf = VRF.objects.create(name="elsewhere")
+        NetBoxScope.objects.create(
+            server=self.server, name="dup", prefix=Prefix.objects.create(prefix="10.1.0.0/24", vrf=vrf)
+        )
+        NetBoxReservation.objects.create(
+            scope=scope, ip_address=IPAddress.objects.create(address="10.1.0.50/24", vrf=vrf), client_id="aa"
+        )
+        WindowsPolicy.objects.create(server=self.server, scope=scope, name="PRINTERS", processing_order=9)
+        NetBoxSuperscope.objects.create(server=self.server, name="CAMPUS")
+
+    def test_every_kind_alone_matches_the_full_read(self):
+        for for_import in (True, False):
+            full = netbox_state.read(self.server, for_import=for_import)
+            kinds = {r.kind for r in full}
+            # The fixture must cover every kind, or this test proves nothing for the missing ones.
+            self.assertEqual(kinds, set(importer.KIND_MODELS) - ({"filterlists"} - kinds))
+            for kind in sorted(importer.KIND_MODELS):
+                with self.subTest(kind=kind, for_import=for_import):
+                    part = netbox_state.read(self.server, for_import=for_import, kinds=frozenset({kind}))
+                    self.assertEqual(part, [r for r in full if r.kind == kind])
+
+    def test_pairs_of_kinds_match_the_full_read(self):
+        full = netbox_state.read(self.server, for_import=True)
+        for kinds in (
+            {"scope", "option"},
+            {"reservation", "policy"},
+            {"option", "option6"},
+            {"superscope", "failover", "macfilter"},
+            {"exclusion", "reservation6", "class"},
+        ):
+            with self.subTest(kinds=kinds):
+                part = netbox_state.read(self.server, for_import=True, kinds=frozenset(kinds))
+                self.assertEqual(part, [r for r in full if r.kind in kinds])
+
+    def test_no_kinds_reads_nothing(self):
+        self.assertEqual(netbox_state.read(self.server, for_import=True, kinds=frozenset()), [])
+
+    def test_applying_a_scope_item_does_not_load_the_reservations(self):
+        self.client.set_scope(
+            Scope(scope_id="10.2.0.0", name="renamed", start_range="10.2.0.10", end_range="10.2.0.200")
+        )
+        item = self.propose().proposal.items.get(kind="scope", action="update")
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(importer.apply_items([item]), (1, 0), item.error)
+        tables = ("reservation", "optionvalue", "windowspolicy", "exclusionrange", "macfilter")
+        loaded = [
+            q["sql"] for q in queries if any(f'FROM "netbox_windows_dhcp_plugin_{t}"' in q["sql"] for t in tables)
+        ]
+        self.assertEqual(loaded, [])
+        self.assertEqual(NetBoxScope.objects.get(prefix__prefix="10.2.0.0/24").name, "renamed")
+
+    def test_staleness_is_still_seen_with_a_partial_read(self):
+        self.client.set_reservation(
+            Reservation(scope_id="10.1.0.0", ip_address="10.1.0.50", client_id="AA-BB-CC-00-11-22", name="from windows")
+        )
+        item = self.propose().proposal.items.get(kind="reservation", action="update")
+        reservation = NetBoxReservation.objects.get(pk=item.object_id)
+        reservation.name = "edited in netbox"
+        reservation.save()
+        self.assertEqual(importer.apply_items([item]), (0, 1))
+        self.assertIn("changed in NetBox since the import", item.error)
 
 
 # -- F47 ---------------------------------------------------------------------------------------------------------
@@ -311,6 +426,43 @@ class F47RealBranchTest(TransactionTestCase):
         self.assertFalse(SyncState.objects.exists())
         item.refresh_from_db()
         self.assertEqual(item.status, ProposalItemStatusChoices.PENDING)
+
+
+# -- F49 ---------------------------------------------------------------------------------------------------------
+
+
+class F49ScopeLookupTest(ImportTestMixin, TestCase):
+    """A child change looks its scope up once."""
+
+    def lookups(self, change):
+        with CaptureQueriesContext(connection) as queries:
+            Writer(self.server).apply(change)
+        return [q["sql"] for q in queries if SCOPE_TABLE in q["sql"] and ">>=" in q["sql"]]
+
+    def changes_of(self, kind):
+        return [c for c in self.changes() if c.kind == kind]
+
+    def test_reservation_and_its_option_value(self):
+        for change in self.changes():
+            if change.kind in ("reservation", "option"):
+                break
+            Writer(self.server).apply(change)
+        (reservation,) = self.changes_of("reservation")
+        self.assertEqual(len(self.lookups(reservation)), 1)
+        self.assertEqual(NetBoxReservation.objects.count(), 1)
+        for option in self.changes_of("option"):
+            expected = 0 if option.after["parent"] == "server" else 1
+            with self.subTest(key=option.key):
+                self.assertEqual(len(self.lookups(option)), expected)
+        self.assertEqual(self.changes(), [])
+
+    def test_a_missing_scope_is_still_named(self):
+        (reservation,) = self.changes_of("reservation")
+        with self.assertRaisesMessage(importer.ApplyError, "scope 10.1.0.0 is not in NetBox yet: apply it first"):
+            Writer(self.server).apply(reservation)
+        scoped = next(c for c in self.changes_of("option") if c.after["parent"] == "10.1.0.0")
+        with self.assertRaisesMessage(importer.ApplyError, "scope 10.1.0.0 is not in NetBox yet: apply it first"):
+            Writer(self.server).apply(scoped)
 
 
 # -- F50 ---------------------------------------------------------------------------------------------------------

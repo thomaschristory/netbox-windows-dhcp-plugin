@@ -153,10 +153,8 @@ def _optiondef(d):
     )
 
 
-def _optiondefs(windows_server):
-    definitions = (
-        OptionDefinition.objects.filter(server=windows_server, family=4).select_related("vendor_class").order_by("pk")
-    )
+def _optiondefs(definitions):
+    """Records for a server's IPv4 option definitions (``definitions``: the model objects, in pk order)."""
     # Windows ships the standard definitions: windows_state leaves them out, so a NetBox definition of a standard code
     # is not synced either, or every import would propose deleting it. Codes 1 and 51 stay in, so a push explains why
     # it refuses them.
@@ -164,51 +162,86 @@ def _optiondefs(windows_server):
     return [_optiondef(d) for d in definitions if d.vendor_class_id or d.code not in standard]
 
 
-def read(windows_server, for_import=False):
+# The DHCPv6 kinds, which ``_v6`` reads together.
+_V6_KINDS = ("class6", "scope6", "reservation6", "option6")
+
+
+def read(windows_server, for_import=False, kinds=None):
     """
     Return the records NetBox holds for this server. ``for_import`` reads a server without MAC filter list switches
     as having Windows' defaults (both lists off), so an import only proposes them when Windows differs; a push leaves
     the switches alone instead.
+
+    ``kinds`` limits the result to those record kinds, for a caller that looks at a few objects only (applying one
+    review item must not load every reservation of the server). A kind is either read exactly as in a full read or
+    left out altogether, together with the queries only it needs: the records returned are the same ones a full read
+    returns for those kinds, which the staleness checks of the review queue rely on. Scopes and option definitions
+    are always read, because other kinds are built from them.
     """
+
+    def wanted(*names):
+        return kinds is None or not kinds.isdisjoint(names)
+
     records = []
 
-    for c in WindowsClass.objects.filter(server=windows_server, family=4).order_by("pk"):
-        records.append(
-            Record(
-                "class",
-                class_key(c.class_type, c.name),
-                {"name": c.name, "class_type": c.class_type, "data": c.data, "description": text_field(c.description)},
-            )
-        )
+    if wanted("class"):
+        for c in WindowsClass.objects.filter(server=windows_server, family=4).order_by("pk"):
+            fields = {
+                "name": c.name,
+                "class_type": c.class_type,
+                "data": c.data,
+                "description": text_field(c.description),
+            }
+            records.append(Record("class", class_key(c.class_type, c.name), fields))
 
-    records.extend(_optiondefs(windows_server))
+    definition_objects = list(
+        OptionDefinition.objects.filter(server=windows_server, family=4).select_related("vendor_class").order_by("pk")
+    )
+    records.extend(_optiondefs(definition_objects))
 
     scope_objects = list(server_scopes(windows_server))
     scopes = _unique((_scope(s), s.pk) for s in scope_objects)
     scope_ids = {pk: record.key for record, pk in scopes}
     records.extend(record for record, _ in scopes)
-    records.extend(_superscopes(windows_server, [(s.superscope_id, scope_ids[s.pk]) for s in scope_objects]))
+    if wanted("superscope"):
+        records.extend(_superscopes(windows_server, [(s.superscope_id, scope_ids[s.pk]) for s in scope_objects]))
 
-    exclusions = ExclusionRange.objects.filter(scope__in=list(scope_ids)).order_by("pk")
-    records.extend(record for record, _ in _unique((_exclusion(e, scope_ids[e.scope_id]), e.pk) for e in exclusions))
+    if wanted("exclusion"):
+        exclusions = ExclusionRange.objects.filter(scope__in=list(scope_ids)).order_by("pk")
+        records.extend(
+            record for record, _ in _unique((_exclusion(e, scope_ids[e.scope_id]), e.pk) for e in exclusions)
+        )
 
-    reservations = (
-        Reservation.objects.filter(scope__in=list(scope_ids)).select_related("ip_address", "mac_address").order_by("pk")
-    )
-    unique = _unique((_reservation(r, scope_ids[r.scope_id]), r.pk) for r in reservations)
-    reservation_parents = {pk: record.key for record, pk in unique}
-    records.extend(record for record, _ in unique)
+    # Option values on a reservation are keyed by the reservation's record, so they need the reservations too.
+    reservation_parents = {}
+    if wanted("reservation", "option"):
+        reservations = (
+            Reservation.objects.filter(scope__in=list(scope_ids))
+            .select_related("ip_address", "mac_address")
+            .order_by("pk")
+        )
+        unique = _unique((_reservation(r, scope_ids[r.scope_id]), r.pk) for r in reservations)
+        reservation_parents = {pk: record.key for record, pk in unique}
+        records.extend(record for record, _ in unique)
 
-    records.extend(_policies(windows_server, scope_ids))
-    records.extend(_options(windows_server, scope_ids, reservation_parents))
-    records.extend(_failovers(windows_server, scope_ids))
-    records.extend(_mac_filters(windows_server, for_import))
-    records.extend(_v6(windows_server))
+    if wanted("policy"):
+        records.extend(_policies(windows_server, scope_ids))
+    if wanted("option"):
+        records.extend(_options(windows_server, scope_ids, reservation_parents))
+    if wanted("failover"):
+        records.extend(_failovers(windows_server, scope_ids))
+    if wanted("macfilter", "filterlists"):
+        records.extend(_mac_filters(windows_server, for_import))
+    if wanted(*_V6_KINDS):
+        records.extend(_v6(windows_server))
     definitions = {
         optiondef_key(d.code, d.vendor_class.name if d.vendor_class_id else ""): d.windows_type
-        for d in OptionDefinition.objects.filter(server=windows_server, family=4).select_related("vendor_class")
+        for d in definition_objects
     }
-    return windows_state.with_option_types(records, definitions)
+    records = windows_state.with_option_types(records, definitions)
+    if kinds is not None:
+        records = [r for r in records if r.kind in kinds]
+    return records
 
 
 def _scope6(scope):

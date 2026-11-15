@@ -9,6 +9,8 @@ saved, constraints included, and an item that breaks a permission is rolled back
 Nothing is applied while the request works in a netbox-branching branch (see ``apply_refusal``).
 """
 
+from django.contrib.contenttypes.models import ContentType
+
 from .choices import ProposalItemStatusChoices
 from .integrations import branching
 from .sync import importer
@@ -34,10 +36,12 @@ def missing_permission(user, item):
     perm = f"{model._meta.app_label}.{action}_{model._meta.model_name}"
     if not user.has_perm(perm):
         return perm
-    # Object permissions can limit which objects a user may change or delete.
+    # Object permissions can limit which objects a user may change or delete. The content type comes from Django's
+    # cache, not from a query per item.
     if (
         item.object_id is not None
-        and model is item.object_type.model_class()
+        and item.object_type_id is not None
+        and model is ContentType.objects.get_for_id(item.object_type_id).model_class()
         and not model.objects.restrict(user, action).filter(pk=item.object_id).exists()
     ):
         return perm

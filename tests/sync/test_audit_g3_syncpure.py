@@ -3,6 +3,7 @@
 import pytest
 
 from netbox_windows_dhcp_plugin.sync import push
+from netbox_windows_dhcp_plugin.sync import windows_state as ws
 from netbox_windows_dhcp_plugin.sync.diff import Change, Record
 from netbox_windows_dhcp_plugin.sync.windows_writer import PushRefused, WindowsWriter
 from netbox_windows_dhcp_plugin.windows import DhcpClient
@@ -11,7 +12,7 @@ from netbox_windows_dhcp_plugin.windows.psscript import PSError
 from netbox_windows_dhcp_plugin.windows.runner import RunnerError
 
 from .test_push import run, state_after
-from .test_windows_writer import failover, scope, wanted, windows_records
+from .test_windows_writer import failover, policy, scope, wanted, windows_records
 
 
 @pytest.fixture
@@ -113,6 +114,29 @@ def test_summary_caps_the_errors():
     summary = push.Result(failed=[(c, "boom") for c in many_changes(over)]).summary()
     assert summary["failed"] == over
     assert len(summary["errors"]) == push.PLANNED_LIMIT and summary["errors_truncated"] is True
+
+
+# -- F55: policies are grouped by level once ----------------------------------------------------------------------
+
+
+def test_policy_ordering_does_not_rescan_every_record_for_each_level(monkeypatch):
+    def policy_at(n, name, order):
+        sid = f"10.{n}.0.0"
+        fields = {**policy(scope_id=sid).fields, "name": name, "scope_id": sid, "processing_order": order}
+        return Record("policy", ws.policy_key(sid, name), fields)
+
+    scopes = [scope_at(f"10.{n}.0.0") for n in range(1, 31)]
+    target = scopes + [policy_at(n, "old", 1) for n in range(1, 31)]
+    source = target + [policy_at(n, "new", 2) for n in range(1, 31)]
+    calls = []
+    real = push._policy_level
+    monkeypatch.setattr(push, "_policy_level", lambda fields: calls.append(1) or real(fields))
+    p = push.plan(source, target, {})
+    assert [(c.action, c.key) for c in p.changes] == [
+        ("create", f"10.{n}.0.0/new") for n in sorted(range(1, 31), key=str)
+    ]
+    # 30 levels, 90 policy records: a few passes over the policies, not one pass per level (2,700 and more).
+    assert len(calls) < 400, len(calls)
 
 
 # -- F56: an unexpected error stops the push but keeps the record of what was written ------------------------------
