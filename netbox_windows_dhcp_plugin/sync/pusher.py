@@ -10,7 +10,7 @@ from django.db import transaction
 from netbox_dhcp.models import Subnet
 
 from ..choices import SyncKindChoices
-from ..connection import failover_secret_lookup
+from ..connection import failover_partner_check, failover_secret_lookup
 from ..models import FailoverRelationship, SyncRun, SyncState
 from ..windows.psscript import NotFound, WindowsLayerError
 from . import netbox_state, push, windows_state
@@ -207,7 +207,12 @@ def run(windows_server, client, dry_run=False, logger=log):
     # The option values the push writes: a reservation update that loses one of these gets it back on the next push.
     skipped = {(s.change.kind, s.change.key) for s in plan.skipped}
     held = {r.key for r in source if r.kind in ("option", "option6") and (r.kind, r.key) not in skipped}
-    writer = WindowsWriter(client, failover_secret=failover_secret_lookup(windows_server), held_options=held)
+    writer = WindowsWriter(
+        client,
+        failover_secret=failover_secret_lookup(windows_server),
+        held_options=held,
+        failover_partner_check=failover_partner_check(windows_server),
+    )
     outcome.result = push.execute(plan, writer)
     _save_state(windows_server, outcome.result)
     outcome.replication_errors, outcome.replication_pending = _replicate(

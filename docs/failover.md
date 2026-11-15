@@ -67,6 +67,9 @@ reservation page follows the same lab: [Reservations](reservations.md).
   `dhcp01.example.com` and `dhcp02.example.com`; in a domain, DNS does it.
 - The scopes to share exist on the primary and are pushed: here `198.18.60.0/24` with the reservation `printer01`.
   The partner does not need them; Windows copies them there when the relationship is created.
+- The primary server's credential profile covers the partner in its `allowed_hosts`, when it has the list: creating
+  the relationship makes the primary contact the partner as that account, and the push refuses to create it
+  otherwise.
 - For message authentication, a credential profile holds the shared secret and its `allowed_hosts` cover both
   partners (here `lab-failover`, see [Shared secret](#shared-secret)).
 

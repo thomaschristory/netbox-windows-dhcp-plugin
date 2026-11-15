@@ -79,8 +79,12 @@ class WindowsWriter:
         client: DhcpClient,
         failover_secret: Callable[[str], str] | None = None,
         held_options: set[str] | None = None,
+        failover_partner_check: Callable[[str, str], None] | None = None,
     ) -> None:
         self.client = client
+        # Called with a relationship's name and the partner host about to be sent. Raises ValueError when it may not
+        # be created because that partner is a host the server's credentials may not reach.
+        self.failover_partner_check = failover_partner_check or (lambda name, partner: None)
         # Keys of the option values (kinds option and option6) the push writes from NetBox. A reservation update
         # that loses a value it cannot put back uses this to say whether a later push brings it back. None: unknown.
         self.held_options = held_options
@@ -417,6 +421,7 @@ class WindowsWriter:
             auto_state_transition=f["state_switch_interval"] is not None,
         )
         if change.action == CREATE:
+            self.failover_partner_check(f["name"], f["partner_server"])
             self.client.add_failover(rel, shared_secret=self._secret(change, f["name"]) if f["auth"] else "")
             return
         before = change.before or {}

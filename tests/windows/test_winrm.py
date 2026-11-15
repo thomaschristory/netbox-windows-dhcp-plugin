@@ -29,11 +29,20 @@ class FakePypsrp:
         self.shells_closed = 0
         self.signals: list[str] = []
         self.sent: list[tuple[bytes, bool]] = []
+        self.sessions: list[Any] = []
         fake = self
+
+        class Transport:
+            session = None
+
+            def _build_session(self) -> Any:
+                fake.sessions.append(types.SimpleNamespace(max_redirects=30))
+                return fake.sessions[-1]
 
         class WSMan:
             def __init__(self, **kwargs: Any) -> None:
                 fake.wsman_kwargs.append(kwargs)
+                self.transport = Transport()
 
             def __enter__(self) -> WSMan:
                 return self

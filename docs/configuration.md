@@ -33,7 +33,7 @@ credential profile, and the profile says where the secrets come from. A profile 
 | Key | Used for |
 |---|---|
 | `username` | WinRM and SSH. `DOMAIN\user`, `user@REALM` or a local `user` |
-| `password` | WinRM (all methods), SSH password login, or the passphrase of an encrypted SSH key |
+| `password` | WinRM (all methods), SSH password login, or the passphrase of an encrypted SSH key (it is then used as a passphrase only, never offered to the server as a password) |
 | `private_key` | SSH key login: an Ed25519, ECDSA or RSA key in PEM or OpenSSH format |
 | `secret` | The shared secret of a [failover relationship](failover.md#shared-secret) |
 | `allowed_hosts` | The hosts the profile's credentials may be sent to, see [below](#allowed_hosts) |
@@ -93,13 +93,26 @@ It is a list of host names and IP addresses. `*` and `?` match within one dot-se
 certificates: `dhcp*.corp.example` matches `dhcp01.corp.example` but not `dhcp.evil.example.corp.example`. Names
 compare without case and without a trailing dot; IPv6 addresses compare in any spelling.
 
+An entry is either an address pattern or a name pattern, never both:
+
+- four dot-separated parts made of digits, `*` and `?` (`10.20.*.*`), or anything containing a `:`, is an address
+  pattern and matches IP addresses only: `10.20.*.*` does not allow the DNS name `10.20.evil.example`;
+- a shorter entry made of digits and wildcards that holds a number (`10.*`, `192.168.*`) is read as an address
+  pattern too, and matches nothing: write all four parts of an IPv4 pattern (`10.*.*.*`);
+- anything else is a name pattern and matches host names only. A bare `*` allows any single-label name, not IP
+  addresses: list IPv6 addresses or an IPv6 pattern of their own.
+
 It is checked:
 
 - when a Windows server is saved (the form and the API refuse a `host` or `computer_name` the profile does not
   cover);
 - before every connection, so tightening the list later also stops servers saved earlier;
+- when a push creates a failover relationship, for the partner: creating it makes the primary server contact the
+  partner as the plugin's account, so the primary's profile must cover the partner's DHCP host too (its
+  `computer_name` when set, else its `host`);
 - for failover secrets, against the hosts of both partners when the relationship is saved and whenever a push sends
   the secret.
 
 A Windows server's `host` and `computer_name` must be plain host names or IP addresses: a port, a user name, a path
-or spaces are refused, so the check and the connection always see the same host.
+or spaces are refused, so the check and the connection always see the same host. So are names a resolver would read
+as an IPv4 address written another way (`2130706433`, `0x7f.1`, `127.1`, or any name whose last label is a number).

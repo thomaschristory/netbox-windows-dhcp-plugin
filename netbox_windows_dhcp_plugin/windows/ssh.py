@@ -2,9 +2,10 @@
 
 Port of ``internal/runner/ssh.go``:
 
-* auth: public key (PEM/OpenSSH; the password is tried as passphrase, then the key
-  unencrypted), then password, then keyboard-interactive answering every prompt with
-  the password (Windows OpenSSH often only offers keyboard-interactive);
+* auth: public key (PEM/OpenSSH; the key is tried unencrypted, then with the password as
+  its passphrase), then password, then keyboard-interactive answering every prompt with
+  the password (Windows OpenSSH often only offers keyboard-interactive). A password
+  that opened the key is a passphrase only and is never sent to the server;
 * host key: ``insecure`` > pinned ``host_key`` (authorized_keys format) >
   ``known_hosts_file`` (default ``~/.ssh/known_hosts``). The host key algorithms
   offered are restricted to the types known for the host, so a server that also has an
@@ -25,7 +26,7 @@ import os
 import socket
 import threading
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from .runner import ExecResult, RunnerError, execute
@@ -42,8 +43,9 @@ __all__ = ["SSHConfig", "SSHRunner", "key_algorithms"]
 class SSHConfig:
     host: str
     username: str
-    password: str = ""
-    private_key: str = ""  # PEM or OpenSSH private key text
+    # Secrets are kept out of repr: error reporting tools print local variables.
+    password: str = field(default="", repr=False)
+    private_key: str = field(default="", repr=False)  # PEM or OpenSSH private key text
     port: int = 22
     host_key: str = ""  # pinned key, authorized_keys format: "ssh-ed25519 AAAA... [comment]"
     known_hosts_file: str = ""  # default ~/.ssh/known_hosts
@@ -68,14 +70,17 @@ def _paramiko():
 
 
 def _parse_private_key(pem: str, password: str):
+    """Return ``(key, encrypted)``; ``encrypted`` is True when the key only opened with the password."""
     paramiko = _paramiko()
     classes = [getattr(paramiko, n) for n in ("Ed25519Key", "ECDSAKey", "RSAKey") if hasattr(paramiko, n)]
-    passwords = [password, None] if password else [None]
+    # Without a passphrase first: paramiko also accepts a passphrase on a key that has none, so trying the password
+    # first would not tell whether it is the key's passphrase.
+    passwords = [None, password] if password else [None]
     last: Exception | None = None
     for pw in passwords:
         for cls in classes:
             try:
-                return cls.from_private_key(io.StringIO(pem), password=pw)
+                return cls.from_private_key(io.StringIO(pem), password=pw), pw is not None
             except Exception as e:  # noqa: BLE001 - wrong class or wrong passphrase; try the next
                 last = e
     raise ValueError(f"ssh: parsing private_key: {last}")
@@ -109,7 +114,10 @@ class SSHRunner:
             raise ValueError("ssh: password or private_key is required")
         self.cfg = cfg
         self.port = cfg.port or 22
-        self._pkey = _parse_private_key(cfg.private_key, cfg.password) if cfg.private_key else None
+        # When the password opened the key it is the key's passphrase, not the account's password.
+        self._pkey, self._password_is_passphrase = (
+            _parse_private_key(cfg.private_key, cfg.password) if cfg.private_key else (None, False)
+        )
         self._pinned = None
         self._known: dict[str, Any] = {}
         self._known_path = ""
@@ -206,7 +214,8 @@ class SSHRunner:
                 errors.append(f"publickey: {e}")
             if t.is_authenticated():
                 return
-        if pw:
+        # A key passphrase is never offered as a password: a server that refuses the key would learn it.
+        if pw and not self._password_is_passphrase:
             try:
                 t.auth_password(user, pw, fallback=False)
             except paramiko.AuthenticationException as e:
