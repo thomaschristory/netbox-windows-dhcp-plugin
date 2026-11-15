@@ -40,10 +40,11 @@ def push_value(label, field, value):
     return str(network.ip)
 
 
-def changed_fields(instance, update_fields=None):
+def changed_fields(instance, update_fields=None, using=None):
     """
     The watched fields whose pushed value differs from the stored row; () for new or unwatched objects. With
-    ``update_fields`` (a save of some fields only), the other fields are not written, so they cannot change.
+    ``update_fields`` (a save of some fields only), the other fields are not written, so they cannot change. ``using``
+    is the database the save writes to (the stored row is read there, not wherever the router would read).
     """
     label = instance._meta.label_lower
     fields = WATCHED.get(label)
@@ -53,7 +54,7 @@ def changed_fields(instance, update_fields=None):
     # the stored row below is what tells a new object from an edit.
     if not fields or instance.pk is None:
         return ()
-    stored = type(instance).objects.filter(pk=instance.pk).values(*fields).first()
+    stored = type(instance).objects.using(using).filter(pk=instance.pk).values(*fields).first()
     if stored is None:
         return ()
     # Kept for recheck_edit, which may have to put these values back.
@@ -61,32 +62,24 @@ def changed_fields(instance, update_fields=None):
     return tuple(f for f in fields if push_value(label, f, getattr(instance, f)) != push_value(label, f, stored[f]))
 
 
-def dependents(instance):
+def dependents(instance, using=None):
     """
     The plugin objects whose Windows state depends on this core object, as [(permission codename, queryset)], with
-    only the non-empty querysets.
+    only the non-empty querysets. ``using``: the database the core object is saved to, where its dependents live.
     """
     from .models import Reservation, Scope
 
+    scopes = Scope.objects.using(using).select_related("server")
+    reservations = Reservation.objects.using(using).select_related("scope__server", "ip_address")
     label = instance._meta.label_lower
     if label == "ipam.prefix":
-        found = [("change_scope", Scope.objects.filter(prefix_id=instance.pk).select_related("server"))]
+        found = [("change_scope", scopes.filter(prefix_id=instance.pk))]
     elif label == "ipam.iprange":
-        found = [("change_scope", Scope.objects.filter(ip_range_id=instance.pk).select_related("server"))]
+        found = [("change_scope", scopes.filter(ip_range_id=instance.pk))]
     elif label == "ipam.ipaddress":
-        found = [
-            (
-                "change_reservation",
-                Reservation.objects.filter(ip_address_id=instance.pk).select_related("scope__server", "ip_address"),
-            )
-        ]
+        found = [("change_reservation", reservations.filter(ip_address_id=instance.pk))]
     elif label == "dcim.macaddress":
-        found = [
-            (
-                "change_reservation",
-                Reservation.objects.filter(mac_address_id=instance.pk).select_related("scope__server", "ip_address"),
-            )
-        ]
+        found = [("change_reservation", reservations.filter(mac_address_id=instance.pk))]
     else:
         return []
     return [(codename, queryset) for codename, queryset in found if queryset.exists()]
@@ -179,10 +172,10 @@ def _request_user():
     return user if user is not None and user.is_authenticated else None
 
 
-def _missing(instance, user):
+def _missing(instance, user, using=None):
     """[(codename, object, viewable)] for every dependent scope or reservation the user may not change."""
     missing = []
-    for codename, queryset in dependents(instance):
+    for codename, queryset in dependents(instance, using):
         allowed = set(queryset.restrict(user, "change").values_list("pk", flat=True))
         refused = [obj for obj in queryset if obj.pk not in allowed]
         if refused:
@@ -198,12 +191,15 @@ def check_edit(sender, instance, raw=False, **kwargs):
     exception into an error message (or HTTP 400) and roll the request back.
     """
     instance._nbwd_guard_user = None
+    # The database the save writes to. A merge writes to main even while a branch is active in its context, and the
+    # router would read that branch's rows instead.
+    using = kwargs.get("using")
     # Reset first: a mark left by an earlier save of this instance must not decide this one.
     instance._nbwd_push_fields = None
     if raw:
         # Fixture loading: not an edit by anyone.
         return
-    fields = changed_fields(instance, kwargs.get("update_fields"))
+    fields = changed_fields(instance, kwargs.get("update_fields"), using)
     # Read by signals._changed after the save: no push for edits Windows never sees.
     instance._nbwd_push_fields = fields
     if not fields:
@@ -214,21 +210,15 @@ def check_edit(sender, instance, raw=False, **kwargs):
     # Imports write what Windows already holds.
     if pushes_suppressed():
         return
-    if applying := applying_branch():
+    if applying := applying_branch(instance):
         # A merge or revert replays the branch's changes on main as their authors (iterative strategy) or as the
         # merging user (squash): check the merging or reverting user, against main's scopes and reservations, which
-        # may differ from what the branch held when the edit was made there. An import's own changes are not checked.
-        from netbox.context import current_request
-
-        from .integrations.branching import applying_request_ids
-
-        # Only when every change the branch holds for this object is the import's: squash replays an object's changes
-        # under its last change's request ID, which must not pass a hand edit off as the import's.
-        if is_import_request(getattr(current_request.get(), "id", None)):
-            request_ids = applying_request_ids(instance)
-            if request_ids and all(is_import_request(r) for r in request_ids):
-                return
-        branch, user = applying
+        # may differ from what the branch held when the edit was made there. An import's own changes are not checked:
+        # only when every change the branch holds for this object is the import's, as squash replays an object's
+        # changes under its last change's request ID, which must not pass a hand edit off as the import's.
+        branch, user, request_ids = applying
+        if all(is_import_request(r) for r in request_ids):
+            return
         # No merging user (a job whose user was deleted): fall back to the user the replay runs as.
         user = user or _request_user()
         instance._nbwd_branch = branch
@@ -240,11 +230,12 @@ def check_edit(sender, instance, raw=False, **kwargs):
         return
     from utilities.exceptions import AbortRequest
 
-    if missing := _missing(instance, user):
+    if missing := _missing(instance, user, using):
         raise AbortRequest(_refusal(fields, missing, user, instance._nbwd_branch))
     # Checked again after the save (recheck_edit): a permission constraint can depend on the edited value itself, for
     # example reservations allowed in part of a subnet only.
     instance._nbwd_guard_user = user
+    instance._nbwd_using = using
 
 
 def recheck_edit(sender, instance, raw=False, **kwargs):
@@ -256,14 +247,15 @@ def recheck_edit(sender, instance, raw=False, **kwargs):
     if raw or user is None:
         return
     instance._nbwd_guard_user = None
+    using = getattr(instance, "_nbwd_using", None)
     from utilities.exceptions import AbortRequest
 
-    if missing := _missing(instance, user):
+    if missing := _missing(instance, user, using):
         # The row is already written. Put the stored values back (without signals) before raising: outside a
         # transaction the exception rolls nothing back, and inside one a caller catching it (a script's try/except)
         # would commit the edit.
         stored = {f: v for f, v in instance._nbwd_stored.items() if f in instance._nbwd_push_fields}
-        type(instance).objects.filter(pk=instance.pk).update(**stored)
+        type(instance).objects.using(using).filter(pk=instance.pk).update(**stored)
         raise AbortRequest(_refusal(instance._nbwd_push_fields, missing, user, getattr(instance, "_nbwd_branch", None)))
 
 
