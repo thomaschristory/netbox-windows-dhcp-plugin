@@ -136,6 +136,13 @@ branch.
 **"The last read never finished".** The worker did not run the job within 15 minutes. Check that the worker runs, then
 load again.
 
+## Upgrade
+
+**The netbox-docker container exits with `ProtectedError: Cannot delete some instances of model 'ContentType'`.** The
+database was upgraded from 0.1.x and the image's automatic `remove_stale_contenttypes` step stops on old change log
+entries. From 0.3.0 the plugin removes its own leftovers during `migrate`; see
+[Installation](installation.md#with-netbox-docker) for what it deletes, what it keeps and how to start NetBox again.
+
 ## Getting more detail
 
 The job log of each run lists every change it made or refused. To see what PowerShell returned for one cmdlet, run
