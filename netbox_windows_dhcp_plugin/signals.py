@@ -37,6 +37,11 @@ def push_suppressed():
         _local.suppressed = previous
 
 
+def pushes_suppressed():
+    """Whether the current save is inside push_suppressed() (an import writing what Windows already has)."""
+    return getattr(_local, "suppressed", False)
+
+
 # -- which servers does a change affect? ---------------------------------------------------------------------------
 
 
@@ -210,3 +215,6 @@ def connect():
     # Before the delete, while the rows the object points at (and that point at it) are still there.
     pre_delete.connect(_changed, dispatch_uid=f"{PLUGIN}.push.delete")
     request_started.connect(_forget_pending, dispatch_uid=f"{PLUGIN}.push.request")
+    from . import ipam_guard
+
+    ipam_guard.connect()

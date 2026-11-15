@@ -12,7 +12,7 @@ a new `SyncRun.triggers` field when the push runs.
 
 **Tech Stack:** NetBox 4.7 plugin (Django 6.1), netbox-branching (optional), NetBox Django test runner.
 
-**Spec:** `docs/superpowers/specs/2026-11-15-ipam-edit-guard-design.md`
+**Spec:** `dev/superpowers/specs/2026-11-15-ipam-edit-guard-design.md`
 
 ## Global Constraints
 

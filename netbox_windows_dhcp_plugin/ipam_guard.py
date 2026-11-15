@@ -77,3 +77,80 @@ def dependents(instance):
     else:
         return []
     return [(codename, queryset) for codename, queryset in found if queryset.exists()]
+
+
+# The refusal names at most this many scopes or reservations, then counts the rest.
+MESSAGE_LIMIT = 5
+
+_KIND = {"change_scope": "scope", "change_reservation": "reservation"}
+
+
+def _describe(codename, obj):
+    if codename == "change_scope":
+        return f"{obj.server.name}/{obj.scope_id}"
+    return f"{obj.scope.server.name}/{obj.scope.scope_id}/{obj.ip_address.address.ip if obj.ip_address_id else obj}"
+
+
+def _refusal(fields, missing):
+    names = ", ".join(fields)
+    lines = []
+    for codename, obj in missing[:MESSAGE_LIMIT]:
+        kind = _KIND[codename]
+        lines.append(
+            f'Changing {names} would change {kind} {_describe(codename, obj)} on Windows. You need the "change {kind}" '
+            "permission on it."
+        )
+    if len(missing) > MESSAGE_LIMIT:
+        lines.append(f"And {len(missing) - MESSAGE_LIMIT} more.")
+    return " ".join(lines)
+
+
+def _request_user():
+    from netbox.context import current_request
+
+    request = current_request.get()
+    user = getattr(request, "user", None) if request is not None else None
+    return user if user is not None and user.is_authenticated else None
+
+
+def check_edit(sender, instance, raw=False, **kwargs):
+    """
+    pre_save receiver for the four watched models: refuse (AbortRequest) an edit that changes what a push writes to
+    Windows when the user may not change every scope or reservation affected. NetBox's views and REST API turn the
+    exception into an error message (or HTTP 400) and roll the request back.
+    """
+    if raw:
+        # Fixture loading: not an edit by anyone.
+        return
+    fields = changed_fields(instance)
+    # Read by signals._changed after the save: no push for edits Windows never sees.
+    instance._nbwd_push_fields = fields
+    if not fields:
+        return
+    from .integrations.branching import applying_branch
+    from .signals import pushes_suppressed
+
+    # Import apply writes what Windows already has; a merge or revert replays edits checked when they were made.
+    if pushes_suppressed() or applying_branch():
+        return
+    # nbshell and management commands have no user: nothing to check, the change log still records the edit.
+    user = _request_user()
+    if user is None:
+        return
+    from utilities.exceptions import AbortRequest
+
+    missing = []
+    for codename, queryset in dependents(instance):
+        allowed = set(queryset.restrict(user, "change").values_list("pk", flat=True))
+        missing.extend((codename, obj) for obj in queryset if obj.pk not in allowed)
+    if missing:
+        raise AbortRequest(_refusal(fields, missing))
+
+
+def connect():
+    from dcim.models import MACAddress
+    from django.db.models.signals import pre_save
+    from ipam.models import IPAddress, IPRange, Prefix
+
+    for model in (Prefix, IPRange, IPAddress, MACAddress):
+        pre_save.connect(check_edit, sender=model, dispatch_uid=f"{PLUGIN}.guard.{model._meta.label_lower}")

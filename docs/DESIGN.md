@@ -124,6 +124,17 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   queues itself again a minute later, so a merge's push is never lost. A new push is not queued while one for the
   same server is waiting to start (it will read the latest data anyway). `sync_enabled = False` stops pushes, not
   dry runs.
+- **IPAM edits need the DHCP permission (#102).** A `pre_save` receiver (`ipam_guard.check_edit`) on Prefix,
+  IPRange, IPAddress and MACAddress compares the fields a push reads (prefix; range start and end, address part;
+  address, address part; MAC) with the stored row. When one changed and a scope or reservation uses the object, the
+  request user needs `change` on every such scope or reservation (object permissions and constraints count), or
+  NetBox's `AbortRequest` refuses the save with a message naming them (edit view, bulk import, REST API, scripts and
+  background requests, which carry their user). Not checked: saves with no user (nbshell, management commands),
+  import apply (`push_suppressed`, it writes what Windows has) and netbox-branching merges and reverts, which replay
+  edits already checked in the branch (`integrations.branching.applying_branch()`: a context variable set by
+  `pre_merge`/`pre_revert`, trusted only while the branch is still merging or reverting, since a failed merge sends
+  no closing signal). It is NetBox's documented plugin mechanism (`docs/plugins/development/exceptions.md`);
+  `CUSTOM_VALIDATORS` belong to the admin's configuration.
 - **Triggers.** `signals.servers_for` maps a changed object (from its saved fields or a change log entry) to the
   Windows servers it affects: our models, and the prefixes, IP ranges, IP addresses and MAC addresses scopes and
   reservations point at. With branching, `post_merge` reads the branch's merged changes (before and after values, so

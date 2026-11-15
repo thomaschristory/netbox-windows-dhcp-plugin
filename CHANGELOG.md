@@ -5,6 +5,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Editing a prefix, IP range, IP address or MAC address that a scope or reservation uses now needs the plugin's
+  `change` permission on that scope or reservation when the edit changes what is pushed to Windows (the prefix,
+  the range's start or end, the address, the MAC). Until now `ipam` / `dcim` permissions alone were enough to change
+  production DHCP. The save is refused with a message naming the scope or reservation. Other fields (description,
+  status, tags...) are not affected. Grant `change_scope` / `change_reservation` to users who renumber in IPAM (see
+  [Permissions](docs/permissions.md)). Issue #102.
+
 ## [0.3.0] - 2026-11-15
 
 0.3.0 is the result of a code audit. It tightens validation and the matching of `allowed_hosts`, so some setups

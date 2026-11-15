@@ -6,6 +6,7 @@ Everything that imports those plugins lives here, so the plugin keeps working wh
 
 import logging
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 from django.apps import apps
 
@@ -148,7 +149,29 @@ def _on_merge(sender, branch, user=None, **kwargs):
         log.exception("could not queue Windows DHCP pushes after merging %s", branch)
 
 
+# The branch whose merge or revert is replaying changes in this context. netbox-branching sends no signal when a merge
+# fails, so applying_branch() also checks that the branch is still merging or reverting before trusting it.
+_applying = ContextVar("netbox_windows_dhcp_plugin_applying_branch", default=None)
+
+
+def _on_pre_apply(sender, branch, user=None, **kwargs):
+    _applying.set(branch.pk)
+
+
+def applying_branch():
+    """True while netbox-branching merges or reverts a branch in this context (its replayed saves land on main)."""
+    pk = _applying.get()
+    if pk is None or not branching_installed():
+        return False
+    from netbox_branching.choices import BranchStatusChoices
+    from netbox_branching.models import Branch
+
+    busy = (BranchStatusChoices.MERGING, BranchStatusChoices.REVERTING)
+    return Branch.objects.filter(pk=pk, status__in=busy).exists()
+
+
 def _on_pre_revert(sender, branch, user=None, **kwargs):
+    _on_pre_apply(sender, branch)
     # A revert that fails, or has nothing to revert, sends no post_revert: do not let those entries pile up.
     if len(_reverting) > 50:
         _reverting.clear()
@@ -167,10 +190,11 @@ def _on_revert(sender, branch, user=None, **kwargs):
 
 def _connect_push_signals():
     try:
-        from netbox_branching.signals import post_merge, post_revert, pre_revert
+        from netbox_branching.signals import post_merge, post_revert, pre_merge, pre_revert
     except ImportError:
         log.warning("netbox-branching has no merge signals; Windows DHCP will not push after merges")
         return
+    pre_merge.connect(_on_pre_apply, dispatch_uid="netbox_windows_dhcp_plugin.guard.pre_merge")
     post_merge.connect(_on_merge, dispatch_uid="netbox_windows_dhcp_plugin.push.merge")
     pre_revert.connect(_on_pre_revert, dispatch_uid="netbox_windows_dhcp_plugin.push.pre_revert")
     post_revert.connect(_on_revert, dispatch_uid="netbox_windows_dhcp_plugin.push.revert")

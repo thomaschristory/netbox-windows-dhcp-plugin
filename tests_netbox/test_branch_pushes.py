@@ -13,7 +13,7 @@ from netbox.context_managers import event_tracking
 from netbox_windows_dhcp_plugin import signals
 from netbox_windows_dhcp_plugin.integrations import branching
 from netbox_windows_dhcp_plugin.jobs import PushJob
-from netbox_windows_dhcp_plugin.models import Scope
+from netbox_windows_dhcp_plugin.models import Reservation, Scope
 
 from .test_import import ImportTestMixin
 
@@ -161,3 +161,77 @@ class BranchMergeIntegrationTest(ImportTestMixin, TransactionTestCase):
         pushes.assert_not_called()
         # The worker's next commit must not push the dry run's servers under the merge's user.
         self.assertFalse(getattr(signals._local, "pending", None) and signals._pending_is_live())
+
+
+def _grant(user, app_label, model, action="change"):
+    from core.models import ObjectType
+    from users.models import ObjectPermission
+
+    permission = ObjectPermission.objects.create(name=f"{user}-{action}-{model}", actions=[action])
+    permission.object_types.add(ObjectType.objects.get(app_label=app_label, model=model))
+    permission.users.add(user)
+    return permission
+
+
+@skipUnless(apps.is_installed("netbox_branching"), "netbox-branching is not installed")
+class BranchGuardTest(ImportTestMixin, TransactionTestCase):
+    """The IPAM edit guard (#102) in a branch, and its absence when a merge or revert replays the change."""
+
+    serialized_rollback = True
+
+    def setUp(self):
+        from netbox_branching.models import Branch
+
+        super().setUp()
+        self.apply_all()
+        users = get_user_model().objects
+        self.editor = users.create_user(username="guard-editor")
+        self.ipam_only = users.create_user(username="guard-ipam-only")
+        for user in (self.editor, self.ipam_only):
+            _grant(user, "ipam", "ipaddress", "view")
+            _grant(user, "ipam", "ipaddress")
+        self.editor_dhcp = _grant(self.editor, "netbox_windows_dhcp_plugin", "reservation")
+        owner = users.create_user(username="guard-owner", is_superuser=True)
+        self.branch = Branch(name="guard", owner=owner)
+        self.branch.save(provision=False)
+        self.addCleanup(self._drop_branch)
+        self.addCleanup(signals._forget_pending)
+        self.branch.provision(user=owner)
+        self.branch.refresh_from_db()
+
+    def _drop_branch(self):
+        from django.db import connections
+
+        connections[self.branch.connection_name].close()
+        self.branch.delete()
+
+    def _edit_in_branch(self, user):
+        from ipam.models import IPAddress
+        from netaddr import IPNetwork
+
+        with branching.writing(self.branch, user):
+            ip = IPAddress.objects.get(pk=Reservation.objects.get().ip_address_id)
+            ip.snapshot()
+            ip.address = IPNetwork(f"{ip.address.ip + 1}/{ip.address.prefixlen}")
+            ip.save()
+            return str(ip.address)
+
+    def test_guard_applies_in_branch(self):
+        from utilities.exceptions import AbortRequest
+
+        with self.assertRaises(AbortRequest):
+            self._edit_in_branch(self.ipam_only)
+
+    def test_merge_and_revert_not_checked(self):
+        address = self._edit_in_branch(self.editor)
+        # The editor lost the DHCP permission since, and the merging user never had it: the edit was checked when it
+        # was made, and who may merge is branching's and change control's business.
+        self.editor_dhcp.delete()
+        self.branch.can_merge = True
+        with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            self.branch.merge(user=self.ipam_only)
+        self.assertEqual(str(Reservation.objects.get().ip_address.address), address)
+        self.branch.can_revert = True
+        with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            self.branch.revert(user=self.ipam_only)
+        self.assertNotEqual(str(Reservation.objects.get().ip_address.address), address)

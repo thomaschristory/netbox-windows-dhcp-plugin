@@ -3,9 +3,37 @@
 Every model has the usual NetBox `view`, `add`, `change` and `delete` permissions, under the
 `netbox_windows_dhcp_plugin` app, for example `netbox_windows_dhcp_plugin.change_windowsserver` or
 `netbox_windows_dhcp_plugin.add_reservation`. The prefixes, IP ranges, IP addresses and MAC addresses that scopes and
-reservations point at keep NetBox's own permissions (`ipam.*`, `dcim.*`). Changing one of those objects changes what
-the next push writes to Windows, so `change` on them is in effect a DHCP permission for the scopes and reservations
-that use them.
+reservations point at keep NetBox's own permissions (`ipam.*`, `dcim.*`).
+
+## Editing IPAM objects that Windows uses
+
+Changing some fields of those objects changes what the next push writes to Windows. Such an edit is a DHCP change,
+so besides NetBox's own `change` permission on the object it needs `change` on every scope or reservation that uses
+it:
+
+| Object | Fields that reach Windows | Also needs |
+|---|---|---|
+| Prefix | the prefix (network and length) | `netbox_windows_dhcp_plugin.change_scope` on the scopes using it |
+| IP range | start and end address | `netbox_windows_dhcp_plugin.change_scope` on the scopes using it |
+| IP address | the address (not the mask) | `netbox_windows_dhcp_plugin.change_reservation` on the reservations using it |
+| MAC address | the MAC address | `netbox_windows_dhcp_plugin.change_reservation` on the reservations using it |
+
+Without it the save is refused, in the UI, bulk import and the REST API (HTTP 400) alike, with a message such as:
+
+```text
+Changing address would change reservation dhcp01/198.18.10.0/198.18.10.25 on Windows. You need the "change
+reservation" permission on it.
+```
+
+Object permissions count: a permission limited to one Windows server (for example the constraint
+`{"scope__server__name": "dhcp01"}` on reservations) allows the edit only for that server's reservations. Every other
+field (status, VRF, tenant, description, tags, DNS name, assigned interface) never reaches Windows, needs no plugin
+permission, and queues no push.
+
+Custom scripts and background API requests are checked like any request, as the user who started them. Not checked:
+saves with no user behind them (`nbshell`, management commands), imports (they write what Windows already has) and
+netbox-branching merges and reverts. With branching, the edit is checked when it is made in the branch; who
+may merge is decided by branching's own permissions and change control.
 
 Actions that connect to Windows need more than viewing:
 
