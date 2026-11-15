@@ -151,13 +151,14 @@ def _on_merge(sender, branch, user=None, **kwargs):
         log.exception("could not queue Windows DHCP pushes after merging %s", branch)
 
 
-# The branch whose merge or revert is replaying changes in this context. netbox-branching sends no signal when a merge
-# fails, so applying_branch() also checks that the branch is still merging or reverting before trusting it.
+# The branch whose merge or revert is replaying changes in this context, with its name and the user merging or
+# reverting it. netbox-branching sends no signal when a merge fails, so applying_branch() also checks that the branch
+# is still merging or reverting before trusting it.
 _applying = ContextVar("netbox_windows_dhcp_plugin_applying_branch", default=None)
 
 
 def _on_pre_apply(sender, branch, user=None, **kwargs):
-    _applying.set(branch.pk)
+    _applying.set((branch.pk, branch.name, user))
 
 
 def clear_applying():
@@ -166,19 +167,23 @@ def clear_applying():
 
 
 def applying_branch():
-    """True while netbox-branching merges or reverts a branch in this context (its replayed saves land on main)."""
-    pk = _applying.get()
-    if pk is None or not branching_installed():
-        return False
+    """
+    While netbox-branching merges or reverts a branch in this context (its replayed saves land on main): the branch
+    name and the merging or reverting user, else None.
+    """
+    mark = _applying.get()
+    if mark is None or not branching_installed():
+        return None
     from netbox_branching.choices import BranchStatusChoices
     from netbox_branching.models import Branch
 
+    pk, name, user = mark
     busy = (BranchStatusChoices.MERGING, BranchStatusChoices.REVERTING)
-    return Branch.objects.filter(pk=pk, status__in=busy).exists()
+    return (name, user) if Branch.objects.filter(pk=pk, status__in=busy).exists() else None
 
 
 def _on_pre_revert(sender, branch, user=None, **kwargs):
-    _on_pre_apply(sender, branch)
+    _on_pre_apply(sender, branch, user)
     # A revert that fails, or has nothing to revert, sends no post_revert: do not let those entries pile up.
     if len(_reverting) > 50:
         _reverting.clear()

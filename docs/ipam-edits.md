@@ -62,10 +62,12 @@ reports it as protected); delete or re-point the scope or reservation first.
 flowchart TD
     save([Someone saves a prefix, IP range,<br/>IP address or MAC address]) --> fields{Did a field Windows<br/>receives change?}
     fields -- no --> ok1([Saved. No push queued])
-    fields -- yes --> skip{An import, or a<br/>branch merge or revert?}
-    skip -- import --> ok2([Saved. No push: NetBox<br/>now matches Windows])
-    skip -- "merge or revert" --> ok3([Saved. The merge or revert<br/>queues its own push])
-    skip -- no --> who{Is there a user<br/>behind the save?}
+    fields -- yes --> skip{An import?}
+    skip -- yes --> ok2([Saved. No push: NetBox<br/>now matches Windows])
+    skip -- no --> merge{A branch merge<br/>or revert?}
+    merge -- yes --> merger([The user checked is the one<br/>merging or reverting])
+    merger --> used
+    merge -- no --> who{Is there a user<br/>behind the save?}
     who -- "no (nbshell, management command)" --> ok4([Saved, push queued.<br/>NetBox writes no change log entry])
     who -- yes --> used{Does a scope or<br/>reservation use it?}
     used -- no --> ok5([Saved. No push:<br/>nothing on Windows uses it])
@@ -209,20 +211,37 @@ before; they still show on each push's trail.
 | Scripts run with **Commit changes** unticked | no | NetBox gives them no user context; they save nothing |
 | `nbshell`, other management commands | no | there is no user to check. NetBox writes no change log entry for such saves; the push lists an **Edit** with no user and no **Changes** link |
 | Applying import proposal items, imports into a branch or main | no | they write what Windows already holds |
-| netbox-branching merge and revert | no | the edits were checked when made in the branch, see below |
+| netbox-branching merge and revert | yes | as the merging or reverting user, against main, see below |
 | netbox-branching sync | no | it copies into a branch edits already made on main |
 | Creating a new prefix, range, address or MAC | no | nothing can use an object that did not exist |
 
 ### With netbox-branching
 
-An edit made **inside a branch** is checked like any other, against the scopes and reservations **the branch**
-holds. When the branch is **merged** (or reverted), the replayed changes are not checked again: who may merge is
-decided by netbox-branching's permissions and, when installed, change control's review. The push after the merge is
-listed as triggered by the merge.
+The check runs twice for a branch:
 
-One gap follows from this: a scope or reservation created **on main after the branch was created** is not in the
-branch, so an edit made in the branch is not checked against it. If that matters, keep branches short-lived or
-review merges that touch IPAM objects used by DHCP.
+1. **Editing inside the branch**: as the user editing, against the scopes and reservations **the branch** holds.
+2. **Merging (or reverting) the branch**: every replayed change to one of the four fields is checked again, as the
+   **user who merges or reverts**, against the scopes and reservations **on main** at that moment, before and after
+   the change. This covers a scope or reservation created on main after the branch was created, which the branch
+   never saw.
+
+The merging user is checked, not each change's author, so the rule is the same whatever the merge strategy
+(netbox-branching's iterative strategy replays changes as their authors, squash as the merging user), and someone who
+lost access since making an edit does not block the merge.
+
+If the merging user lacks the permission, **nothing is merged**: netbox-branching rolls the merge back, the branch
+stays ready to merge, and the merge job fails with a message such as:
+
+```text
+Branch rename-nas cannot be merged or reverted by reviewer: Changing address would change reservation
+dhcp01/198.18.50.0/198.18.50.101 on Windows. You need the "change reservation" permission on it.
+```
+
+With change control, this means whoever clicks **Merge** on a change request that touches DHCP-related IPAM objects
+needs `change` on those scopes or reservations, as well as change control's own permission to merge. A revert works
+the same way, as the reverting user.
+
+The push after a merge or revert is listed as triggered by it.
 
 ## Following a change from NetBox to Windows
 
@@ -314,9 +333,11 @@ and range of a failover scope (`change_scope` on both scopes) and for a MAC addr
 **"A script that worked before 0.4.0 now fails."** Scripts run as the user who started them; give that user the
 plugin permission, or run the change as a user who has it.
 
-**"An import or a merge changed an address without the permission."** By design: imports write what Windows already
-holds, and merges were checked when the edits were made in the branch (see
-[With netbox-branching](#with-netbox-branching)).
+**"An import changed an address without the permission."** By design: imports write what Windows already holds.
+
+**"The merge job failed: Branch ... cannot be merged or reverted by ..."** A change in the branch would change a scope
+or reservation on main that the merging user may not change (perhaps one created on main after the branch was made).
+Nothing was merged. Merge as a user who has the permission named in the message, or ask an administrator for it.
 
 **"A push ran after a merge, although the branch only changed descriptions."** Direct edits of fields Windows does
 not receive queue no push, but a merge queues one push per server it touches. That push finds nothing to change.

@@ -187,7 +187,7 @@ def _grant(user, app_label, model, action="change"):
 
 @skipUnless(apps.is_installed("netbox_branching"), "netbox-branching is not installed")
 class BranchGuardTest(ImportTestMixin, TransactionTestCase):
-    """The IPAM edit guard (#102) in a branch, and its absence when a merge or revert replays the change."""
+    """The IPAM edit guard (#102) in a branch, and at merge and revert, where the merging user is checked."""
 
     serialized_rollback = True
 
@@ -234,19 +234,76 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
         with self.assertRaises(AbortRequest):
             self._edit_in_branch(self.ipam_only)
 
-    def test_merge_and_revert_not_checked(self):
-        address = self._edit_in_branch(self.editor)
-        # The editor lost the DHCP permission since, and the merging user never had it: the edit was checked when it
-        # was made, and who may merge is branching's and change control's business.
-        self.editor_dhcp.delete()
+    def _merge(self, user):
         self.branch.can_merge = True
         with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
-            self.branch.merge(user=self.ipam_only)
-        self.assertEqual(str(Reservation.objects.get().ip_address.address), address)
+            self.branch.merge(user=user)
+
+    def _address(self):
+        return str(Reservation.objects.get().ip_address.address)
+
+    def test_merge_checks_the_merging_user(self):
+        from netbox_branching.choices import BranchStatusChoices
+        from utilities.exceptions import AbortRequest
+
+        before = self._address()
+        self._edit_in_branch(self.editor)
+        with self.assertRaises(AbortRequest):
+            self._merge(self.ipam_only)
+        self.assertEqual(self._address(), before)
+        self.branch.refresh_from_db()
+        self.assertEqual(self.branch.status, BranchStatusChoices.READY)
+
+    def test_merge_by_a_user_with_the_permission(self):
+        # The editor lost the permission since: the merging user's is what counts at merge time.
+        address = self._edit_in_branch(self.editor)
+        self.editor_dhcp.delete()
+        merger = get_user_model().objects.create_user(username="guard-merger")
+        _grant(merger, "netbox_windows_dhcp_plugin", "reservation")
+        self._merge(merger)
+        self.assertEqual(self._address(), address)
+
+    def test_stale_branch_edit_is_checked_at_merge(self):
+        # The address exists when the branch is created but gains its reservation on main only afterwards: the edit
+        # in the branch sees no dependent and is allowed, the merge must check main's.
+        from ipam.models import IPAddress
+        from netaddr import IPNetwork
+        from netbox_branching.models import Branch
+        from utilities.exceptions import AbortRequest
+
+        spare = IPAddress.objects.create(address=IPNetwork("10.1.0.77/24"))
+        owner = get_user_model().objects.get(username="guard-owner")
+        stale = Branch(name="guard-stale", owner=owner)
+        stale.save(provision=False)
+        self.addCleanup(self._drop, stale)
+        stale.provision(user=owner)
+        stale.refresh_from_db()
+        Reservation.objects.create(scope=Reservation.objects.get().scope, ip_address=spare, name="late")
+        with branching.writing(stale, self.ipam_only):
+            ip = IPAddress.objects.get(pk=spare.pk)
+            ip.snapshot()
+            ip.address = IPNetwork("10.1.0.78/24")
+            ip.save()
+        stale.can_merge = True
+        with self.assertRaises(AbortRequest), mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            stale.merge(user=self.ipam_only)
+        self.assertEqual(str(IPAddress.objects.get(pk=spare.pk).address), "10.1.0.77/24")
+
+    def _drop(self, branch):
+        from django.db import connections
+
+        connections[branch.connection_name].close()
+        branch.delete()
+
+    def test_revert_checks_the_reverting_user(self):
+        from utilities.exceptions import AbortRequest
+
+        address = self._edit_in_branch(self.editor)
+        self._merge(self.editor)
         self.branch.can_revert = True
-        with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+        with self.assertRaises(AbortRequest), mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
             self.branch.revert(user=self.ipam_only)
-        self.assertNotEqual(str(Reservation.objects.get().ip_address.address), address)
+        self.assertEqual(self._address(), address)
 
 
 class ApplyingBranchMarkTest(TestCase):
@@ -262,7 +319,7 @@ class ApplyingBranchMarkTest(TestCase):
             signals._forget_pending,
         ):
             branching._on_pre_apply(None, branch=fake)
-            self.assertEqual(branching._applying.get(), 99)
+            self.assertEqual(branching._applying.get()[0], 99)
             close()
             self.assertIsNone(branching._applying.get())
 

@@ -100,7 +100,7 @@ def _describe(codename, obj):
     return f"{obj.scope.server.name}/{obj.scope.scope_id}/{obj.ip_address.address.ip if obj.ip_address_id else obj}"
 
 
-def _refusal(fields, missing, user):
+def _refusal(fields, missing, user, branch=None):
     """
     The message: each scope or reservation the user may not change, named only when the user may view it (the
     message must not reveal objects hidden from them, not even how many there are).
@@ -128,6 +128,9 @@ def _refusal(fields, missing, user):
             f"Changing {names} would change one or more {kind}s on Windows that you may not view. You need the "
             f'"change {kind}" permission on them.'
         )
+    if branch:
+        # Shown in the failed merge (or revert) job: say which branch and whose permission was missing.
+        lines.insert(0, f"Branch {branch} cannot be merged or reverted by {user}:")
     return " ".join(lines)
 
 
@@ -171,17 +174,25 @@ def check_edit(sender, instance, raw=False, **kwargs):
     from .integrations.branching import applying_branch
     from .signals import pushes_suppressed
 
-    # Import apply writes what Windows already has; a merge or revert replays edits checked when they were made.
-    if pushes_suppressed() or applying_branch():
+    # Imports write what Windows already holds.
+    if pushes_suppressed():
         return
+    if applying := applying_branch():
+        # A merge or revert replays the branch's changes on main as their authors (iterative strategy) or as the
+        # merging user (squash): check the merging or reverting user, against main's scopes and reservations, which
+        # may differ from what the branch held when the edit was made there.
+        branch, user = applying
+        instance._nbwd_branch = branch
+    else:
+        instance._nbwd_branch = None
+        user = _request_user()
     # nbshell and management commands have no user: nothing to check (NetBox writes no change log entry either).
-    user = _request_user()
-    if user is None:
+    if user is None or not user.is_authenticated:
         return
     from utilities.exceptions import AbortRequest
 
     if missing := _missing(instance, user):
-        raise AbortRequest(_refusal(fields, missing, user))
+        raise AbortRequest(_refusal(fields, missing, user, instance._nbwd_branch))
     # Checked again after the save (recheck_edit): a permission constraint can depend on the edited value itself, for
     # example reservations allowed in part of a subnet only.
     instance._nbwd_guard_user = user
@@ -204,7 +215,7 @@ def recheck_edit(sender, instance, raw=False, **kwargs):
         # would commit the edit.
         stored = {f: v for f, v in instance._nbwd_stored.items() if f in instance._nbwd_push_fields}
         type(instance).objects.filter(pk=instance.pk).update(**stored)
-        raise AbortRequest(_refusal(instance._nbwd_push_fields, missing, user))
+        raise AbortRequest(_refusal(instance._nbwd_push_fields, missing, user, getattr(instance, "_nbwd_branch", None)))
 
 
 def connect():

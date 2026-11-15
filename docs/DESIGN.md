@@ -136,10 +136,13 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   checked like an edit. Covered: edit view, bulk edit (prefix length), bulk import, REST API, scripts and background
   requests, which carry their user. Not checked: saves with no user (nbshell, management commands; NetBox writes no
   change log entry for them either), imports (proposal apply, into a branch, into main: all under
-  `push_suppressed`, they write what Windows has) and netbox-branching merges and reverts, which replay
-  edits already checked in the branch (`integrations.branching.applying_branch()`: a context variable set by
-  `pre_merge`/`pre_revert`, trusted only while the branch is still merging or reverting, since a failed merge sends
-  no closing signal). It is NetBox's documented plugin mechanism (`docs/plugins/development/exceptions.md`);
+  `push_suppressed`, they write what Windows has). netbox-branching merges and reverts are checked as the merging
+  or reverting user (not each change's author, so the rule does not depend on the merge strategy), against main's
+  scopes and reservations, which may include ones created after the branch: `integrations.branching.applying_branch()`
+  returns the branch name and that user from a context variable set by `pre_merge`/`pre_revert`, trusted only while
+  the branch is still merging or reverting (a failed merge sends no closing signal); a refusal aborts the merge,
+  which netbox-branching rolls back and leaves the branch ready (owner's decision after the adversarial review of
+  #112). It is NetBox's documented plugin mechanism (`docs/plugins/development/exceptions.md`);
   `CUSTOM_VALIDATORS` belong to the admin's configuration.
 - **Push trail.** `enqueue_push(triggers=...)` records `PushTrigger` rows (source: edit, sync_now, merge, revert;
   user; request ID; branch) for the server, whether it queues a job or a waiting one will carry the change. A push

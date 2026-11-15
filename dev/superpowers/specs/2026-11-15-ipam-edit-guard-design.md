@@ -24,8 +24,8 @@ debounce. The owner's two concerns:
 
 - Holding pushes for approval. A push reconciles the whole server, so the next push by anyone would carry a held
   change anyway; only refusing the edit protects Windows.
-- Checks on saves with no user behind them (nbshell, management commands) and on branch merges and reverts. The
-  change log still records them. Custom scripts and background API requests do carry their user (NetBox wraps them
+- Checks on saves with no user behind them (nbshell, management commands); NetBox records no change log entry for
+  them either. Custom scripts and background API requests do carry their user (NetBox wraps them
   in `event_tracking` with a request), so they are checked.
 - Deletes: the links are PROTECT, so these objects cannot be deleted while in use (#107 covers that experience).
 - A backport to `release/0.1` (no new features there).
@@ -56,7 +56,7 @@ debounce. The owner's two concerns:
 **Guard.** A `pre_save` receiver on these four models, connected in `signals.connect()`:
 
 1. Leave at once for new objects (nothing can point at them yet), inside `push_suppressed()` (import apply writes
-   what Windows already has), during a netbox-branching merge or revert, and when `current_request` holds no
+   what Windows already has), and when `current_request` holds no
    authenticated user.
 2. Read the stored values of the watched fields (one query by primary key) and compare. No change: leave.
 3. Find the dependent scopes or reservations. None: leave.
@@ -66,9 +66,11 @@ debounce. The owner's two concerns:
    and the missing permission, for example: "Changing this IP address would change reservation
    dhcp01/198.18.10.0/198.18.10.25 on Windows. You need the change reservation permission on it."
 
-Branches: the guard runs for saves in a branch too (the request user is known). Merges and reverts replay changes
-with an ordinary `save()` under the merging user's request, so the guard detects them explicitly and steps aside: the
-edit was already checked in the branch, and who may merge is governed by branching and change control.
+Branches: the guard runs for saves in a branch too (the request user is known), and again at merge and revert, as
+the merging or reverting user against main's scopes and reservations. Changed after the adversarial review of #112:
+the first version skipped merges, which let an edit made in an old branch, where nothing used the object yet, reach
+Windows unchecked once main had built a scope or reservation on it. The owner chose to check the merging user (not
+each change's author) so the rule does not depend on the merge strategy.
 
 **No-op pushes.** For the four core models, `_changed` queues a push only when a watched field changed (or on
 delete). The `pre_save` receiver marks the instance with the result of step 2 so `post_save` does not query again.
