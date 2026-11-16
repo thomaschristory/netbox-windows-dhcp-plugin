@@ -101,7 +101,8 @@ def test_prepare_keeps_the_secret_out_of_the_script_text() -> None:
     secret = "s3'cr\u00e9t.with:separators"
     args, stdin = prepare("# netbox-windows-dhcp-plugin:x\n", {"name": "fo", "shared_secret": secret})
     assert stdin.endswith("\r\n") and "\n" not in stdin[:-2]
-    script_b64, pair = stdin.strip().split(".")
+    script_b64, pair, count = stdin.strip().split(".")
+    assert count == "1"
     script = base64.b64decode(script_b64).decode("utf-8")
     assert secret not in script and "shared_secret" not in script and '"name":"fo"' in script
     name, value = pair.split(":")
@@ -112,7 +113,8 @@ def test_prepare_keeps_the_secret_out_of_the_script_text() -> None:
 
 def test_prepare_without_secrets_sends_only_the_script() -> None:
     _, stdin = prepare("# body", {"a": 1, "shared_secret": ""})
-    assert "." not in stdin and base64.b64decode(stdin.strip()).decode() == render("# body", {"a": 1})
+    script_b64, count = stdin.strip().split(".")
+    assert count == "0" and base64.b64decode(script_b64).decode() == render("# body", {"a": 1})
 
 
 def test_render_escapes_quotes() -> None:
@@ -157,10 +159,11 @@ def test_command_encoding() -> None:
     enc = cmd[len(prefix) :]
     assert base64.b64decode(enc).decode("utf-16-le") == BOOTSTRAP
     assert stdin.endswith("\r\n")
-    assert base64.b64decode(stdin.strip()).decode("utf-8") == "Write-Output 'h\u00e9llo'"
+    assert stdin.strip().endswith(".0")
+    assert base64.b64decode(stdin.strip()[: -len(".0")]).decode("utf-8") == "Write-Output 'h\u00e9llo'"
     args, stdin2 = command_argv("x")
     assert args[-2] == "-EncodedCommand" and args[-1] == enc
-    assert stdin2 == base64.b64encode(b"x").decode() + "\r\n"
+    assert stdin2 == base64.b64encode(b"x").decode() + ".0\r\n"
 
 
 def test_bootstrap_matches_go() -> None:

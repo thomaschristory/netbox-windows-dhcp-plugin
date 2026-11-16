@@ -26,10 +26,11 @@ def split_rendered(rendered: str) -> tuple[dict, str]:
 def fake_host_response(server: FakeDhcpServer, stdin: str) -> tuple[bytes, bytes, int]:
     """What powershell.exe running the bootstrap would print, with ``server`` as the DHCP role."""
     parts = stdin.strip().split(".")
+    assert parts[-1] == str(len(parts) - 2), "the line ends with the number of secrets"
     rendered = base64.b64decode(parts[0]).decode("utf-8")
     params, wrapped = split_rendered(rendered)
     # The secrets that the bootstrap reads into $wdSecrets, which the preamble copies onto $p.
-    for pair in parts[1:]:
+    for pair in parts[1:-1]:
         name, value = (base64.b64decode(x).decode("utf-8") for x in pair.split(":"))
         params[name] = value
     envelope = server.run(wrapped, params)

@@ -237,8 +237,10 @@ def render(script: str, params: Mapping[str, Any] | None = None) -> str:
 # sometimes loses the end of stdin, and reading to the end then waited until the timeout
 # (lab, about 1 run in 15). ReadLine also returns at the end of stdin.
 #
-# The line is "<script>" or "<script>.<name>:<value>.<name>:<value>...", every part base64
-# UTF-8 ('.' and ':' are not in the base64 alphabet). The name/value pairs are secrets: the
+# The line is "<script>.<name>:<value>....<count>": the script and each name and value base64
+# UTF-8 ('.' and ':' are not in the base64 alphabet), then the number of pairs in decimal.
+# The count comes last so that a line cut short fails here: without it a cut could drop or
+# shorten a secret and the script would run without noticing. The name/value pairs are secrets: the
 # bootstrap puts them in $wdSecrets, which the script reads, so they never appear in the
 # script block that [scriptblock]::Create compiles and script block logging records. Only
 # .NET methods touch them here, so module logging does not record them either.
@@ -247,9 +249,10 @@ BOOTSTRAP = (
     "$ProgressPreference = 'SilentlyContinue'\n"
     "$in = [Console]::In.ReadLine()\n"
     "$parts = $in.Trim().Split('.')\n"
+    "if ($parts.Length -lt 2 -or $parts[-1] -cne [string]($parts.Length - 2)) { throw 'incomplete script input' }\n"
     "$src = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[0]))\n"
     "$wdSecrets = @{}\n"
-    "for ($i = 1; $i -lt $parts.Length; $i++) {\n"
+    "for ($i = 1; $i -lt $parts.Length - 1; $i++) {\n"
     "    $nv = $parts[$i].Split(':')\n"
     "    $wdSecrets[[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($nv[0]))] = "
     "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($nv[1]))\n"
@@ -273,8 +276,8 @@ def _b64(s: str) -> str:
 def command_argv(rendered: str, secrets: Mapping[str, str] | None = None) -> tuple[list[str], str]:
     """Like ``command`` but return the argument vector (without the executable)."""
     args = [*POWERSHELL_ARGS, "-EncodedCommand", _encoded_bootstrap()]
-    line = ".".join([_b64(rendered), *(_b64(k) + ":" + _b64(v) for k, v in (secrets or {}).items())])
-    return args, line + "\r\n"
+    pairs = [_b64(k) + ":" + _b64(v) for k, v in (secrets or {}).items()]
+    return args, ".".join([_b64(rendered), *pairs, str(len(pairs))]) + "\r\n"
 
 
 def command(rendered: str, secrets: Mapping[str, str] | None = None) -> tuple[str, str]:

@@ -512,10 +512,22 @@ def test_secret_reaches_p_but_not_the_script_text(pwsh_path: str, secret: str) -
     assert data == {"secret": secret, "in_src": False, "name": "fo"}
 
 
+@pytest.mark.parametrize("cut", [1, 2, 4, 9, 13])
+def test_input_cut_short_is_refused(pwsh_path: str, cut: int) -> None:
+    """A line cut short must not run with a shortened or missing secret (review of #104)."""
+    body = Script("secret.cut", "$out = @{ secret = $p.shared_secret }").wrap()
+    _, full = prepare(body, {"shared_secret": "correct-horse-battery", "name": "x"})
+    args, _ = prepare(body, {})
+    stdin = full.strip()[:-cut] + "\r\n"
+    p = subprocess.run([pwsh_path, *args], input=stdin.encode(), capture_output=True, timeout=120)
+    assert p.returncode != 0 or not p.stdout.strip(), p.stdout
+    assert b"incomplete script input" in p.stderr
+
+
 def test_no_secret_leaves_shared_secret_unset(pwsh_path: str) -> None:
     body = Script("secret.none", "$out = @{ set = [bool]$p.shared_secret; n = @($wdSecrets.Keys).Count }").wrap()
     args, stdin = prepare(body, {"shared_secret": ""})
-    assert "." not in stdin
+    assert stdin.strip().endswith(".0")
     p = subprocess.run([pwsh_path, *args], input=stdin.encode(), capture_output=True, timeout=120)
     assert p.returncode == 0, p.stderr
     assert parse(decode_output(p.stdout)) == (True, {"set": False, "n": 0})
