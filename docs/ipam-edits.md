@@ -224,7 +224,8 @@ The check runs twice for a branch:
 2. **Merging (or reverting) the branch**: every replayed change to one of the four fields is checked again, as the
    **user who merges or reverts**, against the scopes and reservations **on main** at that moment, before and after
    the change. This covers a scope or reservation created on main after the branch was created, which the branch
-   never saw.
+   never saw. A merge also checks against the scopes and reservations **the branch** puts on the object, as main
+   may not have them yet when the change is replayed.
 
 The merging user is checked, not each change's author, so the same person is checked whatever the merge strategy
 (netbox-branching's iterative strategy replays changes as their authors, squash as the merging user), and someone who
@@ -236,8 +237,10 @@ is governed by branching's own rules, as for any other object. Two cases where t
 
 - **Reverting an import.** The import's changes are exempt when a branch is merged, not when it is reverted: undoing
   them puts back values Windows no longer holds, and the next push writes them there.
-- **An address the import created, then edited by hand in the branch.** The squash strategy merges the two as one
-  creation; the hand edit is still checked, as the merging user, against the reservations the branch puts on it.
+- **A prefix, range, address or MAC created in the branch, then edited by hand there.** The squash strategy merges the
+  two as one creation; the hand edit is still checked, as the merging user, against the scopes and reservations the
+  branch puts on it, as the iterative strategy checks it. Creating the object alone is not checked, and neither is
+  an edit Windows would not see (the mask alone, or an edit undone later).
 
 If the merging user lacks the permission, **nothing is merged**: netbox-branching rolls the merge back, the branch
 stays ready to merge (a refused revert leaves it merged), and the merge job ends as errored with a message such as:
@@ -350,11 +353,11 @@ plugin permission, or run the change as a user who has it.
 or reservation on main that the merging user may not change (perhaps one created on main after the branch was made).
 Nothing was merged. Merge as a user who has the permission named in the message, or ask an administrator for it.
 
-**"The merge is refused for a reservation the branch deletes or creates anyway."** With the iterative merge strategy,
-changes are replayed in the order they were made and each is checked against main as it stands at that point: an
-address edited before its reservation is deleted, or edited after the reservation was created in the same branch,
-is checked against that reservation. The squash strategy applies deletes first and creates last, so it does not
-refuse these.
+**"The merge is refused for a reservation the branch deletes or creates anyway."** An address edited in the branch
+is checked against the reservations the branch puts on it, under both merge strategies. With the iterative strategy,
+changes are replayed in the order they were made and each is also checked against main as it stands at that point:
+an address edited before its reservation is deleted is checked against that reservation. The squash strategy
+applies deletes first, so it does not refuse that case.
 
 **"A push ran after a merge, although the branch only changed descriptions."** Direct edits of fields Windows does
 not receive queue no push, but a merge queues one push per server it touches. That push finds nothing to change.

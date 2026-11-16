@@ -27,7 +27,9 @@ All notable changes to this project are documented here. The format follows
   merge without the permission, also after a sync of main's edits to other fields (description, tags) or a hand
   edit of those fields in the branch; a change in the branch of the address, prefix, range or MAC (even of its mask
   alone), by hand or synced from main, is still checked, and so is reverting an import branch (it puts back values
-  Windows no longer holds) and a squash merge that folds a hand edit of an imported address into its creation. Issues
+  Windows no longer holds). At merge, an edit is also checked against the scopes and reservations the branch puts on
+  the object (squash creates them after replaying the edit), and a squash merge that folds a hand edit into an
+  object's creation is checked like the iterative strategy checks it. Issues
   #102, #113, #115, #116.
 - Direct edits of a prefix, IP range, IP address or MAC address that do not change what Windows receives
   (description, status, tags...) no longer queue a push (a branch merge still queues one per server it touches).

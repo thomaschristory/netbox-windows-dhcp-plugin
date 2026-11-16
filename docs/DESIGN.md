@@ -152,9 +152,11 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   main's description edit or a hand edit of the tags, do not count (#115). Reverts get no import exemption: undoing
   an import puts back values Windows no longer holds. netbox-branching replays a create as a raw save, which the guard
   otherwise skips; during a merge (`_check_replayed_create`), a create is checked when the branch holds a non-import
-  update of a watched field for the object (squash folds an import's create and a later hand edit into one create),
-  as the merging user against the scopes and reservations using it in the branch schema (they are created on main
-  after it). The guard reads the stored row and the dependents from the database the save writes to (the `using` of
+  update of a watched field for the object that changes what a push sends (squash folds the create and later edits
+  into one create), as the merging user against the scopes and reservations using it in the branch schema (they are
+  created on main after it). Replayed updates in a merge are checked against main's dependents and the branch's
+  (`_merge_dependents`): squash replays every update before any create, so a reservation the branch puts on an
+  existing address is not on main yet. The guard reads the stored row and the dependents from the database the save writes to (the `using` of
   the save), not wherever the router would read, so a merge run with a branch active (custom code such as a
   script running in a branch; the merge job itself runs with none) is checked against main. A merge or revert with no
   user (a merge job whose user was deleted, a script calling `merge(user=None)`) is refused when a replayed change
