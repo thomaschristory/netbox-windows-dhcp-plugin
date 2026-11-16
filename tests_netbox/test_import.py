@@ -552,6 +552,20 @@ class BranchImportTest(ImportTestMixin, TransactionTestCase):
             result.branch.merge(user=self.user)
         self.assertEqual(str(NetBoxScope.objects.get().ip_range.start_address.ip), "10.1.0.30")
 
+    def test_merging_an_import_branch_without_a_user(self):
+        # The import's own changes need nobody's permission, so a merge job whose user is gone still merges them.
+        from dataclasses import replace
+
+        self.apply_all()
+        client = DhcpClient(self.fake)
+        client.set_scope(replace(client.get_scope("10.1.0.0"), start_range="10.1.0.30"))
+        result = importer.import_to_branch(self.server, self.state(), self.user)
+        self.assertEqual(result.failed, [])
+        result.branch.can_merge = True
+        with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            result.branch.merge(user=None)
+        self.assertEqual(str(NetBoxScope.objects.get().ip_range.start_address.ip), "10.1.0.30")
+
     def test_repeated_import_reuses_the_branch(self):
         first = importer.import_to_branch(self.server, self.state(), self.user)
         self.client.remove_reservation("10.1.0.50")

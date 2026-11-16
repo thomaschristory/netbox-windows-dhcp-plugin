@@ -431,22 +431,65 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
             self._merge(self.ipam_only)
         self.assertEqual(self._address(), before)
 
-    def test_merge_without_a_user_checks_the_replayed_change_author(self):
-        # A merge job whose user was deleted: the iterative strategy replays each change as its author, who must
-        # still hold the permission.
+    NO_USER = "Branch guard cannot be merged or reverted without a user: changing address would change"
+
+    def test_merge_without_a_user_is_refused(self):
+        # A merge job whose user was deleted: nobody to check, even though the change's author has the permission.
+        before = self._address()
+        self._edit_in_branch(self.editor)
+        from utilities.exceptions import AbortRequest
+
+        with self.assertRaisesMessage(AbortRequest, self.NO_USER):
+            self._merge(None)
+        self.assertEqual(self._address(), before)
+
+    def test_squash_merge_without_a_user_is_refused(self):
+        # Squash replays as the merging user, here nobody: before #116 the change was not checked at all.
         from utilities.exceptions import AbortRequest
 
         before = self._address()
         self._edit_in_branch(self.editor)
-        self.editor_dhcp.delete()
-        with self.assertRaisesMessage(AbortRequest, "Branch guard cannot be merged or reverted by guard-editor"):
+        self.branch.merge_strategy = "squash"
+        self.branch.save(update_fields=["merge_strategy"])
+        with self.assertRaisesMessage(AbortRequest, self.NO_USER):
             self._merge(None)
         self.assertEqual(self._address(), before)
 
-    def test_merge_without_a_user_by_an_author_with_the_permission(self):
+    def test_revert_without_a_user_is_refused(self):
+        from utilities.exceptions import AbortRequest
+
         address = self._edit_in_branch(self.editor)
-        self._merge(None)
+        self._merge(self.editor)
+        self.branch.can_revert = True
+        with (
+            self.assertRaisesMessage(AbortRequest, self.NO_USER),
+            mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"),
+        ):
+            self.branch.revert(user=None)
         self.assertEqual(self._address(), address)
+
+    def test_merge_without_a_user_of_changes_windows_never_sees(self):
+        # An address no scope or reservation uses: nothing to refuse.
+        from ipam.models import IPAddress
+        from netaddr import IPNetwork
+        from netbox_branching.models import Branch
+
+        spare = IPAddress.objects.create(address=IPNetwork("10.1.0.77/24"))
+        owner = get_user_model().objects.get(username="guard-owner")
+        branch = Branch(name="guard-spare", owner=owner)
+        branch.save(provision=False)
+        self.addCleanup(self._drop, branch)
+        branch.provision(user=owner)
+        branch.refresh_from_db()
+        with branching.writing(branch, self.editor):
+            ip = IPAddress.objects.get(pk=spare.pk)
+            ip.snapshot()
+            ip.address = IPNetwork("10.1.0.78/24")
+            ip.save()
+        branch.can_merge = True
+        with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            branch.merge(user=None)
+        self.assertEqual(str(IPAddress.objects.get(pk=spare.pk).address), "10.1.0.78/24")
 
     def test_mark_of_a_branch_no_longer_merging_is_ignored_even_under_its_request_id(self):
         # A failed merge resets the branch to ready but sends no closing signal: even a save under one of the branch's
