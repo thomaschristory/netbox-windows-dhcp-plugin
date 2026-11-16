@@ -11,7 +11,7 @@ import hmac
 import os
 import uuid
 
-from netaddr import EUI, IPNetwork
+from netaddr import EUI, AddrFormatError, IPNetwork
 
 PLUGIN = "netbox_windows_dhcp_plugin"
 
@@ -116,6 +116,35 @@ def is_import_request(value):
     except (TypeError, ValueError, AttributeError):
         return False
     return hmac.compare_digest(raw[8:], _tag(raw[:8]))
+
+
+def _alters_watched(label, prechange, postchange):
+    """Whether a change log entry (its pre- and postchange data, None for a create or delete) alters a watched field."""
+    prechange, postchange = prechange or {}, postchange or {}
+    for field in WATCHED[label]:
+        before, after = prechange.get(field), postchange.get(field)
+        try:
+            if push_value(label, field, before) != push_value(label, field, after):
+                return True
+        except (ValueError, TypeError, AddrFormatError):
+            # A value this code cannot read: count it as a change, which only makes the check stricter.
+            if before != after:
+                return True
+    return False
+
+
+def import_only(label, changes):
+    """
+    Whether the branch changes of one object, [(request ID, prechange data, postchange data)], come from an import as
+    far as Windows is concerned: every change that alters a watched field is the import's (and there is one). Changes
+    that leave the watched fields alone, such as main's description edit brought in by a sync (#115) or a hand edit of
+    the tags, cannot pass anything off as the import's, so they do not count. A hand edit of a watched field does:
+    squash replays all of an object's changes under one request ID, which may be the import's.
+    """
+    watched = [
+        request_id for request_id, prechange, postchange in changes if _alters_watched(label, prechange, postchange)
+    ]
+    return bool(watched) and all(is_import_request(r) for r in watched)
 
 
 # The refusal names at most this many scopes or reservations, then counts the rest.
@@ -225,10 +254,11 @@ def check_edit(sender, instance, raw=False, **kwargs):
         # A merge or revert replays the branch's changes on main as their authors (iterative strategy) or as the
         # merging user (squash): check the merging or reverting user, against main's scopes and reservations, which
         # may differ from what the branch held when the edit was made there. An import's own changes are not checked:
-        # only when every change the branch holds for this object is the import's, as squash replays an object's
-        # changes under its last change's request ID, which must not pass a hand edit off as the import's.
-        branch, user, request_ids = applying
-        if all(is_import_request(r) for r in request_ids):
+        # only when every change the branch holds for this object that alters a watched field is the import's, as
+        # squash replays an object's changes under its last change's request ID, which must not pass a hand edit off
+        # as the import's (see import_only).
+        branch, user, changes = applying
+        if import_only(instance._meta.label_lower, changes):
             return
         instance._nbwd_branch = branch
         if user is None or not user.is_authenticated:

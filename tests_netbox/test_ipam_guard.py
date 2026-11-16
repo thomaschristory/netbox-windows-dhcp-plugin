@@ -437,3 +437,34 @@ class ImportRequestIdTest(TestCase):
     def test_other_request_ids_are_not(self):
         for value in (uuid.uuid4(), None, "not-a-uuid", str(uuid.uuid4())):
             self.assertFalse(ipam_guard.is_import_request(value))
+
+    def test_import_only_counts_changes_of_watched_fields(self):
+        # #115: a change that leaves the watched fields alone (main's description edit brought in by a sync, a hand
+        # edit of the tags) does not take the exemption away from the import's own changes.
+        imported, other = ipam_guard.import_request_id(), uuid.uuid4()
+        address = {"address": "10.1.0.5/24", "description": ""}
+        moved = {"address": "10.1.0.6/24", "description": ""}
+        described = {"address": "10.1.0.6/24", "description": "synced"}
+        label = "ipam.ipaddress"
+        self.assertTrue(ipam_guard.import_only(label, [(imported, address, moved), (other, moved, described)]))
+        # The mask is not sent to Windows: changing it alone is not a change of the address.
+        remasked = {"address": "10.1.0.6/16", "description": ""}
+        self.assertTrue(ipam_guard.import_only(label, [(imported, address, moved), (other, moved, remasked)]))
+        # A hand edit of the address still counts, before or after the import's.
+        self.assertFalse(ipam_guard.import_only(label, [(other, address, moved), (imported, moved, described)]))
+        # A create or a delete alters the address too.
+        self.assertFalse(ipam_guard.import_only(label, [(imported, address, moved), (other, None, moved)]))
+        self.assertFalse(ipam_guard.import_only(label, [(imported, address, moved), (other, moved, None)]))
+        # No change of a watched field at all: nothing to exempt.
+        self.assertFalse(ipam_guard.import_only(label, [(imported, moved, described)]))
+        self.assertFalse(ipam_guard.import_only(label, []))
+
+    def test_import_only_compares_macs_by_value(self):
+        imported, other = ipam_guard.import_request_id(), uuid.uuid4()
+        label = "dcim.macaddress"
+        before, after = {"mac_address": "00:11:22:33:44:55"}, {"mac_address": "00:11:22:33:44:66"}
+        reformatted = {"mac_address": "00-11-22-33-44-66"}
+        self.assertTrue(ipam_guard.import_only(label, [(imported, before, after), (other, after, reformatted)]))
+        # A value that cannot be read counts as a change.
+        broken = {"mac_address": "not a mac"}
+        self.assertFalse(ipam_guard.import_only(label, [(imported, before, after), (other, after, broken)]))

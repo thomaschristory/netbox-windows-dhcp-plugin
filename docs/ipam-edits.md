@@ -212,7 +212,7 @@ before; they still show on each push's trail.
 | `nbshell`, other management commands | no | there is no user to check. NetBox writes no change log entry for such saves; the push lists an **Edit** with no user and no **Changes** link |
 | Applying import proposal items, imports into a branch or main | no | they write what Windows already holds |
 | netbox-branching merge and revert | yes | as the merging or reverting user, against main, see below; with no user (also `merge(user=None)` from `nbshell` or a script) it is refused when it would change Windows |
-| Merging an import branch: the import's own changes | no | they bring NetBox in line with Windows; edits added to the branch by hand, and every change of an object they touched, are checked |
+| Merging an import branch: the import's own changes | no | they bring NetBox in line with Windows; a hand edit in the branch of the prefix, range, address or MAC is checked, and so is every change of the object it touched; a sync from main or a hand edit of other fields (description, tags) does not change this |
 | netbox-branching sync | no | it copies into a branch edits already made on main |
 | Creating a new prefix, range, address or MAC | no | nothing can use an object that did not exist |
 

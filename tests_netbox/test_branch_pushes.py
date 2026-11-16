@@ -295,6 +295,107 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
             self._merge(self.ipam_only)
         self.assertEqual(self._address(), before)
 
+    def _import_in_branch(self):
+        """Change the reserved address in the branch as an import does; returns the new address."""
+        from ipam.models import IPAddress
+        from netaddr import IPNetwork
+
+        from netbox_windows_dhcp_plugin.ipam_guard import import_request_id
+
+        with branching.writing(self.branch, self.editor, request_id=import_request_id()):
+            ip = IPAddress.objects.get(pk=Reservation.objects.get().ip_address_id)
+            ip.snapshot()
+            ip.address = IPNetwork(f"{ip.address.ip + 1}/{ip.address.prefixlen}")
+            ip.save()
+            return str(ip.address)
+
+    def _describe_on_main_and_sync(self):
+        """Edit only the description of the reserved address on main, then sync the branch (#115)."""
+        from ipam.models import IPAddress
+
+        request = RequestFactory().get("/")
+        request.id = uuid.uuid4()
+        request.user = self.ipam_only
+        ip = IPAddress.objects.get(pk=Reservation.objects.get().ip_address_id)
+        ip.snapshot()
+        ip.description = "edited on main"
+        with event_tracking(request), mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            ip.save()
+        self.branch.can_sync = True
+        self.branch.sync(user=get_user_model().objects.get(username="guard-owner"))
+        self.branch.refresh_from_db()
+
+    def _describe_in_branch(self, user):
+        from ipam.models import IPAddress
+
+        with branching.writing(self.branch, user):
+            ip = IPAddress.objects.get(pk=Reservation.objects.get().ip_address_id)
+            ip.snapshot()
+            ip.description = "edited in the branch"
+            ip.save()
+
+    def _set_strategy(self, strategy):
+        self.branch.merge_strategy = strategy
+        self.branch.save(update_fields=["merge_strategy"])
+
+    def test_import_changes_merge_without_the_permission(self):
+        address = self._import_in_branch()
+        self._merge(self.ipam_only)
+        self.assertEqual(self._address(), address)
+
+    def _import_merge_after_sync(self, strategy):
+        # #115: the synced description edit has its own request ID; it used to take the exemption away.
+        address = self._import_in_branch()
+        self._describe_on_main_and_sync()
+        self._set_strategy(strategy)
+        self._merge(self.ipam_only)
+        self.assertEqual(self._address(), address)
+        self.assertEqual(Reservation.objects.get().ip_address.description, "edited on main")
+
+    def test_import_changes_merge_after_a_sync_of_a_main_description_edit(self):
+        self._import_merge_after_sync("iterative")
+
+    def test_squash_import_changes_merge_after_a_sync_of_a_main_description_edit(self):
+        self._import_merge_after_sync("squash")
+
+    def test_import_changes_revert_after_a_sync_of_a_main_description_edit(self):
+        before = self._address()
+        self._import_in_branch()
+        self._describe_on_main_and_sync()
+        self._merge(self.ipam_only)
+        self.branch.can_revert = True
+        with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            self.branch.revert(user=self.ipam_only)
+        self.assertEqual(self._address(), before)
+
+    def test_squash_hand_edit_of_the_description_keeps_the_import_exemption(self):
+        # Squash replays the address under the hand edit's request ID (the last change): the hand edit left the address
+        # alone, so the address is still the import's alone.
+        address = self._import_in_branch()
+        self._describe_in_branch(self.editor)
+        self._set_strategy("squash")
+        self._merge(self.ipam_only)
+        self.assertEqual(self._address(), address)
+
+    def _import_and_hand_edit_of_the_address(self, strategy):
+        # The import moves the address, then someone moves it again by hand: still checked after a sync.
+        from utilities.exceptions import AbortRequest
+
+        before = self._address()
+        self._import_in_branch()
+        self._edit_in_branch(self.editor)
+        self._describe_on_main_and_sync()
+        self._set_strategy(strategy)
+        with self.assertRaises(AbortRequest):
+            self._merge(self.ipam_only)
+        self.assertEqual(self._address(), before)
+
+    def test_import_merge_with_a_hand_edit_of_the_address_is_checked(self):
+        self._import_and_hand_edit_of_the_address("iterative")
+
+    def test_squash_import_merge_with_a_hand_edit_of_the_address_is_checked(self):
+        self._import_and_hand_edit_of_the_address("squash")
+
     def test_merge_by_a_user_with_the_permission(self):
         # The editor lost the permission since: the merging user's is what counts at merge time.
         address = self._edit_in_branch(self.editor)
