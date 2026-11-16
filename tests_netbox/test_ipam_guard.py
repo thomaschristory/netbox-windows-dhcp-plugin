@@ -470,3 +470,25 @@ class ImportRequestIdTest(TestCase):
         self.assertTrue(ipam_guard.import_only(label, [(imported, start, shifted), (other, shifted, described)]))
         remasked = {**shifted, "end_address": "10.1.0.200/25"}
         self.assertFalse(ipam_guard.import_only(label, [(imported, start, shifted), (other, shifted, remasked)]))
+
+    def test_hand_updates_compare_with_the_value_the_import_last_wrote(self):
+        from types import SimpleNamespace
+
+        imported, other = ipam_guard.import_request_id(), uuid.uuid4()
+        label = "ipam.ipaddress"
+        a, b = {"address": "10.1.0.5/24"}, {"address": "10.1.0.6/24"}
+
+        def fields(changes, final):
+            return ipam_guard._hand_updates(label, changes, SimpleNamespace(address=final))
+
+        # The import created A then moved it to B (Windows holds B); a hand edit back to A changes Windows.
+        self.assertEqual(fields([(imported, None, a), (imported, a, b), (other, b, a)], "10.1.0.5/24"), ("address",))
+        # A hand edit undone later, or of the mask alone, does not.
+        self.assertEqual(fields([(imported, None, a), (other, a, b), (other, b, a)], "10.1.0.5/24"), ())
+        self.assertEqual(fields([(imported, None, a), (other, a, {"address": "10.1.0.5/25"})], "10.1.0.5/25"), ())
+        # An import write after the hand edit sets what Windows holds.
+        self.assertEqual(fields([(imported, None, a), (other, a, b), (imported, b, a)], "10.1.0.5/24"), ())
+        # Created and edited by hand: checked against the created value.
+        self.assertEqual(fields([(other, None, a), (other, a, b)], "10.1.0.6/24"), ("address",))
+        # No hand update at all.
+        self.assertEqual(fields([(imported, None, a), (imported, a, b)], "10.1.0.6/24"), ())

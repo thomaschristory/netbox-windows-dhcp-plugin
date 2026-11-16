@@ -350,15 +350,43 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
     def test_squash_import_changes_merge_after_a_sync_of_a_main_description_edit(self):
         self._import_merge_after_sync("squash")
 
-    def test_import_changes_revert_after_a_sync_of_a_main_description_edit(self):
-        before = self._address()
-        self._import_in_branch()
+    def _revert_import(self, strategy, user):
+        before = self._before = self._address()
+        address = self._import_in_branch()
         self._describe_on_main_and_sync()
+        self._set_strategy(strategy)
         self._merge(self.ipam_only)
+        self.assertEqual(self._address(), address)
         self.branch.can_revert = True
         with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
-            self.branch.revert(user=self.ipam_only)
+            self.branch.revert(user=user)
+        return before, address
+
+    def _refused_revert_of_import(self, strategy):
+        # Undoing the import puts back an address Windows no longer has: the next push would change Windows.
+        from utilities.exceptions import AbortRequest
+
+        with self.assertRaisesMessage(AbortRequest, "Branch guard cannot be merged or reverted by guard-ipam-only"):
+            self._revert_import(strategy, self.ipam_only)
+        self.assertNotEqual(self._address(), self._before)
+        self.branch.refresh_from_db()
+        self.assertEqual(self.branch.status, "merged")
+
+    def test_revert_of_import_changes_is_checked(self):
+        self._refused_revert_of_import("iterative")
+
+    def test_squash_revert_of_import_changes_is_checked(self):
+        self._refused_revert_of_import("squash")
+
+    def test_revert_of_import_changes_by_a_user_with_the_permission(self):
+        before, _ = self._revert_import("iterative", self.editor)
         self.assertEqual(self._address(), before)
+
+    def test_revert_of_import_changes_without_a_user_is_refused(self):
+        from utilities.exceptions import AbortRequest
+
+        with self.assertRaisesMessage(AbortRequest, "cannot be merged or reverted without a user"):
+            self._revert_import("iterative", None)
 
     def test_import_merge_after_a_sync_of_a_main_address_edit_is_checked(self):
         # Stricter than #115 asked: a synced change of the address itself is not the import's, so it is checked.
@@ -450,6 +478,176 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
 
     def test_squash_range_mask_edit_does_not_ride_on_the_import(self):
         self._range_mask_edit_replays_a_stale_end("squash")
+
+    def _import_creates_a_reservation(self, hand_edit, edits=("10.1.0.121/24",), by_import=True):
+        """
+        In the branch, an import (or, with by_import False, a user) creates an address and a reservation on it; then,
+        with hand_edit, the editor sets the address to each of ``edits`` in turn.
+        """
+        from ipam.models import IPAddress
+        from netaddr import IPNetwork
+
+        from netbox_windows_dhcp_plugin.ipam_guard import import_request_id
+
+        request_id = import_request_id() if by_import else None
+        with branching.writing(self.branch, self.editor, request_id=request_id):
+            ip = IPAddress.objects.create(address=IPNetwork("10.1.0.120/24"))
+            Reservation.objects.create(
+                scope=Reservation.objects.first().scope,
+                ip_address=ip,
+                name="imported",
+                client_id="01-aa-bb-cc-dd-ee-ff",
+            )
+        for address in edits if hand_edit else ():
+            with branching.writing(self.branch, self.editor):
+                ip = IPAddress.objects.get(pk=ip.pk)
+                ip.snapshot()
+                ip.address = IPNetwork(address)
+                ip.save()
+        return ip.pk
+
+    def _created_address(self, pk):
+        from ipam.models import IPAddress
+
+        found = IPAddress.objects.filter(pk=pk).first()
+        return str(found.address) if found else None
+
+    def test_squash_create_with_a_hand_edit_of_the_address_is_checked(self):
+        # Squash folds the import's create and the hand edit into one create on main, which the guard did not see.
+        from utilities.exceptions import AbortRequest
+
+        pk = self._import_creates_a_reservation(hand_edit=True)
+        self._set_strategy("squash")
+        with self.assertRaisesMessage(AbortRequest, "Branch guard cannot be merged or reverted by guard-ipam-only"):
+            self._merge(self.ipam_only)
+        self.assertIsNone(self._created_address(pk))
+
+    def test_iterative_create_with_a_hand_edit_of_the_address_is_checked(self):
+        from utilities.exceptions import AbortRequest
+
+        pk = self._import_creates_a_reservation(hand_edit=True)
+        with self.assertRaises(AbortRequest):
+            self._merge(self.ipam_only)
+        self.assertIsNone(self._created_address(pk))
+
+    def test_squash_create_without_a_user_is_refused(self):
+        from utilities.exceptions import AbortRequest
+
+        pk = self._import_creates_a_reservation(hand_edit=True)
+        self._set_strategy("squash")
+        with self.assertRaisesMessage(AbortRequest, "cannot be merged or reverted without a user"):
+            self._merge(None)
+        self.assertIsNone(self._created_address(pk))
+
+    def test_squash_create_with_a_hand_edit_by_a_user_with_the_permission(self):
+        pk = self._import_creates_a_reservation(hand_edit=True)
+        self._set_strategy("squash")
+        self._merge(self.editor)
+        self.assertEqual(self._created_address(pk), "10.1.0.121/24")
+
+    def _squash_create_with_edits_windows_never_sees(self, edits):
+        pk = self._import_creates_a_reservation(hand_edit=True, edits=edits)
+        self._set_strategy("squash")
+        self._merge(self.ipam_only)
+        self.assertEqual(self._created_address(pk), edits[-1])
+
+    def test_squash_create_with_a_mask_edit_alone_needs_no_permission(self):
+        # Windows receives the address without its mask: still the import's address.
+        self._squash_create_with_edits_windows_never_sees(("10.1.0.120/25",))
+
+    def test_squash_create_with_an_undone_edit_needs_no_permission(self):
+        self._squash_create_with_edits_windows_never_sees(("10.1.0.121/24", "10.1.0.120/24"))
+
+    def test_squash_hand_edit_back_to_the_created_value_after_an_import_move_is_checked(self):
+        # The import created .120 and later moved it to .122 (what Windows holds); a hand edit puts .120 back.
+        from ipam.models import IPAddress
+        from netaddr import IPNetwork
+        from utilities.exceptions import AbortRequest
+
+        from netbox_windows_dhcp_plugin.ipam_guard import import_request_id
+
+        pk = self._import_creates_a_reservation(hand_edit=False)
+        with branching.writing(self.branch, self.editor, request_id=import_request_id()):
+            ip = IPAddress.objects.get(pk=pk)
+            ip.snapshot()
+            ip.address = IPNetwork("10.1.0.122/24")
+            ip.save()
+        with branching.writing(self.branch, self.editor):
+            ip = IPAddress.objects.get(pk=pk)
+            ip.snapshot()
+            ip.address = IPNetwork("10.1.0.120/24")
+            ip.save()
+        self._set_strategy("squash")
+        with self.assertRaisesMessage(AbortRequest, "Branch guard cannot be merged or reverted by guard-ipam-only"):
+            self._merge(self.ipam_only)
+        self.assertIsNone(self._created_address(pk))
+
+    def _hand_created_and_edited(self, strategy):
+        from utilities.exceptions import AbortRequest
+
+        pk = self._import_creates_a_reservation(hand_edit=True, by_import=False)
+        self._set_strategy(strategy)
+        with self.assertRaisesMessage(AbortRequest, "Branch guard cannot be merged or reverted by guard-ipam-only"):
+            self._merge(self.ipam_only)
+        self.assertIsNone(self._created_address(pk))
+
+    def test_squash_hand_created_address_edited_in_the_branch_is_checked(self):
+        self._hand_created_and_edited("squash")
+
+    def test_iterative_hand_created_address_edited_in_the_branch_is_checked(self):
+        self._hand_created_and_edited("iterative")
+
+    def test_squash_create_by_the_import_alone_needs_no_permission(self):
+        pk = self._import_creates_a_reservation(hand_edit=False)
+        self._set_strategy("squash")
+        self._merge(self.ipam_only)
+        self.assertEqual(self._created_address(pk), "10.1.0.120/24")
+
+    def _new_reservation_on_a_main_address(self, strategy):
+        # The address exists on main, unused; the branch puts a reservation on it (as an import adopting it would) and
+        # then moves it by hand. Squash replays the address edit before it creates the reservation, so main has no
+        # dependent yet: the branch's reservation must be checked too.
+        from ipam.models import IPAddress
+        from netaddr import IPNetwork
+        from netbox_branching.models import Branch
+        from utilities.exceptions import AbortRequest
+
+        from netbox_windows_dhcp_plugin.ipam_guard import import_request_id
+
+        spare = IPAddress.objects.create(address=IPNetwork("10.1.0.130/24"))
+        owner = get_user_model().objects.get(username="guard-owner")
+        branch = Branch(name="guard-adopt", owner=owner, merge_strategy=strategy)
+        branch.save(provision=False)
+        self.addCleanup(self._drop, branch)
+        branch.provision(user=owner)
+        branch.refresh_from_db()
+        with branching.writing(branch, self.editor, request_id=import_request_id()):
+            Reservation.objects.create(
+                scope=Reservation.objects.first().scope,
+                ip_address=IPAddress.objects.get(pk=spare.pk),
+                name="adopted",
+                client_id="01-aa-bb-cc-dd-ee-01",
+            )
+        with branching.writing(branch, self.editor):
+            ip = IPAddress.objects.get(pk=spare.pk)
+            ip.snapshot()
+            ip.address = IPNetwork("10.1.0.131/24")
+            ip.save()
+        branch.can_merge = True
+        with (
+            self.assertRaisesMessage(
+                AbortRequest, "Branch guard-adopt cannot be merged or reverted by guard-ipam-only"
+            ),
+            mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"),
+        ):
+            branch.merge(user=self.ipam_only)
+        self.assertEqual(str(IPAddress.objects.get(pk=spare.pk).address), "10.1.0.130/24")
+
+    def test_squash_edit_of_a_main_address_given_a_reservation_in_the_branch_is_checked(self):
+        self._new_reservation_on_a_main_address("squash")
+
+    def test_iterative_edit_of_a_main_address_given_a_reservation_in_the_branch_is_checked(self):
+        self._new_reservation_on_a_main_address("iterative")
 
     def test_merge_by_a_user_with_the_permission(self):
         # The editor lost the permission since: the merging user's is what counts at merge time.

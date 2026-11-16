@@ -7,6 +7,7 @@ Everything that imports those plugins lives here, so the plugin keeps working wh
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
+from typing import NamedTuple
 
 from django.apps import apps
 
@@ -166,11 +167,24 @@ def clear_applying():
     _applying.set(None)
 
 
+class Applying(NamedTuple):
+    """A replayed save of a branch merge or revert, as applying_branch() returns it."""
+
+    branch: str
+    # The merging or reverting user (None when the merge or revert runs without one).
+    user: object
+    # Every change the branch holds for the object, oldest first: [(request ID, prechange data, postchange data)].
+    changes: list
+    reverting: bool
+    # The branch schema's database alias, where objects the merge has not created on main yet can be read.
+    connection: str
+
+
 def applying_branch(instance):
     """
     While netbox-branching merges or reverts a branch in this context and this save is one of its replayed changes:
-    (branch name, merging or reverting user, [(request ID, prechange data, postchange data)] for every change the
-    branch holds for this object), else None.
+    an Applying (branch name, merging or reverting user, the branch's changes to this object, whether it is a revert,
+    the branch's database alias), else None.
 
     The mark alone is not enough: a failed, empty or dry-run merge sends no closing signal, so the mark can outlive it
     (until the next request or merge in this process). A replayed save runs under the request ID of one of the
@@ -199,14 +213,14 @@ def applying_branch(instance):
     changes = branch.get_changes()
     object_type = ObjectType.objects.get_for_model(instance)
     own = list(
-        changes.filter(changed_object_type=object_type, changed_object_id=instance.pk).values_list(
-            "request_id", "prechange_data", "postchange_data"
-        )
+        changes.filter(changed_object_type=object_type, changed_object_id=instance.pk)
+        .order_by("time", "pk")
+        .values_list("request_id", "prechange_data", "postchange_data")
     )
     # request.id may be a UUID or its string form.
     if str(request_id) not in {str(r) for r, _, _ in own}:
         return None
-    return name, user, own
+    return Applying(name, user, own, branch.status == BranchStatusChoices.REVERTING, branch.connection_name)
 
 
 def _on_pre_revert(sender, branch, user=None, **kwargs):

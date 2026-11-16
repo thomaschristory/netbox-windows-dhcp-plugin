@@ -221,6 +221,28 @@ def _missing(instance, user, using=None):
     return missing
 
 
+def _merge_dependents(instance, using, connection):
+    """
+    The dependents a merge must check: main's, plus the branch's (``connection``, None for a revert or an ordinary
+    save). The squash strategy replays every update before any create, so a reservation that the branch puts on an
+    address main already has is not on main yet when the address edit is replayed.
+    """
+    found = dependents(instance, using)
+    if connection:
+        codenames = {codename for codename, _ in found}
+        found += [(c, q) for c, q in dependents(instance, connection) if c not in codenames]
+    return found
+
+
+def _merge_missing(instance, user, using, connection):
+    """_missing() for main, plus the branch's dependents (see _merge_dependents) not already listed."""
+    missing = _missing(instance, user, using)
+    if connection:
+        seen = {(codename, obj.pk) for codename, obj, _ in missing}
+        missing += [m for m in _missing(instance, user, connection) if (m[0], m[1].pk) not in seen]
+    return missing
+
+
 def check_edit(sender, instance, raw=False, **kwargs):
     """
     pre_save receiver for the four watched models: refuse (AbortRequest) an edit that changes what a push writes to
@@ -234,7 +256,9 @@ def check_edit(sender, instance, raw=False, **kwargs):
     # Reset first: a mark left by an earlier save of this instance must not decide this one.
     instance._nbwd_push_fields = None
     if raw:
-        # Fixture loading: not an edit by anyone.
+        # Fixture loading (not an edit by anyone), or a merge replaying a create: netbox-branching saves new objects
+        # raw.
+        _check_replayed_create(instance, using)
         return
     fields = changed_fields(instance, kwargs.get("update_fields"), using)
     # Read by signals._changed after the save: no push for edits Windows never sees.
@@ -254,34 +278,101 @@ def check_edit(sender, instance, raw=False, **kwargs):
         # only when every change the branch holds for this object that alters a watched field is the import's, as
         # squash replays an object's changes under its last change's request ID, which must not pass a hand edit off
         # as the import's (see import_only).
-        branch, user, changes = applying
-        if import_only(instance._meta.label_lower, changes):
+        # Not for a revert: undoing the import puts back values Windows no longer holds, and the next push writes
+        # them there.
+        branch, user, changes = applying.branch, applying.user, applying.changes
+        if not applying.reverting and import_only(instance._meta.label_lower, changes):
             return
         instance._nbwd_branch = branch
+        # A revert puts main back as it was before the merge: main's dependents are the ones it affects.
+        branch_connection = None if applying.reverting else applying.connection
         if user is None or not user.is_authenticated:
             # No merging user (a merge job whose user was deleted, or code calling merge(user=None)): nobody whose
             # permission could be checked, so a change Windows would see is refused. Not the user the replay runs as:
             # squash runs it as the (missing) merging user, iterative as each change's author, who may have made the
             # edit long ago. Someone with the permission can run the merge again.
-            if found := dependents(instance, using):
+            if found := _merge_dependents(instance, using, branch_connection):
                 from utilities.exceptions import AbortRequest
 
                 raise AbortRequest(_no_user_refusal(fields, branch, [codename for codename, _ in found]))
             return
     else:
         instance._nbwd_branch = None
+        branch_connection = None
         user = _request_user()
     # nbshell and management commands have no user: nothing to check (NetBox writes no change log entry either).
     if user is None or not user.is_authenticated:
         return
     from utilities.exceptions import AbortRequest
 
-    if missing := _missing(instance, user, using):
+    if missing := _merge_missing(instance, user, using, branch_connection):
         raise AbortRequest(_refusal(fields, missing, user, instance._nbwd_branch))
     # Checked again after the save (recheck_edit): a permission constraint can depend on the edited value itself, for
     # example reservations allowed in part of a subnet only.
     instance._nbwd_guard_user = user
     instance._nbwd_using = using
+
+
+def _hand_updates(label, changes, instance):
+    """
+    The watched fields that the branch's non-import updates of a new object changed, as a push sees them.
+    ``changes`` are oldest first. A field counts when a hand update wrote it and the value the object is created with
+    on main differs from the baseline: the value the import last wrote to that field (what Windows holds), or, with
+    no import write, the value the object was created with (creating alone is not checked). A mask edit alone, or an
+    edit undone later, changes nothing Windows receives.
+    """
+    edited, baseline = set(), {}
+    for request_id, prechange, postchange in changes:
+        if postchange is None:
+            continue
+        if prechange is None or is_import_request(request_id):
+            # A create sets every field; an import update sets the ones it changed.
+            baseline.update(
+                (f, postchange.get(f))
+                for f in WATCHED[label]
+                if prechange is None or prechange.get(f) != postchange.get(f)
+            )
+            continue
+        edited.update(f for f in WATCHED[label] if prechange.get(f) != postchange.get(f))
+    return tuple(
+        f
+        for f in WATCHED[label]
+        if f in edited
+        and (f not in baseline or push_value(label, f, baseline[f]) != push_value(label, f, getattr(instance, f)))
+    )
+
+
+def _check_replayed_create(instance, using):
+    """
+    A merge that creates an object on main: squash folds the object's create and later updates into one create, so
+    a hand edit of the address made in the branch after the object was created there is not replayed as an update,
+    which the iterative strategy would check. Check it here, as the merging user, against the scopes and reservations
+    that use the object in the branch: they do not exist on main yet (squash creates them after the object). Creating
+    the object alone is not checked, as everywhere else.
+    """
+    label = instance._meta.label_lower
+    if label not in WATCHED or instance.pk is None:
+        return
+    from .integrations.branching import applying_branch
+
+    applying = applying_branch(instance)
+    if applying is None or applying.reverting:
+        return
+    if not (fields := _hand_updates(label, applying.changes, instance)):
+        return
+    if type(instance).objects.using(using).filter(pk=instance.pk).exists():
+        # The row is already on main, so this is not a create (netbox-branching replays updates through a normal save,
+        # which the usual path of check_edit checks).
+        return
+    from utilities.exceptions import AbortRequest
+
+    user, branch = applying.user, applying.branch
+    if user is None or not user.is_authenticated:
+        if found := dependents(instance, applying.connection):
+            raise AbortRequest(_no_user_refusal(fields, branch, [codename for codename, _ in found]))
+        return
+    if missing := _missing(instance, user, applying.connection):
+        raise AbortRequest(_refusal(fields, missing, user, branch))
 
 
 def recheck_edit(sender, instance, raw=False, **kwargs):
