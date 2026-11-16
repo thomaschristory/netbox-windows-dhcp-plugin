@@ -13,8 +13,8 @@ redirect clients. These are the guarantees it gives, and what is left to you.
 - Errors name the cmdlet and the PowerShell message, nothing more.
 - The failover shared secret is read when a push needs it and goes straight to the cmdlet; NetBox records only
   whether authentication is on. It is sent next to the script, not inside it, so PowerShell script block logging
-  (event 4104) on the DHCP server does not record it (checked with PowerShell 7; Windows PowerShell 5.1 is still to
-  be confirmed, see [Limitations](limitations.md)). Module logging (event 4103) and transcription can record the
+  (event 4104) on the DHCP server does not record it (checked with PowerShell 7 and with
+  Windows PowerShell 5.1 on Windows Server 2025 in the lab). Module logging (event 4103) and transcription can record the
   failover cmdlet's parameters, `-SharedSecret` included: if they are on, restrict who may read those logs.
 
 Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` readable only by the NetBox service.

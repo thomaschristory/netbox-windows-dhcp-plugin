@@ -15,8 +15,8 @@ All notable changes to this project are documented here. The format follows
 
 - The failover shared secret no longer appears in the PowerShell script sent to the DHCP server: it follows the
   script on the same input line and is handed to it in a variable. PowerShell script block logging (event 4104) on
-  the DHCP server no longer records it, nor does module logging of `ConvertFrom-Json` (checked with PowerShell 7;
-  Windows PowerShell 5.1 still to be confirmed in the lab). Module logging and transcription can still record the
+  the DHCP server no longer records it, nor does module logging of `ConvertFrom-Json` (checked with PowerShell 7
+  and with Windows PowerShell 5.1 on Windows Server 2025 in the lab). Module logging and transcription can still record the
   failover cmdlet's own `-SharedSecret` parameter when they are on. A script input line cut short in transit is
   now refused instead of running. (#104)
 - Editing a prefix, IP range, IP address or MAC address that a scope or reservation uses now needs the plugin's

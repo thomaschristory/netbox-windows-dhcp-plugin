@@ -243,7 +243,7 @@ The secret goes to both servers, so `allowed_hosts` must cover both partners; it
 saved and again whenever a push sends the secret. It is read from the profile only when a push needs it, goes
 straight to the cmdlet, and is never stored or logged by the plugin. It is sent to the DHCP server next to the
 script, not inside it, so PowerShell script block logging (event 4104) there does not record it (checked with
-PowerShell 7; Windows PowerShell 5.1, which the DHCP server runs, is still to be confirmed in the lab). Module logging
+PowerShell 7 and with Windows PowerShell 5.1 on Windows Server 2025 in the lab). Module logging
 (event 4103) and transcription can record the parameters of the failover cmdlet itself, `-SharedSecret` included:
 if they are on for the DhcpServer module, restrict who may read those logs. NetBox only records whether
 authentication is on, so a secret rotated on Windows is not noticed. Without a profile, NetBox does not manage
