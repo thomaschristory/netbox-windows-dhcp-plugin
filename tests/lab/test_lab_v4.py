@@ -509,3 +509,37 @@ def test_policy_mac_prefix_case(lab: Lab, probe_out) -> None:
     )
     save_probe(probe_out, "v4-policy-mac-case", p.to_dict())
     assert p.criteria["mac_address"] == ["EQ", "02-4e-42-ab-*"]
+
+
+def test_secret_stays_out_of_the_script_block(lab: Lab, probe_out) -> None:
+    """psscript.py BOOTSTRAP (#104): a secret reaches $p on Windows PowerShell 5.1 but not the compiled script.
+
+    When script block logging is on, the event log is searched for the marker too. When it is off, that part checks
+    nothing: the probe file records ``logging`` and whether the log could be read.
+
+    The marker has no quote character: render() doubles quotes, so a marker with one would not be found in the
+    script text even if a regression put it there.
+    """
+    import secrets as pysecrets
+
+    marker = "nbwd-" + pysecrets.token_hex(8) + ".:"
+    got = lab.raw(
+        "probe.secret",
+        r"""
+$sbl = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging' `
+    -ErrorAction SilentlyContinue
+$readable = $true
+try { $null = Get-WinEvent -LogName 'Microsoft-Windows-PowerShell/Operational' -MaxEvents 1 }
+catch { $readable = $false }
+$logged = @(Get-WinEvent -FilterHashtable @{ LogName = 'Microsoft-Windows-PowerShell/Operational'; Id = 4104;
+    StartTime = (Get-Date).AddMinutes(-5) } -ErrorAction SilentlyContinue |
+    Where-Object { $_.Message.Contains($p.shared_secret) }).Count
+$out = @{ secret = $p.shared_secret; in_src = $src.Contains($p.shared_secret);
+    ps = "$($PSVersionTable.PSVersion)"; logging = [bool]($sbl -and $sbl.EnableScriptBlockLogging); logged = $logged;
+    log_readable = $readable }
+""",
+        {"shared_secret": marker},
+    )
+    save_probe(probe_out, "secret-logging", {k: v for k, v in got.items() if k != "secret"})
+    assert got["secret"] == marker and got["in_src"] is False, got
+    assert got["logged"] == 0, got

@@ -9,6 +9,10 @@ The script contract (docs/DESIGN.md section 5):
 * user values only enter the script as a single-quoted JSON literal assigned to ``$p``,
   with every single-quote character (ASCII and typographic) doubled. Nothing is ever
   interpolated into PowerShell source;
+* secret values (``SECRET_PARAMS``, such as the failover shared secret) never enter the
+  script source at all: they travel on the same stdin line, after the script, and the
+  bootstrap hands them to the script in a variable. PowerShell script block logging
+  (event 4104) records script source, so a secret in ``$p`` would land in the event log;
 * ``$PSDefaultParameterValues['*:ErrorAction'] = 'Stop'`` is set because the CDXML
   DhcpServer cmdlets ignore ``$ErrorActionPreference``; without it their errors are
   non-terminating and a failed call looks like a success;
@@ -40,6 +44,7 @@ __all__ = [
     "PSError",
     "PSNotFoundError",
     "Requirement",
+    "SECRET_PARAMS",
     "Script",
     "WindowsLayerError",
     "command",
@@ -48,7 +53,9 @@ __all__ = [
     "is_not_found",
     "op_of",
     "parse",
+    "prepare",
     "render",
+    "split_secrets",
 ]
 
 # First line of every wrapped script. Fakes dispatch on it (see fake.py).
@@ -62,6 +69,10 @@ NOT_FOUND_IDS: tuple[str, ...] = (
     "DHCP 20010",  # ERROR_DHCP_OPTION_NOT_PRESENT
     "DHCP 20018",  # ERROR_DHCP_NOT_RESERVED_CLIENT
 )
+
+# Parameter names whose values are secrets. They are never logged by the plugin, and never written into the script
+# text: see split_secrets() and BOOTSTRAP.
+SECRET_PARAMS = frozenset({"shared_secret", "password"})
 
 # Characters that end a PowerShell single-quoted string. Inside such a string any of
 # them is escaped by doubling it. PowerShell treats the typographic quotes exactly like
@@ -175,32 +186,77 @@ def _params_literal(params: Mapping[str, Any] | None) -> str:
     return _ps_quote_body(raw)
 
 
+def split_secrets(params: Mapping[str, Any] | None) -> tuple[dict[str, Any], dict[str, str]]:
+    """Split ``params`` into the values that may appear in the script and the secrets that may not.
+
+    Empty secrets are dropped: the scripts test them with ``if ($p.shared_secret)``, which is false for a missing
+    property too. A secret must be a string, so it can travel as text on stdin.
+    """
+    public: dict[str, Any] = {}
+    secrets: dict[str, str] = {}
+    for k, v in (params or {}).items():
+        if k not in SECRET_PARAMS:
+            public[k] = v
+        elif v:
+            if not isinstance(v, str):
+                raise TypeError(f"secret parameter {k!r} must be a string")
+            secrets[k] = v
+    return public, secrets
+
+
 def render(script: str, params: Mapping[str, Any] | None = None) -> str:
     """Prepend the preamble that defines ``$p`` and ``$cn`` to a wrapped script.
 
     This is the injection boundary: ``params`` are JSON-encoded and only ever appear
     inside one single-quoted literal. Raises ``TypeError``/``ValueError`` when the
-    params cannot be encoded as JSON.
+    params cannot be encoded as JSON, or when they hold a secret: secrets go through
+    ``prepare()``, which keeps them out of the script text.
+
+    The preamble copies the secrets the bootstrap read from stdin (``$wdSecrets``) onto
+    ``$p`` with a .NET call rather than a cmdlet: PowerShell module logging (event 4103)
+    records cmdlet parameters, not method arguments.
     """
+    leaked = sorted(k for k in (params or {}) if k in SECRET_PARAMS)
+    if leaked:
+        raise ValueError(f"secret parameters must go through prepare(), not the script text: {', '.join(leaked)}")
     return (
         "$ErrorActionPreference = 'Stop'\n"
         "$ProgressPreference = 'SilentlyContinue'\n"
         "$PSDefaultParameterValues['*:ErrorAction'] = 'Stop'\n"
         "$p = ConvertFrom-Json -InputObject '" + _params_literal(params) + "'\n"
+        "if ($wdSecrets) { foreach ($k in @($wdSecrets.Keys)) { "
+        "$p.PSObject.Properties.Add([psnoteproperty]::new($k, $wdSecrets[$k])) } }\n"
         "$cn = @{}\n"
         "if ($p.computer_name) { $cn['ComputerName'] = $p.computer_name }\n" + script
     )
 
 
-# Fixed bootstrap passed with -EncodedCommand. It reads the base64 UTF-8 script from
-# stdin, runs it, joins its output with "`n" and writes it back base64 UTF-8 encoded,
-# so the transport only ever carries ASCII. The script is one line, so it reads one line:
-# Windows OpenSSH sometimes loses the end of stdin, and reading to the end then waited until
-# the timeout (lab, about 1 run in 15). ReadLine also returns at the end of stdin.
+# Fixed bootstrap passed with -EncodedCommand. It reads one stdin line, runs the script in
+# it, joins its output with "`n" and writes it back base64 UTF-8 encoded, so the transport
+# only ever carries ASCII. The script is one line, so it reads one line: Windows OpenSSH
+# sometimes loses the end of stdin, and reading to the end then waited until the timeout
+# (lab, about 1 run in 15). ReadLine also returns at the end of stdin.
+#
+# The line is "<script>.<name>:<value>....<count>": the script and each name and value base64
+# UTF-8 ('.' and ':' are not in the base64 alphabet), then the number of pairs in decimal.
+# The count comes last so that a line cut short fails here: without it a cut could drop or
+# shorten a secret and the script would run without noticing. The name/value pairs are secrets: the
+# bootstrap puts them in $wdSecrets, which the script reads, so they never appear in the
+# script block that [scriptblock]::Create compiles and script block logging records. Only
+# .NET methods touch them here, so module logging does not record them either.
+# unverified: on Windows PowerShell 5.1 with script block logging on (tested with pwsh 7 only, issue #104).
 BOOTSTRAP = (
     "$ProgressPreference = 'SilentlyContinue'\n"
     "$in = [Console]::In.ReadLine()\n"
-    "$src = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($in.Trim()))\n"
+    "$parts = $in.Trim().Split('.')\n"
+    "if ($parts.Length -lt 2 -or $parts[-1] -cne [string]($parts.Length - 2)) { throw 'incomplete script input' }\n"
+    "$src = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[0]))\n"
+    "$wdSecrets = @{}\n"
+    "for ($i = 1; $i -lt $parts.Length - 1; $i++) {\n"
+    "    $nv = $parts[$i].Split(':')\n"
+    "    $wdSecrets[[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($nv[0]))] = "
+    "[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($nv[1]))\n"
+    "}\n"
     '$res = (& ([scriptblock]::Create($src))) -join "`n"\n'
     "[Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($res)))\n"
 )
@@ -213,17 +269,31 @@ def _encoded_bootstrap() -> str:
     return base64.b64encode(BOOTSTRAP.encode("utf-16-le")).decode("ascii")
 
 
-def command_argv(rendered: str) -> tuple[list[str], str]:
+def _b64(s: str) -> str:
+    return base64.b64encode(s.encode("utf-8")).decode("ascii")
+
+
+def command_argv(rendered: str, secrets: Mapping[str, str] | None = None) -> tuple[list[str], str]:
     """Like ``command`` but return the argument vector (without the executable)."""
     args = [*POWERSHELL_ARGS, "-EncodedCommand", _encoded_bootstrap()]
-    stdin = base64.b64encode(rendered.encode("utf-8")).decode("ascii") + "\r\n"
-    return args, stdin
+    pairs = [_b64(k) + ":" + _b64(v) for k, v in (secrets or {}).items()]
+    return args, ".".join([_b64(rendered), *pairs, str(len(pairs))]) + "\r\n"
 
 
-def command(rendered: str) -> tuple[str, str]:
+def command(rendered: str, secrets: Mapping[str, str] | None = None) -> tuple[str, str]:
     """Return the powershell.exe command line and the stdin payload for a rendered script."""
-    args, stdin = command_argv(rendered)
+    args, stdin = command_argv(rendered, secrets)
     return " ".join([POWERSHELL_EXE, *args]), stdin
+
+
+def prepare(script: str, params: Mapping[str, Any] | None = None) -> tuple[list[str], str]:
+    """Render a wrapped script and return the powershell.exe arguments and the stdin line.
+
+    The one entry point transports use: secrets in ``params`` go on stdin next to the
+    script, never into its text. Raises ``TypeError``/``ValueError`` like ``render``.
+    """
+    public, secrets = split_secrets(params)
+    return command_argv(render(script, public), secrets)
 
 
 def _truncate(s: str, n: int = 200) -> str:

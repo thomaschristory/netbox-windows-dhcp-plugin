@@ -12,6 +12,7 @@ ConvertTo-Json to print "nothing" as {} the way Windows PowerShell 5.1 does (#15
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import subprocess
@@ -46,7 +47,9 @@ from netbox_windows_dhcp_plugin.windows.psscript import (
     command_argv,
     decode_output,
     parse,
+    prepare,
     render,
+    split_secrets,
 )
 from netbox_windows_dhcp_plugin.windows.runner import RunnerError, clean_stderr
 
@@ -70,7 +73,9 @@ class PwshRunner:
         self.seed = seed
 
     def run(self, script: str, params: Any = None) -> bytes:
-        rendered = render(script, params)
+        # Secrets go on stdin next to the script, as psscript.prepare() sends them.
+        public, secrets = split_secrets(params)
+        rendered = render(script, public)
         full = (
             "New-Module -Name DhcpServerStub -ScriptBlock {\n"
             + STUBS
@@ -79,7 +84,7 @@ class PwshRunner:
             + "\n$global:WdNoRecord = $false\n"
             + rendered
         )
-        args, stdin = command_argv(full)
+        args, stdin = command_argv(full, secrets)
         env = {**os.environ, "WD_CALLS": str(self.calls)}
         p = subprocess.run([self.pwsh, *args], input=stdin.encode(), capture_output=True, env=env, timeout=120)
         if p.returncode != 0:
@@ -464,7 +469,7 @@ def test_missing_module_is_not_not_found(pw: PwshRunner, tmp_path: Path) -> None
 
 
 def _run_without_stubs(pwsh: str, script: str, params: Any, env: dict[str, str]) -> bytes:
-    args, stdin = command_argv(render(script, params))
+    args, stdin = prepare(script, params)
     p = subprocess.run([pwsh, *args], input=stdin.encode(), capture_output=True, env=env, timeout=120)
     return decode_output(p.stdout)
 
@@ -490,6 +495,42 @@ def test_classes(pw: PwshRunner) -> None:
     rm = find_call(pw.last_calls(), "Remove-DhcpServerv4Class")
     assert rm["Name"] == "phones" and rm["Confirm"] is False
     assert [x.name for x in c.list_classes("User")] == ["phones"]
+
+
+@pytest.mark.parametrize("secret", ["s3'cret", "a.b:c=d/+", "caf\u00e9 \u2019quoted\u2019 $(whoami) `n"])
+def test_secret_reaches_p_but_not_the_script_text(pwsh_path: str, secret: str) -> None:
+    """Issue #104: script block logging records the compiled script, so the secret must not be in it."""
+    body = Script(
+        "secret.check",
+        "$out = @{ secret = $p.shared_secret; in_src = $src.Contains($p.shared_secret); name = $p.name }",
+    ).wrap()
+    args, stdin = prepare(body, {"name": "fo", "shared_secret": secret})
+    assert secret not in base64.b64decode(stdin.split(".")[0]).decode("utf-8")
+    p = subprocess.run([pwsh_path, *args], input=stdin.encode(), capture_output=True, timeout=120)
+    assert p.returncode == 0, p.stderr
+    _, data = parse(decode_output(p.stdout))
+    assert data == {"secret": secret, "in_src": False, "name": "fo"}
+
+
+@pytest.mark.parametrize("cut", [1, 2, 4, 9, 13])
+def test_input_cut_short_is_refused(pwsh_path: str, cut: int) -> None:
+    """A line cut short must not run with a shortened or missing secret (review of #104)."""
+    body = Script("secret.cut", "$out = @{ secret = $p.shared_secret }").wrap()
+    _, full = prepare(body, {"shared_secret": "correct-horse-battery", "name": "x"})
+    args, _ = prepare(body, {})
+    stdin = full.strip()[:-cut] + "\r\n"
+    p = subprocess.run([pwsh_path, *args], input=stdin.encode(), capture_output=True, timeout=120)
+    assert p.returncode != 0 or not p.stdout.strip(), p.stdout
+    assert b"incomplete script input" in p.stderr
+
+
+def test_no_secret_leaves_shared_secret_unset(pwsh_path: str) -> None:
+    body = Script("secret.none", "$out = @{ set = [bool]$p.shared_secret; n = @($wdSecrets.Keys).Count }").wrap()
+    args, stdin = prepare(body, {"shared_secret": ""})
+    assert stdin.strip().endswith(".0")
+    p = subprocess.run([pwsh_path, *args], input=stdin.encode(), capture_output=True, timeout=120)
+    assert p.returncode == 0, p.stderr
+    assert parse(decode_output(p.stdout)) == (True, {"set": False, "n": 0})
 
 
 def test_failover(pw: PwshRunner) -> None:

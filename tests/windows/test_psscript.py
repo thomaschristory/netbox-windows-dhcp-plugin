@@ -12,6 +12,7 @@ import pytest
 from netbox_windows_dhcp_plugin.windows import psscript
 from netbox_windows_dhcp_plugin.windows.psscript import (
     BOOTSTRAP,
+    SECRET_PARAMS,
     NotFound,
     OutputError,
     PSError,
@@ -24,7 +25,9 @@ from netbox_windows_dhcp_plugin.windows.psscript import (
     is_not_found,
     op_of,
     parse,
+    prepare,
     render,
+    split_secrets,
 )
 
 from .conftest import fixture_bytes
@@ -66,9 +69,52 @@ def test_render_preamble() -> None:
     assert lines[1] == "$ProgressPreference = 'SilentlyContinue'"
     assert lines[2] == "$PSDefaultParameterValues['*:ErrorAction'] = 'Stop'"
     assert lines[3] == """$p = ConvertFrom-Json -InputObject '{"scope_id":"10.1.2.0"}'"""
-    assert lines[4] == "$cn = @{}"
-    assert lines[5] == "if ($p.computer_name) { $cn['ComputerName'] = $p.computer_name }"
+    assert lines[4] == (
+        "if ($wdSecrets) { foreach ($k in @($wdSecrets.Keys)) { "
+        "$p.PSObject.Properties.Add([psnoteproperty]::new($k, $wdSecrets[$k])) } }"
+    )
+    assert lines[5] == "$cn = @{}"
+    assert lines[6] == "if ($p.computer_name) { $cn['ComputerName'] = $p.computer_name }"
     assert out.endswith("# body")
+
+
+@pytest.mark.parametrize("key", sorted(SECRET_PARAMS))
+def test_render_refuses_secrets(key: str) -> None:
+    # Issue #104: script block logging records the script text, so a secret must never be rendered into it.
+    with pytest.raises(ValueError, match="prepare"):
+        render("# body", {key: "x"})
+    with pytest.raises(ValueError, match="prepare"):
+        render("# body", {key: ""})
+
+
+def test_split_secrets() -> None:
+    assert split_secrets(None) == ({}, {})
+    assert split_secrets({"name": "fo", "shared_secret": "s", "password": ""}) == (
+        {"name": "fo"},
+        {"shared_secret": "s"},
+    )
+    with pytest.raises(TypeError, match="shared_secret"):
+        split_secrets({"shared_secret": 123})
+
+
+def test_prepare_keeps_the_secret_out_of_the_script_text() -> None:
+    secret = "s3'cr\u00e9t.with:separators"
+    args, stdin = prepare("# netbox-windows-dhcp-plugin:x\n", {"name": "fo", "shared_secret": secret})
+    assert stdin.endswith("\r\n") and "\n" not in stdin[:-2]
+    script_b64, pair, count = stdin.strip().split(".")
+    assert count == "1"
+    script = base64.b64decode(script_b64).decode("utf-8")
+    assert secret not in script and "shared_secret" not in script and '"name":"fo"' in script
+    name, value = pair.split(":")
+    assert base64.b64decode(name).decode() == "shared_secret"
+    assert base64.b64decode(value).decode("utf-8") == secret
+    assert secret not in stdin and secret not in " ".join(args)
+
+
+def test_prepare_without_secrets_sends_only_the_script() -> None:
+    _, stdin = prepare("# body", {"a": 1, "shared_secret": ""})
+    script_b64, count = stdin.strip().split(".")
+    assert count == "0" and base64.b64decode(script_b64).decode() == render("# body", {"a": 1})
 
 
 def test_render_escapes_quotes() -> None:
@@ -113,10 +159,11 @@ def test_command_encoding() -> None:
     enc = cmd[len(prefix) :]
     assert base64.b64decode(enc).decode("utf-16-le") == BOOTSTRAP
     assert stdin.endswith("\r\n")
-    assert base64.b64decode(stdin.strip()).decode("utf-8") == "Write-Output 'h\u00e9llo'"
+    assert stdin.strip().endswith(".0")
+    assert base64.b64decode(stdin.strip()[: -len(".0")]).decode("utf-8") == "Write-Output 'h\u00e9llo'"
     args, stdin2 = command_argv("x")
     assert args[-2] == "-EncodedCommand" and args[-1] == enc
-    assert stdin2 == base64.b64encode(b"x").decode() + "\r\n"
+    assert stdin2 == base64.b64encode(b"x").decode() + ".0\r\n"
 
 
 def test_bootstrap_matches_go() -> None:

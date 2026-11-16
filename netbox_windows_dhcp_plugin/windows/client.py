@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
 from . import normalize
-from .psscript import NotFound, OutputError, PSError, Requirement, Script, is_not_found, parse
+from .psscript import SECRET_PARAMS, NotFound, OutputError, PSError, Requirement, Script, is_not_found, parse
 from .runner import Runner
 
 __all__ = [
@@ -75,7 +75,7 @@ DHCP_MODULE = Requirement(
 )
 
 # Parameter names whose values must never be logged.
-_SECRET_KEYS = frozenset({"shared_secret", "password"})
+_SECRET_KEYS = SECRET_PARAMS
 
 
 # ---------------------------------------------------------------------------

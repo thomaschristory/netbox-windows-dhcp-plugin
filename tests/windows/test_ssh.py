@@ -339,7 +339,9 @@ def test_stdin_is_base64_script(ssh_server) -> None:
     finally:
         r.close()
     assert seen["stdin"].endswith("\r\n")
-    assert base64.b64decode(seen["stdin"]).decode().endswith("# body")
+    script_b64, count = seen["stdin"].strip().split(".")
+    assert count == "0"
+    assert base64.b64decode(script_b64, validate=True).decode().endswith("# body")
 
 
 def test_silence_past_the_command_timeout_says_so(ssh_server) -> None:

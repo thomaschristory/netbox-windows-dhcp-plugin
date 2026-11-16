@@ -33,7 +33,9 @@ def test_execute_success() -> None:
     assert out == b'{"ok":true,"data":1}'
     assert seen["argv"][0] == "powershell.exe"
     assert seen["argv"][-2] == "-EncodedCommand"
-    rendered = base64.b64decode(seen["stdin"]).decode()
+    script_b64, count = seen["stdin"].strip().split(".")
+    assert count == "0"
+    rendered = base64.b64decode(script_b64).decode()
     assert rendered == psscript.render("# body", {"a": "b'c"})
 
 
