@@ -188,17 +188,6 @@ def _job_destination(job):
     return destination or branching.import_destinations()[0]
 
 
-def _run_destination(run, has_proposal):
-    """Where a run wrote. Runs from before #36 recorded nothing: a branch name or a proposal says which it was."""
-    if run.destination:
-        return run.destination
-    if run.branch_name:
-        return ImportDestinationChoices.BRANCH
-    if has_proposal or not branching.branching_installed():
-        return ImportDestinationChoices.PROPOSAL
-    return ImportDestinationChoices.BRANCH
-
-
 def _branch(name, user, since=None, until=None):
     """
     What became of the branch an import wrote into. ``since``: when the run started, so an older deleted branch of the
@@ -263,7 +252,8 @@ def for_run(run, user, job=None, now=None):
         proposal=proposal,
         proposal_hidden=hidden,
         open_proposal=open_proposal,
-        destination=_run_destination(run, proposal is not None or hidden),
+        # Every import run records where it wrote (the 0.2 line started with empty tables, so none predates that).
+        destination=run.destination,
     )
 
 

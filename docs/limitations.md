@@ -70,7 +70,11 @@ DHCP 20135 and 20136). A push of such a policy fails the same way, so fix it in 
   fails and names the other scope. To avoid the sharing, give each server its own import VRF before its first
   import; a scope that already exists keeps the VRF of its prefix, so for those see
   [Troubleshooting](troubleshooting.md#import). Import the failover relationship if they are partners. A range
-  change and a brand new failover relationship in the same import need a second run (or the failed item applied
-  again).
+  change and a brand new failover relationship found in the same import no longer need a second run: the scope is
+  written first and already counts as shared with the partner when every scope of the relationship is in NetBox (or
+  created by the same run) and the user applying it may add the relationship. A proposal's scope item applied without
+  the relationship's item still waits for it. If the relationship then fails anyway (a stale item, for example), the
+  range change stays: NetBox has the new range for both servers but no relationship. Import or apply the relationship
+  again, or put the range back by hand.
 - Deleting a device, virtual machine or interface whose IP address or MAC address a reservation uses is refused by
   NetBox. Delete the reservation, or unassign the address, first.

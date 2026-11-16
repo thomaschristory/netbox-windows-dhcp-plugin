@@ -36,7 +36,9 @@ while a push writes it would propose half-pushed changes back. A PostgreSQL advi
 
 - A push that finds its server busy is queued again a minute later, for up to two hours, so a merge's push is never
   lost.
-- An import that finds its server busy fails; the next one (manual or scheduled) runs normally.
+- A scheduled import that finds its server busy is queued again a minute later, for up to half an hour; the waiting
+  attempts leave no failed sync run. After that it fails, and the next interval brings a new one.
+- An import started by hand that finds its server busy fails; run it again.
 - A dry run that finds its server busy fails; run it again.
 
 The lock is held by the worker's database session, so the worker must not reach PostgreSQL through a

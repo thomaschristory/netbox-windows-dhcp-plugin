@@ -68,7 +68,7 @@ cannot be applied while you work in a netbox-branching branch; see
 scope".** Two servers hold the same subnet and were imported into the same VRF, so their scopes share one IP range
 in NetBox. Pick the case that fits, then apply the failed item again (or run the import again):
 
-- The servers are failover partners: import the failover relationship first.
+- The servers are failover partners: apply the failover relationship item too (both in one go), or first.
 - Both servers got the same range change on Windows: edit the shared IP range in NetBox to the new start and end.
 - Otherwise: edit one of the two scopes in NetBox and point it at its own prefix and IP range in another VRF
   (NetBox refuses two overlapping ranges in one VRF).
