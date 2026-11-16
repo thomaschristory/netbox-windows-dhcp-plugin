@@ -159,6 +159,17 @@ SyncRunViewSet = _viewset(
 )
 
 
+def _review_jobs():
+    from core.models import Job
+    from django.db.models import Prefetch
+
+    from ..jobs import ReviewJob
+
+    return Prefetch(
+        "jobs", queryset=Job.objects.filter(name=ReviewJob.name).order_by("-created"), to_attr="review_jobs"
+    )
+
+
 class _ReviewActionsMixin:
     """Apply or dismiss proposal items as the requesting user (see review.py for the permission rules)."""
 
@@ -190,10 +201,13 @@ class _ReviewActionsMixin:
         try:
             jobs = review.queue(request.user, items, dismiss=dismiss, whole_proposal=self.whole_proposal)
         except ReviewBusy as exc:
+            job = review.visible_job(request.user, exc.job)
             return Response(
                 {
-                    "detail": "applying or dismissing items of this proposal is already queued or running",
-                    "job": exc.job.pk if exc.job else None,
+                    "detail": "applying or dismissing items of this proposal is already queued or running (a job "
+                    "that no worker finishes stops blocking new reviews 2 hours after it was queued)",
+                    # Only a job the requester asked for or may view: another user's job ID is not theirs to learn.
+                    "job": job.pk if job else None,
                 },
                 status=409,
             )
@@ -205,7 +219,12 @@ class _ReviewActionsMixin:
 
 class ImportProposalViewSet(
     _ReviewActionsMixin,
-    _viewset(models.ImportProposal, models.ImportProposal.objects.all(), base=NetBoxReadOnlyModelViewSet),
+    _viewset(
+        models.ImportProposal,
+        # The newest review job of each proposal, for the serializer's review_job, in one query for the page.
+        models.ImportProposal.objects.prefetch_related(_review_jobs()),
+        base=NetBoxReadOnlyModelViewSet,
+    ),
 ):
     whole_proposal = True
 

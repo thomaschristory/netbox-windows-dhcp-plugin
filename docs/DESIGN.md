@@ -359,7 +359,13 @@ while queued) and `SyncRun.destination`. Without branching the only destination 
   and Dismiss all, `change` on each item, then the same per-item checks as the request. It takes the server's advisory
   lock (fails if an import or push holds it), writes on main under `event_tracking` with the job's `job_id` as the
   request ID (`integrations/branching.acting_as`), and records `action`, `items`, the counts and `remaining` in
-  `job.data`. Queuing takes a per-proposal transaction lock and refuses a second job while one waits or runs (409 in
+  `job.data`, with `superseded` (picked items no longer open when it starts, read under the server lock: an import
+  replaces open items with new IDs; none left fails the job) and, when it dies halfway, `interrupted` plus counts read
+  from the database. `acting_as` flushes the queued events even on an exception (only committed items' events are in
+  the queue), so webhooks hear of what was committed. Permissions are read once, at start. The proposal serializer's
+  `review_job` gives the newest job's status and data without `core.view_job`; job IDs, users and errors are shown
+  only to viewers of the job. A non-integer or negative `review_job_threshold` is logged and treated as None. Queuing
+  takes a per-proposal transaction lock and refuses a second job while one waits or runs (409 in
   the API). The API answers 202 with the job (proposal actions) or `{"jobs": [...]}` (item actions); below the
   threshold the request does the work and answers as before. Each item's change log events go into a queue of their
   own (`importer._one_change`), merged into the request's queue with NetBox's coalescing rules only when the item

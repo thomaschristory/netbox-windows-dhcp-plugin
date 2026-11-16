@@ -95,16 +95,32 @@ runs as you, and the answer is `202` instead of the counts above:
   `url`, `status`...);
 - `import-proposal-items/apply/` and `/dismiss/` answer `{"jobs": [...]}`, one job per proposal the items belong to.
 
-Follow the job at `GET /api/core/jobs/<id>/`. Once it has finished, its `data` holds what it did:
-`{"action": "apply", "items": 2400, "applied": ..., "failed": ..., "missing_permissions": [...], "remaining": ...}`
-(`"dismissed"` in place of the three apply counts for a dismissal), where `remaining` counts the picked items still
-open (failed, left pending for a missing permission, or no longer yours to change). If the job could not run at all
-(the proposal is gone, or an import or push of the same server was running), the job fails and `data["error"]` says
-why. The job checks your permissions again when it runs, and only acts on the items picked when it was queued.
+Follow the job either at `GET /api/core/jobs/<id>/` (this needs `core.view_job`) or through the proposal: every
+`import-proposals/` object has `review_job`, the newest review job's `status`, `created`, `started`, `completed` and
+`data` (`null` when there was none), readable by anyone who may view the proposal. Once the job has finished, its
+`data` holds what it did:
+`{"action": "apply", "items": 2400, "superseded": 0, "applied": ..., "failed": ..., "missing_permissions": [...],
+"remaining": ...}` (`"dismissed"` in place of the three apply counts for a dismissal).
+
+- `superseded` counts the picked items that were no longer open when the job started: a newer import of the server
+  replaced them (an import replaces every open item of the proposal with new ones), or another reviewer decided them.
+  Review the proposal again. When none of the picked items is left, the job fails and says so.
+- `remaining` counts the picked items that were open when the job started and still are: failed, left pending for a
+  missing permission, or no longer yours to change. Superseded items are not in it.
+- `error` says why the job could not run at all (the proposal is gone, your permissions changed, every picked item
+  was superseded, or an import or push of the same server was running); the job then failed.
+- `interrupted` is `true` when the job stopped halfway (it timed out, lost its database connection, or hit a bug; the
+  job is then errored and its `error` says why): the counts are what it had done until then, every one of those items
+  is committed, and webhooks heard of them.
+
+The job checks your permissions when it starts (not again for each item), and only acts on the items picked when it
+was queued.
 
 While a review job of a proposal waits or runs, a request that would queue another one for the same proposal answers
-`409` with a `detail` and the waiting job's ID in `job`. Below the threshold nothing changes: the request applies or
-dismisses the items itself and answers `200` with the counts. Clients that send large reviews must handle both.
+`409` with a `detail`, and the waiting job's ID in `job` when you queued it or may view it (`null` otherwise). A job
+that no worker finishes stops blocking new reviews 2 hours after it was queued. Below the threshold nothing changes:
+the request applies or dismisses the items itself and answers `200` with the counts. Clients that send large reviews
+must handle both.
 
 List the pending items of a proposal with `GET import-proposal-items/?proposal_id=<id>&status=pending`. Each item
 has its `action`, `kind`, `key`, `before` and `after` values, and the NetBox object it touches.

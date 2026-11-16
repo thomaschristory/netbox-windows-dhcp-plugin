@@ -6,7 +6,7 @@
     <tr>
       <th scope="row">{% trans "Job" %}</th>
       <td>
-        <a href="{{ job.get_absolute_url }}">#{{ job.pk }}</a>
+        {% if viewable %}<a href="{{ job.get_absolute_url }}">#{{ job.pk }}</a>{% endif %}
         <span class="badge text-bg-{{ job.get_status_color }}">{{ job.get_status_display }}</span>
       </td>
     </tr>
@@ -19,10 +19,12 @@
         {% endif %}
       </td>
     </tr>
-    <tr>
-      <th scope="row">{% trans "Requested by" %}</th>
-      <td>{{ job.user.username|default:"-" }} <span class="text-muted">{{ job.created|date:"SHORT_DATETIME_FORMAT" }}</span></td>
-    </tr>
+    {% if viewable %}
+      <tr>
+        <th scope="row">{% trans "Requested by" %}</th>
+        <td>{{ job.user.username|default:"-" }} <span class="text-muted">{{ job.created|date:"SHORT_DATETIME_FORMAT" }}</span></td>
+      </tr>
+    {% endif %}
     {% if running %}
       <tr>
         <td colspan="2" class="text-muted">
@@ -30,15 +32,29 @@
           {% trans "Waiting or running: reload the page to see the result." %}
         </td>
       </tr>
-    {% elif result.error %}
+    {% elif lost %}
       <tr>
-        <th scope="row">{% trans "Error" %}</th>
-        <td>{{ result.error }}</td>
+        <td colspan="2" class="text-warning">
+          {% trans "This job never finished (the background worker may have stopped). Review the open items again." %}
+        </td>
       </tr>
     {% else %}
+      {% if error %}
+        <tr>
+          <th scope="row">{% trans "Error" %}</th>
+          <td>{% if viewable %}{{ error }}{% else %}<span class="text-muted">{% trans "The job did not finish." %}</span>{% endif %}</td>
+        </tr>
+      {% endif %}
+      {% if result.interrupted %}
+        <tr>
+          <td colspan="2" class="text-warning">{% trans "Stopped halfway: the counts below are what it did before it stopped." %}</td>
+        </tr>
+      {% endif %}
       {% if result.applied is not None %}
         <tr><th scope="row">{% trans "Applied" %}</th><td>{{ result.applied }}</td></tr>
-        <tr><th scope="row">{% trans "Failed" %}</th><td>{{ result.failed }}</td></tr>
+        {% if result.failed is not None %}
+          <tr><th scope="row">{% trans "Failed" %}</th><td>{{ result.failed }}</td></tr>
+        {% endif %}
         {% if result.missing_permissions %}
           <tr>
             <th scope="row">{% trans "Missing permissions" %}</th>
@@ -52,6 +68,14 @@
       {% if result.remaining is not None %}
         <tr><th scope="row">{% trans "Still open" %}</th><td>{{ result.remaining }}</td></tr>
       {% endif %}
+    {% endif %}
+    {% if result.superseded %}
+      <tr>
+        <th scope="row">{% trans "Skipped" %}</th>
+        <td>
+          {% blocktrans count n=result.superseded %}{{ n }} picked item was replaced by a newer import or decided by someone else meanwhile: review again.{% plural %}{{ n }} picked items were replaced by a newer import or decided by someone else meanwhile: review again.{% endblocktrans %}
+        </td>
+      </tr>
     {% endif %}
   </table>
 </div>

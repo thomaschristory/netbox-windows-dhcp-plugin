@@ -12,6 +12,8 @@ More open items than the review_job_threshold setting are not handled in the req
 background job (jobs.ReviewJob) that runs as the same user and checks the same permissions (#101).
 """
 
+import logging
+
 from django.contrib.contenttypes.models import ContentType
 
 from .choices import ProposalItemStatusChoices
@@ -19,7 +21,18 @@ from .conf import get_setting
 from .integrations import branching
 from .sync import importer
 
-__all__ = ("apply", "apply_refusal", "dismiss", "in_background", "missing_permission", "open_items", "queue")
+__all__ = (
+    "apply",
+    "apply_refusal",
+    "dismiss",
+    "in_background",
+    "missing_permission",
+    "open_items",
+    "queue",
+    "visible_job",
+)
+
+log = logging.getLogger(__name__)
 
 _PERMISSION = {"create": "add", "update": "change", "delete": "delete"}
 
@@ -84,13 +97,38 @@ def dismiss(user, items):
     return importer.dismiss_items(list(items))
 
 
+def review_job_threshold():
+    """
+    The review_job_threshold setting, or None when every review stays in the request. A value that is not a whole
+    number of at least 0 is a configuration mistake: it is logged and treated as None, so reviews keep working.
+    """
+    value = get_setting("review_job_threshold")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        log.error(f"review_job_threshold must be None or a whole number of at least 0, not {value!r}: ignored")
+        return None
+    return value
+
+
 def in_background(items):
     """Whether these open items are too many for the request and go to a background job."""
-    threshold = get_setting("review_job_threshold")
+    threshold = review_job_threshold()
     if threshold is None:
         return False
     # Only counted up to the threshold: a selection of thousands needs no full count to know it is too large.
     return items[: threshold + 1].count() > threshold
+
+
+def visible_job(user, job):
+    """The job, if the user asked for it or may view it; None otherwise (its ID is not theirs to learn)."""
+    from core.models import Job
+
+    if job is None:
+        return None
+    if job.user_id == user.pk or Job.objects.restrict(user, "view").filter(pk=job.pk).exists():
+        return job
+    return None
 
 
 def queue(user, items, dismiss=False, whole_proposal=False):

@@ -732,9 +732,12 @@ class _ReviewView(GetReturnURLMixin, BaseObjectView):
         try:
             jobs = review.queue(request.user, items, dismiss=self.dismiss, whole_proposal=self.whole_proposal)
         except ReviewBusy as exc:
-            text = _("Applying or dismissing these items is already queued or running")
-            if exc.job is not None:
-                text = format_html('{} (<a href="{}">job #{}</a>)', text, exc.job.get_absolute_url(), exc.job.pk)
+            text = _(
+                "Applying or dismissing these items is already queued or running. A job that no worker finishes "
+                "stops blocking new reviews 2 hours after it was queued."
+            )
+            if (job := review.visible_job(request.user, exc.job)) is not None:
+                text = format_html('{} (<a href="{}">job #{}</a>)', text, job.get_absolute_url(), job.pk)
             messages.warning(request, text)
             return
         links = format_html_join(", ", '<a href="{}">job #{}</a>', ((j.get_absolute_url(), j.pk) for j in jobs))

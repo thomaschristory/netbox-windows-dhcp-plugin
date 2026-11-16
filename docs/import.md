@@ -177,8 +177,12 @@ server can propose thousands of changes. Above that number, Apply all, Dismiss a
 **Windows DHCP import review** job instead and link it in the message. The job runs as you, with the same permission
 checks (made again when it starts), acts only on the items you picked, and records the changes in the change log under
 your name with the job's ID as the request ID. The proposal page shows the newest review job in a **Background review**
-panel, with its counts once it has finished, and lists all of them on its **Jobs** tab. One review job per proposal
-runs at a time: another click while one waits says so. The job waits for no import or push of the same server: if
+panel, with its counts once it has finished, and lists all of them on its **Jobs** tab. Who asked, the error and the link to
+the job only show to users who may view jobs (`core.view_job`). One review job per proposal runs at a time: another
+click while one waits says so (a job that no worker finishes stops blocking after 2 hours). Picked items that a newer
+import replaced, or that someone else decided, before the job started are skipped and counted; when none is left, the
+job fails and asks you to review again. A job that stops halfway (a timeout, a crash) keeps what it had already done
+and says how far it got. The job waits for no import or push of the same server: if
 one is running, it fails and says so, and you apply again once it has finished.
 
 Proposals are applied to main. If netbox-branching was installed after a proposal was written, its items cannot be

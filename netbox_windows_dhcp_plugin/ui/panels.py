@@ -307,21 +307,35 @@ class ImportStatusPanel(panels.ObjectPanel):
 
 
 class ReviewJobPanel(panels.ObjectPanel):
-    """On a proposal page: the newest background review of its items (#101), while it runs and after."""
+    """
+    On a proposal page: the newest background review of its items (#101), while it runs and after. Anyone who may
+    view the proposal sees its status and counts; who asked, the error and the link only show to a viewer who may
+    view that job.
+    """
 
     title = _("Background review")
     template_name = "netbox_windows_dhcp_plugin/inc/review_job.html"
 
     def get_context(self, context):
         from core.choices import JobStatusChoices
+        from core.models import Job
+        from django.utils import timezone
 
-        from ..jobs import ReviewJob
+        from ..jobs import ABANDONED_JOB, ReviewJob
 
         ctx = super().get_context(context)
         job = ReviewJob.get_jobs(ctx["object"]).select_related("user").order_by("-created").first()
         ctx["job"] = job
-        ctx["running"] = job is not None and job.status in JobStatusChoices.ENQUEUED_STATE_CHOICES
-        ctx["result"] = (job.data if job is not None and isinstance(job.data, dict) else None) or {}
+        if job is None:
+            return ctx
+        waiting = job.status in JobStatusChoices.ENQUEUED_STATE_CHOICES
+        # Past this a job no worker finished is no longer waited for (jobs.review_jobs): a new review may start.
+        ctx["running"] = waiting and job.created >= timezone.now() - ABANDONED_JOB
+        ctx["lost"] = waiting and not ctx["running"]
+        ctx["result"] = job.data if isinstance(job.data, dict) else {}
+        ctx["viewable"] = Job.objects.restrict(ctx["request"].user, "view").filter(pk=job.pk).exists()
+        # A job NetBox marked errored (a crash or a timeout) has its reason on the job, not in its data.
+        ctx["error"] = ctx["result"].get("error") or job.error
         return ctx
 
     def should_render(self, context):

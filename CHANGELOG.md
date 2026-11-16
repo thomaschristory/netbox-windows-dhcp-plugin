@@ -16,7 +16,9 @@ All notable changes to this project are documented here. The format follows
   **Windows DHCP import review** job of the proposal, run as the requesting user with the same permission checks
   (made again when it starts), instead of working inside the web request, where a large first import timed out the
   browser or the reverse proxy. The message links the job, and the proposal page shows it in a Background review
-  panel and on a new Jobs tab. One review job per proposal at a time. (#101)
+  panel and on a new Jobs tab, and the REST API gives its status and counts as `review_job` on each import
+  proposal. One review job per proposal at a time. Items a newer import replaced before the job started are skipped
+  and counted (`superseded`). (#101)
 
 ### Changed
 

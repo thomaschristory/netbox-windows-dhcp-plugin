@@ -677,6 +677,10 @@ class ReviewServerBusy(ServerBusy):
     pass
 
 
+# Why picked items are no longer there to review, for the job log, its data and the proposal page.
+SUPERSEDED = "replaced by a newer import or decided by someone else meanwhile: review again"
+
+
 class ReviewJob(JobRunner):
     """
     Apply or dismiss many items of one import proposal in the background (#101), as the user who asked. Below the
@@ -691,37 +695,63 @@ class ReviewJob(JobRunner):
         name = "Windows DHCP import review"
 
     def run(self, *args, item_ids=(), dismiss=False, whole_proposal=False, **kwargs):
-        from . import review
-        from .integrations import branching
-        from .models import ImportProposal, ImportProposalItem
+        from .models import ImportProposal
 
-        verb = "dismiss" if dismiss else "apply"
-        self.job.data = {**(self.job.data or {}), "action": verb, "items": len(item_ids)}
+        self.job.data = {**(self.job.data or {}), "action": "dismiss" if dismiss else "apply", "items": len(item_ids)}
         proposal = self.job.object
         user = self.job.user
         if proposal is None:
             self._fail("the import proposal no longer exists")
         if user is None or not user.is_active:
             self._fail("the user who asked for this review no longer exists or is inactive")
-        if whole_proposal and not ImportProposal.objects.restrict(user, "change").filter(pk=proposal.pk).exists():
-            self._fail(f"{user} may no longer change import proposal {proposal}")
+        # Permissions are read once, here: one taken away while the job runs is honoured by the next review.
+        if whole_proposal and not (
+            ImportProposal.objects.restrict(user, "view").restrict(user, "change").filter(pk=proposal.pk).exists()
+        ):
+            self._fail(f"the requesting user may no longer view and change import proposal {proposal}")
+        try:
+            # An import holds this lock too while it rewrites the proposal, so the items read below stay as read.
+            with server_lock(proposal.windows_server, ReviewServerBusy):
+                self._review(proposal, user, item_ids, dismiss)
+        except ReviewServerBusy as exc:
+            self._fail(f"{exc}: try again once it has finished")
+
+    def _review(self, proposal, user, item_ids, dismiss):
+        from . import review
+        from .integrations import branching
+        from .models import ImportProposalItem
+
+        # A newer import replaces the open items of a proposal with new ones (new IDs), and another reviewer may
+        # have decided some meanwhile: neither is this job's to touch, and the user must know they were skipped.
+        still_open = list(
+            review.open_items(ImportProposalItem.objects.filter(pk__in=item_ids)).values_list("pk", flat=True)
+        )
+        superseded = len(item_ids) - len(still_open)
+        self.job.data["superseded"] = superseded
+        if superseded:
+            self.logger.warning(f"{superseded} picked item(s) were {SUPERSEDED}")
+        if not still_open:
+            self._fail(f"none of the picked items is still open: they were {SUPERSEDED}")
         # Only the items picked when the job was queued: a new import may have proposed others since, which the
         # user has not seen. Items they may no longer change are left alone.
         items = review.open_items(
-            ImportProposalItem.objects.restrict(user, "change").filter(proposal=proposal, pk__in=item_ids)
+            ImportProposalItem.objects.restrict(user, "change").filter(proposal=proposal, pk__in=still_open)
         )
         try:
-            with server_lock(proposal.windows_server, ReviewServerBusy), branching.acting_as(user, self.job.job_id):
+            with branching.acting_as(user, self.job.job_id):
                 if dismiss:
                     summary = {"dismissed": review.dismiss(user, items)}
                 else:
                     applied, failed, denied = review.apply(user, items)
                     summary = {"applied": applied, "failed": failed, "missing_permissions": denied}
-        except ReviewServerBusy as exc:
-            self._fail(f"{exc}: try again once it has finished")
+        except BaseException:
+            # Killed or broken halfway (a timeout, a lost database connection, a bug): every item decided so far is
+            # committed, so say how far it got before NetBox marks the job errored.
+            self.job.data.update(self._progress(still_open, dismiss), interrupted=True)
+            raise
         # What the user picked and is still open: denied, failed, or left untouched (a permission went away).
-        summary["remaining"] = review.open_items(ImportProposalItem.objects.filter(pk__in=item_ids)).count()
-        self.job.data = {**self.job.data, **summary}
+        summary["remaining"] = review.open_items(ImportProposalItem.objects.filter(pk__in=still_open)).count()
+        self.job.data.update(summary)
         if dismiss:
             self.logger.info(f"Dismissed {summary['dismissed']} item(s) of {proposal}")
         else:
@@ -732,6 +762,20 @@ class ReviewJob(JobRunner):
                 self.logger.warning(f"Not applied, missing permission: {', '.join(summary['missing_permissions'])}")
         if summary["remaining"]:
             self.logger.info(f"{summary['remaining']} picked item(s) still open")
+
+    @staticmethod
+    def _progress(item_ids, dismiss):
+        """What became of these items so far, read from the database."""
+        from . import review
+        from .choices import ProposalItemStatusChoices
+        from .models import ImportProposalItem
+
+        done = ProposalItemStatusChoices.DISMISSED if dismiss else ProposalItemStatusChoices.APPLIED
+        picked = ImportProposalItem.objects.filter(pk__in=item_ids)
+        return {
+            "dismissed" if dismiss else "applied": picked.filter(status=done).count(),
+            "remaining": review.open_items(picked).count(),
+        }
 
     def _fail(self, message):
         # Job.terminate saves the job, data included: the proposal page and the API show the reason.
