@@ -217,11 +217,11 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
         connections[self.branch.connection_name].close()
         self.branch.delete()
 
-    def _edit_in_branch(self, user):
+    def _edit_in_branch(self, user, request_id=None):
         from ipam.models import IPAddress
         from netaddr import IPNetwork
 
-        with branching.writing(self.branch, user):
+        with branching.writing(self.branch, user, request_id=request_id):
             ip = IPAddress.objects.get(pk=Reservation.objects.get().ip_address_id)
             ip.snapshot()
             ip.address = IPNetwork(f"{ip.address.ip + 1}/{ip.address.prefixlen}")
@@ -294,6 +294,162 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
         with self.assertRaises(AbortRequest):
             self._merge(self.ipam_only)
         self.assertEqual(self._address(), before)
+
+    def _import_in_branch(self):
+        """Change the reserved address in the branch as an import does; returns the new address."""
+        from netbox_windows_dhcp_plugin.ipam_guard import import_request_id
+
+        return self._edit_in_branch(self.editor, request_id=import_request_id())
+
+    def _describe_on_main_and_sync(self):
+        """Edit only the description of the reserved address on main, then sync the branch (#115)."""
+        from ipam.models import IPAddress
+
+        request = RequestFactory().get("/")
+        request.id = uuid.uuid4()
+        request.user = self.ipam_only
+        ip = IPAddress.objects.get(pk=Reservation.objects.get().ip_address_id)
+        ip.snapshot()
+        ip.description = "edited on main"
+        with event_tracking(request), mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            ip.save()
+        self.branch.can_sync = True
+        self.branch.sync(user=get_user_model().objects.get(username="guard-owner"))
+        self.branch.refresh_from_db()
+
+    def _describe_in_branch(self, user):
+        from ipam.models import IPAddress
+
+        with branching.writing(self.branch, user):
+            ip = IPAddress.objects.get(pk=Reservation.objects.get().ip_address_id)
+            ip.snapshot()
+            ip.description = "edited in the branch"
+            ip.save()
+
+    def _set_strategy(self, strategy):
+        self.branch.merge_strategy = strategy
+        self.branch.save(update_fields=["merge_strategy"])
+
+    def test_import_changes_merge_without_the_permission(self):
+        address = self._import_in_branch()
+        self._merge(self.ipam_only)
+        self.assertEqual(self._address(), address)
+
+    def _import_merge_after_sync(self, strategy):
+        # #115: the synced description edit has its own request ID; it used to take the exemption away.
+        address = self._import_in_branch()
+        self._describe_on_main_and_sync()
+        self._set_strategy(strategy)
+        self._merge(self.ipam_only)
+        self.assertEqual(self._address(), address)
+        self.assertEqual(Reservation.objects.get().ip_address.description, "edited on main")
+
+    def test_import_changes_merge_after_a_sync_of_a_main_description_edit(self):
+        self._import_merge_after_sync("iterative")
+
+    def test_squash_import_changes_merge_after_a_sync_of_a_main_description_edit(self):
+        self._import_merge_after_sync("squash")
+
+    def test_import_changes_revert_after_a_sync_of_a_main_description_edit(self):
+        before = self._address()
+        self._import_in_branch()
+        self._describe_on_main_and_sync()
+        self._merge(self.ipam_only)
+        self.branch.can_revert = True
+        with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            self.branch.revert(user=self.ipam_only)
+        self.assertEqual(self._address(), before)
+
+    def test_import_merge_after_a_sync_of_a_main_address_edit_is_checked(self):
+        # Stricter than #115 asked: a synced change of the address itself is not the import's, so it is checked.
+        from ipam.models import IPAddress
+        from netaddr import IPNetwork
+        from utilities.exceptions import AbortRequest
+
+        self._import_in_branch()
+        ip = IPAddress.objects.get(pk=Reservation.objects.get().ip_address_id)
+        ip.snapshot()
+        ip.address = IPNetwork("10.1.0.55/24")
+        request = RequestFactory().get("/")
+        request.id = uuid.uuid4()
+        request.user = self.editor
+        with event_tracking(request), mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            ip.save()
+        self.branch.can_sync = True
+        self.branch.sync(user=get_user_model().objects.get(username="guard-owner"))
+        self.branch.refresh_from_db()
+        with self.assertRaises(AbortRequest):
+            self._merge(self.ipam_only)
+        self.assertEqual(self._address(), "10.1.0.55/24")
+
+    def test_squash_hand_edit_of_the_description_keeps_the_import_exemption(self):
+        # Squash replays the address under the hand edit's request ID (the last change): the hand edit left the address
+        # alone, so the address is still the import's alone.
+        address = self._import_in_branch()
+        self._describe_in_branch(self.editor)
+        self._set_strategy("squash")
+        self._merge(self.ipam_only)
+        self.assertEqual(self._address(), address)
+
+    def _import_and_hand_edit_of_the_address(self, strategy):
+        # The import moves the address, then someone moves it again by hand: still checked after a sync.
+        from utilities.exceptions import AbortRequest
+
+        before = self._address()
+        self._import_in_branch()
+        self._edit_in_branch(self.editor)
+        self._describe_on_main_and_sync()
+        self._set_strategy(strategy)
+        with self.assertRaises(AbortRequest):
+            self._merge(self.ipam_only)
+        self.assertEqual(self._address(), before)
+
+    def test_import_merge_with_a_hand_edit_of_the_address_is_checked(self):
+        self._import_and_hand_edit_of_the_address("iterative")
+
+    def test_squash_import_merge_with_a_hand_edit_of_the_address_is_checked(self):
+        self._import_and_hand_edit_of_the_address("squash")
+
+    def _range_mask_edit_replays_a_stale_end(self, strategy):
+        # The import shifts the range start in the branch; main's end moves afterwards (by someone allowed to). A user
+        # without the scope permission changes only the masks in the branch: the merge replays the stored end, address
+        # included, which would put the stale end back on main. It must be checked, not taken for the import's.
+        from ipam.models import IPRange
+        from netaddr import IPNetwork
+        from utilities.exceptions import AbortRequest
+
+        from netbox_windows_dhcp_plugin.ipam_guard import import_request_id
+
+        for user in (self.editor, self.ipam_only):
+            _grant(user, "ipam", "iprange", "view")
+            _grant(user, "ipam", "iprange")
+        _grant(self.editor, "netbox_windows_dhcp_plugin", "scope")
+        range_pk = Scope.objects.get().ip_range_id
+        with branching.writing(self.branch, self.editor, request_id=import_request_id()):
+            ip_range = IPRange.objects.get(pk=range_pk)
+            ip_range.snapshot()
+            ip_range.start_address = IPNetwork("10.1.0.11/24")
+            ip_range.save()
+        ip_range = IPRange.objects.get(pk=range_pk)
+        ip_range.end_address = IPNetwork("10.1.0.199/24")
+        with mock.patch("netbox_windows_dhcp_plugin.signals.queue_pushes"):
+            ip_range.save()
+        with branching.writing(self.branch, self.ipam_only):
+            ip_range = IPRange.objects.get(pk=range_pk)
+            ip_range.snapshot()
+            ip_range.start_address = IPNetwork("10.1.0.11/25")
+            ip_range.end_address = IPNetwork("10.1.0.200/25")
+            ip_range.save()
+        self._set_strategy(strategy)
+        with self.assertRaises(AbortRequest):
+            self._merge(self.ipam_only)
+        self.assertEqual(str(IPRange.objects.get(pk=range_pk).end_address), "10.1.0.199/24")
+
+    def test_range_mask_edit_does_not_ride_on_the_import(self):
+        self._range_mask_edit_replays_a_stale_end("iterative")
+
+    def test_squash_range_mask_edit_does_not_ride_on_the_import(self):
+        self._range_mask_edit_replays_a_stale_end("squash")
 
     def test_merge_by_a_user_with_the_permission(self):
         # The editor lost the permission since: the merging user's is what counts at merge time.

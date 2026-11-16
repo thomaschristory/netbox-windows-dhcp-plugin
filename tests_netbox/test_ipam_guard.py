@@ -437,3 +437,36 @@ class ImportRequestIdTest(TestCase):
     def test_other_request_ids_are_not(self):
         for value in (uuid.uuid4(), None, "not-a-uuid", str(uuid.uuid4())):
             self.assertFalse(ipam_guard.is_import_request(value))
+
+    def test_import_only_counts_changes_of_watched_fields(self):
+        # #115: a change that leaves the watched fields alone (main's description edit brought in by a sync, a hand
+        # edit of the tags) does not take the exemption away from the import's own changes.
+        imported, other = ipam_guard.import_request_id(), uuid.uuid4()
+        address = {"address": "10.1.0.5/24", "description": ""}
+        moved = {"address": "10.1.0.6/24", "description": ""}
+        described = {"address": "10.1.0.6/24", "description": "synced"}
+        label = "ipam.ipaddress"
+        self.assertTrue(ipam_guard.import_only(label, [(imported, address, moved), (other, moved, described)]))
+        # A mask edit alone counts: the merge replays the whole stored value, address included.
+        remasked = {"address": "10.1.0.6/16", "description": ""}
+        self.assertFalse(ipam_guard.import_only(label, [(imported, address, moved), (other, moved, remasked)]))
+        # A hand edit of the address still counts, before or after the import's.
+        self.assertFalse(ipam_guard.import_only(label, [(other, address, moved), (imported, moved, described)]))
+        # A create or a delete alters the address too.
+        self.assertFalse(ipam_guard.import_only(label, [(imported, address, moved), (other, None, moved)]))
+        self.assertFalse(ipam_guard.import_only(label, [(imported, address, moved), (other, moved, None)]))
+        # No change of a watched field at all: nothing to exempt.
+        self.assertFalse(ipam_guard.import_only(label, [(imported, moved, described)]))
+        self.assertFalse(ipam_guard.import_only(label, []))
+
+    def test_import_only_reads_every_watched_field_of_a_range(self):
+        # The import moves the start; a hand edit of the end (here its mask alone) must still be checked.
+        imported, other = ipam_guard.import_request_id(), uuid.uuid4()
+        label = "ipam.iprange"
+        start = {"start_address": "10.1.0.10/24", "end_address": "10.1.0.200/24", "description": ""}
+        shifted = {**start, "start_address": "10.1.0.11/24"}
+        self.assertTrue(ipam_guard.import_only(label, [(imported, start, shifted)]))
+        described = {**shifted, "description": "by hand"}
+        self.assertTrue(ipam_guard.import_only(label, [(imported, start, shifted), (other, shifted, described)]))
+        remasked = {**shifted, "end_address": "10.1.0.200/25"}
+        self.assertFalse(ipam_guard.import_only(label, [(imported, start, shifted), (other, shifted, remasked)]))

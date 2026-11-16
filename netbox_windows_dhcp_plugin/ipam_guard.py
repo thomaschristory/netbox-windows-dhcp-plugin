@@ -118,6 +118,32 @@ def is_import_request(value):
     return hmac.compare_digest(raw[8:], _tag(raw[:8]))
 
 
+def _alters_watched(label, prechange, postchange):
+    """
+    Whether a change log entry (its pre- and postchange data, None for a create or delete) writes a watched field.
+    The stored values are compared as they are, not by what a push sends: netbox-branching replays a field whose stored
+    value differs, mask and all, so a change of the mask alone also writes the address it carries. Counting it as
+    the import's would let a mask edit of a range's end replay a stale end address under the import's exemption.
+    """
+    prechange, postchange = prechange or {}, postchange or {}
+    return any(prechange.get(field) != postchange.get(field) for field in WATCHED[label])
+
+
+def import_only(label, changes):
+    """
+    Whether the branch changes of one object, [(request ID, prechange data, postchange data)], come from an import as
+    far as Windows is concerned: every change that writes a watched field is the import's (and there is one). Changes
+    that leave the watched fields alone, such as main's description edit brought in by a sync (#115) or a hand edit of
+    the tags, cannot pass anything off as the import's, so they do not count. A hand edit of a watched field does,
+    even of the mask alone: squash replays all of an object's changes under one request ID, which may be the
+    import's.
+    """
+    watched = [
+        request_id for request_id, prechange, postchange in changes if _alters_watched(label, prechange, postchange)
+    ]
+    return bool(watched) and all(is_import_request(r) for r in watched)
+
+
 # The refusal names at most this many scopes or reservations, then counts the rest.
 MESSAGE_LIMIT = 5
 
@@ -225,10 +251,11 @@ def check_edit(sender, instance, raw=False, **kwargs):
         # A merge or revert replays the branch's changes on main as their authors (iterative strategy) or as the
         # merging user (squash): check the merging or reverting user, against main's scopes and reservations, which
         # may differ from what the branch held when the edit was made there. An import's own changes are not checked:
-        # only when every change the branch holds for this object is the import's, as squash replays an object's
-        # changes under its last change's request ID, which must not pass a hand edit off as the import's.
-        branch, user, request_ids = applying
-        if all(is_import_request(r) for r in request_ids):
+        # only when every change the branch holds for this object that alters a watched field is the import's, as
+        # squash replays an object's changes under its last change's request ID, which must not pass a hand edit off
+        # as the import's (see import_only).
+        branch, user, changes = applying
+        if import_only(instance._meta.label_lower, changes):
             return
         instance._nbwd_branch = branch
         if user is None or not user.is_authenticated:

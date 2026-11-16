@@ -169,7 +169,8 @@ def clear_applying():
 def applying_branch(instance):
     """
     While netbox-branching merges or reverts a branch in this context and this save is one of its replayed changes:
-    (branch name, merging or reverting user, request IDs of every change the branch holds for this object), else None.
+    (branch name, merging or reverting user, [(request ID, prechange data, postchange data)] for every change the
+    branch holds for this object), else None.
 
     The mark alone is not enough: a failed, empty or dry-run merge sends no closing signal, so the mark can outlive it
     (until the next request or merge in this process). A replayed save runs under the request ID of one of the
@@ -197,15 +198,15 @@ def applying_branch(instance):
     # applied changes: a branch change that was a no-op on main at merge left none there, yet its undo is replayed.
     changes = branch.get_changes()
     object_type = ObjectType.objects.get_for_model(instance)
-    request_ids = set(
+    own = list(
         changes.filter(changed_object_type=object_type, changed_object_id=instance.pk).values_list(
-            "request_id", flat=True
+            "request_id", "prechange_data", "postchange_data"
         )
     )
     # request.id may be a UUID or its string form.
-    if str(request_id) not in {str(r) for r in request_ids}:
+    if str(request_id) not in {str(r) for r, _, _ in own}:
         return None
-    return name, user, request_ids
+    return name, user, own
 
 
 def _on_pre_revert(sender, branch, user=None, **kwargs):

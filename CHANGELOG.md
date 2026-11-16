@@ -23,7 +23,11 @@ All notable changes to this project are documented here. The format follows
   or reservation that user may not change is refused and nothing is merged. The check reads the database the save
   writes to (a merge started from code running in a branch, such as a script, is checked against main), and a save
   is checked as the merging user only when it is one of the branch's replayed changes. A merge or revert with no user
-  (a merge job whose user was deleted) is refused when it would change Windows. Issues #102, #113, #116.
+  (a merge job whose user was deleted) is refused when it would change Windows. An import branch's own changes
+  merge without the permission, also after a sync of main's edits to other fields (description, tags) or a hand
+  edit of those fields in the branch; a change in the branch of the address, prefix, range or MAC (even of its mask
+  alone), by hand or synced from main, is still checked. Issues #102,
+  #113, #115, #116.
 - Direct edits of a prefix, IP range, IP address or MAC address that do not change what Windows receives
   (description, status, tags...) no longer queue a push (a branch merge still queues one per server it touches).
 
