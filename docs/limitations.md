@@ -22,7 +22,9 @@ Not seen on a real server yet:
 - **Kerberos**: the lab is a workgroup, without a domain;
 - **SSH key authentication**;
 - running the cmdlets on another server through **`computer_name`** (`-ComputerName`), and the fully qualified name
-  a domain member reports for itself.
+  a domain member reports for itself;
+- the input format that sends the failover shared secret next to the script rather than inside it (0.4.0), and that
+  script block logging then leaves it out: checked with PowerShell 7 only so far, not Windows PowerShell 5.1.
 
 Over SSH, Windows OpenSSH stalls on more than about 70 KB of script input, so the plugin refuses a script above
 64 KB with an error that says to use WinRM. Its scripts send under 10 KB; only very large parameter lists come close.

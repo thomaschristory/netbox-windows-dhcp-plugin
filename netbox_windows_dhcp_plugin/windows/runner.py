@@ -100,10 +100,9 @@ ExecFunc = Callable[[list[str], str], ExecResult]
 def execute(transport: str, exec_fn: ExecFunc, script: str, params: Mapping[str, Any] | None) -> bytes:
     """Render, encode, run through ``exec_fn`` and decode. Shared by every transport."""
     try:
-        rendered = psscript.render(script, params)
+        args, stdin = psscript.prepare(script, params)
     except (TypeError, ValueError) as e:
         raise RunnerError(f"encoding script parameters: {e}") from e
-    args, stdin = psscript.command_argv(rendered)
     try:
         res = exec_fn([psscript.POWERSHELL_EXE, *args], stdin)
     except RunnerError:
