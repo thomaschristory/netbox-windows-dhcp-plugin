@@ -171,6 +171,16 @@ as it is saved, and a refusal rolls back the whole item and marks it failed. Fai
 later. Applied items do not
 trigger a push (NetBox and Windows then agree), and the applied objects are recorded as managed straight away.
 
+**Large reviews run in the background.** Applying or dismissing more open items at once than the
+`review_job_threshold` setting (100 by default) would take too long for one web request: the first import of a large
+server can propose thousands of changes. Above that number, Apply all, Dismiss all and the bulk buttons queue a
+**Windows DHCP import review** job instead and link it in the message. The job runs as you, with the same permission
+checks (made again when it starts), acts only on the items you picked, and records the changes in the change log under
+your name with the job's ID as the request ID. The proposal page shows the newest review job in a **Background review**
+panel, with its counts once it has finished, and lists all of them on its **Jobs** tab. One review job per proposal
+runs at a time: another click while one waits says so. The job waits for no import or push of the same server: if
+one is running, it fails and says so, and you apply again once it has finished.
+
 Proposals are applied to main. If netbox-branching was installed after a proposal was written, its items cannot be
 applied while you work in a branch: nothing is written and the page says to switch to main (the REST API answers
 409). Dismissing still works. When change control's `protect_main` keeps you from writing to main, dismiss the old

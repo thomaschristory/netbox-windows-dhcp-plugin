@@ -85,6 +85,27 @@ be applied again. The [permission rules](permissions.md#applying-proposal-items)
 Both apply actions answer `409` with a `detail` when the request is sent in a branch (the `X-NetBox-Branch`
 header): proposals are applied to main. Dismissing works either way.
 
+### Large reviews run as a job
+
+When a request picks more open items than the [`review_job_threshold`](configuration.md#settings) setting (100 by
+default), the work is not done in the request: it is queued as a background job (**Windows DHCP import review**) that
+runs as you, and the answer is `202` instead of the counts above:
+
+- `import-proposals/<id>/apply/` and `/dismiss/` answer with the job, as `test-connection` and `import` do (its `id`,
+  `url`, `status`...);
+- `import-proposal-items/apply/` and `/dismiss/` answer `{"jobs": [...]}`, one job per proposal the items belong to.
+
+Follow the job at `GET /api/core/jobs/<id>/`. Once it has finished, its `data` holds what it did:
+`{"action": "apply", "items": 2400, "applied": ..., "failed": ..., "missing_permissions": [...], "remaining": ...}`
+(`"dismissed"` in place of the three apply counts for a dismissal), where `remaining` counts the picked items still
+open (failed, left pending for a missing permission, or no longer yours to change). If the job could not run at all
+(the proposal is gone, or an import or push of the same server was running), the job fails and `data["error"]` says
+why. The job checks your permissions again when it runs, and only acts on the items picked when it was queued.
+
+While a review job of a proposal waits or runs, a request that would queue another one for the same proposal answers
+`409` with a `detail` and the waiting job's ID in `job`. Below the threshold nothing changes: the request applies or
+dismisses the items itself and answers `200` with the counts. Clients that send large reviews must handle both.
+
 List the pending items of a proposal with `GET import-proposal-items/?proposal_id=<id>&status=pending`. Each item
 has its `action`, `kind`, `key`, `before` and `after` values, and the NetBox object it touches.
 

@@ -9,6 +9,7 @@ from django.db import models
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
 from netbox.models import NetBoxModel
+from netbox.models.features import JobsMixin
 from utilities.querysets import RestrictedQuerySet
 
 from ..choices import (
@@ -198,8 +199,11 @@ class PushTrigger(models.Model):
         }
 
 
-class ImportProposal(NetBoxModel):
-    """Differences found on a Windows server, waiting for review. Used when netbox-branching is not installed."""
+class ImportProposal(JobsMixin, NetBoxModel):
+    """
+    Differences found on a Windows server, waiting for review. Used when netbox-branching is not installed. Large
+    reviews run as jobs of the proposal (jobs.ReviewJob), listed on its Jobs tab.
+    """
 
     windows_server = models.ForeignKey(
         to="netbox_windows_dhcp_plugin.WindowsServer",

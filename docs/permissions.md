@@ -72,6 +72,10 @@ Applying an item writes NetBox objects as the reviewing user, so the change log 
   `ipam.add_ipaddress` and `dcim.add_macaddress` for a new scope or reservation. An item that breaks one of these is
   rolled back and marked failed.
 
+**Apply all** and **Dismiss all** also need `change` on the proposal. A large review (more open items than the
+`review_job_threshold` setting) runs as a background job as the same user; the job checks every one of these
+permissions again when it starts, so a permission taken away while it waits is honoured.
+
 ## Suggested roles
 
 | Role | Permissions |

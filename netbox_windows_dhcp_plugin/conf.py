@@ -29,6 +29,10 @@ DEFAULTS = {
     # Username that scheduled imports run as. It owns import branches and requests their change requests (manual
     # imports use the user who clicked). With branching, scheduled imports fail without it.
     "import_user": None,
+    # Applying or dismissing more open import proposal items than this at once runs as a background job instead of
+    # inside the web request, so a large first import cannot time out the browser or a reverse proxy. None keeps
+    # every review in the request.
+    "review_job_threshold": 100,
     # Seconds to wait after a save before pushing, so a burst of edits becomes one push (without branching).
     "push_debounce": 10,
     # Upper bound on the PowerShell commands one job runs at the same time against a server. It has no effect today:

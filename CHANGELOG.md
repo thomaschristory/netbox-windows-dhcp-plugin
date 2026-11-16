@@ -11,8 +11,20 @@ All notable changes to this project are documented here. The format follows
   change log entries of that request, a Sync now click, or a branch merge or revert. Edits made while a push waits to
   start are added to that push. Also in the REST API (`triggers` on sync runs). Adds migration `0004`.
 
+- Applying or dismissing many import proposal items at once runs in the background: above the new
+  `review_job_threshold` setting (100 open items by default), Apply all, Dismiss all and the bulk buttons queue a
+  **Windows DHCP import review** job of the proposal, run as the requesting user with the same permission checks
+  (made again when it starts), instead of working inside the web request, where a large first import timed out the
+  browser or the reverse proxy. The message links the job, and the proposal page shows it in a Background review
+  panel and on a new Jobs tab. One review job per proposal at a time. (#101)
+
 ### Changed
 
+- **REST API:** above `review_job_threshold`, `POST import-proposals/<id>/apply/` and `/dismiss/` answer `202` with
+  the job instead of `200` with the counts, and `POST import-proposal-items/apply/` and `/dismiss/` answer `202` with
+  `{"jobs": [...]}` (one per proposal); the counts are in the job's `data` once it has finished. A second large
+  review of a proposal while one waits or runs answers `409`. Below the threshold the answers are unchanged. Clients
+  that apply large proposals through the API must handle the `202`, or raise the setting. (#101)
 - The failover shared secret no longer appears in the PowerShell script sent to the DHCP server: it follows the
   script on the same input line and is handed to it in a variable. PowerShell script block logging (event 4104) on
   the DHCP server no longer records it, nor does module logging of `ConvertFrom-Json` (checked with PowerShell 7;
@@ -39,6 +51,12 @@ All notable changes to this project are documented here. The format follows
   #102, #113, #115, #116.
 - Direct edits of a prefix, IP range, IP address or MAC address that do not change what Windows receives
   (description, status, tags...) no longer queue a push (a branch merge still queues one per server it touches).
+
+### Performance
+
+- Applying proposal items (and importing into main) no longer copies every queued change log event for each item:
+  each item's events are kept apart and added to the request's once it succeeds, so the cost grows linearly with the
+  number of items. (#101)
 
 ## [0.3.0] - 2026-11-15
 

@@ -353,6 +353,17 @@ while queued) and `SyncRun.destination`. Without branching the only destination 
   Every object an apply writes
   (prefixes and addresses included) is checked against the reviewer's permissions and constraints, and a refusal
   rolls the item back.
+  A review picking more open items than `review_job_threshold` (default 100) runs as `jobs.ReviewJob`, one per
+  proposal (the job's object; `ImportProposal` has `JobsMixin`), queued as the requesting user with the item IDs
+  frozen at enqueue (issue #101). The job checks again, as that user: active, `change` on the proposal for Apply all
+  and Dismiss all, `change` on each item, then the same per-item checks as the request. It takes the server's advisory
+  lock (fails if an import or push holds it), writes on main under `event_tracking` with the job's `job_id` as the
+  request ID (`integrations/branching.acting_as`), and records `action`, `items`, the counts and `remaining` in
+  `job.data`. Queuing takes a per-proposal transaction lock and refuses a second job while one waits or runs (409 in
+  the API). The API answers 202 with the job (proposal actions) or `{"jobs": [...]}` (item actions); below the
+  threshold the request does the work and answers as before. Each item's change log events go into a queue of their
+  own (`importer._one_change`), merged into the request's queue with NetBox's coalescing rules only when the item
+  succeeds, so applying N items no longer copies the whole queue N times.
 - **Who imports.** Manual imports run as the user who asked, who needs change on the server, plus add on branches
   and change requests when those are installed. Scheduled imports, queued every minute by a system job for servers
   whose `import_interval` has passed, run as the `import_user` setting; with branching they fail without it.

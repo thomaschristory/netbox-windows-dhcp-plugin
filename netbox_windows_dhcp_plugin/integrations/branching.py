@@ -5,7 +5,7 @@ Everything that imports those plugins lives here, so the plugin keeps working wh
 """
 
 import logging
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import NamedTuple
 
@@ -580,6 +580,19 @@ def writing_main(user):
     from netbox.context_managers import event_tracking
 
     with on_main(), event_tracking(_request(user)):
+        yield
+
+
+@contextmanager
+def acting_as(user, request_id=None):
+    """
+    Write into main with change tracking, as ``user``, from a background job, with or without netbox-branching. The
+    change log records ``user`` and ``request_id``, and webhooks hear of the changes when the block ends. Main is
+    used whatever branch is active, as in ``writing_main``.
+    """
+    from netbox.context_managers import event_tracking
+
+    with on_main() if branching_installed() else nullcontext(), event_tracking(_request(user, request_id)):
         yield
 
 

@@ -1,0 +1,57 @@
+{% load i18n %}
+{# Large reviews run as jobs of the proposal (#101). Reload the page to follow one that is waiting or running. #}
+<div class="card">
+  <h2 class="card-header">{{ title }}</h2>
+  <table class="table table-hover attr-table">
+    <tr>
+      <th scope="row">{% trans "Job" %}</th>
+      <td>
+        <a href="{{ job.get_absolute_url }}">#{{ job.pk }}</a>
+        <span class="badge text-bg-{{ job.get_status_color }}">{{ job.get_status_display }}</span>
+      </td>
+    </tr>
+    <tr>
+      <th scope="row">{% trans "Action" %}</th>
+      <td>
+        {% if result.action == "dismiss" %}{% trans "Dismiss" %}{% else %}{% trans "Apply" %}{% endif %}
+        {% if result.items is not None %}
+          {% blocktrans count items=result.items %}{{ items }} item{% plural %}{{ items }} items{% endblocktrans %}
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th scope="row">{% trans "Requested by" %}</th>
+      <td>{{ job.user.username|default:"-" }} <span class="text-muted">{{ job.created|date:"SHORT_DATETIME_FORMAT" }}</span></td>
+    </tr>
+    {% if running %}
+      <tr>
+        <td colspan="2" class="text-muted">
+          <div class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></div>
+          {% trans "Waiting or running: reload the page to see the result." %}
+        </td>
+      </tr>
+    {% elif result.error %}
+      <tr>
+        <th scope="row">{% trans "Error" %}</th>
+        <td>{{ result.error }}</td>
+      </tr>
+    {% else %}
+      {% if result.applied is not None %}
+        <tr><th scope="row">{% trans "Applied" %}</th><td>{{ result.applied }}</td></tr>
+        <tr><th scope="row">{% trans "Failed" %}</th><td>{{ result.failed }}</td></tr>
+        {% if result.missing_permissions %}
+          <tr>
+            <th scope="row">{% trans "Missing permissions" %}</th>
+            <td class="font-monospace">{{ result.missing_permissions|join:", " }}</td>
+          </tr>
+        {% endif %}
+      {% endif %}
+      {% if result.dismissed is not None %}
+        <tr><th scope="row">{% trans "Dismissed" %}</th><td>{{ result.dismissed }}</td></tr>
+      {% endif %}
+      {% if result.remaining is not None %}
+        <tr><th scope="row">{% trans "Still open" %}</th><td>{{ result.remaining }}</td></tr>
+      {% endif %}
+    {% endif %}
+  </table>
+</div>

@@ -304,3 +304,25 @@ class ImportStatusPanel(panels.ObjectPanel):
 
     def should_render(self, context):
         return context["status"] is not None
+
+
+class ReviewJobPanel(panels.ObjectPanel):
+    """On a proposal page: the newest background review of its items (#101), while it runs and after."""
+
+    title = _("Background review")
+    template_name = "netbox_windows_dhcp_plugin/inc/review_job.html"
+
+    def get_context(self, context):
+        from core.choices import JobStatusChoices
+
+        from ..jobs import ReviewJob
+
+        ctx = super().get_context(context)
+        job = ReviewJob.get_jobs(ctx["object"]).select_related("user").order_by("-created").first()
+        ctx["job"] = job
+        ctx["running"] = job is not None and job.status in JobStatusChoices.ENQUEUED_STATE_CHOICES
+        ctx["result"] = (job.data if job is not None and isinstance(job.data, dict) else None) or {}
+        return ctx
+
+    def should_render(self, context):
+        return context["job"] is not None
