@@ -149,13 +149,17 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   only when every change the branch holds for that object that writes a watched field (stored values compared as
   they are, mask included, as the replay writes them) is the import's (squash replays an object's changes under its
   last request ID; `ipam_guard.import_only()`). Changes that leave the watched fields alone, such as a sync of
-  main's description edit or a hand edit of the tags, do not count (#115). The guard reads the stored row and the
-  dependents from the database the save writes to (the
-  `using` of the save), not wherever the router would read, so a merge run with a branch active (custom code such as a
+  main's description edit or a hand edit of the tags, do not count (#115). Reverts get no import exemption: undoing
+  an import puts back values Windows no longer holds. netbox-branching replays a create as a raw save, which the guard
+  otherwise skips; during a merge (`_check_replayed_create`), a create is checked when the branch holds a non-import
+  update of a watched field for the object (squash folds an import's create and a later hand edit into one create),
+  as the merging user against the scopes and reservations using it in the branch schema (they are created on main
+  after it). The guard reads the stored row and the dependents from the database the save writes to (the `using` of
+  the save), not wherever the router would read, so a merge run with a branch active (custom code such as a
   script running in a branch; the merge job itself runs with none) is checked against main. A merge or revert with no
   user (a merge job whose user was deleted, a script calling `merge(user=None)`) is refused when a replayed change
   alters a watched field that a scope or reservation uses, with a message naming no object (#116); the import's own
-  changes and changes no plugin object depends on still merge. A refusal aborts
+  changes (in a merge, not a revert) and changes no plugin object depends on still merge. A refusal aborts
   the merge, which netbox-branching rolls back and leaves the branch ready (owner's decision after the adversarial
   review of #112). It is NetBox's documented plugin mechanism (`docs/plugins/development/exceptions.md`);
   `CUSTOM_VALIDATORS` belong to the admin's configuration.

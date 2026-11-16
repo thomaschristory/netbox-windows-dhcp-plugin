@@ -234,7 +234,9 @@ def check_edit(sender, instance, raw=False, **kwargs):
     # Reset first: a mark left by an earlier save of this instance must not decide this one.
     instance._nbwd_push_fields = None
     if raw:
-        # Fixture loading: not an edit by anyone.
+        # Fixture loading (not an edit by anyone), or a merge replaying a create: netbox-branching saves new objects
+        # raw.
+        _check_replayed_create(instance, using)
         return
     fields = changed_fields(instance, kwargs.get("update_fields"), using)
     # Read by signals._changed after the save: no push for edits Windows never sees.
@@ -254,8 +256,10 @@ def check_edit(sender, instance, raw=False, **kwargs):
         # only when every change the branch holds for this object that alters a watched field is the import's, as
         # squash replays an object's changes under its last change's request ID, which must not pass a hand edit off
         # as the import's (see import_only).
-        branch, user, changes = applying
-        if import_only(instance._meta.label_lower, changes):
+        # Not for a revert: undoing the import puts back values Windows no longer holds, and the next push writes
+        # them there.
+        branch, user, changes = applying.branch, applying.user, applying.changes
+        if not applying.reverting and import_only(instance._meta.label_lower, changes):
             return
         instance._nbwd_branch = branch
         if user is None or not user.is_authenticated:
@@ -282,6 +286,50 @@ def check_edit(sender, instance, raw=False, **kwargs):
     # example reservations allowed in part of a subnet only.
     instance._nbwd_guard_user = user
     instance._nbwd_using = using
+
+
+def _hand_updates(label, changes):
+    """The watched fields that the branch's non-import updates of an object write (creates left out)."""
+    fields = []
+    for request_id, prechange, postchange in changes:
+        if prechange is None or is_import_request(request_id):
+            continue
+        for field in WATCHED[label]:
+            if prechange.get(field) != (postchange or {}).get(field) and field not in fields:
+                fields.append(field)
+    return tuple(fields)
+
+
+def _check_replayed_create(instance, using):
+    """
+    A merge that creates an object on main: squash folds the object's create and later updates into one create, so
+    a hand edit of the address made in the branch after an import created it is not replayed as an update, which
+    the iterative strategy would check. Check it here, as the merging user, against the scopes and reservations that
+    use the object in the branch: they do not exist on main yet (squash creates them after the object).
+    """
+    label = instance._meta.label_lower
+    if label not in WATCHED or instance.pk is None:
+        return
+    from .integrations.branching import applying_branch
+
+    applying = applying_branch(instance)
+    if applying is None or applying.reverting:
+        return
+    if not (fields := _hand_updates(label, applying.changes)):
+        return
+    if type(instance).objects.using(using).filter(pk=instance.pk).exists():
+        # The row is already on main, so this is not a create (netbox-branching replays updates through a normal save,
+        # which the usual path of check_edit checks).
+        return
+    from utilities.exceptions import AbortRequest
+
+    user, branch = applying.user, applying.branch
+    if user is None or not user.is_authenticated:
+        if found := dependents(instance, applying.connection):
+            raise AbortRequest(_no_user_refusal(fields, branch, [codename for codename, _ in found]))
+        return
+    if missing := _missing(instance, user, applying.connection):
+        raise AbortRequest(_refusal(fields, missing, user, branch))
 
 
 def recheck_edit(sender, instance, raw=False, **kwargs):
