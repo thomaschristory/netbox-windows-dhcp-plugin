@@ -40,6 +40,7 @@ from .test_push import PushTestMixin
 BRANCHING = "netbox_windows_dhcp_plugin.integrations.branching"
 RESERVATION_TABLE = Reservation._meta.db_table
 PLUGIN_TABLES = "netbox_windows_dhcp_plugin_"
+PROPOSAL = ImportDestinationChoices.PROPOSAL
 
 
 def _job(server, job_class, **kwargs):
@@ -391,7 +392,7 @@ class F27SchedulerTest(TestCase):
         return queued, logs.output
 
     def test_one_failing_server_does_not_stop_the_others(self):
-        def enqueue(server, user):
+        def enqueue(server, user, **kwargs):
             if server == self.first:
                 raise RuntimeError("queue unavailable")
             return object()
@@ -402,17 +403,17 @@ class F27SchedulerTest(TestCase):
         self.assertTrue(any("Queued an import for dhcp2" in line for line in output), output)
 
     def test_queued_is_only_logged_when_a_job_was_queued(self):
-        _, output = self._schedule(lambda server, user: None if server == self.first else object())
+        _, output = self._schedule(lambda server, user, **kwargs: None if server == self.first else object())
         self.assertFalse(any("Queued an import for dhcp1" in line for line in output), output)
         self.assertTrue(any("Queued an import for dhcp2" in line for line in output), output)
 
     def test_due_servers_reads_the_newest_import_of_each_server_at_once(self):
         now = timezone.now()
-        old = SyncRun.objects.create(windows_server=self.first, kind=SyncKindChoices.IMPORT)
+        old = SyncRun.objects.create(windows_server=self.first, kind=SyncKindChoices.IMPORT, destination=PROPOSAL)
         SyncRun.objects.filter(pk=old.pk).update(created=now - timedelta(hours=3))
-        SyncRun.objects.create(windows_server=self.first, kind=SyncKindChoices.IMPORT)
+        SyncRun.objects.create(windows_server=self.first, kind=SyncKindChoices.IMPORT, destination=PROPOSAL)
         # Only imports count: a recent push does not postpone the next import.
-        stale = SyncRun.objects.create(windows_server=self.second, kind=SyncKindChoices.IMPORT)
+        stale = SyncRun.objects.create(windows_server=self.second, kind=SyncKindChoices.IMPORT, destination=PROPOSAL)
         SyncRun.objects.filter(pk=stale.pk).update(created=now - timedelta(hours=3))
         SyncRun.objects.create(windows_server=self.second, kind=SyncKindChoices.PUSH)
         third = windows_server("dhcp3", import_interval=60)

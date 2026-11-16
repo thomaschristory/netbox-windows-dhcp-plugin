@@ -23,8 +23,8 @@ All notable changes to this project are documented here. The format follows
 
 - The failover shared secret no longer appears in the PowerShell script sent to the DHCP server: it follows the
   script on the same input line and is handed to it in a variable. PowerShell script block logging (event 4104) on
-  the DHCP server no longer records it, nor does module logging of `ConvertFrom-Json` (checked with PowerShell 7;
-  Windows PowerShell 5.1 still to be confirmed in the lab). Module logging and transcription can still record the
+  the DHCP server no longer records it, nor does module logging of `ConvertFrom-Json` (checked with PowerShell 7
+  and with Windows PowerShell 5.1 on Windows Server 2025 in the lab). Module logging and transcription can still record the
   failover cmdlet's own `-SharedSecret` parameter when they are on. A script input line cut short in transit is
   now refused instead of running. (#104)
 - Editing a prefix, IP range, IP address or MAC address that a scope or reservation uses now needs the plugin's
@@ -47,6 +47,25 @@ All notable changes to this project are documented here. The format follows
   #102, #113, #115, #116.
 - Direct edits of a prefix, IP range, IP address or MAC address that do not change what Windows receives
   (description, status, tags...) no longer queue a push (a branch merge still queues one per server it touches).
+
+### Fixed
+
+- A scheduled import that finds its server busy (another import or a push running) is queued again a minute later,
+  for up to half an hour, instead of waiting a whole import interval. The waiting attempts leave no failed sync run
+  and send no notification. An import started by hand still fails at once and says why. (#109)
+- A push job log lists at most 1000 changes it did not push, then how many more (the sync run summary has the same
+  limit), instead of one line for each. (#109)
+- "Select all matching" on the import proposal item list refuses a query parameter that is neither a filter of the
+  list nor a paging, sorting or table parameter, and changes nothing: a mistyped filter name (`proposal=7` for
+  `proposal_id=7`) used to widen the selection to every open item. A saved filter is checked the same way, and one
+  that does not exist or that the user may not see is refused too. A refused selection no longer also reports
+  "Applied 0 item(s)". (#109)
+- A scope range change and a new failover relationship found in the same import no longer fail the scope change once
+  with "import the failover relationship first": the import into a branch or into main, and applying both proposal
+  items in one go, write the scope as shared with the partner when the relationship's scopes are all in NetBox (or
+  created by the same run) and the user may add it. Applying the scope item alone still waits for the relationship.
+  If the relationship then fails, the range change stays (see [Known limitations](docs/limitations.md)). (#109)
+- The lease read job no longer lets an error while closing the connection hide its own outcome. (#109)
 
 ## [0.3.0] - 2026-11-15
 
