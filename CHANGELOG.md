@@ -13,9 +13,11 @@ All notable changes to this project are documented here. The format follows
 - Old sync runs are now deleted: new setting `sync_run_retention_days` (default 90, `0` keeps every run). The import
   scheduler deletes older runs, oldest first, at most 500 a minute, and keeps the runs the plugin still reads
   whatever their age (the newest of each kind per server, the newest push that reached Windows, the runs of open
-  import proposals, the newest runs of the two newest import branches, runs still queued or running). Until now the
+  import proposals, the newest runs of the two newest import branches, runs still queued or running, runs with a
+  journal entry). Until now the
   history grew without limit. **Upgrading deletes sync runs older than 90 days** unless the setting says otherwise.
-  Adds migration `0005` (an index). (#106)
+  Runs with a journal entry are kept; a deleted run's tags and bookmarks go with it, and users subscribed to it may
+  get a deletion notification. Adds migration `0005` (two indexes). (#106)
 
 ### Changed
 

@@ -692,8 +692,11 @@ class ScheduleImportsJob(JobRunner):
         # sync runs, a bad setting) must not fail the scheduler, which would hide the imports it queued.
         try:
             deleted = retention.prune_when_due()
-        except Exception as exc:
+        except ValueError as exc:
+            # The setting is wrong: the message says how to fix it, a traceback would add nothing.
             self.logger.error(f"Could not delete old sync runs: {exc}")
+        except Exception as exc:
+            self.logger.error(f"Could not delete old sync runs: {exc}", exc_info=True)
         else:
             if deleted:
                 self.logger.info(f"Deleted {deleted} sync run(s) older than {retention.retention_days()} days")

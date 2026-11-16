@@ -77,11 +77,25 @@ Some runs are kept whatever their age, because the plugin still reads them. For 
 - the newest run of each of the two newest import branches: the Import panel keeps an earlier import branch that
   still waits to be merged in sight;
 - the runs open import proposals belong to;
-- runs whose job is still queued or running.
+- runs whose job is still queued or running (a job still "running" two hours after it started was abandoned, and
+  its run is no longer kept).
 
-A failing delete (for example a NetBox protection rule on sync runs) is logged in the scheduler's job and does not
-stop the imports it queues. NetBox's own `JOB_RETENTION` setting prunes the jobs: a run whose job is gone keeps its
-summary and loses the link.
+Runs with a journal entry are never deleted
+either: delete the entry to let the run go. A deleted run's tags and bookmarks go with it, and users subscribed to
+it may get a notification that it was deleted. The deletes are not recorded in the change log.
+
+The runs kept are the newest of each server, whoever looks. A user whose view permission on sync runs is limited
+by their attributes (only some kinds, for example) can see the newest run they may view deleted; the Import panel
+then describes an older one, or none.
+
+`sync_run_retention_days` must be a whole number of days from 1 to 36500 (or `0`). Any other value deletes nothing:
+NetBox logs a warning at startup, and the scheduler's job log says so too. A failing delete is logged in the
+scheduler's job, does not stop the imports it queues, and is tried again 15 minutes later. Each batch is deleted at
+once, so a NetBox protection rule (`PROTECTION_RULES`) on sync runs that refuses one of them stops retention
+altogether. If you need such a rule, make it refuse only runs that retention keeps anyway, such as runs with a
+journal entry.
+
+NetBox's own `JOB_RETENTION` setting prunes the jobs: a run whose job is gone keeps its summary and loses the link.
 
 ## Notifications
 

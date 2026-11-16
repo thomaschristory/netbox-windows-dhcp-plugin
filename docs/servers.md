@@ -110,8 +110,8 @@ dismissed exactly the same change); `changes` counts both.
 The job log (**Operations > Jobs**, or the job linked from the sync run) has one line per change and per note.
 
 Sync runs are kept for 90 days by default (`sync_run_retention_days` in the
-[configuration](configuration.md#settings)); the ones the plugin still reads are kept longer, see
-[Workers](workers.md#sync-run-retention).
+[configuration](configuration.md#settings)); the ones the plugin still reads, and runs with a journal entry, are
+kept longer, see [Workers](workers.md#sync-run-retention).
 
 ## Deleting a Windows server
 

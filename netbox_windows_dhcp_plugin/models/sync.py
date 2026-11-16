@@ -125,6 +125,8 @@ class SyncRun(NetBoxModel):
             models.Index(fields=("windows_server", "kind", "-created"), name="nbwd_syncrun_latest"),
             # Run retention looks for the runs older than a date across all servers, oldest first (retention.py).
             models.Index(fields=("created",), name="nbwd_syncrun_created"),
+            # "The newest push that reached Windows" (pusher.replication_runs), read by each push and by retention.
+            models.Index(fields=("windows_server", "kind", "-completed"), name="nbwd_syncrun_completed"),
         )
 
     def __str__(self):
