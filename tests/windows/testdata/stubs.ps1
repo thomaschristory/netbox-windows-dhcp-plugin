@@ -22,6 +22,9 @@ $global:Reservations = [ordered]@{}
 $global:Exclusions = [System.Collections.ArrayList]::new()
 $global:Options = [System.Collections.ArrayList]::new()
 $global:Leases = [System.Collections.ArrayList]::new()
+# Reserved IPs whose option values a Get reports as gone (DHCP 20018 ObjectNotFound), as for a reservation deleted
+# while a batched read runs (issue #100). Seeds fill it.
+$global:GoneReservations = @()
 
 # Common parameters (added by [CmdletBinding()]) that Record leaves out, so
 # tests only see the DHCP-specific parameters a script passed.
@@ -267,7 +270,7 @@ function Remove-DhcpServerv4ExclusionRange {
 
 # ---- Option values ----
 # Each stored option has a Level string: "" for server, the scope ID, or the
-# reserved IP. Get returns every option at the requested level. A reservation
+# reserved IP. Get returns every option at the requested level and policy. A reservation
 # is named by its IP alone: Get tolerates a ScopeId next to ReservedIP (seen on
 # Windows Server 2025) and ignores it, while Set and Remove refuse the pair with
 # InvalidArgument, as the real cmdlets do (issue #20).
@@ -277,8 +280,12 @@ function Get-DhcpServerv4OptionValue {
         [ipaddress]$ReservedIP, [Parameter(Position = 1)][uint32[]]$OptionId, [string]$UserClass, [switch]$All,
         [string]$PolicyName)
     Record 'Get-DhcpServerv4OptionValue' $PSBoundParameters
+    if ($ReservedIP -and $global:GoneReservations -contains "$ReservedIP") {
+        Write-DhcpError $PSCmdlet 20018 ObjectNotFound "Failed to get reservation $ReservedIP on DHCP server STUB."
+        return
+    }
     $level = if ($ReservedIP) { "$ReservedIP" } else { "$ScopeId" }
-    $global:Options | Where-Object { "$($_.Level)" -eq $level }
+    $global:Options | Where-Object { "$($_.Level)" -eq $level -and "$($_.PolicyName)" -eq "$PolicyName" }
 }
 
 # Appends an option (does not replace an existing one; tests never set the
@@ -294,7 +301,7 @@ function Set-DhcpServerv4OptionValue {
         return
     }
     [void]$global:Options.Add([pscustomobject]@{ Level = "$ScopeId$ReservedIP"; OptionId = $OptionId; Name = 'Router'
-        Value = $Value; VendorClass = $VendorClass; UserClass = $UserClass })
+        Value = $Value; VendorClass = $VendorClass; UserClass = $UserClass; PolicyName = $PolicyName })
 }
 
 # Records the call and refuses ScopeId with ReservedIP; tests check the parameters it received.
@@ -770,6 +777,10 @@ function Get-DhcpServerv6OptionValue {
     param([string]$ComputerName, [ipaddress]$Prefix, [ipaddress]$ReservedIP, [uint32[]]$OptionId,
         [string]$VendorClass, [string]$UserClass, [switch]$All)
     Record 'Get-DhcpServerv6OptionValue' $PSBoundParameters
+    if ($ReservedIP -and $global:GoneReservations -contains "$ReservedIP") {
+        Write-DhcpError $PSCmdlet 20018 ObjectNotFound "Failed to get reservation $ReservedIP on DHCP server STUB."
+        return
+    }
     # Like IPv4: Get tolerates -Prefix next to -ReservedIP; Set and Remove refuse the pair (issue #17).
     $level = if ($ReservedIP) { "$ReservedIP" } else { "$Prefix" }
     $global:V6Options | Where-Object { "$($_.Level)" -eq $level }

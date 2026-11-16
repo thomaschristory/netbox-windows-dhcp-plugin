@@ -56,8 +56,8 @@ transaction-pooling proxy (pgbouncer in transaction mode). Session pooling is fi
   for output, so a command that keeps the connection alive without finishing is abandoned after ten times that
   long, and never before 10 minutes (20 minutes with the default).
 - A job sends its commands to a server one after another: `max_concurrency` (4) is only an upper bound and changing
-  it makes no difference. Reading a large server makes a few calls per scope, per policy and per reservation, so
-  the time grows with their number.
+  it makes no difference. Reading a server makes a few calls per scope (reservations and policies are read in
+  batches of up to 256 per call), so the time grows with the number of scopes.
 - A push, dry run or import job may run for an hour; with netbox-branching an import may run as long as its
   `job_timeout` when that is longer (provisioning a branch can be slow).
 

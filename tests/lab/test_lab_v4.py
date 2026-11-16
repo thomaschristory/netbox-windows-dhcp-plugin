@@ -6,6 +6,8 @@ name shows up as an empty field. Raw property dumps go to .lab/probe/ (gitignore
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from netbox_windows_dhcp_plugin.sync import windows_state
@@ -543,3 +545,87 @@ $out = @{ secret = $p.shared_secret; in_src = $src.Contains($p.shared_secret);
     save_probe(probe_out, "secret-logging", {k: v for k, v in got.items() if k != "secret"})
     assert got["secret"] == marker and got["in_src"] is False, got
     assert got["logged"] == 0, got
+
+
+def _values(values: list[wc.OptionValue]) -> list[tuple]:
+    return sorted((o.option_id, tuple(o.value), o.vendor_class, o.user_class, o.policy_name) for o in values)
+
+
+def test_batched_reads_match_single_reads(lab: Lab, probe_out) -> None:
+    """client.py (issue #100): option.list_reserved and policy.list_contents, their output shape and not-found."""
+    s = lab.scope("nbwd-test-batch")
+    sid = s.scope_id
+    base = sid.rsplit(".", 1)[0]
+    ips = [f"{base}.20", f"{base}.21"]
+    for i, ip in enumerate(ips):
+        lab.client.add_reservation(
+            wc.Reservation(scope_id=sid, ip_address=ip, client_id=MAC_PREFIX + f"0b-00-{i:02x}", name=f"nbwd-test-b{i}")
+        )
+    lab.client.set_option_value(wc.OptionKey(15, sid, reserved_ip=ips[0]), ["batch.example"])
+    p = lab.policy(wc.Policy(name="nbwd-test-batchpol", scope_id=sid, criteria={"mac_address": ["EQ", "02-4e-42-ba*"]}))
+    lab.client.add_policy_ip_range(wc.PolicyIPRange(sid, p.name, f"{base}.50", f"{base}.60"))
+    lab.client.set_option_value(wc.OptionKey(15, sid, policy_name=p.name), ["policy.example"])
+    srv = lab.policy(
+        wc.Policy(name="nbwd-test-batchsrv", enabled=False, criteria={"mac_address": ["EQ", "02-4e-42-bb*"]})
+    )
+    lab.client.set_option_value(wc.OptionKey(15, policy_name=srv.name), ["server-policy.example"])
+
+    raw = {
+        "reserved": lab.client._run(wc.S_OPTION_LIST_RESERVED, {"ips": ips})[1],
+        "policy": lab.client._run(wc.S_POLICY_LIST_CONTENTS, {"scope_id": sid, "names": [p.name]})[1],
+        "server_policy": lab.client._run(wc.S_POLICY_LIST_CONTENTS, {"scope_id": "", "names": [srv.name]})[1],
+    }
+    save_probe(probe_out, "v4-batched-reads", raw)
+
+    got = lab.client.list_reservation_option_values(sid, ips)
+    assert list(got) == ips
+    for ip in ips:
+        assert _values(got[ip]) == _values(lab.client.list_option_values(scope_id=sid, reserved_ip=ip, all=True))
+    assert [o.value for o in got[ips[0]] if o.option_id == 15] == [["batch.example"]]
+    assert got[ips[1]] == []
+
+    c = lab.client.list_policy_contents([p.name], sid)[p.name]
+    assert c.ip_ranges == lab.client.list_policy_ip_ranges(sid, p.name)
+    assert _values(c.options) == _values(lab.client.list_option_values(scope_id=sid, policy_name=p.name, all=True))
+    assert ["policy.example"] in [o.value for o in c.options if o.option_id == 15]
+    c = lab.client.list_policy_contents([srv.name])[srv.name]
+    assert c.ip_ranges == []
+    assert _values(c.options) == _values(lab.client.list_option_values(policy_name=srv.name, all=True))
+    assert ["server-policy.example"] in [o.value for o in c.options]
+
+    # A reserved IP that is not (or no longer) a reservation, and a policy that does not exist, must read as gone, not
+    # as "no option values": windows_state then reads the scope again.
+    with pytest.raises(wc.NotFound):
+        lab.client.list_reservation_option_values(sid, [ips[0], f"{base}.99"])
+    with pytest.raises(wc.NotFound):
+        lab.client.list_policy_contents(["nbwd-test-nopolicy"], sid)
+    with pytest.raises(wc.NotFound):
+        lab.client.list_policy_contents(["nbwd-test-nopolicy"])
+    save_probe(
+        probe_out,
+        "v4-batched-gone",
+        lab.client._run(wc.S_OPTION_LIST_RESERVED, {"ips": [ips[0], f"{base}.99"]})[1],
+    )
+
+
+def test_batched_read_time(lab: Lab, probe_out) -> None:
+    """client.py (issue #100): how long one batch takes per reservation, to check READ_BATCH against command_timeout."""
+    s = lab.scope("nbwd-test-batchtime")
+    sid = s.scope_id
+    base = sid.rsplit(".", 1)[0]
+    ips = [f"{base}.{20 + i}" for i in range(30)]
+    for i, ip in enumerate(ips):
+        lab.client.add_reservation(
+            wc.Reservation(scope_id=sid, ip_address=ip, client_id=MAC_PREFIX + f"0c-00-{i:02x}", name=f"nbwd-test-t{i}")
+        )
+        lab.client.set_option_value(wc.OptionKey(15, sid, reserved_ip=ip), [f"t{i}.example"])
+    start = time.monotonic()
+    got = lab.client.list_reservation_option_values(sid, ips)
+    batch = time.monotonic() - start
+    start = time.monotonic()
+    for ip in ips:
+        lab.client.list_option_values(scope_id=sid, reserved_ip=ip, all=True)
+    single = time.monotonic() - start
+    save_probe(probe_out, "v4-batched-time", {"reservations": len(ips), "batch_s": batch, "single_s": single})
+    assert all([o.value for o in got[ip] if o.option_id == 15] == [[f"t{i}.example"]] for i, ip in enumerate(ips))
+    assert batch < single

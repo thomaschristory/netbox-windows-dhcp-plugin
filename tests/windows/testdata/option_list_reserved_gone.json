@@ -1,0 +1,1 @@
+{"ok":true,"data":[{"ip":"10.1.20.5","values":[{"option_id":15,"value":["pc.example"],"vendor_class":"","user_class":"","policy_name":""}]},{"ip":"10.1.20.6","error":{"message":"Failed to get reservation 10.1.20.6 on DHCP server DHCP01.","category":"ObjectNotFound","id":"DHCP 20018,Get-DhcpServerv4OptionValue","command":"Get-DhcpServerv4OptionValue"}}]}

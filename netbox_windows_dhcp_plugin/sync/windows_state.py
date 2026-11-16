@@ -117,15 +117,34 @@ class WindowsState:
 GONE_MID_READ = "{kind} {key} left out: deleted on Windows while it was read"
 
 
-def _scope_options(client: DhcpClient, scope_id: str, reserved_ip: str = "", policy_name: str = "") -> list:
-    out = client.list_option_values(scope_id=scope_id, reserved_ip=reserved_ip, policy_name=policy_name, all=True)
+def _scope_options(client: DhcpClient, scope_id: str) -> list:
+    out = client.list_option_values(scope_id=scope_id, all=True)
     for o in out:
-        o.scope_id, o.reserved_ip = scope_id, reserved_ip
+        o.scope_id, o.reserved_ip = scope_id, ""
     return out
 
 
+def _read_policies(client: DhcpClient, part: WindowsState, sid: str) -> None:
+    """The policies of one scope (server-level ones when ``sid`` is empty), with their IP ranges and option values."""
+    policies = client.list_policies(scope_id=sid)
+    # One batched read for all of them (issue #100), not two PowerShell starts per policy.
+    contents = client.list_policy_contents([p.name for p in policies], scope_id=sid)
+    for policy in policies:
+        policy.scope_id = sid
+        part.policies.append(policy)
+        c = contents[policy.name]
+        part.policy_ranges.extend(c.ip_ranges)
+        for o in c.options:
+            o.scope_id, o.reserved_ip = sid, ""
+        part.options.extend(c.options)
+
+
 def read(client: DhcpClient) -> WindowsState:
-    """Read everything the sync handles. One PowerShell call per list, plus a few per scope, policy and reservation."""
+    """
+    Read everything the sync handles. One PowerShell call per list, plus a few per scope: a scope's reservation
+    option values and its policies' ranges and values are read in batches (issue #100), so the number of calls does
+    not grow with the number of reservations or policies (up to ``client.READ_BATCH`` of each per scope).
+    """
     state = WindowsState(
         classes=client.list_classes(),
         option_definitions=client.list_option_definitions(),
@@ -137,9 +156,7 @@ def read(client: DhcpClient) -> WindowsState:
     )
     # -All returns the values of every user and vendor class at each level (lab, Windows Server 2022).
     state.options.extend(client.list_option_values(all=True))
-    for policy in client.list_policies():
-        state.policies.append(policy)
-        state.options.extend(_scope_options(client, "", policy_name=policy.name))
+    _read_policies(client, state, "")
     # A scope can disappear while it is read, for example when a failover relationship is removed on its partner:
     # its reads then fail with not found. It is gone, as if it had not been listed; the rest of the read stands.
     state.scopes = [
@@ -182,13 +199,13 @@ def _read_scope(client: DhcpClient, state: WindowsState, sid: str) -> None:
     part.exclusions = client.list_exclusion_ranges(sid)
     part.reservations = client.list_reservations(sid)
     part.options = _scope_options(client, sid)
+    # A reservation deleted after the list above makes this raise NotFound, and _gone_or_read reads the scope again.
+    values = client.list_reservation_option_values(sid, [r.ip_address for r in part.reservations])
     for r in part.reservations:
-        part.options.extend(_scope_options(client, sid, r.ip_address))
-    for policy in client.list_policies(scope_id=sid):
-        policy.scope_id = sid
-        part.policies.append(policy)
-        part.policy_ranges.extend(client.list_policy_ip_ranges(sid, policy.name))
-        part.options.extend(_scope_options(client, sid, policy_name=policy.name))
+        for o in values[r.ip_address]:
+            o.scope_id, o.reserved_ip = sid, r.ip_address
+        part.options.extend(values[r.ip_address])
+    _read_policies(client, part, sid)
     state.exclusions.extend(part.exclusions)
     state.reservations.extend(part.reservations)
     state.options.extend(part.options)
@@ -219,17 +236,20 @@ def _read_v6_scope(client: DhcpClient, state: WindowsState, prefix: str) -> None
     exclusions = client.list_v6_exclusion_ranges(prefix)
     reservations = client.list_v6_reservations(prefix)
     options = _v6_options(client, prefix)
+    values = client.list_v6_reservation_option_values(prefix, [r.ip_address for r in reservations])
     for r in reservations:
-        options.extend(_v6_options(client, prefix, r.ip_address))
+        for o in values[r.ip_address]:
+            o.prefix, o.reserved_ip = prefix, r.ip_address
+        options.extend(values[r.ip_address])
     state.v6_exclusions.extend(exclusions)
     state.v6_reservations.extend(reservations)
     state.v6_options.extend(options)
 
 
-def _v6_options(client: DhcpClient, prefix: str, reserved_ip: str = "") -> list:
-    out = client.list_v6_option_values(prefix=prefix, reserved_ip=reserved_ip, all=True)
+def _v6_options(client: DhcpClient, prefix: str) -> list:
+    out = client.list_v6_option_values(prefix=prefix, all=True)
     for o in out:
-        o.prefix, o.reserved_ip = prefix, reserved_ip
+        o.prefix, o.reserved_ip = prefix, ""
     return out
 
 

@@ -24,10 +24,13 @@ Not seen on a real server yet:
 - running the cmdlets on another server through **`computer_name`** (`-ComputerName`), and the fully qualified name
   a domain member reports for itself;
 - the input format that sends the failover shared secret next to the script rather than inside it (0.4.0), and that
-  script block logging then leaves it out: checked with PowerShell 7 only so far, not Windows PowerShell 5.1.
+  script block logging then leaves it out: checked with PowerShell 7 only so far, not Windows PowerShell 5.1;
+- the batched reads of reservation option values and policy ranges and values (0.4.0): checked against stub cmdlets,
+  not yet on a real server.
 
 Over SSH, Windows OpenSSH stalls on more than about 70 KB of script input, so the plugin refuses a script above
-64 KB with an error that says to use WinRM. Its scripts send under 10 KB; only very large parameter lists come close.
+64 KB with an error that says to use WinRM. Its scripts send under 20 KB (a batched read of 256 DHCPv6 reservations is
+the largest); only very large parameter lists come close.
 
 Try the plugin on a lab server before a production one, and use **Dry run** before turning **Sync enabled** on.
 
@@ -65,8 +68,10 @@ DHCP 20135 and 20136). A push of such a policy fails the same way, so fix it in 
 ## Operations
 
 - The worker's database connection must not go through pgbouncer in transaction mode (advisory locks).
-- Reading a large server takes a few PowerShell calls per scope, per policy and per reservation, sent one after
-  another; a push or an import of a server with thousands of scopes or reservations takes minutes.
+- Reading a server takes a few PowerShell calls per scope, sent one after another: the option values of a scope's
+  reservations and the IP ranges and values of its policies are read in batches of up to 256 per call, so the number
+  of calls no longer grows with the number of reservations or policies. A push or an import of a server with
+  thousands of scopes still takes minutes.
 - Two Windows servers that hold the same subnet without being failover partners share one IP range in NetBox when
   they are imported into the same VRF, and an import will not move that range for one of them: the scope change
   fails and names the other scope. To avoid the sharing, give each server its own import VRF before its first

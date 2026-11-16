@@ -222,3 +222,24 @@ def test_v6_scope_refuses_timers_out_of_order(lab: Lab, probe_out) -> None:
             seen[label] = f"refused: {exc.id}: {exc}"
     save_probe(probe_out, "v6-scope-timers-out-of-order", seen)
     assert all(v.startswith("refused") for v in seen.values()), seen
+
+
+def test_v6_batched_reservation_option_values(lab: Lab, probe_out) -> None:
+    """client.py (issue #100): v6option.list_reserved, its output shape and not-found."""
+    lab.v6_scope("nbwd-test-v6batch")
+    ips = ["2001:db8:4e42::30", "2001:db8:4e42::31"]
+    for i, ip in enumerate(ips):
+        lab.client.add_v6_reservation(
+            wc.ReservationV6(prefix=V6_PREFIX, ip_address=ip, client_duid=DUID[:-2] + f"{i + 0x30:02x}", iaid=i + 1)
+        )
+    lab.client.set_v6_option_value(wc.OptionKeyV6(24, prefix=V6_PREFIX, reserved_ip=ips[0]), ["batch.example"])
+    save_probe(probe_out, "v6-batched-reads", lab.client._run(wc.S_V6OPTION_LIST_RESERVED, {"ips": ips})[1])
+    got = lab.client.list_v6_reservation_option_values(V6_PREFIX, ips)
+    for ip in ips:
+        single = lab.client.list_v6_option_values(prefix=V6_PREFIX, reserved_ip=ip, all=True)
+        assert sorted((o.option_id, tuple(o.value), o.user_class) for o in got[ip]) == sorted(
+            (o.option_id, tuple(o.value), o.user_class) for o in single
+        )
+    assert [o.value for o in got[ips[0]] if o.option_id == 24] == [["batch.example"]]
+    with pytest.raises(wc.NotFound):
+        lab.client.list_v6_reservation_option_values(V6_PREFIX, [ips[0], "2001:db8:4e42::99"])

@@ -27,6 +27,7 @@ This module must not import Django or NetBox.
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -56,6 +57,7 @@ __all__ = [
     "OptionValueV6",
     "PSError",
     "Policy",
+    "PolicyContents",
     "PolicyIPRange",
     "Reservation",
     "ReservationV6",
@@ -266,6 +268,15 @@ class PolicyIPRange(_Model):
     policy_name: str = ""
     start_range: str = ""
     end_range: str = ""
+
+
+@dataclass
+class PolicyContents(_Model):
+    """What a full read needs from one policy besides the policy itself: its IP ranges and its option values."""
+
+    name: str = ""
+    ip_ranges: list[PolicyIPRange] = field(default_factory=list)  # always empty for a server-level policy
+    options: list[OptionValue] = field(default_factory=list)
 
 
 @dataclass
@@ -1506,12 +1517,139 @@ Remove-DhcpServerv6Class @cn -Name $p.name -Type $p.type -Confirm:$false
 """,
 )
 
+# ---- Batched reads (issue #100) -----------------------------------------------------------------
+
+# A full read of a server used to start PowerShell once per reservation (its option values) and twice per policy (its
+# IP ranges, its option values). These scripts read a whole batch in one start: the client sends the reserved IPs or
+# policy names it has just listed, and each one is read in its own try/catch, so one reservation deleted mid-read
+# does not hide the others. Its error comes back next to it, tagged by IP or name, and the client raises it exactly
+# as the one-at-a-time read would have (NotFound for a missing object), so windows_state reads the scope again.
+# Each value is printed without its option name, scope or IP (the client fills those in) to keep the output small for
+# scopes with thousands of reservations.
+_BATCH_FUNC = r"""
+function ConvertTo-WdItemError($e) {
+    [ordered]@{
+        message  = "$($e.Exception.Message)"
+        category = "$($e.CategoryInfo.Category)"
+        id       = "$($e.FullyQualifiedErrorId)"
+        command  = "$($e.InvocationInfo.MyCommand.Name)"
+    }
+}
+function ConvertTo-WdValueItem($o) {
+    [ordered]@{
+        option_id    = [int]$o.OptionId
+        value        = @($o.Value | Where-Object { $null -ne $_ } | ForEach-Object { "$_" })
+        vendor_class = "$($o.VendorClass)"
+        user_class   = "$($o.UserClass)"
+        policy_name  = "$($o.PolicyName)"
+    }
+}
+"""
+
+# unverified: the per-item try/catch inside one script and the output shape on Windows PowerShell 5.1 (issue #100).
+# The cmdlet calls are the ones option.list makes for one reservation.
+S_OPTION_LIST_RESERVED = Script(
+    "option.list_reserved",
+    _BATCH_FUNC
+    + r"""
+$out = @(foreach ($ip in @($p.ips)) {
+    try {
+        $v = @(Get-DhcpServerv4OptionValue @cn -ReservedIP $ip -All | ForEach-Object { ConvertTo-WdValueItem $_ })
+        [ordered]@{ ip = "$ip"; values = $v }
+    } catch {
+        [ordered]@{ ip = "$ip"; error = ConvertTo-WdItemError $_ }
+    }
+})
+""",
+)
+
+# unverified: as option.list_reserved. The cmdlet calls are the ones policyrange.list and option.list (with
+# -PolicyName and -All) make for one policy; a server-level policy has no IP ranges.
+S_POLICY_LIST_CONTENTS = Script(
+    "policy.list_contents",
+    _BATCH_FUNC
+    + r"""
+$out = @(foreach ($name in @($p.names)) {
+    try {
+        $sel = @{ PolicyName = $name; All = $true }
+        $ranges = @()
+        if ($p.scope_id) {
+            $sel['ScopeId'] = $p.scope_id
+            $ranges = @(Get-DhcpServerv4PolicyIPRange @cn -ScopeId $p.scope_id -Name $name | ForEach-Object {
+                [ordered]@{ start_range = "$($_.StartRange)"; end_range = "$($_.EndRange)" }
+            })
+        }
+        $v = @(Get-DhcpServerv4OptionValue @cn @sel | ForEach-Object { ConvertTo-WdValueItem $_ })
+        [ordered]@{ name = "$name"; ranges = $ranges; values = $v }
+    } catch {
+        [ordered]@{ name = "$name"; error = ConvertTo-WdItemError $_ }
+    }
+})
+""",
+)
+
+# unverified: as option.list_reserved, for DHCPv6 reservations.
+S_V6OPTION_LIST_RESERVED = Script(
+    "v6option.list_reserved",
+    _BATCH_FUNC
+    + r"""
+$out = @(foreach ($ip in @($p.ips)) {
+    try {
+        $v = @(Get-DhcpServerv6OptionValue @cn -ReservedIP $ip -All | ForEach-Object { ConvertTo-WdValueItem $_ })
+        [ordered]@{ ip = "$ip"; values = $v }
+    } catch {
+        [ordered]@{ ip = "$ip"; error = ConvertTo-WdItemError $_ }
+    }
+})
+""",
+)
+
 ALL_SCRIPTS: tuple[Script, ...] = tuple(v for k, v in list(globals().items()) if k.startswith("S_"))
 
 
 # ---------------------------------------------------------------------------
 # Parameter builders
 # ---------------------------------------------------------------------------
+
+
+def _objects(op: str, data: Any) -> list[dict]:
+    """A script's list of objects, as JSON gives it, with the shapes Windows PowerShell 5.1 can print handled."""
+    if isinstance(data, dict):
+        # Windows PowerShell 5.1 can print an array as {"value": [...], "Count": n}. No object the scripts build has
+        # exactly these two fields, so this is never a real single object: refuse it instead of returning one object
+        # with every field at its default.
+        if set(data) == {"value", "Count"}:
+            raise OutputError(f"{op}: expected a list of objects, got an array wrapped as value/Count")
+        data = [data]  # a single object that lost its array wrapper
+    if not isinstance(data, list):
+        raise OutputError(f"{op}: expected a list of objects, got {type(data).__name__}")
+    for d in data:
+        if not isinstance(d, dict):
+            raise OutputError(f"{op}: expected a list of objects, got a list with {type(d).__name__}")
+    return [d for d in data if d != {}]
+
+
+# How many reservations or policies one batched read sends (issue #100), and how many bytes of their IPs or names
+# (as UTF-8 JSON). They travel in the script input, which must stay well under the 64 KB SSH limit (#63): 256 DHCPv6
+# addresses are under 11 KB, policy names can be long, and the whole input is base64, a third larger. One batch must
+# also answer within command_timeout, since a script prints nothing until it ends: at a few tens of milliseconds per
+# reservation that is seconds, not minutes. 256 also reads a whole /24 in one go.
+READ_BATCH = 256
+READ_BATCH_BYTES = 12_000
+
+
+def _batches(keys: Sequence[str]) -> list[list[str]]:
+    """``keys`` cut into batches of at most READ_BATCH keys and READ_BATCH_BYTES bytes of JSON (one key at least)."""
+    out: list[list[str]] = []
+    size = 0
+    for key in keys:
+        n = len(json.dumps(key, ensure_ascii=False).encode()) + 1
+        if not out or len(out[-1]) >= READ_BATCH or size + n > READ_BATCH_BYTES:
+            out.append([])
+            size = 0
+        out[-1].append(key)
+        size += n
+    return out
 
 
 def _ipv4(s: str) -> str:
@@ -1682,19 +1820,52 @@ class DhcpClient:
         present, data = self._run(script, params)
         if not present:
             return []
-        if isinstance(data, dict):
-            # Windows PowerShell 5.1 can print an array as {"value": [...], "Count": n}. No object the scripts build
-            # has exactly these two fields, so this is never a real single object: refuse it instead of returning one
-            # object with every field at its default.
-            if set(data) == {"value", "Count"}:
-                raise OutputError(f"{script.op}: expected a list of objects, got an array wrapped as value/Count")
-            data = [data]  # a single object that lost its array wrapper
-        if not isinstance(data, list):
-            raise OutputError(f"{script.op}: expected a list of objects, got {type(data).__name__}")
-        for d in data:
-            if not isinstance(d, dict):
-                raise OutputError(f"{script.op}: expected a list of objects, got a list with {type(d).__name__}")
-        return [cls.from_dict(d) for d in data if d != {}]
+        return [cls.from_dict(d) for d in _objects(script.op, data)]
+
+    def _tagged(self, script: Script, params: Mapping[str, Any], tag: str, keys: Sequence[str]) -> dict[str, dict]:
+        """
+        Run a batched read (issue #100) over ``keys``, in ``_batches``, and return each key's result object.
+
+        The script answers one object per key, ``{tag: key, ...}`` or ``{tag: key, error: {...}}``. An item's error is
+        raised as the one-at-a-time read would raise it: ``PSNotFoundError`` (a ``NotFound``) when the object is gone,
+        ``PSError`` otherwise, which wins over a not-found in the same batch. A key with no answer is an
+        ``OutputError``, never an empty result: reading nothing for a reservation would look like "no options".
+        """
+        out: dict[str, dict] = {}
+        # The parameter is the plural of the tag: "ip" -> "ips", "name" -> "names".
+        name = tag + "s"
+        for chunk in _batches(keys):
+            present, data = self._run(script, {**params, name: chunk})
+            got: dict[str, dict] = {}
+            for row in _objects(script.op, data) if present else []:
+                key = row.get(tag)
+                if not isinstance(key, str):
+                    raise OutputError(f"{script.op}: a result without its {tag}")
+                got[key] = row
+            not_found: PSError | None = None
+            for key in chunk:
+                row = got.get(key)
+                if row is None:
+                    raise OutputError(f"{script.op}: no result for {key}")
+                if "error" in row:
+                    if not isinstance(row["error"], dict):
+                        raise OutputError(f"{script.op}: unreadable error for {key}")
+                    err = PSError.from_dict(row["error"])
+                    log.debug("DHCP script %s failed for %s: %s", script.op, key, err)
+                    if not err.not_found:
+                        raise err
+                    not_found = not_found or err
+                out[key] = row
+            if not_found is not None:
+                raise not_found
+        return out
+
+    @staticmethod
+    def _values(op: str, row: Mapping[str, Any], field_name: str = "values") -> list[dict]:
+        """A list held by one batched result; a missing one is an error, not an empty list."""
+        if field_name not in row or row[field_name] is None:
+            raise OutputError(f"{op}: a result without its {field_name}")
+        return _objects(op, row[field_name])
 
     def _do(self, script: Script, params: Mapping[str, Any] | None = None) -> None:
         self._run(script, params)
@@ -1803,6 +1974,23 @@ class DhcpClient:
         p = _option_params(OptionKey(0, scope_id, reserved_ip, vendor_class, user_class, policy_name))
         p["all"] = bool(all)
         return [self._option_context(v, scope_id, reserved_ip) for v in self._list(S_OPTION_LIST, p, OptionValue)]
+
+    def list_reservation_option_values(self, scope_id: str, ips: Sequence[str]) -> dict[str, list[OptionValue]]:
+        """
+        Every option value (``-All``) of each reservation in ``ips``, keyed by the IP as given: what
+        ``list_option_values(scope_id, ip, all=True)`` returns for each, in one PowerShell start per READ_BATCH
+        reservations instead of one per reservation (issue #100). Raises ``NotFound`` when one of them is gone.
+        """
+        sid = _ipv4(scope_id)
+        sent = {_ipv4(ip): ip for ip in ips}
+        rows = self._tagged(S_OPTION_LIST_RESERVED, {}, "ip", list(sent))
+        return {
+            ip: [
+                OptionValue.from_dict({**d, "scope_id": sid, "reserved_ip": canon})
+                for d in self._values(S_OPTION_LIST_RESERVED.op, rows[canon])
+            ]
+            for canon, ip in sent.items()
+        }
 
     def set_option_value(self, key: OptionKey, value: Sequence[str]) -> OptionValue:
         """Create or overwrite an option value (Set-DhcpServerv4OptionValue is an upsert)."""
@@ -2036,6 +2224,28 @@ class DhcpClient:
     def list_policy_ip_ranges(self, scope_id: str, policy_name: str) -> list[PolicyIPRange]:
         return self._list(S_POLICYRANGE_LIST, {"scope_id": _ipv4(scope_id), "policy_name": policy_name}, PolicyIPRange)
 
+    def list_policy_contents(self, names: Sequence[str], scope_id: str = "") -> dict[str, PolicyContents]:
+        """
+        The IP ranges and option values (``-All``) of each policy in ``names`` (server-level policies when
+        ``scope_id`` is empty), keyed by the name as given: what ``list_policy_ip_ranges`` and ``list_option_values``
+        return for each, in one PowerShell start per READ_BATCH policies (issue #100). Raises ``NotFound`` when one
+        of them is gone.
+        """
+        sid = _ipv4(scope_id)
+        op = S_POLICY_LIST_CONTENTS.op
+        rows = self._tagged(S_POLICY_LIST_CONTENTS, {"scope_id": sid}, "name", list(dict.fromkeys(names)))
+        out = {}
+        for name, row in rows.items():
+            ranges = self._values(op, row, "ranges")
+            out[name] = PolicyContents(
+                name=name,
+                ip_ranges=[
+                    PolicyIPRange(sid, name, str(r.get("start_range", "")), str(r.get("end_range", ""))) for r in ranges
+                ],
+                options=[OptionValue.from_dict({**d, "scope_id": sid}) for d in self._values(op, row)],
+            )
+        return out
+
     def add_policy_ip_range(self, r: PolicyIPRange) -> PolicyIPRange:
         return self._get(S_POLICYRANGE_ADD, self._policy_range_params(r), PolicyIPRange)
 
@@ -2127,6 +2337,19 @@ class DhcpClient:
         p = _v6option_params(OptionKeyV6(0, prefix, reserved_ip, vendor_class, user_class))
         p["all"] = bool(all)
         return [self._option_context(v, prefix, reserved_ip) for v in self._list(S_V6OPTION_LIST, p, OptionValueV6)]
+
+    def list_v6_reservation_option_values(self, prefix: str, ips: Sequence[str]) -> dict[str, list[OptionValueV6]]:
+        """As ``list_reservation_option_values``, for the reservations of a DHCPv6 scope."""
+        px = _ipv6(prefix)
+        sent = {_ipv6(ip): ip for ip in ips}
+        rows = self._tagged(S_V6OPTION_LIST_RESERVED, {}, "ip", list(sent))
+        return {
+            ip: [
+                OptionValueV6.from_dict({**d, "prefix": px, "reserved_ip": canon})
+                for d in self._values(S_V6OPTION_LIST_RESERVED.op, rows[canon])
+            ]
+            for canon, ip in sent.items()
+        }
 
     def set_v6_option_value(self, key: OptionKeyV6, value: Sequence[str]) -> OptionValueV6:
         p = _v6option_params(key)
