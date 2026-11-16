@@ -447,9 +447,9 @@ class ImportRequestIdTest(TestCase):
         described = {"address": "10.1.0.6/24", "description": "synced"}
         label = "ipam.ipaddress"
         self.assertTrue(ipam_guard.import_only(label, [(imported, address, moved), (other, moved, described)]))
-        # The mask is not sent to Windows: changing it alone is not a change of the address.
+        # A mask edit alone counts: the merge replays the whole stored value, address included.
         remasked = {"address": "10.1.0.6/16", "description": ""}
-        self.assertTrue(ipam_guard.import_only(label, [(imported, address, moved), (other, moved, remasked)]))
+        self.assertFalse(ipam_guard.import_only(label, [(imported, address, moved), (other, moved, remasked)]))
         # A hand edit of the address still counts, before or after the import's.
         self.assertFalse(ipam_guard.import_only(label, [(other, address, moved), (imported, moved, described)]))
         # A create or a delete alters the address too.
@@ -459,12 +459,14 @@ class ImportRequestIdTest(TestCase):
         self.assertFalse(ipam_guard.import_only(label, [(imported, moved, described)]))
         self.assertFalse(ipam_guard.import_only(label, []))
 
-    def test_import_only_compares_macs_by_value(self):
+    def test_import_only_reads_every_watched_field_of_a_range(self):
+        # The import moves the start; a hand edit of the end (here its mask alone) must still be checked.
         imported, other = ipam_guard.import_request_id(), uuid.uuid4()
-        label = "dcim.macaddress"
-        before, after = {"mac_address": "00:11:22:33:44:55"}, {"mac_address": "00:11:22:33:44:66"}
-        reformatted = {"mac_address": "00-11-22-33-44-66"}
-        self.assertTrue(ipam_guard.import_only(label, [(imported, before, after), (other, after, reformatted)]))
-        # A value that cannot be read counts as a change.
-        broken = {"mac_address": "not a mac"}
-        self.assertFalse(ipam_guard.import_only(label, [(imported, before, after), (other, after, broken)]))
+        label = "ipam.iprange"
+        start = {"start_address": "10.1.0.10/24", "end_address": "10.1.0.200/24", "description": ""}
+        shifted = {**start, "start_address": "10.1.0.11/24"}
+        self.assertTrue(ipam_guard.import_only(label, [(imported, start, shifted)]))
+        described = {**shifted, "description": "by hand"}
+        self.assertTrue(ipam_guard.import_only(label, [(imported, start, shifted), (other, shifted, described)]))
+        remasked = {**shifted, "end_address": "10.1.0.200/25"}
+        self.assertFalse(ipam_guard.import_only(label, [(imported, start, shifted), (other, shifted, remasked)]))

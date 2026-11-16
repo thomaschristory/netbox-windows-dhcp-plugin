@@ -11,7 +11,7 @@ import hmac
 import os
 import uuid
 
-from netaddr import EUI, AddrFormatError, IPNetwork
+from netaddr import EUI, IPNetwork
 
 PLUGIN = "netbox_windows_dhcp_plugin"
 
@@ -119,27 +119,24 @@ def is_import_request(value):
 
 
 def _alters_watched(label, prechange, postchange):
-    """Whether a change log entry (its pre- and postchange data, None for a create or delete) alters a watched field."""
+    """
+    Whether a change log entry (its pre- and postchange data, None for a create or delete) writes a watched field.
+    The stored values are compared as they are, not by what a push sends: netbox-branching replays a field whose stored
+    value differs, mask and all, so a change of the mask alone also writes the address it carries. Counting it as
+    the import's would let a mask edit of a range's end replay a stale end address under the import's exemption.
+    """
     prechange, postchange = prechange or {}, postchange or {}
-    for field in WATCHED[label]:
-        before, after = prechange.get(field), postchange.get(field)
-        try:
-            if push_value(label, field, before) != push_value(label, field, after):
-                return True
-        except (ValueError, TypeError, AddrFormatError):
-            # A value this code cannot read: count it as a change, which only makes the check stricter.
-            if before != after:
-                return True
-    return False
+    return any(prechange.get(field) != postchange.get(field) for field in WATCHED[label])
 
 
 def import_only(label, changes):
     """
     Whether the branch changes of one object, [(request ID, prechange data, postchange data)], come from an import as
-    far as Windows is concerned: every change that alters a watched field is the import's (and there is one). Changes
+    far as Windows is concerned: every change that writes a watched field is the import's (and there is one). Changes
     that leave the watched fields alone, such as main's description edit brought in by a sync (#115) or a hand edit of
-    the tags, cannot pass anything off as the import's, so they do not count. A hand edit of a watched field does:
-    squash replays all of an object's changes under one request ID, which may be the import's.
+    the tags, cannot pass anything off as the import's, so they do not count. A hand edit of a watched field does,
+    even of the mask alone: squash replays all of an object's changes under one request ID, which may be the
+    import's.
     """
     watched = [
         request_id for request_id, prechange, postchange in changes if _alters_watched(label, prechange, postchange)
