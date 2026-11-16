@@ -431,7 +431,10 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
             self._merge(self.ipam_only)
         self.assertEqual(self._address(), before)
 
-    NO_USER = "Branch guard cannot be merged or reverted without a user: changing address would change"
+    NO_USER = (
+        "Branch guard cannot be merged or reverted without a user: changing address would change one or more "
+        'reservations on Windows. Merge or revert it as a user with the "change reservation" permission on them.'
+    )
 
     def test_merge_without_a_user_is_refused(self):
         # A merge job whose user was deleted: nobody to check, even though the change's author has the permission.
@@ -441,6 +444,16 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
 
         with self.assertRaisesMessage(AbortRequest, self.NO_USER):
             self._merge(None)
+        self.assertEqual(self._address(), before)
+
+    def test_merge_as_an_anonymous_user_is_refused_like_no_user(self):
+        from django.contrib.auth.models import AnonymousUser
+        from utilities.exceptions import AbortRequest
+
+        before = self._address()
+        self._edit_in_branch(self.editor)
+        with self.assertRaisesMessage(AbortRequest, self.NO_USER):
+            self._merge(AnonymousUser())
         self.assertEqual(self._address(), before)
 
     def test_squash_merge_without_a_user_is_refused(self):
@@ -468,7 +481,7 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
             self.branch.revert(user=None)
         self.assertEqual(self._address(), address)
 
-    def test_merge_without_a_user_of_changes_windows_never_sees(self):
+    def test_merge_without_a_user_of_an_address_nothing_uses(self):
         # An address no scope or reservation uses: nothing to refuse.
         from ipam.models import IPAddress
         from netaddr import IPNetwork
