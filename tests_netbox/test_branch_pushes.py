@@ -558,6 +558,30 @@ class BranchGuardTest(ImportTestMixin, TransactionTestCase):
     def test_squash_create_with_an_undone_edit_needs_no_permission(self):
         self._squash_create_with_edits_windows_never_sees(("10.1.0.121/24", "10.1.0.120/24"))
 
+    def test_squash_hand_edit_back_to_the_created_value_after_an_import_move_is_checked(self):
+        # The import created .120 and later moved it to .122 (what Windows holds); a hand edit puts .120 back.
+        from ipam.models import IPAddress
+        from netaddr import IPNetwork
+        from utilities.exceptions import AbortRequest
+
+        from netbox_windows_dhcp_plugin.ipam_guard import import_request_id
+
+        pk = self._import_creates_a_reservation(hand_edit=False)
+        with branching.writing(self.branch, self.editor, request_id=import_request_id()):
+            ip = IPAddress.objects.get(pk=pk)
+            ip.snapshot()
+            ip.address = IPNetwork("10.1.0.122/24")
+            ip.save()
+        with branching.writing(self.branch, self.editor):
+            ip = IPAddress.objects.get(pk=pk)
+            ip.snapshot()
+            ip.address = IPNetwork("10.1.0.120/24")
+            ip.save()
+        self._set_strategy("squash")
+        with self.assertRaisesMessage(AbortRequest, "Branch guard cannot be merged or reverted by guard-ipam-only"):
+            self._merge(self.ipam_only)
+        self.assertIsNone(self._created_address(pk))
+
     def _hand_created_and_edited(self, strategy):
         from utilities.exceptions import AbortRequest
 

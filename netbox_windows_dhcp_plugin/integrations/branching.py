@@ -173,7 +173,7 @@ class Applying(NamedTuple):
     branch: str
     # The merging or reverting user (None when the merge or revert runs without one).
     user: object
-    # Every change the branch holds for the object: [(request ID, prechange data, postchange data)].
+    # Every change the branch holds for the object, oldest first: [(request ID, prechange data, postchange data)].
     changes: list
     reverting: bool
     # The branch schema's database alias, where objects the merge has not created on main yet can be read.
@@ -213,9 +213,9 @@ def applying_branch(instance):
     changes = branch.get_changes()
     object_type = ObjectType.objects.get_for_model(instance)
     own = list(
-        changes.filter(changed_object_type=object_type, changed_object_id=instance.pk).values_list(
-            "request_id", "prechange_data", "postchange_data"
-        )
+        changes.filter(changed_object_type=object_type, changed_object_id=instance.pk)
+        .order_by("time", "pk")
+        .values_list("request_id", "prechange_data", "postchange_data")
     )
     # request.id may be a UUID or its string form.
     if str(request_id) not in {str(r) for r, _, _ in own}:

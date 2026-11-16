@@ -315,24 +315,30 @@ def check_edit(sender, instance, raw=False, **kwargs):
 
 def _hand_updates(label, changes, instance):
     """
-    The watched fields that the branch's non-import updates of a new object changed, as a push sees them: the value
-    the object is created with on main against the one the branch created it with (a mask edit alone, or an edit
-    undone later, changes nothing Windows receives).
+    The watched fields that the branch's non-import updates of a new object changed, as a push sees them.
+    ``changes`` are oldest first. A field counts when a hand update wrote it and the value the object is created with
+    on main differs from the baseline: the value the import last wrote to that field (what Windows holds), or, with
+    no import write, the value the object was created with (creating alone is not checked). A mask edit alone, or an
+    edit undone later, changes nothing Windows receives.
     """
-    created = next((post for _, pre, post in changes if pre is None and post is not None), None)
-    edited = set()
+    edited, baseline = set(), {}
     for request_id, prechange, postchange in changes:
-        # Creates, deletes and the import's own updates left out.
-        if prechange is None or postchange is None or is_import_request(request_id):
+        if postchange is None:
+            continue
+        if prechange is None or is_import_request(request_id):
+            # A create sets every field; an import update sets the ones it changed.
+            baseline.update(
+                (f, postchange.get(f))
+                for f in WATCHED[label]
+                if prechange is None or prechange.get(f) != postchange.get(f)
+            )
             continue
         edited.update(f for f in WATCHED[label] if prechange.get(f) != postchange.get(f))
-    if created is None:
-        # No create in the branch's changes (not expected for a new object): every edited field counts.
-        return tuple(f for f in WATCHED[label] if f in edited)
     return tuple(
         f
         for f in WATCHED[label]
-        if f in edited and push_value(label, f, created.get(f)) != push_value(label, f, getattr(instance, f))
+        if f in edited
+        and (f not in baseline or push_value(label, f, baseline[f]) != push_value(label, f, getattr(instance, f)))
     )
 
 

@@ -240,7 +240,7 @@ is governed by branching's own rules, as for any other object. Two cases where t
 - **A prefix, range, address or MAC created in the branch, then edited by hand there.** The squash strategy merges the
   two as one creation; the hand edit is still checked, as the merging user, against the scopes and reservations the
   branch puts on it, as the iterative strategy checks it. Creating the object alone is not checked, and neither is
-  an edit Windows would not see (the mask alone, or an edit undone later).
+  an edit Windows would not see (the mask alone, or an edit that ends on the value the import last wrote).
 
 If the merging user lacks the permission, **nothing is merged**: netbox-branching rolls the merge back, the branch
 stays ready to merge (a refused revert leaves it merged), and the merge job ends as errored with a message such as:
