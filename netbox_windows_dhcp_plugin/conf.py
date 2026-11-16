@@ -29,6 +29,10 @@ DEFAULTS = {
     # Username that scheduled imports run as. It owns import branches and requests their change requests (manual
     # imports use the user who clicked). With branching, scheduled imports fail without it.
     "import_user": None,
+    # Days to keep sync runs (the history of imports, pushes, dry runs and connection tests). Older runs are deleted
+    # by the import scheduler, a batch at a time; runs the plugin still reads are kept whatever their age. 0 or None
+    # keeps every run.
+    "sync_run_retention_days": 90,
     # Seconds to wait after a save before pushing, so a burst of edits becomes one push (without branching).
     "push_debounce": 10,
     # Upper bound on the PowerShell commands one job runs at the same time against a server. It has no effect today:

@@ -188,17 +188,6 @@ def _job_destination(job):
     return destination or branching.import_destinations()[0]
 
 
-def _run_destination(run, has_proposal):
-    """Where a run wrote. Runs from before #36 recorded nothing: a branch name or a proposal says which it was."""
-    if run.destination:
-        return run.destination
-    if run.branch_name:
-        return ImportDestinationChoices.BRANCH
-    if has_proposal or not branching.branching_installed():
-        return ImportDestinationChoices.PROPOSAL
-    return ImportDestinationChoices.BRANCH
-
-
 def _branch(name, user, since=None, until=None):
     """
     What became of the branch an import wrote into. ``since``: when the run started, so an older deleted branch of the
@@ -217,6 +206,15 @@ def _branch(name, user, since=None, until=None):
         if deletion is not None:
             info.deletion, info.deleted_status, info.deleted_merged_time = deletion
     return info
+
+
+def import_branch_runs(runs):
+    """
+    The import runs in ``runs`` that wrote an import branch of their own, rather than a branch the user chose. The
+    panel looks back through them for an earlier branch still waiting to be merged; run retention (``retention.py``)
+    keeps the newest run of the two newest such branches of each server for it.
+    """
+    return runs.exclude(branch_name="").exclude(destination=ImportDestinationChoices.CURRENT)
 
 
 def for_run(run, user, job=None, now=None):
@@ -263,7 +261,8 @@ def for_run(run, user, job=None, now=None):
         proposal=proposal,
         proposal_hidden=hidden,
         open_proposal=open_proposal,
-        destination=_run_destination(run, proposal is not None or hidden),
+        # Every import run records where it wrote (the 0.2 line started with empty tables, so none predates that).
+        destination=run.destination,
     )
 
 
@@ -304,7 +303,7 @@ def for_server(server, user, now=None):
     if branching.branching_installed() and (status.branch is None or not status.branch.main_unchanged):
         # Keep an unmerged branch from an earlier run in sight after a run that failed or found nothing new.
         # Only import branches: a branch the user chose to import into is their own work, not an import to merge.
-        earlier = runs.exclude(branch_name="").exclude(destination=ImportDestinationChoices.CURRENT)
+        earlier = import_branch_runs(runs)
         if status.branch is not None:
             earlier = earlier.exclude(branch_name=status.branch.name)
         earlier = earlier.values_list("branch_name", "created", "completed").first()

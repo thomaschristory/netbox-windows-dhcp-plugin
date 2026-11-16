@@ -378,12 +378,14 @@ class SyncRunProposalsTest(TestCase):
     """A sync run page lists the proposals of that run only (it listed every proposal of every server)."""
 
     def test_proposals_are_filtered_by_sync_run(self):
-        from netbox_windows_dhcp_plugin.choices import SyncKindChoices
+        from netbox_windows_dhcp_plugin.choices import ImportDestinationChoices, SyncKindChoices
         from netbox_windows_dhcp_plugin.filtersets import ImportProposalFilterSet
         from netbox_windows_dhcp_plugin.models import SyncRun
 
         server = windows_server()
-        imported = SyncRun.objects.create(windows_server=server, kind=SyncKindChoices.IMPORT)
+        imported = SyncRun.objects.create(
+            windows_server=server, kind=SyncKindChoices.IMPORT, destination=ImportDestinationChoices.PROPOSAL
+        )
         dry_run = SyncRun.objects.create(windows_server=server, kind=SyncKindChoices.DRY_RUN)
         proposal = ImportProposal.objects.create(windows_server=server, sync_run=imported)
         qs = ImportProposalFilterSet({"sync_run_id": [imported.pk]}, ImportProposal.objects.all()).qs

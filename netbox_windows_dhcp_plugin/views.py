@@ -4,6 +4,7 @@ from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils.translation import gettext_lazy as _
+from extras.models import SavedFilter
 from extras.ui.panels import CustomFieldsPanel, TagsPanel
 from netbox.object_actions import (
     AddObject,
@@ -699,12 +700,16 @@ class _ReviewView(GetReturnURLMixin, BaseObjectView):
         return redirect(self.get_return_url(request))
 
     def _items(self, request, obj):
-        """The items to act on, restricted to those the user may change."""
+        """The items to act on, restricted to those the user may change; None when the selection was refused."""
         return ImportProposalItem.objects.restrict(request.user, "change").filter(pk=obj.pk)
 
     def post(self, request, pk=None):
         obj = get_object_or_404(self.queryset.restrict(request.user, "change"), pk=pk) if pk is not None else None
-        items = review.open_items(self._items(request, obj))
+        selected = self._items(request, obj)
+        if selected is None:
+            # Refused, and the error already says why: a "0 item(s)" success next to it would read as done.
+            return redirect(self.get_return_url(request, obj))
+        items = review.open_items(selected)
         if self.dismiss:
             count = review.dismiss(request.user, items)
             messages.success(request, _("Dismissed {count} item(s)").format(count=count))
@@ -735,21 +740,65 @@ class _ItemReviewView(_ReviewView):
     pass
 
 
+# Query parameters an object list carries that are not filters: paging, sorting, table settings, the page to go back
+# to, and NetBox's saved filters (which the filterset expands itself).
+LIST_PARAMETERS = frozenset(
+    {
+        "page",
+        "per_page",
+        "sort",
+        "ordering",
+        "return_url",
+        "export",
+        "embedded",
+        "tableconfig_id",
+        "filter",
+        "filter_id",
+    }
+)
+
+
 class _BulkReviewView(_ReviewView):
     filterset = filtersets.ImportProposalItemFilterSet
 
     def _items(self, request, obj):
         qs = ImportProposalItem.objects.restrict(request.user, "change")
         if request.POST.get("_all"):
-            # "Select all matching": the items of the list the user was looking at. django-filter leaves out a
-            # filter whose value is not valid (a deleted proposal, for example), which would widen this to every
-            # open item of every proposal. NetBox shows an empty list for such a filter, so act on nothing.
+            # "Select all matching": the items of the list the user was looking at. Anything that would make the
+            # list filter mean less than it says widens the selection to every open item of every proposal, so it
+            # is refused and nothing is selected.
             filterset = self.filterset(request.GET, qs, request=request)
-            if not filterset.is_valid():
-                messages.error(request, _("The list filter is not valid: nothing was selected"))
-                return qs.none()
+            refusal = self._filter_refusal(request, filterset)
+            if refusal:
+                messages.error(request, refusal)
+                return None
             return filterset.qs
         return qs.filter(pk__in=[pk for pk in request.POST.getlist("pk") if pk.isascii() and pk.isdigit()])
+
+    @staticmethod
+    def _filter_refusal(request, filterset):
+        """Why the list filter cannot be trusted to select all matching items, or None."""
+        # django-filter leaves out a filter whose value is not valid (a deleted proposal, for example). NetBox shows
+        # an empty list for such a filter.
+        if not filterset.is_valid():
+            return _("The list filter is not valid: nothing was selected")
+        # NetBox replaces a saved filter (filter_id, filter) by its own parameters, and silently drops one that does
+        # not exist or that this user may not see.
+        ids, slugs = request.GET.getlist("filter_id"), request.GET.getlist("filter")
+        if ids or slugs:
+            visible = SavedFilter.objects.restrict_to_shared(request.user)
+            wanted_ids = {int(i) for i in ids if i.isascii() and i.isdigit()}
+            found_ids = set(visible.filter(pk__in=wanted_ids).values_list("pk", flat=True))
+            found_slugs = set(visible.filter(slug__in=slugs).values_list("slug", flat=True))
+            if len(wanted_ids) < len(set(ids)) or found_ids != wanted_ids or found_slugs != set(slugs):
+                return _("The saved filter was not found: nothing was selected")
+        # django-filter also ignores a parameter that is no filter at all: a mistyped name (proposal=7 for
+        # proposal_id=7), typed or held by a saved filter. The filterset's data is the query with saved filters
+        # expanded.
+        unknown = sorted(set(filterset.data) - set(filterset.filters) - LIST_PARAMETERS)
+        if unknown:
+            return _("Unknown list filter {names}: nothing was selected").format(names=", ".join(unknown))
+        return None
 
 
 for _dismiss, _verb in ((False, "apply"), (True, "dismiss")):

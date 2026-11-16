@@ -27,6 +27,7 @@ if PluginConfig is not None:
 
             from . import (
                 jobs,  # noqa: F401 - registers the import scheduler system job
+                retention,
                 signals,
             )
             from .conf import profiles_without_allowed_hosts
@@ -34,6 +35,7 @@ if PluginConfig is not None:
 
             branching.register()
             signals.connect()
+            retention.check_setting()
             unrestricted = profiles_without_allowed_hosts()
             if unrestricted:
                 logging.getLogger(__name__).warning(

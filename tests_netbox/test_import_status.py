@@ -19,7 +19,12 @@ from django.utils import timezone
 from utilities.testing import TestCase
 
 from netbox_windows_dhcp_plugin import import_status
-from netbox_windows_dhcp_plugin.choices import ProposalStatusChoices, SyncKindChoices, SyncStatusChoices
+from netbox_windows_dhcp_plugin.choices import (
+    ImportDestinationChoices,
+    ProposalStatusChoices,
+    SyncKindChoices,
+    SyncStatusChoices,
+)
 from netbox_windows_dhcp_plugin.jobs import ImportJob
 from netbox_windows_dhcp_plugin.models import ImportProposal, SyncRun
 
@@ -57,6 +62,8 @@ def panel(html):
 
 
 class ImportStatusTestBase(TestCase):
+    destination = ImportDestinationChoices.PROPOSAL
+
     def setUp(self):
         super().setUp()
         self.user.is_superuser = True
@@ -74,13 +81,21 @@ class ImportStatusTestBase(TestCase):
         changes=2,
         kind=SyncKindChoices.IMPORT,
         created=False,
+        destination=None,
         **extra,
     ):
         summary = {"changes": changes, **extra}
         if branch_name:
             summary["branch_created"] = created
+        # Every import run records where it wrote, as ImportJob does.
         return SyncRun.objects.create(
-            windows_server=self.server, kind=kind, status=status, job=job, branch_name=branch_name, summary=summary
+            windows_server=self.server,
+            kind=kind,
+            status=status,
+            job=job,
+            branch_name=branch_name,
+            summary=summary,
+            destination=destination or self.destination,
         )
 
     def age(self, obj, hours):
@@ -322,6 +337,8 @@ class StandaloneImportStatusTest(ImportStatusTestBase):
 
 class BranchImportStatusTest(ImportStatusTestBase):
     """The branch itself is stubbed here; tests_netbox/test_import.py checks a real branch import end to end."""
+
+    destination = ImportDestinationChoices.BRANCH
 
     def setUp(self):
         super().setUp()

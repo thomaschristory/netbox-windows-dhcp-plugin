@@ -60,7 +60,7 @@ Not branchable (bookkeeping, always written in main): `integrations/branching.NO
 
 - `WindowsServer`: name, optional device or virtual machine, host, transport (winrm or ssh), port, WinRM auth (ntlm, basic, kerberos, credssp), HTTPS (default on), TLS verification, Kerberos realm and SPN, SSH host key, optional `computer_name` for remoting, the names it reports for itself, VRF for imports, sync enabled, import schedule, and a credential profile name. Deleting it deletes its DHCP objects in NetBox (not on Windows; IPAM objects stay). A server that is the partner of another server's failover relationship cannot be deleted while that relationship exists.
 - `SyncState`: per managed Windows object, the last pushed fingerprint. This is what lets the push delete only objects NetBox manages, and spot drift. A push records every object it creates or updates, and adopts every object it finds identical on both sides (which is how objects merged from an import branch become managed). Applying an import proposal item records it too, since NetBox and Windows then agree.
-- `SyncRun`: one row per push or import job with its result, linked to the NetBox `Job`.
+- `SyncRun`: one row per push, dry run, import or connection test job with its result, linked to the NetBox `Job`. Kept for `sync_run_retention_days` (90 by default, 0 keeps them all; issue #106): the import scheduler deletes older runs, oldest first, at most `retention.PRUNE_BATCH` (500) per tick, and once caught up looks again an hour later (a key in NetBox's cache; 15 minutes after a failed tick). It never deletes what the plugin still reads (`retention.protected_run_ids`), per server: the newest run of each kind (`due_servers`, the Import panel), the newest push that reached Windows (`pusher.replication_runs`, read for `replication_pending`), with branching the newest run of each of the two newest import branches (`import_status.import_branch_runs`, the panel's earlier branch), runs of open import proposals, and runs whose job is still queued or running and younger than `ABANDONED_JOB`. Runs with a journal entry are never deleted either: a job writes no change log, so the entry would vanish without a trace. Protection is per server, not per viewer: a user whose view permission is limited by run attributes can see their newest visible run deleted. Migration `0005` adds an index on `created` (the oldest-first lookup) and one on `(windows_server, kind, -completed)` (`replication_runs`). The delete cascades to the run's `PushTrigger` rows, tags and bookmarks, and unlinks closed proposals; it is one atomic delete per batch, so a NetBox protection rule on sync runs that refuses one run stops retention. `sync_run_retention_days` is checked at startup too (a warning), and must be 1 to 36500 days.
 - `ImportProposal` and `ImportProposalItem`: the review queue used when branching is off.
 
 Leases have no model: a lease read is kept in its job's data (see section 8).
@@ -146,7 +146,10 @@ The push is a **reconcile per server**, not a replay of the change log. For each
 - **Jobs.** `PushJob` and `DryRunJob` take the per-server lock shared with import. A push that finds the server busy
   queues itself again a minute later, so a merge's push is never lost. A new push is not queued while one for the
   same server is waiting to start (it will read the latest data anyway). `sync_enabled = False` stops pushes, not
-  dry runs.
+  dry runs. A scheduled import (`scheduled=True` job kwarg) that finds the server busy queues itself again
+  `PUSH_RETRY` seconds later, up to `IMPORT_ATTEMPTS`, and deletes its own busy run so `due_servers` does not count it
+  as the latest import (the queued job keeps the scheduler from queueing another); manual imports fail and keep the
+  run.
 - **IPAM edits need the DHCP permission (#102).** A `pre_save` receiver (`ipam_guard.check_edit`) on Prefix,
   IPRange, IPAddress and MACAddress compares the fields a push reads (prefix; range start and end, address part;
   address, address part; MAC) with the stored row. When one changed and a scope or reservation uses the object, the
