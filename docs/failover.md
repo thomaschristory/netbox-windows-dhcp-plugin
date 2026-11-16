@@ -245,8 +245,8 @@ straight to the cmdlet, and is never stored or logged by the plugin. It is sent 
 script, not inside it, so PowerShell script block logging (event 4104) there does not record it (checked with
 PowerShell 7 and with Windows PowerShell 5.1 on Windows Server 2025 in the lab). Module logging (event 4103, and
 event 800 in the classic "Windows PowerShell" log) and transcription can record the parameters of the failover cmdlet
-itself, `-SharedSecret` included: if they are on for the DhcpServer module, restrict who may read those logs. NetBox only records whether
-authentication is on, so a secret rotated on Windows is not noticed. Without a profile, NetBox does not manage
+itself, `-SharedSecret` included: if they are on for the DhcpServer module, restrict who may read those logs. NetBox
+only records whether authentication is on, so a secret rotated on Windows is not noticed. Without a profile, NetBox does not manage
 authentication at all: an imported relationship keeps whatever Windows has (an import cannot read the secret), and
 pushes leave it alone. Set a profile to turn authentication on or to send a new secret.
 
