@@ -103,18 +103,25 @@ def _hold_partner_scopes(windows_server, plan, logger):
         plan.changes = kept
 
 
-def _pending_replication(windows_server):
+def replication_runs(windows_server):
     """
-    The scopes an earlier push wrote to Windows but could not replicate. A push that wrote nothing has nothing new to
-    replicate, so without this the partner would stay behind until the next change. Pushes that stopped before
-    writing (no summary: connection or credential errors) are skipped, so what they inherited is not lost.
+    The finished pushes of a server that reached Windows, newest first. Pushes that stopped before writing (no
+    summary: connection or credential errors) are left out, so what they inherited is not lost. The first one is
+    what the next push reads its unfinished replication from, so run retention (``retention.py``) keeps it.
     """
-    last = (
+    return (
         SyncRun.objects.filter(windows_server=windows_server, kind=SyncKindChoices.PUSH, completed__isnull=False)
         .exclude(summary={})
         .order_by("-completed", "-pk")
-        .first()
     )
+
+
+def _pending_replication(windows_server):
+    """
+    The scopes an earlier push wrote to Windows but could not replicate. A push that wrote nothing has nothing new to
+    replicate, so without this the partner would stay behind until the next change.
+    """
+    last = replication_runs(windows_server).first()
     pending = (last.summary.get("replication_pending") if last else None) or {}
     return {name: set(ids) for name, ids in pending.items()}
 

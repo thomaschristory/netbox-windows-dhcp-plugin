@@ -208,6 +208,15 @@ def _branch(name, user, since=None, until=None):
     return info
 
 
+def import_branch_runs(runs):
+    """
+    The import runs in ``runs`` that wrote an import branch of their own, rather than a branch the user chose. The
+    panel looks back through them for an earlier branch still waiting to be merged; run retention (``retention.py``)
+    keeps the newest run of the two newest such branches of each server for it.
+    """
+    return runs.exclude(branch_name="").exclude(destination=ImportDestinationChoices.CURRENT)
+
+
 def for_run(run, user, job=None, now=None):
     """The status of one import run. ``job`` defaults to the run's own job."""
     now = now or timezone.now()
@@ -294,7 +303,7 @@ def for_server(server, user, now=None):
     if branching.branching_installed() and (status.branch is None or not status.branch.main_unchanged):
         # Keep an unmerged branch from an earlier run in sight after a run that failed or found nothing new.
         # Only import branches: a branch the user chose to import into is their own work, not an import to merge.
-        earlier = runs.exclude(branch_name="").exclude(destination=ImportDestinationChoices.CURRENT)
+        earlier = import_branch_runs(runs)
         if status.branch is not None:
             earlier = earlier.exclude(branch_name=status.branch.name)
         earlier = earlier.values_list("branch_name", "created", "completed").first()
