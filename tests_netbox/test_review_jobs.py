@@ -1,5 +1,6 @@
 """Large reviews in the background (#101): over review_job_threshold, apply and dismiss run as a job of the proposal."""
 
+import uuid
 from contextlib import contextmanager
 from datetime import timedelta
 from unittest.mock import patch
@@ -371,7 +372,8 @@ class ReviewJobReviewFindingsTest(_ReviewJobMixin, TestCase):
 
     def test_panel_hides_the_job_from_users_who_may_not_view_it(self):
         self.add_permissions(VIEW_PROPOSAL, PROPOSAL, ITEM)
-        job, _ = self._queue()
+        other = get_user_model().objects.create_user(username="other-reviewer")
+        (job,) = jobs.enqueue_review(other, {self.proposal: [self.item.pk]}, whole_proposal=True)
         Job.objects.filter(pk=job.pk).update(
             status=JobStatusChoices.STATUS_ERRORED, error="RuntimeError('secret detail')"
         )
@@ -433,3 +435,109 @@ class ReviewJobAPIFindingsTest(PluginAPIMixin, APITestCase):
         self.assertNotIn("id", review_job)
         listed = self.client.get("/api/plugins/windows-dhcp/import-proposals/", **self.header).data["results"]
         self.assertEqual(listed[0]["review_job"]["status"], job.status)
+
+
+@override_settings(PLUGINS_CONFIG=IN_BACKGROUND)
+class ReviewJobFinalRoundTest(_ReviewJobMixin, TestCase):
+    """Fixes from the check of the #124 review fixes."""
+
+    def _dying(self, after=1):
+        """Writer.apply that works ``after`` times, then fails as a killed worker would."""
+        from netbox_windows_dhcp_plugin.sync.mapping import Writer
+
+        real_apply = Writer.apply
+        calls = []
+
+        def apply(writer, change):
+            calls.append(change)
+            if len(calls) > after:
+                raise RuntimeError("worker killed")
+            return real_apply(writer, change)
+
+        return patch.object(Writer, "apply", apply)
+
+    def test_a_rolled_back_status_write_leaves_no_event(self):
+        from django.db import IntegrityError
+        from django.test import RequestFactory
+        from netbox.context import events_queue
+        from netbox.context_managers import event_tracking
+
+        request = RequestFactory().get("/")
+        request.id = uuid.uuid4()
+        request.user = self.user
+        real_save = ImportProposalItem.save
+
+        def save(item, *args, **kwargs):
+            real_save(item, *args, **kwargs)
+            raise IntegrityError("lost the connection after the save")
+
+        with (
+            patch("netbox.context_managers.flush_events"),
+            event_tracking(request),
+            patch.object(ImportProposalItem, "save", save),
+        ):
+            with self.assertRaises(IntegrityError):
+                importer._set_item(self.item, ProposalItemStatusChoices.DISMISSED)
+            self.assertEqual(events_queue.get(), {})
+
+    def test_counts_survive_a_database_that_is_gone(self):
+        from django.db import OperationalError
+
+        self.add_permissions(VIEW_PROPOSAL, PROPOSAL, ITEM, *SCOPE_PERMISSIONS)
+        second = self._second_item()
+        job, kwargs = self._queue(ids=[self.item.pk, second.pk])
+        with (
+            self._dying(),
+            patch.object(ReviewJob, "_progress", side_effect=OperationalError("server closed the connection")),
+            patch("netbox.context_managers.flush_events"),
+        ):
+            ReviewJob.handle(Job.objects.get(pk=job.pk), **kwargs)
+        job.refresh_from_db()
+        self.assertEqual(job.status, JobStatusChoices.STATUS_ERRORED)
+        # The original error, not the one from counting.
+        self.assertIn("worker killed", job.error)
+        self.assertTrue(job.data["interrupted"])
+        self.assertNotIn("applied", job.data)
+
+    def test_items_decided_during_the_run_add_up(self):
+        from netbox_windows_dhcp_plugin.sync.mapping import Writer
+
+        self.add_permissions(VIEW_PROPOSAL, PROPOSAL, ITEM, *SCOPE_PERMISSIONS)
+        second = self._second_item()
+        job, kwargs = self._queue(ids=[self.item.pk, second.pk])
+        real_apply = Writer.apply
+
+        def apply(writer, change):
+            # Another reviewer dismisses the second item while the job applies the first.
+            importer.dismiss_items([ImportProposalItem.objects.get(pk=second.pk)])
+            return real_apply(writer, change)
+
+        with patch.object(Writer, "apply", apply):
+            job = self._run(job, **kwargs)
+        counts = {k: job.data[k] for k in ("items", "superseded", "applied", "remaining")}
+        self.assertEqual(counts, {"items": 2, "superseded": 1, "applied": 1, "remaining": 0})
+
+
+@override_settings(PLUGINS_CONFIG=IN_BACKGROUND)
+class ReviewJobErrorVisibilityAPITest(PluginAPIMixin, APITestCase):
+    def setUp(self):
+        super().setUp()
+        self.server, self.proposal = make_proposal()
+        self.item = self.proposal.items.get(kind="scope")
+
+    def test_review_job_error_only_for_the_requester_or_viewers(self):
+        self.add_permissions(VIEW_PROPOSAL)
+        other = get_user_model().objects.create_user(username="other-reviewer")
+        (job,) = jobs.enqueue_review(other, {self.proposal: [self.item.pk]}, whole_proposal=True)
+        Job.objects.filter(pk=job.pk).update(
+            status=JobStatusChoices.STATUS_FAILED,
+            data={"action": "apply", "items": 1, "error": "other-reviewer may not"},
+        )
+        url = f"/api/plugins/windows-dhcp/import-proposals/{self.proposal.pk}/"
+        self.assertEqual(
+            self.client.get(url, **self.header).data["review_job"]["data"], {"action": "apply", "items": 1}
+        )
+        self.add_permissions(VIEW_JOB)
+        self.assertEqual(
+            self.client.get(url, **self.header).data["review_job"]["data"]["error"], "other-reviewer may not"
+        )

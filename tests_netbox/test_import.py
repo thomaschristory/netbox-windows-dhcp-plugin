@@ -14,6 +14,7 @@ from django.utils import timezone
 from ipam.models import IPAddress, IPRange, Prefix
 
 from netbox_windows_dhcp_plugin.choices import (
+    ImportDestinationChoices,
     ProposalItemStatusChoices,
     ProposalStatusChoices,
     SyncKindChoices,
@@ -471,7 +472,9 @@ class ScheduleTest(TestCase):
         self.assertEqual(list(due_servers()), [self.server])
 
     def test_recent_import_is_not_due(self):
-        SyncRun.objects.create(windows_server=self.server, kind=SyncKindChoices.IMPORT)
+        SyncRun.objects.create(
+            windows_server=self.server, kind=SyncKindChoices.IMPORT, destination=ImportDestinationChoices.PROPOSAL
+        )
         self.assertEqual(list(due_servers()), [])
         self.assertEqual(list(due_servers(now=timezone.now() + timedelta(minutes=61))), [self.server])
 
@@ -589,6 +592,7 @@ class BranchImportTest(ImportTestMixin, TransactionTestCase):
             status=SyncStatusChoices.COMPLETED,
             branch_name=result.branch.name,
             summary=result.summary(),
+            destination=ImportDestinationChoices.BRANCH,
         )
         self.user.is_superuser = True
         self.user.save()

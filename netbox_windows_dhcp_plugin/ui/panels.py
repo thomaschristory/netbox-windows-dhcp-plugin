@@ -309,8 +309,8 @@ class ImportStatusPanel(panels.ObjectPanel):
 class ReviewJobPanel(panels.ObjectPanel):
     """
     On a proposal page: the newest background review of its items (#101), while it runs and after. Anyone who may
-    view the proposal sees its status and counts; who asked, the error and the link only show to a viewer who may
-    view that job.
+    view the proposal sees its status and counts; who asked, the error and the link only show to the user who asked
+    and to users who may view that job.
     """
 
     title = _("Background review")
@@ -318,9 +318,9 @@ class ReviewJobPanel(panels.ObjectPanel):
 
     def get_context(self, context):
         from core.choices import JobStatusChoices
-        from core.models import Job
         from django.utils import timezone
 
+        from .. import review
         from ..jobs import ABANDONED_JOB, ReviewJob
 
         ctx = super().get_context(context)
@@ -333,7 +333,8 @@ class ReviewJobPanel(panels.ObjectPanel):
         ctx["running"] = waiting and job.created >= timezone.now() - ABANDONED_JOB
         ctx["lost"] = waiting and not ctx["running"]
         ctx["result"] = job.data if isinstance(job.data, dict) else {}
-        ctx["viewable"] = Job.objects.restrict(ctx["request"].user, "view").filter(pk=job.pk).exists()
+        # The same rule as the REST API's review_job and 409: the requester, or a user who may view the job.
+        ctx["viewable"] = review.visible_job(ctx["request"].user, job) is not None
         # A job NetBox marked errored (a crash or a timeout) has its reason on the job, not in its data.
         ctx["error"] = ctx["result"].get("error") or job.error
         return ctx

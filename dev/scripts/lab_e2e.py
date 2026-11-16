@@ -190,7 +190,7 @@ def read_state(server):
 
 def import_into_netbox(server):
     state = read_state(server)
-    run = SyncRun.objects.create(windows_server=server, kind="import", status="running")
+    run = SyncRun.objects.create(windows_server=server, kind="import", status="running", destination="proposal")
     result = importer.import_to_proposal(server, state, run)
     if result.proposal is None:
         log("import: nothing to apply")

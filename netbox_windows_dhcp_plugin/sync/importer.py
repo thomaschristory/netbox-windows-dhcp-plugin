@@ -311,6 +311,18 @@ def _item_change(item):
     return Change(item.action, item.kind, item.key, item.before, item.after)
 
 
+def _incoming(changes):
+    """
+    What the writer needs to know of the rest of the run (see Writer.failovers): the failover relationships these
+    changes create or update, and the scopes they create.
+    """
+    changes = list(changes)
+    return {
+        "failovers": [c.after for c in changes if c.kind == "failover" and c.action != DELETE],
+        "new_scopes": {c.key for c in changes if c.kind == "scope" and c.action == CREATE},
+    }
+
+
 _OPEN = (ProposalItemStatusChoices.PENDING, ProposalItemStatusChoices.FAILED)
 
 
@@ -320,8 +332,11 @@ def _set_item(item, status, error=""):
     the copy in hand was loaded when the request started, and since then a new import may have replaced the item
     (saving the copy would bring it back) or another reviewer may have applied or dismissed it (their decision
     stands).
+
+    Its change log event goes through _one_change too: a background review sends the events it queued even when it
+    dies (integrations/branching.acting_as), so the event of a write rolled back here must not stay queued.
     """
-    with transaction.atomic():
+    with _one_change(), transaction.atomic():
         locked = ImportProposalItem.objects.select_for_update().filter(pk=item.pk, status__in=_OPEN).first()
         if locked is None:
             return False
@@ -383,7 +398,10 @@ def _apply_items(items, user):
         if server.pk not in current_by_server:
             kinds = frozenset(kinds_by_server[server.pk])
             current_by_server[server.pk] = index(netbox_state.read(server, for_import=True, kinds=kinds))
-            writers[server.pk] = Writer(server, user=user)
+            # Only the relationships applied in this same call: a pending one the reviewer did not pick must not
+            # let a scope move a range its partner shares.
+            incoming = _incoming(_item_change(i) for i in items if i.proposal.windows_server_id == server.pk)
+            writers[server.pk] = Writer(server, user=user, **incoming)
         current = current_by_server[server.pk].get((item.kind, item.key))
         change = _item_change(item)
         error = _stale(change, current)
@@ -532,7 +550,7 @@ def _fill_branch(windows_server, user, branch, result, logger, on_branch, chosen
     # in a branch queue no push anyway). The request ID marks these changes as the import's, so merging the branch
     # does not check them either.
     with push_suppressed(), branching.writing(branch, user, request_id=import_request_id()):
-        writer = Writer(windows_server, user=user if chosen else None)
+        writer = Writer(windows_server, user=user if chosen else None, **_incoming(changes))
         for change in changes:
             try:
                 with _one_change(), branching.atomic(branch):
@@ -584,7 +602,7 @@ def import_to_main(windows_server, state, user, logger=log):
 
     logger.info(f"Writing {len(changes)} difference(s) into main as {user}")
     with push_suppressed(), branching.writing_main(user):
-        writer = Writer(windows_server, user=user)
+        writer = Writer(windows_server, user=user, **_incoming(changes))
         for change in changes:
             try:
                 with _one_change(), transaction.atomic():

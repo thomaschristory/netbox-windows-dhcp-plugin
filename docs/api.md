@@ -105,13 +105,17 @@ Follow the job either at `GET /api/core/jobs/<id>/` (this needs `core.view_job`)
 - `superseded` counts the picked items that were no longer open when the job started: a newer import of the server
   replaced them (an import replaces every open item of the proposal with new ones), or another reviewer decided them.
   Review the proposal again. When none of the picked items is left, the job fails and says so.
-- `remaining` counts the picked items that were open when the job started and still are: failed, left pending for a
-  missing permission, or no longer yours to change. Superseded items are not in it.
+- `remaining` counts the picked items that were open when the job started and still are: failed (so `failed` is
+  part of `remaining`), left pending for a missing permission, or no longer yours to change. Superseded items are not
+  in it. Once the job has finished, `superseded` also counts the items someone else decided while it ran, so
+  `superseded` + `applied` (or `dismissed`) + `remaining` = `items`.
 - `error` says why the job could not run at all (the proposal is gone, your permissions changed, every picked item
-  was superseded, or an import or push of the same server was running); the job then failed.
-- `interrupted` is `true` when the job stopped halfway (it timed out, lost its database connection, or hit a bug; the
-  job is then errored and its `error` says why): the counts are what it had done until then, every one of those items
-  is committed, and webhooks heard of them.
+  was superseded, or an import or push of the same server was running); the job then failed. The proposal's
+  `review_job` leaves `error` out for users who did not queue the job and may not view it.
+- `interrupted` is `true` when the job stopped halfway (it timed out, lost its database connection, or hit a bug):
+  NetBox marks the job errored and records why in the job's own `error` field, readable at `/api/core/jobs/<id>/`
+  with `core.view_job` (the proposal's `review_job` does not include it). The counts are what it had done until then
+  (absent if they could not be read), every one of those items is committed, and webhooks heard of them.
 
 The job checks your permissions when it starts (not again for each item), and only acts on the items picked when it
 was queued.

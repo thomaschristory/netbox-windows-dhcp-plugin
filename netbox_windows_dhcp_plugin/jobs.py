@@ -148,7 +148,7 @@ class LeaseJob(JobRunner):
             self._fail(f"reading leases from {server.host} failed: {exc}")
         finally:
             if client is not None:
-                client.close()
+                _close(client, self.logger)
         kept, total = leases.rows(found, family)
         self._forget_earlier_reads(server)
         self.job.data = {
@@ -239,7 +239,7 @@ class ImportJob(JobRunner):
     # Tests substitute a fake runner here.
     runner_factory = None
 
-    def run(self, *args, destination=None, branch="", **kwargs):
+    def run(self, *args, destination=None, branch="", scheduled=False, attempt=1, **kwargs):
         from .integrations import branching
         from .sync import importer, windows_state
 
@@ -258,6 +258,7 @@ class ImportJob(JobRunner):
         )
         runner = self.runner_factory(server) if self.runner_factory else None
         client = None
+        retried = False
 
         def record_branch(branch):
             # Saved straight away, so the run points at the branch even if a later step fails.
@@ -293,11 +294,18 @@ class ImportJob(JobRunner):
                     result = importer.import_to_main(server, state, user, logger=self.logger)
                 else:
                     result = importer.import_to_proposal(server, state, sync_run)
+        except ImportBusy as exc:
+            sync_run.status = SyncStatusChoices.FAILED
+            sync_run.error = str(exc)
+            self._nothing_written(sync_run, destination)
+            if scheduled and self._retry(server, exc, destination, branch, attempt):
+                retried = True
+            else:
+                self.logger.error(f"Import from {server.host} failed: {exc}")
         except (
             CredentialError,
             WindowsLayerError,
             ValueError,
-            ImportBusy,
             ImportRefused,
             branching.BranchError,
         ) as exc:
@@ -329,8 +337,38 @@ class ImportJob(JobRunner):
             self.logger.info(message)
         finally:
             _finish(sync_run, client, self.logger)
+        if retried:
+            # The run only says the server was busy, and the queued attempt makes its own: keeping one per minute
+            # would bury the runs that read Windows.
+            sync_run.delete()
+            return
         if sync_run.status == SyncStatusChoices.FAILED:
             raise JobFailed(sync_run.error)
+
+    def _retry(self, server, exc, destination, branch, attempt):
+        """
+        Queue a scheduled import that found its server busy again shortly, rather than wait a whole import interval
+        (the busy run would count as the latest import). Returns whether it was queued. Imports started by hand fail
+        instead: the person who asked sees why at once and can try again.
+        """
+        if attempt >= IMPORT_ATTEMPTS:
+            self.logger.warning(f"{exc}; giving up after {attempt} attempt(s)")
+            return False
+        # This job is still running, so neither the scheduler nor a click can queue another import meanwhile: no need
+        # for enqueue_import's checks.
+        _queue_import(
+            server,
+            self.job.user,
+            destination,
+            branch,
+            delay=PUSH_RETRY,
+            scheduled=True,
+            attempt=attempt + 1,
+        )
+        self.logger.info(f"{exc}; import queued again in {PUSH_RETRY} seconds")
+        # Nothing was read: the attempt that runs (or the last one, which fails) tells the user.
+        self.job.notifications = JobNotificationChoices.NOTIFICATION_NEVER
+        return True
 
     @staticmethod
     def _nothing_written(sync_run, destination):
@@ -356,6 +394,20 @@ def push_log_line(host, outcome, dry_run):
     if not planned and not outcome.replication_errors:
         line += ": nothing to change"
     return line
+
+
+def log_skipped(logger, skipped):
+    """
+    One warning per change the push refused, up to the summary's own limit, then how many more: a first push of a
+    server with thousands of records NetBox cannot push must not flood the job log.
+    """
+    from .sync.push import PLANNED_LIMIT
+
+    for skip in skipped[:PLANNED_LIMIT]:
+        c = skip.change
+        logger.warning(f"Not pushed: {c.action} {c.kind} {c.key}: {skip.reason}")
+    if len(skipped) > PLANNED_LIMIT:
+        logger.warning(f"Not pushed: and {len(skipped) - PLANNED_LIMIT} more, see the sync run summary")
 
 
 class PushJob(JobRunner):
@@ -435,9 +487,7 @@ class PushJob(JobRunner):
             sync_run.summary = outcome.summary()
             for note in outcome.notes:
                 self.logger.info(note)
-            for skip in outcome.plan.skipped:
-                c = skip.change
-                self.logger.warning(f"Not pushed: {c.action} {c.kind} {c.key}: {skip.reason}")
+            log_skipped(self.logger, outcome.plan.skipped)
             if outcome.failed:
                 sync_run.status = SyncStatusChoices.FAILED
                 sync_run.error = "\n".join(outcome.errors())
@@ -463,6 +513,10 @@ class DryRunJob(PushJob):
 # an import provisioning a branch should take).
 PUSH_RETRY = 60
 PUSH_ATTEMPTS = 120
+
+# How many times a scheduled import that found its server busy tries (PUSH_RETRY seconds apart). Half an hour: a push
+# that holds the server longer is rare, and the next interval brings a new import anyway.
+IMPORT_ATTEMPTS = 30
 
 # A job still waiting this long after it was due never reached a worker (Redis lost it, or the worker died before
 # starting it). It no longer stops new pushes from being queued.
@@ -631,14 +685,12 @@ def import_refusal(destination, user, branch=""):
     return None
 
 
-def enqueue_import(server, user, destination=None, branch=""):
+def enqueue_import(server, user, destination=None, branch="", scheduled=False):
     """
     Queue an import into ``destination`` (the default one when None; ``branch`` names the branch for CURRENT) unless
     one is already queued or running for the server. Returns the job, or None. Raises ImportRefused for a destination
     that may not be used.
     """
-    from django.db import transaction
-
     from .integrations import branching
 
     destination = destination or branching.import_destinations()[0]
@@ -649,14 +701,23 @@ def enqueue_import(server, user, destination=None, branch=""):
         raise ImportRefused(refusal)
     if _busy_jobs().filter(object_id=server.pk).exists():
         return None
+    return _queue_import(server, user, destination, branch, scheduled=scheduled)
+
+
+def _queue_import(server, user, destination, branch, delay=0, scheduled=False, attempt=1):
+    from django.db import transaction
+
     # RQ gets the job when this transaction commits, with its data: the Import panel can say where a queued import
     # will write before the worker has picked it up.
     with transaction.atomic():
         job = ImportJob.enqueue(
             instance=server,
             user=user,
+            schedule_at=timezone.now() + timedelta(seconds=delay) if delay else None,
             destination=destination,
             branch=branch,
+            scheduled=scheduled,
+            attempt=attempt,
             # The longer of ours and netbox-branching's own (provisioning a branch can be slow too).
             job_timeout=max(PUSH_TIMEOUT, branching_job_kwargs().get("job_timeout") or 0),
         )
@@ -746,11 +807,21 @@ class ReviewJob(JobRunner):
                     summary = {"applied": applied, "failed": failed, "missing_permissions": denied}
         except BaseException:
             # Killed or broken halfway (a timeout, a lost database connection, a bug): every item decided so far is
-            # committed, so say how far it got before NetBox marks the job errored.
-            self.job.data.update(self._progress(still_open, dismiss), interrupted=True)
+            # committed, so say how far it got before NetBox marks the job errored. Reading that needs the database,
+            # which may be what failed: then only say it stopped, and let the original error through.
+            self.job.data["interrupted"] = True
+            try:
+                self.job.data.update(self._progress(still_open, dismiss))
+            except Exception as exc:
+                self.logger.error(f"Could not count what was done before the job stopped: {type(exc).__name__}")
             raise
         # What the user picked and is still open: denied, failed, or left untouched (a permission went away).
         summary["remaining"] = review.open_items(ImportProposalItem.objects.filter(pk__in=still_open)).count()
+        # Items another reviewer decided while this job ran were not this job's: count them with the ones decided
+        # before it started, so the counts add up to the items picked. A failed item still open is in both "failed"
+        # and "remaining", so only "applied" is added for an apply.
+        done = summary["dismissed"] if dismiss else summary["applied"]
+        summary["superseded"] = self.job.data["superseded"] + len(still_open) - done - summary["remaining"]
         self.job.data.update(summary)
         if dismiss:
             self.logger.info(f"Dismissed {summary['dismissed']} item(s) of {proposal}")
@@ -855,7 +926,7 @@ class ScheduleImportsJob(JobRunner):
         for server in due_servers():
             # One server that cannot be queued must not keep the servers after it from their imports.
             try:
-                job = enqueue_import(server, user)
+                job = enqueue_import(server, user, scheduled=True)
             except Exception as exc:
                 self.logger.error(f"Could not queue an import for {server}: {exc}")
                 continue
@@ -869,8 +940,8 @@ class ScheduleImportsJob(JobRunner):
 ABANDONED_JOB = timedelta(hours=2)
 
 
-def _busy_jobs(now=None, name=None):
-    """Import jobs (or jobs called ``name``) queued or running, ignoring ones abandoned long ago."""
+def _busy_jobs(now=None):
+    """Import jobs queued or running, ignoring ones abandoned long ago."""
     from core.choices import JobStatusChoices
     from core.models import Job
     from django.contrib.contenttypes.models import ContentType
@@ -880,7 +951,7 @@ def _busy_jobs(now=None, name=None):
     now = now or timezone.now()
     return Job.objects.filter(
         object_type=ContentType.objects.get_for_model(WindowsServer),
-        name=name or ImportJob.name,
+        name=ImportJob.name,
         status__in=JobStatusChoices.ENQUEUED_STATE_CHOICES,
         created__gte=now - ABANDONED_JOB,
     )
