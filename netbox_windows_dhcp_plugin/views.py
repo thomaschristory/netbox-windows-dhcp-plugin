@@ -735,6 +735,24 @@ class _ItemReviewView(_ReviewView):
     pass
 
 
+# Query parameters an object list carries that are not filters: paging, sorting, table settings, the page to go back
+# to, and NetBox's saved filters (which the filterset expands itself).
+LIST_PARAMETERS = frozenset(
+    {
+        "page",
+        "per_page",
+        "sort",
+        "ordering",
+        "return_url",
+        "export",
+        "embedded",
+        "tableconfig_id",
+        "filter",
+        "filter_id",
+    }
+)
+
+
 class _BulkReviewView(_ReviewView):
     filterset = filtersets.ImportProposalItemFilterSet
 
@@ -747,6 +765,15 @@ class _BulkReviewView(_ReviewView):
             filterset = self.filterset(request.GET, qs, request=request)
             if not filterset.is_valid():
                 messages.error(request, _("The list filter is not valid: nothing was selected"))
+                return qs.none()
+            # django-filter also ignores a parameter that is no filter at all: a mistyped name (proposal=7 for
+            # proposal_id=7) would widen the selection to every open item too.
+            unknown = sorted(set(request.GET) - set(filterset.filters) - LIST_PARAMETERS)
+            if unknown:
+                messages.error(
+                    request,
+                    _("Unknown list filter {names}: nothing was selected").format(names=", ".join(unknown)),
+                )
                 return qs.none()
             return filterset.qs
         return qs.filter(pk__in=[pk for pk in request.POST.getlist("pk") if pk.isascii() and pk.isdigit()])

@@ -67,12 +67,16 @@ def _overlap(start, end, ip_range):
 class Writer:
     """Applies changes for one Windows server. Under activate_branch every read and write goes to the branch."""
 
-    def __init__(self, windows_server, user=None):
+    def __init__(self, windows_server, user=None, failovers=()):
         self.server = windows_server
         self.vrf = windows_server.import_vrf
         # When set (a reviewer applying proposal items), every object written is checked against this user's
         # permissions, constraints included, like NetBox's own edit views do. Imports run by a job leave it unset.
         self.user = user
+        # The fields of the failover relationships written in the same run (from Windows, not yet in NetBox while the
+        # scopes are written, since scopes come first). A scope range change in a new relationship is then shared
+        # with the partner's scope as it will be once the relationship is written, not refused once.
+        self.failovers = [f for f in failovers if f]
 
     # -- writes ------------------------------------------------------------------------------------------------------
 
@@ -255,7 +259,7 @@ class Writer:
         relationship between the two servers, in either direction, covers one of the two. A relationship lists the
         scopes of its primary server only, so the partner's own scope object is never in it.
         """
-        return (
+        in_netbox = (
             FailoverRelationship.objects.filter(
                 Q(primary_server=self.server, partner_server=other.server_id)
                 | Q(primary_server=other.server_id, partner_server=self.server)
@@ -263,6 +267,24 @@ class Writer:
             .filter(scopes__in=[scope.pk, other.pk])
             .exists()
         )
+        return in_netbox or self._incoming_twin(scope, other)
+
+    def _incoming_twin(self, scope, other):
+        """Whether a relationship written in this same run pairs this scope with ``other``'s server."""
+        if not self.failovers:
+            return False
+        scope_id = netbox_state.scope_id_of(scope)
+        for fields in self.failovers:
+            if scope_id not in fields.get("scope_ids", ()):
+                continue
+            try:
+                partner = self._partner(fields["partner_server"])
+            except ApplyError:
+                # The relationship itself will fail with this error when it is written; the scope gets no exception.
+                continue
+            if partner.pk == other.server_id:
+                return True
+        return False
 
     def _ip_address(self, ip, prefixlen, vrf):
         """The IP address of a reservation, in ``vrf``: the VRF of its scope's prefix."""

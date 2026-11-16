@@ -288,6 +288,11 @@ def _item_change(item):
     return Change(item.action, item.kind, item.key, item.before, item.after)
 
 
+def _failovers(changes):
+    """The failover relationships these changes create or update, for the writer (see Writer.failovers)."""
+    return [c.after for c in changes if c.kind == "failover" and c.action != DELETE]
+
+
 _OPEN = (ProposalItemStatusChoices.PENDING, ProposalItemStatusChoices.FAILED)
 
 
@@ -360,7 +365,10 @@ def _apply_items(items, user):
         if server.pk not in current_by_server:
             kinds = frozenset(kinds_by_server[server.pk])
             current_by_server[server.pk] = index(netbox_state.read(server, for_import=True, kinds=kinds))
-            writers[server.pk] = Writer(server, user=user)
+            # Only the relationships applied in this same call: a pending one the reviewer did not pick must not
+            # let a scope move a range its partner shares.
+            failovers = _failovers(_item_change(i) for i in items if i.proposal.windows_server_id == server.pk)
+            writers[server.pk] = Writer(server, user=user, failovers=failovers)
         current = current_by_server[server.pk].get((item.kind, item.key))
         change = _item_change(item)
         error = _stale(change, current)
@@ -509,7 +517,7 @@ def _fill_branch(windows_server, user, branch, result, logger, on_branch, chosen
     # in a branch queue no push anyway). The request ID marks these changes as the import's, so merging the branch
     # does not check them either.
     with push_suppressed(), branching.writing(branch, user, request_id=import_request_id()):
-        writer = Writer(windows_server, user=user if chosen else None)
+        writer = Writer(windows_server, user=user if chosen else None, failovers=_failovers(changes))
         for change in changes:
             try:
                 with _one_change(), branching.atomic(branch):
@@ -561,7 +569,7 @@ def import_to_main(windows_server, state, user, logger=log):
 
     logger.info(f"Writing {len(changes)} difference(s) into main as {user}")
     with push_suppressed(), branching.writing_main(user):
-        writer = Writer(windows_server, user=user)
+        writer = Writer(windows_server, user=user, failovers=_failovers(changes))
         for change in changes:
             try:
                 with _one_change(), transaction.atomic():

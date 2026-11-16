@@ -391,7 +391,7 @@ class F27SchedulerTest(TestCase):
         return queued, logs.output
 
     def test_one_failing_server_does_not_stop_the_others(self):
-        def enqueue(server, user):
+        def enqueue(server, user, **kwargs):
             if server == self.first:
                 raise RuntimeError("queue unavailable")
             return object()
@@ -402,7 +402,7 @@ class F27SchedulerTest(TestCase):
         self.assertTrue(any("Queued an import for dhcp2" in line for line in output), output)
 
     def test_queued_is_only_logged_when_a_job_was_queued(self):
-        _, output = self._schedule(lambda server, user: None if server == self.first else object())
+        _, output = self._schedule(lambda server, user, **kwargs: None if server == self.first else object())
         self.assertFalse(any("Queued an import for dhcp1" in line for line in output), output)
         self.assertTrue(any("Queued an import for dhcp2" in line for line in output), output)
 

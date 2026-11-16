@@ -123,7 +123,10 @@ The push is a **reconcile per server**, not a replay of the change log. For each
 - **Jobs.** `PushJob` and `DryRunJob` take the per-server lock shared with import. A push that finds the server busy
   queues itself again a minute later, so a merge's push is never lost. A new push is not queued while one for the
   same server is waiting to start (it will read the latest data anyway). `sync_enabled = False` stops pushes, not
-  dry runs.
+  dry runs. A scheduled import (`scheduled=True` job kwarg) that finds the server busy queues itself again
+  `PUSH_RETRY` seconds later, up to `IMPORT_ATTEMPTS`, and deletes its own busy run so `due_servers` does not count it
+  as the latest import (the queued job keeps the scheduler from queueing another); manual imports fail and keep the
+  run.
 - **IPAM edits need the DHCP permission (#102).** A `pre_save` receiver (`ipam_guard.check_edit`) on Prefix,
   IPRange, IPAddress and MACAddress compares the fields a push reads (prefix; range start and end, address part;
   address, address part; MAC) with the stored row. When one changed and a scope or reservation uses the object, the

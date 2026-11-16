@@ -40,6 +40,21 @@ All notable changes to this project are documented here. The format follows
 - Direct edits of a prefix, IP range, IP address or MAC address that do not change what Windows receives
   (description, status, tags...) no longer queue a push (a branch merge still queues one per server it touches).
 
+### Fixed
+
+- A scheduled import that finds its server busy (another import or a push running) is queued again a minute later,
+  for up to half an hour, instead of waiting a whole import interval. The waiting attempts leave no failed sync run
+  and send no notification. An import started by hand still fails at once and says why. (#109)
+- A push job log lists at most 1000 changes it did not push, then how many more (the sync run summary has the same
+  limit), instead of one line for each. (#109)
+- "Select all matching" on the import proposal item list refuses a query parameter that is neither a filter of the
+  list nor a paging, sorting or table parameter, and changes nothing: a mistyped filter name (`proposal=7` for
+  `proposal_id=7`) used to widen the selection to every open item. (#109)
+- A scope range change and a new failover relationship found in the same import go through together: the import
+  into a branch or into main, and applying both proposal items in one go, no longer fail the scope change once with
+  "import the failover relationship first". Applying the scope item alone still waits for the relationship. (#109)
+- The lease read job no longer lets an error while closing the connection hide its own outcome. (#109)
+
 ## [0.3.0] - 2026-11-15
 
 0.3.0 is the result of a code audit. It tightens validation and the matching of `allowed_hosts`, so some setups
