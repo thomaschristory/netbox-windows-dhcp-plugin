@@ -121,8 +121,10 @@ class SyncRun(NetBoxModel):
         verbose_name_plural = _("sync runs")
         indexes = (
             # "The latest run of this kind for this server" is read by the import scheduler every minute and by each
-            # server page; runs are never pruned, so without this PostgreSQL sorts all of a server's runs each time.
+            # server page; a server keeps thousands of runs, so without this PostgreSQL sorts them all each time.
             models.Index(fields=("windows_server", "kind", "-created"), name="nbwd_syncrun_latest"),
+            # Run retention looks for the runs older than a date across all servers, oldest first (retention.py).
+            models.Index(fields=("created",), name="nbwd_syncrun_created"),
         )
 
     def __str__(self):

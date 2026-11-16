@@ -10,6 +10,12 @@ All notable changes to this project are documented here. The format follows
 - Each push's sync run lists what queued it ("Triggered by"): the edits it carries, with the user and a link to the
   change log entries of that request, a Sync now click, or a branch merge or revert. Edits made while a push waits to
   start are added to that push. Also in the REST API (`triggers` on sync runs). Adds migration `0004`.
+- Old sync runs are now deleted: new setting `sync_run_retention_days` (default 90, `0` keeps every run). The import
+  scheduler deletes older runs, oldest first, at most 500 a minute, and keeps the runs the plugin still reads
+  whatever their age (the newest of each kind per server, the newest push that reached Windows, the runs of open
+  import proposals, the newest runs of the two newest import branches, runs still queued or running). Until now the
+  history grew without limit. **Upgrading deletes sync runs older than 90 days** unless the setting says otherwise.
+  Adds migration `0005` (an index). (#106)
 
 ### Changed
 

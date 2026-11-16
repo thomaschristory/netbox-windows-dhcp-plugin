@@ -8,6 +8,7 @@ from django.db import connection
 from django.utils import timezone
 from netbox.jobs import JobRunner, system_job
 
+from . import retention
 from .choices import ImportDestinationChoices, SyncKindChoices, SyncStatusChoices
 from .conf import CredentialError, get_setting
 from .connection import build_client
@@ -677,12 +678,27 @@ def _import_user():
 
 @system_job(interval=1)
 class ScheduleImportsJob(JobRunner):
-    """Every minute, queue an import for each server whose import interval has passed."""
+    """
+    Every minute, queue an import for each server whose import interval has passed, then delete a batch of sync runs
+    older than ``sync_run_retention_days`` (see retention.py).
+    """
 
     class Meta:
         name = "Windows DHCP import scheduler"
 
     def run(self, *args, **kwargs):
+        self._schedule_imports()
+        # After the imports, so a slow delete never delays one, and caught: a failing delete (a protection rule on
+        # sync runs, a bad setting) must not fail the scheduler, which would hide the imports it queued.
+        try:
+            deleted = retention.prune_when_due()
+        except Exception as exc:
+            self.logger.error(f"Could not delete old sync runs: {exc}")
+        else:
+            if deleted:
+                self.logger.info(f"Deleted {deleted} sync run(s) older than {retention.retention_days()} days")
+
+    def _schedule_imports(self):
         user = _import_user()
         for server in due_servers():
             # One server that cannot be queued must not keep the servers after it from their imports.

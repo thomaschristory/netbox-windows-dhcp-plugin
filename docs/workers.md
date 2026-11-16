@@ -12,7 +12,7 @@ requests only queue jobs, so a slow or unreachable Windows server never holds up
 | Windows DHCP push | Sync now, saves, merges, reverts | Makes the server match NetBox |
 | Windows DHCP dry run | Dry run | Plans a push without writing |
 | Windows DHCP leases | Load leases | Reads the leases of one scope |
-| Windows DHCP import scheduler | NetBox, every minute | Queues imports for servers whose import interval has passed |
+| Windows DHCP import scheduler | NetBox, every minute | Queues imports for servers whose import interval has passed, then deletes old sync runs |
 
 The jobs belong to their Windows server and appear under **Operations > Jobs**, with their log. Each one except the
 lease read and the scheduler also leaves a [sync run](servers.md#sync-runs).
@@ -60,6 +60,28 @@ transaction-pooling proxy (pgbouncer in transaction mode). Session pooling is fi
   the time grows with their number.
 - A push, dry run or import job may run for an hour; with netbox-branching an import may run as long as its
   `job_timeout` when that is longer (provisioning a branch can be slow).
+
+## Sync run retention
+
+The import scheduler also deletes the [sync runs](servers.md#sync-runs) older than `sync_run_retention_days` (90 by
+default; `0` keeps every run), oldest first, at most 500 per minute, so the first runs after an upgrade catch up
+on a long history step by step. Once nothing more is due it looks again an hour later, so a lower setting can take
+up to an hour to apply. A run's push triggers ("Triggered by") go with it, and a closed import proposal keeps its
+items but no longer links the run.
+
+Some runs are kept whatever their age, because the plugin still reads them. For each Windows server:
+
+- the newest run of each kind (import, push, dry run, connection test): the scheduler times the next import from
+  the newest import, and the server's Import panel describes it;
+- the newest push that reached Windows: the next push reads from it the scopes still to copy to a failover partner;
+- the newest run of each of the two newest import branches: the Import panel keeps an earlier import branch that
+  still waits to be merged in sight;
+- the runs open import proposals belong to;
+- runs whose job is still queued or running.
+
+A failing delete (for example a NetBox protection rule on sync runs) is logged in the scheduler's job and does not
+stop the imports it queues. NetBox's own `JOB_RETENTION` setting prunes the jobs: a run whose job is gone keeps its
+summary and loses the link.
 
 ## Notifications
 

@@ -15,6 +15,7 @@ environment variables and the files they name exist for both.
 | `import_change_request` | `True` | Open a change request for each import branch when netbox-change-control is installed |
 | `import_direct` | `True` | With netbox-branching, offer **Import directly** (an import written straight into main). `False` allows branch imports only. Change control's `protect_main` applies either way |
 | `import_user` | `None` | User name [scheduled imports](import.md#scheduled-imports) run as. With branching, scheduled imports fail without it |
+| `sync_run_retention_days` | `90` | Days to keep [sync runs](servers.md#sync-runs). The import scheduler deletes older runs, oldest first, except the ones the plugin still reads (see [Workers](workers.md#sync-run-retention)). `0` or `None` keeps every run |
 | `push_debounce` | `10` | Seconds to wait after a save before pushing, so a burst of edits becomes one push (saves outside branching) |
 | `max_concurrency` | `4` | Upper bound on the PowerShell commands one job runs at the same time against a server. A job sends its commands one after another, so changing it makes no difference |
 | `command_timeout` | `120` | Seconds: the WinRM connection and operation timeout (one wait for output), and the longest silence allowed while an SSH command runs (SSH connects within 30 seconds). A WinRM command that never finishes is abandoned after ten times this long, and never before 10 minutes |
