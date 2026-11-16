@@ -245,7 +245,7 @@ def render(script: str, params: Mapping[str, Any] | None = None) -> str:
 # bootstrap puts them in $wdSecrets, which the script reads, so they never appear in the
 # script block that [scriptblock]::Create compiles and script block logging records. Only
 # .NET methods touch them here, so module logging does not record them either.
-# unverified: on Windows PowerShell 5.1 with script block logging on (tested with pwsh 7 only, issue #104).
+# Checked on Windows PowerShell 5.1 (Windows Server 2025) with script block logging on (issue #104).
 BOOTSTRAP = (
     "$ProgressPreference = 'SilentlyContinue'\n"
     "$in = [Console]::In.ReadLine()\n"
