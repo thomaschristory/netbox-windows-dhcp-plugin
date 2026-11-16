@@ -645,9 +645,14 @@ def test_batched_reads_match_single_reads(lab: Lab, probe_out) -> None:
     save_probe(probe_out, "v4-batched-gone", errors)
     for name, err in errors.items():
         print(f"{name}: id={err.get('id')!r} category={err.get('category')!r} not_found={err.get('not_found')}")
-    # A gone item must read as gone, never as "no option values": windows_state then reads the scope again. The
-    # single-cmdlet entries are only recorded, to tell which call gives which error.
-    assert all(errors[k].get("not_found") for k in errors if k.endswith("_batch")), errors
+    # A gone item must read as gone, never as "no option values": windows_state then reads the scope again. Windows
+    # Server 2025 answers an IP that is not reserved with DHCP 20016 (InvalidType), which the reservation option reads
+    # alone take as not found, and a missing policy with DHCP 20111 (ObjectNotFound) on both cmdlets.
+    for k in ("reserved_batch", "reserved_single"):
+        assert errors[k].get("not_found") and errors[k]["id"].startswith("DHCP 20016,"), errors
+    for k in errors:
+        if "policy" in k:
+            assert errors[k].get("not_found") and errors[k]["id"].startswith("DHCP 20111,"), errors
 
 
 def test_batched_read_time(lab: Lab, probe_out) -> None:

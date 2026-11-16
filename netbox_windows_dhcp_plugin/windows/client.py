@@ -39,6 +39,7 @@ from .psscript import (
     NotFound,
     OutputError,
     PSError,
+    PSNotFoundError,
     Requirement,
     Script,
     _ps_quote_body,
@@ -1579,9 +1580,10 @@ function ConvertTo-WdValueItem($o) {
 }
 """
 
-# unverified: the output shape on Windows PowerShell 5.1, -Brief next to -All (and that it keeps VendorClass and
-# UserClass), and -CimSession in place of -ComputerName (issue #100). Otherwise the cmdlet call is the one option.list
-# makes for one reservation.
+# Output shape (including an empty values list on Windows PowerShell 5.1) and -Brief next to -All, with the same values
+# and class names as without it, checked (lab, Windows Server 2025, issue #100). -Brief took 6.8 ms per reservation
+# against 15 ms without.
+# unverified: -CimSession in place of -ComputerName (the lab does not use computer_name).
 S_OPTION_LIST_RESERVED = Script(
     "option.list_reserved",
     _VALUE_ITEM_V4
@@ -1595,8 +1597,10 @@ $out = @(foreach ($ip in @($p.ips)) {
     + _BATCH_SESSION_END,
 )
 
-# unverified: as option.list_reserved. The cmdlet calls are the ones policyrange.list and option.list (with
-# -PolicyName and -All) make for one policy, plus -Brief; a server-level policy has no IP ranges.
+# As option.list_reserved; checked the same way, server-level policies included (no IP ranges). A missing policy is
+# DHCP 20111, category ObjectNotFound, on the option read and on Get-DhcpServerv4PolicyIPRange (lab, Windows Server
+# 2025): not found, so the scope is read again.
+# unverified: -CimSession in place of -ComputerName.
 S_POLICY_LIST_CONTENTS = Script(
     "policy.list_contents",
     _VALUE_ITEM_V4
@@ -1618,7 +1622,8 @@ $out = @(foreach ($name in @($p.names)) {
     + _BATCH_SESSION_END,
 )
 
-# unverified: as option.list_reserved, for DHCPv6 reservations.
+# As option.list_reserved, for DHCPv6 reservations; checked the same way (lab, Windows Server 2025).
+# unverified: -CimSession in place of -ComputerName.
 S_V6OPTION_LIST_RESERVED = Script(
     "v6option.list_reserved",
     _VALUE_ITEM_V6
@@ -1665,6 +1670,13 @@ def _objects(op: str, data: Any) -> list[dict]:
 # half the budget spare. tests/lab measures the time per item against this.
 READ_BATCH = 64
 READ_BATCH_BYTES = 12_000
+
+# Get-DhcpServerv4OptionValue -ReservedIP on an IP that is not (or no longer) reserved fails with DHCP 20016
+# (ERROR_DHCP_INVALID_DHCP_CLIENT, category InvalidType), not a not-found code (lab, Windows Server 2025, issue #100).
+# For the reservation option reads only, it means the reservation is gone, so a full read reads the scope again. It is
+# not added to NOT_FOUND_IDS: elsewhere an invalid client is a real error. DHCPv6 reports a missing reservation as
+# DHCP 20013 (ERROR_DHCP_JET_ERROR, a database error), which stays a real error: the read fails and the next one runs.
+RESERVATION_GONE_IDS = ("DHCP 20016",)
 
 
 def _batches(keys: Sequence[str]) -> list[list[str]]:
@@ -1825,7 +1837,13 @@ class DhcpClient:
 
     # -- plumbing -------------------------------------------------------------
 
-    def _run(self, script: Script, params: Mapping[str, Any] | None = None) -> tuple[bool, Any]:
+    def _run(
+        self, script: Script, params: Mapping[str, Any] | None = None, gone_ids: Sequence[str] = ()
+    ) -> tuple[bool, Any]:
+        """
+        Run one script and parse its envelope. ``gone_ids`` are error ids that mean "not found" for this read only
+        (see RESERVATION_GONE_IDS); they are raised as ``PSNotFoundError`` like the ids every read shares.
+        """
         p = dict(params or {})
         if self.computer_name:
             p["computer_name"] = self.computer_name
@@ -1835,6 +1853,8 @@ class DhcpClient:
             return parse(raw)
         except PSError as e:
             log.debug("DHCP script %s failed: %s", script.op, e)
+            if not e.not_found and any(e.id == i or e.id.startswith(i + ",") for i in gone_ids):
+                raise PSNotFoundError(**e.to_dict()) from None
             raise
 
     def _get[M: _Model](self, script: Script, params: Mapping[str, Any] | None, cls: type[M]) -> M:
@@ -1848,13 +1868,17 @@ class DhcpClient:
             raise OutputError(f"{script.op}: expected an object, got {type(data).__name__}")
         return cls.from_dict(data)
 
-    def _list[M: _Model](self, script: Script, params: Mapping[str, Any] | None, cls: type[M]) -> list[M]:
-        present, data = self._run(script, params)
+    def _list[M: _Model](
+        self, script: Script, params: Mapping[str, Any] | None, cls: type[M], gone_ids: Sequence[str] = ()
+    ) -> list[M]:
+        present, data = self._run(script, params, gone_ids)
         if not present:
             return []
         return [cls.from_dict(d) for d in _objects(script.op, data)]
 
-    def _tagged(self, script: Script, params: Mapping[str, Any], tag: str, keys: Sequence[str]) -> dict[str, dict]:
+    def _tagged(
+        self, script: Script, params: Mapping[str, Any], tag: str, keys: Sequence[str], gone_ids: Sequence[str] = ()
+    ) -> dict[str, dict]:
         """
         Run a batched read (issue #100) over ``keys``, in ``_batches``, and return each key's result object.
 
@@ -1866,7 +1890,7 @@ class DhcpClient:
         # The parameter is the plural of the tag: "ip" -> "ips", "name" -> "names".
         name = tag + "s"
         for chunk in _batches(keys):
-            present, data = self._run(script, {**params, name: chunk})
+            present, data = self._run(script, {**params, name: chunk}, gone_ids)
             got: dict[str, dict] = {}
             for row in _objects(script.op, data) if present else []:
                 key = row.get(tag)
@@ -1996,7 +2020,9 @@ class DhcpClient:
     ) -> list[OptionValue]:
         p = _option_params(OptionKey(0, scope_id, reserved_ip, vendor_class, user_class, policy_name))
         p["all"] = bool(all)
-        return [self._option_context(v, scope_id, reserved_ip) for v in self._list(S_OPTION_LIST, p, OptionValue)]
+        gone = RESERVATION_GONE_IDS if reserved_ip else ()
+        values = self._list(S_OPTION_LIST, p, OptionValue, gone)
+        return [self._option_context(v, scope_id, reserved_ip) for v in values]
 
     def list_reservation_option_values(self, scope_id: str, ips: Sequence[str]) -> dict[str, list[OptionValue]]:
         """
@@ -2006,7 +2032,7 @@ class DhcpClient:
         """
         sid = _ipv4(scope_id)
         sent = {_ipv4(ip): ip for ip in ips}
-        rows = self._tagged(S_OPTION_LIST_RESERVED, {}, "ip", list(sent))
+        rows = self._tagged(S_OPTION_LIST_RESERVED, {}, "ip", list(sent), RESERVATION_GONE_IDS)
         return {
             ip: [
                 OptionValue.from_dict({**d, "scope_id": sid, "reserved_ip": canon})

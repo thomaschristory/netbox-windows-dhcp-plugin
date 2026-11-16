@@ -730,9 +730,13 @@ def test_empty_batches_send_nothing(c: DhcpClient, fake: FakeDhcpServer) -> None
 def test_a_reservation_gone_from_a_batch_is_not_found(c: DhcpClient, fake: FakeDhcpServer) -> None:
     ips = _reservations(c, 2)
     c.remove_reservation(ips[0])
-    # Not "no options": the caller must learn the reservation went away.
-    with pytest.raises(NotFound, match=ips[0]):
+    # Not "no options": the caller must learn the reservation went away. Windows says so with DHCP 20016, which only
+    # these reads take as not found (issue #100).
+    with pytest.raises(NotFound) as err:
         c.list_reservation_option_values("10.1.20.0", ips)
+    assert err.value.id.startswith("DHCP 20016")
+    with pytest.raises(NotFound):
+        c.list_option_values(scope_id="10.1.20.0", reserved_ip=ips[0], all=True)
 
 
 def test_a_batch_stops_at_its_first_error(c: DhcpClient, fake: FakeDhcpServer) -> None:
@@ -792,8 +796,10 @@ def test_v6_reservation_values_in_one_call(c: DhcpClient, fake: FakeDhcpServer) 
     assert (v.option_id, v.value, v.prefix, v.reserved_ip) == (24, ["lab.example"], "2001:db8:1::", "2001:db8:1::10")
     assert got["2001:db8:1::11"] == []
     c.remove_v6_reservation("2001:db8:1::11")
-    with pytest.raises(NotFound):
+    # DHCPv6 answers a gone reservation with DHCP 20013, a database error code: a real error, never "not found".
+    with pytest.raises(PSError) as err:
         c.list_v6_reservation_option_values("2001:db8:1::", ["2001:db8:1::10", "2001:db8:1::11"])
+    assert err.value.id.startswith("DHCP 20013") and not isinstance(err.value, NotFound)
 
 
 def test_batches_also_stop_at_a_size(monkeypatch) -> None:
@@ -827,3 +833,31 @@ def test_a_batch_never_reaches_the_ssh_input_limit() -> None:
             params = {key: batch, "scope_id": "10.1.20.0", "computer_name": "dhcp02.example.local"}
             _, stdin = prepare(script.with_requirement(wc.DHCP_MODULE).wrap(), params)
             assert len(stdin) < 24 * 1024
+
+
+def test_dhcp_20016_is_not_found_only_for_reservation_option_reads() -> None:
+    # Other reads keep it a real error: elsewhere an invalid client is not a missing object.
+    from netbox_windows_dhcp_plugin.windows.psscript import PSError as PSE
+
+    err = {"message": "x", "category": "InvalidType", "id": "DHCP 20016,Get-Thing", "command": "Get-Thing"}
+
+    class Failing:
+        def run(self, script, params=None):
+            import json
+
+            return json.dumps({"ok": False, "error": err}).encode()
+
+    c = DhcpClient(Failing())
+    with pytest.raises(NotFound):
+        c.list_option_values(scope_id="10.1.20.0", reserved_ip="10.1.20.5", all=True)
+    with pytest.raises(NotFound):
+        c.list_reservation_option_values("10.1.20.0", ["10.1.20.5"])
+    for read in (
+        lambda: c.list_option_values(scope_id="10.1.20.0", all=True),
+        lambda: c.get_option_value(OptionKey(15, reserved_ip="10.1.20.5")),
+        lambda: c.list_reservations("10.1.20.0"),
+        lambda: c.list_v6_reservation_option_values("2001:db8:1::", ["2001:db8:1::10"]),
+    ):
+        with pytest.raises(PSE) as e:
+            read()
+        assert not isinstance(e.value, NotFound)

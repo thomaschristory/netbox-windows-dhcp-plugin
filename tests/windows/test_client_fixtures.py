@@ -503,9 +503,20 @@ def test_reservation_option_values_batch() -> None:
 
 
 def test_reservation_gone_in_a_batch_is_not_found() -> None:
+    # The error Windows Server 2025 gave for an IP that is not reserved (lab probe, issue #100).
     c, _ = new_client("option_list_reserved_gone.json")
-    with pytest.raises(NotFound, match="10.1.20.6"):
+    with pytest.raises(NotFound):
         c.list_reservation_option_values("10.1.20.0", ["10.1.20.5", "10.1.20.6"])
+    with pytest.raises(NotFound):
+        c.list_option_values(scope_id="10.1.20.0", reserved_ip="10.1.20.6", all=True)
+
+
+def test_v6_reservation_gone_in_a_batch_is_a_real_error() -> None:
+    # DHCP 20013 is ERROR_DHCP_JET_ERROR, a database error: never read as "the reservation is gone".
+    c, _ = new_client("v6option_list_reserved_gone.json")
+    with pytest.raises(PSError) as err:
+        c.list_v6_reservation_option_values("2001:db8:1::", ["2001:db8:1::10"])
+    assert err.value.category == "OpenError" and not isinstance(err.value, NotFound)
 
 
 def test_policy_contents_batch_reads_a_lost_array_wrapper() -> None:

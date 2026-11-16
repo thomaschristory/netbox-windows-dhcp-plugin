@@ -1,1 +1,1 @@
-{"ok":false,"error":{"message":"Failed to get reservation 10.1.20.6 on DHCP server DHCP01.","category":"ObjectNotFound","id":"DHCP 20018,Get-DhcpServerv4OptionValue","command":"Get-DhcpServerv4OptionValue"}}
+{"ok":false,"error":{"message":"Failed to get option values on DHCP server DHCP01.","category":"InvalidType","id":"DHCP 20016,Get-DhcpServerv4OptionValue","command":"Get-DhcpServerv4OptionValue"}}

@@ -29,6 +29,9 @@ Modelled server behaviour:
   shape Windows PowerShell 5.1 gave before the envelope fixed it (issue #15);
 * the batched reads (``option.list_reserved``, ``policy.list_contents``,
   ``v6option.list_reserved``) stop at the first item that fails, as the scripts do;
+* listing the option values of an IP that is not reserved fails with DHCP 20016
+  (InvalidType) for IPv4 and DHCP 20013 (OpenError) for DHCPv6, as Windows Server 2025
+  does; a missing policy is DHCP 20111 (ObjectNotFound);
 * ``fail`` injects an error for any op; ``calls`` records every call.
 
 The fake trusts the client to send canonical values (it does not re-validate every
@@ -543,6 +546,10 @@ class FakeDhcpServer:
         return self.options.get(self._option_key(p))
 
     def _op_option_list(self, p: dict) -> Any:
+        ip = _s(p, "reserved_ip")
+        if ip and ip not in self.reservations:
+            # What Windows answers a list for an IP that is not reserved (lab, Windows Server 2025, issue #100).
+            raise _err("Get-DhcpServerv4OptionValue", 20016, "InvalidType", "Failed to get option values")
         self._check_option_level(p)
         sid, rip, vc, uc, pol = self._option_level(p)
         out = []
@@ -1096,7 +1103,7 @@ class FakeDhcpServer:
             if sid:
                 ranges = self._op_policyrange_list({"scope_id": sid, "policy_name": name})
             elif ("", name.lower()) not in self.policies:
-                raise _err("Get-DhcpServerv4OptionValue", 20152, "ObjectNotFound", f"The policy {name} does not exist.")
+                raise _err("Get-DhcpServerv4OptionValue", 20111, "ObjectNotFound", f"Failed to get policy {name}.")
             else:
                 ranges = []
             values = self._op_option_list({"scope_id": sid, "policy_name": name, "all": True})
@@ -1288,6 +1295,10 @@ class FakeDhcpServer:
         return self.v6_options.get(self._v6option_key(p))
 
     def _op_v6option_list(self, p: dict) -> Any:
+        ip = _s(p, "reserved_ip")
+        if ip and ip not in self.v6_reservations:
+            # DHCPv6 answers with a database error code instead (lab, Windows Server 2025, issue #100).
+            raise _err("Get-DhcpServerv6OptionValue", 20013, "OpenError", "Failed to get option values")
         self._check_v6option_level(p)
         key = self._v6option_key(p)
         # -All: every class at that level; otherwise only the values of the class asked for (none: standard ones).

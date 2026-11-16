@@ -22,8 +22,8 @@ $global:Reservations = [ordered]@{}
 $global:Exclusions = [System.Collections.ArrayList]::new()
 $global:Options = [System.Collections.ArrayList]::new()
 $global:Leases = [System.Collections.ArrayList]::new()
-# Reserved IPs whose option values a Get reports as gone (DHCP 20018 ObjectNotFound), as for a reservation deleted
-# while a batched read runs (issue #100). Seeds fill it.
+# Reserved IPs whose option values a Get refuses as Windows does once the reservation is gone (DHCP 20016 for IPv4,
+# 20013 for DHCPv6), as for a reservation deleted while a batched read runs (issue #100). Seeds fill it.
 $global:GoneReservations = @()
 
 # Common parameters (added by [CmdletBinding()]) that Record leaves out, so
@@ -281,7 +281,8 @@ function Get-DhcpServerv4OptionValue {
         [string]$PolicyName, [switch]$Brief, [object]$CimSession)
     Record 'Get-DhcpServerv4OptionValue' $PSBoundParameters
     if ($ReservedIP -and $global:GoneReservations -contains "$ReservedIP") {
-        Write-DhcpError $PSCmdlet 20018 ObjectNotFound "Failed to get reservation $ReservedIP on DHCP server STUB."
+        # What Windows Server 2025 answers for an IP that is not reserved (issue #100): not a not-found code.
+        Write-DhcpError $PSCmdlet 20016 InvalidType "Failed to get option values on DHCP server STUB."
         return
     }
     $level = if ($ReservedIP) { "$ReservedIP" } else { "$ScopeId" }
@@ -796,7 +797,8 @@ function Get-DhcpServerv6OptionValue {
         [string]$VendorClass, [string]$UserClass, [switch]$All, [switch]$Brief, [object]$CimSession)
     Record 'Get-DhcpServerv6OptionValue' $PSBoundParameters
     if ($ReservedIP -and $global:GoneReservations -contains "$ReservedIP") {
-        Write-DhcpError $PSCmdlet 20018 ObjectNotFound "Failed to get reservation $ReservedIP on DHCP server STUB."
+        # DHCPv6 answers with a database error code instead (Windows Server 2025, issue #100).
+        Write-DhcpError $PSCmdlet 20013 OpenError "Failed to get option values on DHCP server STUB."
         return
     }
     # Like IPv4: Get tolerates -Prefix next to -ReservedIP; Set and Remove refuse the pair (issue #17).

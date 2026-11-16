@@ -251,4 +251,5 @@ def test_v6_batched_reservation_option_values(lab: Lab, probe_out) -> None:
         err = {"raised": False}
     save_probe(probe_out, "v6-batched-gone", err)
     print(f"v6 reserved_batch: id={err.get('id')!r} category={err.get('category')!r}")
-    assert err.get("not_found"), err
+    # DHCP 20013 is a database error code: it stays a real error, so the read fails and the next one runs.
+    assert err.get("id", "").startswith("DHCP 20013,") and not err.get("not_found"), err

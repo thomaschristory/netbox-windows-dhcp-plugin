@@ -21,12 +21,10 @@ Not seen on a real server yet:
 
 - **Kerberos**: the lab is a workgroup, without a domain;
 - **SSH key authentication**;
-- running the cmdlets on another server through **`computer_name`** (`-ComputerName`), and the fully qualified name
-  a domain member reports for itself;
+- running the cmdlets on another server through **`computer_name`** (`-ComputerName`, and the single CIM session
+  the batched reads open for it), and the fully qualified name a domain member reports for itself;
 - the input format that sends the failover shared secret next to the script rather than inside it (0.4.0), and that
-  script block logging then leaves it out: checked with PowerShell 7 only so far, not Windows PowerShell 5.1;
-- the batched reads of reservation option values and policy ranges and values (0.4.0): checked against stub cmdlets,
-  not yet on a real server.
+  script block logging then leaves it out: checked with PowerShell 7 only so far, not Windows PowerShell 5.1.
 
 Over SSH, Windows OpenSSH stalls on more than about 70 KB of script input, so the plugin refuses a script above
 64 KB with an error that says to use WinRM. Its scripts send under 24 KB (the batched reads cap what they send); only very large
@@ -68,6 +66,9 @@ DHCP 20135 and 20136). A push of such a policy fails the same way, so fix it in 
 ## Operations
 
 - The worker's database connection must not go through pgbouncer in transaction mode (advisory locks).
+- A DHCPv6 reservation deleted on Windows while a server is being read fails that read (import, push or dry run):
+  Windows reports it with a database error code (DHCP 20013), which the plugin does not take for "deleted". The
+  next run works. An IPv4 reservation or a policy deleted during a read only makes its scope be read again.
 - Reading a server takes a few PowerShell calls per scope, sent one after another: the option values of a scope's
   reservations and the IP ranges and values of its policies are read in batches of up to 64 per call, so the number
   of calls grows 64 times slower with the number of reservations or policies. A push or an import of a server with

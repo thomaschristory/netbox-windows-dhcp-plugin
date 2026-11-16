@@ -963,8 +963,9 @@ def test_batched_reservation_option_values(pw: PwshRunner) -> None:
 def test_batched_read_stops_at_a_gone_reservation(pw: PwshRunner) -> None:
     pw.seed = SEED_RESERVATIONS + "$global:GoneReservations = @('10.1.20.5')\n"
     c = DhcpClient(pw)
-    with pytest.raises(NotFound, match="10.1.20.5"):
+    with pytest.raises(NotFound) as err:  # DHCP 20016, which these reads take as not found
         c.list_reservation_option_values("10.1.20.0", ["10.1.20.5", "10.1.20.6"])
+    assert err.value.id.startswith("DHCP 20016")
     # The first error ends the script, as the one-at-a-time reads did: the next reservation is not read.
     calls = [x for x in pw.last_calls() if x["cmd"] == "Get-DhcpServerv4OptionValue"]
     assert [x["ReservedIP"] for x in calls] == ["10.1.20.5"]
@@ -1034,5 +1035,6 @@ def test_batched_v6_reservation_option_values(pw: PwshRunner) -> None:
     assert [x["ReservedIP"] for x in calls] == ["2001:db8:1::10", "2001:db8:1::11"]
     assert all(x["All"] is True and x["Brief"] is True and "Prefix" not in x for x in calls)
     pw.seed += "$global:GoneReservations = @('2001:db8:1::11')\n"
-    with pytest.raises(NotFound):
+    with pytest.raises(PSError) as err:  # DHCP 20013, a database error code: stays a real error
         c.list_v6_reservation_option_values("2001:db8:1::", ["2001:db8:1::10", "2001:db8:1::11"])
+    assert err.value.id.startswith("DHCP 20013") and not isinstance(err.value, NotFound)

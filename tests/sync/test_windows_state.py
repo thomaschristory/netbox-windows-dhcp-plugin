@@ -521,3 +521,25 @@ def test_a_policy_deleted_on_windows_mid_read_is_left_out_after_the_scope_is_rea
     state = ws.read(client)
     assert gone["done"]
     assert [p.name for p in state.policies if p.scope_id == "10.7.0.0"] == ["pol1"]
+
+
+def test_a_v6_reservation_deleted_mid_read_fails_the_read(client):
+    # Windows answers DHCP 20013 (a database error code) for it, which is never read as "gone": the read fails and the
+    # next one, which no longer lists the reservation, works (lab, Windows Server 2025, issue #100).
+    from netbox_windows_dhcp_plugin.windows.psscript import PSError
+
+    fake = client.runner
+    client.add_v6_scope(ScopeV6(prefix="2001:db8:7::", name="v6"))
+    client.add_v6_reservation(ReservationV6("2001:db8:7::", "2001:db8:7::10", "00-01-00-01-aa", 3))
+
+    def delete_it(op, p):
+        if op == "v6option.list_reserved":
+            fake.v6_reservations.pop("2001:db8:7::10", None)
+        return None
+
+    fake.fail = delete_it
+    with pytest.raises(PSError) as err:
+        ws.read(client)
+    assert not isinstance(err.value, NotFound)
+    fake.fail = None
+    assert ws.read(client).v6_reservations == []
