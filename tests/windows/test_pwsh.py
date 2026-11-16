@@ -956,17 +956,35 @@ def test_batched_reservation_option_values(pw: PwshRunner) -> None:
     assert got["10.1.20.6"] == []
     calls = [x for x in pw.last_calls() if x["cmd"] == "Get-DhcpServerv4OptionValue"]
     assert [x["ReservedIP"] for x in calls] == ["10.1.20.5", "10.1.20.6"]
-    assert all(x["All"] is True and "ScopeId" not in x for x in calls)
+    assert all(x["All"] is True and x["Brief"] is True and "ScopeId" not in x for x in calls)
+    assert not [x for x in calls if "CimSession" in x or "ComputerName" in x]
 
 
-def test_batched_read_reports_a_gone_reservation_and_reads_the_rest(pw: PwshRunner) -> None:
+def test_batched_read_stops_at_a_gone_reservation(pw: PwshRunner) -> None:
     pw.seed = SEED_RESERVATIONS + "$global:GoneReservations = @('10.1.20.5')\n"
     c = DhcpClient(pw)
     with pytest.raises(NotFound, match="10.1.20.5"):
         c.list_reservation_option_values("10.1.20.0", ["10.1.20.5", "10.1.20.6"])
-    # The failed item did not stop the script: the next reservation was still read.
+    # The first error ends the script, as the one-at-a-time reads did: the next reservation is not read.
     calls = [x for x in pw.last_calls() if x["cmd"] == "Get-DhcpServerv4OptionValue"]
-    assert [x["ReservedIP"] for x in calls] == ["10.1.20.5", "10.1.20.6"]
+    assert [x["ReservedIP"] for x in calls] == ["10.1.20.5"]
+
+
+def test_batched_read_shares_one_cim_session_with_computer_name(pw: PwshRunner) -> None:
+    pw.seed = SEED_RESERVATIONS + "$global:GoneReservations = @('10.1.20.6')\n"
+    c = DhcpClient(pw, "dhcp02.example.local")
+    with pytest.raises(NotFound):
+        c.list_reservation_option_values("10.1.20.0", ["10.1.20.5", "10.1.20.6"])
+    calls = pw.last_calls()
+    assert [x["cmd"] for x in calls] == [
+        "New-CimSession",
+        "Get-DhcpServerv4OptionValue",
+        "Get-DhcpServerv4OptionValue",
+        "Remove-CimSession",  # removed even though the batch failed
+    ]
+    assert calls[0]["ComputerName"] == ["dhcp02.example.local"]
+    assert all(x["CimSession"]["Id"] == 7 and "ComputerName" not in x for x in calls[1:3])
+    assert calls[3]["CimSession"] == 7
 
 
 def test_batched_policy_contents(pw: PwshRunner) -> None:
@@ -991,6 +1009,7 @@ def test_batched_policy_contents(pw: PwshRunner) -> None:
     assert rng["ScopeId"] == "10.1.20.0" and rng["Name"] == "printers"
     opt = find_call(calls, "Get-DhcpServerv4OptionValue")
     assert opt["ScopeId"] == "10.1.20.0" and opt["PolicyName"] == "printers" and opt["All"] is True
+    assert opt["Brief"] is True
 
     srv = c.list_policy_contents(["srv"])["srv"]
     assert srv.ip_ranges == [] and [(o.option_id, o.value) for o in srv.options] == [(6, ["10.0.0.53"])]
@@ -1013,7 +1032,7 @@ def test_batched_v6_reservation_option_values(pw: PwshRunner) -> None:
     assert got["2001:db8:1::11"] == []
     calls = [x for x in pw.last_calls() if x["cmd"] == "Get-DhcpServerv6OptionValue"]
     assert [x["ReservedIP"] for x in calls] == ["2001:db8:1::10", "2001:db8:1::11"]
-    assert all(x["All"] is True and "Prefix" not in x for x in calls)
+    assert all(x["All"] is True and x["Brief"] is True and "Prefix" not in x for x in calls)
     pw.seed += "$global:GoneReservations = @('2001:db8:1::11')\n"
     with pytest.raises(NotFound):
         c.list_v6_reservation_option_values("2001:db8:1::", ["2001:db8:1::10", "2001:db8:1::11"])

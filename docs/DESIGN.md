@@ -82,16 +82,21 @@ sync engine  ->  client (one function per cmdlet operation)  ->  psscript (envel
   operations replace those loops: `option.list_reserved` and `v6option.list_reserved` (client
   `list_reservation_option_values`, `list_v6_reservation_option_values`) and `policy.list_contents`
   (`list_policy_contents`, scope or server-level policies). The client sends the IPs or names it has just listed,
-  at most 256 and 12 KB of them per script (`READ_BATCH`, `READ_BATCH_BYTES`, so the input stays far below the
-  64 KB SSH limit and one script ends well within `command_timeout`), and the script reads each in its own
-  try/catch, answering `[{ip, values: [...]} | {ip, error: {...}}]` (policies: `{name, ranges, values}`; values
-  without their option name, scope or IP, to keep large scopes' output small). An item's error is raised as the
-  single read would raise it: not found (a reservation or policy deleted mid-read) becomes `NotFound`, so
-  `_gone_or_read` reads the scope again, and any other error wins over a not found. A key with no answer, or an
-  answer without its values, is an `OutputError`, never "no options". Per scope the read is now exclusions,
-  reservations, scope options, policies, plus one batch for reservation values and one for policy contents when
-  there are any. The single-target reads stay for the push writer (`_keep_reservation_options`). Unverified on a
-  real server until the lab run (`test_batched_reads_match_single_reads`, `test_batched_read_time`,
+  at most 64 and 12 KB of escaped `$p` literal per script (`READ_BATCH`, `READ_BATCH_BYTES`; a longer single name is
+  refused), so the input stays under 24 KB, far below the 64 KB SSH limit. The script answers `[{ip, values: [...]}]`
+  (policies: `{name, ranges, values}`; values without their option name, scope or IP, to keep large scopes' output
+  small; the client leaves the name empty) and stops at its first error, which reaches the envelope as with the
+  one-at-a-time reads: a reservation or policy deleted mid-read is not found, so `_gone_or_read` reads the scope
+  again, and a DHCP service that goes away fails the read at once rather than item by item. Server-level policies are
+  read outside `_gone_or_read`, so one deleted during the read fails the read, as before. A key with no answer, or an
+  answer without its list of values, is an `OutputError`, never "no options". Over SSH `command_timeout` is a silence
+  timeout and the script prints only at its end, so a batch must finish within it: the option reads use `-Brief`
+  (no option name lookup), and with `computer_name` the script opens one CIM session (`New-CimSession`, swapped into
+  `$cn` as `-CimSession`, removed in a `finally`) instead of one per cmdlet call. Per scope the read is now
+  exclusions, reservations, scope options, policies, plus one batch per 64 reservations and one per 64 policies when
+  there are any. The single-target reads stay for the push writer (`_keep_reservation_options`). Unverified on a real
+  server until the lab run (`test_batched_reads_match_single_reads` records the not-found ids and categories,
+  `test_batched_read_time` fails if 64 items take more than half of `command_timeout`,
   `test_v6_batched_reservation_option_values`).
 - **Cmdlet parameters checked on Windows Server 2025** (lab run, issues #14 to #22): an option value on a reservation is named by `-ReservedIP` alone, since Set and Remove refuse it next to `-ScopeId` (IPv4) or `-Prefix` (DHCPv6); the client keeps the scope or prefix as context in what it returns. `Rename-DhcpServerv4Superscope` takes `-Name` and `-NewName`, unlike Add and Remove (`-SuperscopeName`). `Get-DhcpServerv6Lease` has no `AddressState`, so a DHCPv6 lease has no state. A policy condition takes a wildcard only at its start or end, and a policy with an FQDN condition cannot hold IP ranges (DHCP 20135) or ordinary option values (DHCP 20136). `Set-DhcpServerv4Scope` refuses a range that moves one end out and the other in (DHCP 20023), so the client first narrows to the overlap of the old and new pools (or widens over both when they do not overlap), then sets the final range, and tries to put the old range back if that fails (#30; both directions checked in the lab, Windows Server 2022). `Set-DhcpServerv4Failover` has no `-ServerRole` (only Add has it), so a hot standby role cannot change in place and the push refuses that change (#33). A `Set-DhcpServerv4Reservation` or `Set-DhcpServerv6Reservation` that resent the client ID and type (DHCPv6: DUID and IAID) for a description change reported success but dropped the reservation's option values (#42). The client now sends those only when they change, and the push writer reads the reservation's option values before and after every reservation update (two extra list calls) and writes back any that went missing; the plan and dry run do not change. A failed write-back does not stop the others; the error names each lost value and whether NetBox holds it (the next push recreates it) or not (DHCPv6 vendor class values, unsynced codes, values added on Windows since the last import: put back by hand). A new client ID, type, DUID or IAID on its own drops them too (lab, Windows Server 2022, #56). `Set-DhcpServerv4OptionValue` and `Set-DhcpServerv6OptionValue` check that every DNS server address (option 6, DHCPv6 23) answers before saving and refuse one they cannot query ("is not a valid DNS server"); NetBox cannot know what the DHCP server reaches, so the client sends `-Force`, which skips the check as the DHCP console allows. `Set-DhcpServerv4Failover` refuses `-Mode` when it names the mode the relationship already has (Windows Server 2025), so the writer sends the mode only with a switch.
 - **Failover writes** (checked on two Windows Server 2022 servers, 2026-10-26): Add, Set, Remove, the scope add and

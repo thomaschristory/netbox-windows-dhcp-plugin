@@ -4,6 +4,7 @@ from netbox_windows_dhcp_plugin.sync import windows_state as ws
 from netbox_windows_dhcp_plugin.sync.diff import Record, diff
 from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows.client import (
+    READ_BATCH,
     DhcpClass,
     ExclusionRange,
     FailoverRelationship,
@@ -424,8 +425,11 @@ def _read_calls(reservations: int, policies: int, server_policies: int = 0) -> t
 
 def test_the_number_of_calls_does_not_grow_with_reservations_and_policies():
     small, _ = _read_calls(reservations=1, policies=1, server_policies=1)
+    full, _ = _read_calls(reservations=READ_BATCH, policies=20, server_policies=10)
+    assert full == small
     big, state = _read_calls(reservations=200, policies=20, server_policies=10)
-    assert big == small
+    # One more call per extra batch of reservations: 200 is four batches.
+    assert big == small + 3
     # Before issue #100 the same read made one call per reservation and two per policy: 1 + 200 + 2 * 20 + 10 more.
     assert len(state.reservations) == 200 and len(state.policies) == 30 and len(state.policy_ranges) == 20
     records = by_kind(ws.to_records(state)[0])

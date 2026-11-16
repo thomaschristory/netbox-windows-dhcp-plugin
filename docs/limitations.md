@@ -29,8 +29,8 @@ Not seen on a real server yet:
   not yet on a real server.
 
 Over SSH, Windows OpenSSH stalls on more than about 70 KB of script input, so the plugin refuses a script above
-64 KB with an error that says to use WinRM. Its scripts send under 20 KB (a batched read of 256 DHCPv6 reservations is
-the largest); only very large parameter lists come close.
+64 KB with an error that says to use WinRM. Its scripts send under 24 KB (the batched reads cap what they send); only very large
+parameter lists come close.
 
 Try the plugin on a lab server before a production one, and use **Dry run** before turning **Sync enabled** on.
 
@@ -69,8 +69,8 @@ DHCP 20135 and 20136). A push of such a policy fails the same way, so fix it in 
 
 - The worker's database connection must not go through pgbouncer in transaction mode (advisory locks).
 - Reading a server takes a few PowerShell calls per scope, sent one after another: the option values of a scope's
-  reservations and the IP ranges and values of its policies are read in batches of up to 256 per call, so the number
-  of calls no longer grows with the number of reservations or policies. A push or an import of a server with
+  reservations and the IP ranges and values of its policies are read in batches of up to 64 per call, so the number
+  of calls grows 64 times slower with the number of reservations or policies. A push or an import of a server with
   thousands of scopes still takes minutes.
 - Two Windows servers that hold the same subnet without being failover partners share one IP range in NetBox when
   they are imported into the same VRF, and an import will not move that range for one of them: the scope change

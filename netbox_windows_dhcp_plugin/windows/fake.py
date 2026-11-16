@@ -28,8 +28,7 @@ Modelled server behaviour:
 * ``empty_result_as_object`` prints ``{}`` instead of ``null`` for "nothing found", the
   shape Windows PowerShell 5.1 gave before the envelope fixed it (issue #15);
 * the batched reads (``option.list_reserved``, ``policy.list_contents``,
-  ``v6option.list_reserved``) report each item's error next to the others, as the
-  scripts' per-item try/catch does;
+  ``v6option.list_reserved``) stop at the first item that fails, as the scripts do;
 * ``fail`` injects an error for any op; ``calls`` records every call.
 
 The fake trusts the client to send canonical values (it does not re-validate every
@@ -582,24 +581,18 @@ class FakeDhcpServer:
         return None
 
     # -- batched reads (issue #100) ------------------------------------------------------------
-    # One item per name asked for, each read on its own: a failing item is reported next to the others, tagged, the
-    # way the scripts' per-item try/catch reports it.
+    # One item per name asked for, read in order; the first error fails the whole call, as the scripts do.
 
     _VALUE_ITEM = ("option_id", "value", "vendor_class", "user_class", "policy_name")
 
     @classmethod
-    def _value_items(cls, values: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [{k: v.get(k, "") for k in cls._VALUE_ITEM} for v in values]
+    def _value_items(cls, values: list[dict[str, Any]], v6: bool = False) -> list[dict[str, Any]]:
+        names = cls._VALUE_ITEM[:-1] if v6 else cls._VALUE_ITEM
+        return [{k: v.get(k, "") for k in names} for v in values]
 
     @staticmethod
     def _batch(tag: str, keys: Any, read: Callable[[str], dict[str, Any]]) -> list[dict[str, Any]]:
-        out = []
-        for key in keys or []:
-            try:
-                out.append({tag: key, **read(key)})
-            except _Fail as f:
-                out.append({tag: key, "error": f.err.to_dict()})
-        return out
+        return [{tag: key, **read(key)} for key in keys or []]
 
     def _op_option_list_reserved(self, p: dict) -> Any:
         return self._batch(
@@ -1333,7 +1326,7 @@ class FakeDhcpServer:
         return self._batch(
             "ip",
             p.get("ips"),
-            lambda ip: {"values": self._value_items(self._op_v6option_list({"reserved_ip": ip, "all": True}))},
+            lambda ip: {"values": self._value_items(self._op_v6option_list({"reserved_ip": ip, "all": True}), v6=True)},
         )
 
     # -- DHCPv6 exclusions, leases and classes ---------------------------------------------

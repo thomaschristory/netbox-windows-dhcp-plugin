@@ -15,10 +15,11 @@ All notable changes to this project are documented here. The format follows
 
 - Reading a Windows server (import, push, dry run) no longer starts PowerShell once per reservation and twice per
   policy: the option values of a scope's reservations, and the IP ranges and option values of its policies (and of
-  the server-level policies), are read in batches of up to 256 per call. A scope with 3,000 reservations and 10
-  policies took more than 3,020 calls; it now takes about 17, and a server's import or push holds its lock for far
-  less time. A reservation or policy deleted on Windows during the read still makes the scope be read again. Not yet
-  checked on a real server. (#100)
+  the server-level policies), are read in batches of up to 64 per call, with one CIM session per batch when
+  `computer_name` is set. A scope with 3,000 reservations and 10 policies took more than 3,020 calls; it now takes
+  about 52, and a server's import or push holds its lock for far less time. A scope's reservation or policy deleted on
+  Windows during the read still makes that scope be read again (a server-level policy deleted during the read still
+  fails the read, as before). Not yet checked on a real server. (#100)
 - The failover shared secret no longer appears in the PowerShell script sent to the DHCP server: it follows the
   script on the same input line and is handed to it in a variable. PowerShell script block logging (event 4104) on
   the DHCP server no longer records it, nor does module logging of `ConvertFrom-Json` (checked with PowerShell 7;

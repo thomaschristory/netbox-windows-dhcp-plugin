@@ -1,1 +1,1 @@
-{"ok":true,"data":[{"ip":"2001:db8:1::10","values":{"option_id":24,"value":["lab.example"],"vendor_class":"","user_class":"","policy_name":""}}]}
+{"ok":true,"data":[{"ip":"2001:db8:1::10","values":[{"option_id":24,"value":["lab.example"],"vendor_class":"","user_class":""}]}]}

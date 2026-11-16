@@ -495,7 +495,7 @@ def test_reservation_option_values_batch() -> None:
     c, r = new_client("option_list_reserved.json")
     got = c.list_reservation_option_values("10.1.20.0", ["10.1.20.5", "10.1.20.6"])
     assert r.op == "option.list_reserved" and r.params == {"ips": ["10.1.20.5", "10.1.20.6"]}
-    assert "Get-DhcpServerv4OptionValue @cn -ReservedIP $ip -All" in r.script
+    assert "Get-DhcpServerv4OptionValue @cn -ReservedIP $ip -All -Brief" in r.script
     a, b = got["10.1.20.5"]
     assert (a.option_id, a.value, a.scope_id, a.reserved_ip) == (15, ["pc.example"], "10.1.20.0", "10.1.20.5")
     assert (b.option_id, b.value, b.user_class) == (6, ["10.0.0.53", "10.0.1.53"], "phones")
@@ -508,8 +508,8 @@ def test_reservation_gone_in_a_batch_is_not_found() -> None:
         c.list_reservation_option_values("10.1.20.0", ["10.1.20.5", "10.1.20.6"])
 
 
-def test_policy_contents_batch_reads_lost_array_wrappers() -> None:
-    # Windows PowerShell 5.1 can drop the array around a single object: the result, the ranges and the values.
+def test_policy_contents_batch_reads_a_lost_array_wrapper() -> None:
+    # Windows PowerShell 5.1 can drop the array around a single result object.
     c, r = new_client("policy_list_contents.json")
     got = c.list_policy_contents(["printers"], "10.1.20.0")
     assert r.op == "policy.list_contents" and r.params == {"scope_id": "10.1.20.0", "names": ["printers"]}
@@ -539,6 +539,8 @@ def test_v6_reservation_option_values_batch() -> None:
         [{"ip": "10.1.20.5"}, {"ip": "10.1.20.6", "values": []}],  # an item without its values
         [{"ip": "10.1.20.5", "values": None}, {"ip": "10.1.20.6", "values": []}],
         [{"ip": "10.1.20.5", "error": "boom"}, {"ip": "10.1.20.6", "values": []}],
+        [{"ip": "10.1.20.5", "values": {}}, {"ip": "10.1.20.6", "values": []}],  # not a list
+        [{"ip": "10.1.20.5", "values": {"option_id": 3}}, {"ip": "10.1.20.6", "values": []}],
         {"value": [{"ip": "10.1.20.5", "values": []}], "Count": 1},
     ],
 )
@@ -546,11 +548,3 @@ def test_a_batch_answer_that_breaks_the_contract_is_an_error_not_no_options(data
     c = DhcpClient(JsonRunner(data))
     with pytest.raises(wc.OutputError):
         c.list_reservation_option_values("10.1.20.0", ["10.1.20.5", "10.1.20.6"])
-
-
-def test_a_batch_error_names_the_cmdlet() -> None:
-    err = {"message": "Access is denied.", "category": "PermissionDenied", "id": "x", "command": "Get-Thing"}
-    c = DhcpClient(JsonRunner([{"name": "p", "error": err}]))
-    with pytest.raises(PSError, match="Get-Thing: Access is denied") as e:
-        c.list_policy_contents(["p"])
-    assert not isinstance(e.value, NotFound)

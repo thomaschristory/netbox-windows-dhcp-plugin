@@ -34,7 +34,17 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, Self
 
 from . import normalize
-from .psscript import SECRET_PARAMS, NotFound, OutputError, PSError, Requirement, Script, is_not_found, parse
+from .psscript import (
+    SECRET_PARAMS,
+    NotFound,
+    OutputError,
+    PSError,
+    Requirement,
+    Script,
+    _ps_quote_body,
+    is_not_found,
+    parse,
+)
 from .runner import Runner
 
 __all__ = [
@@ -1521,20 +1531,33 @@ Remove-DhcpServerv6Class @cn -Name $p.name -Type $p.type -Confirm:$false
 
 # A full read of a server used to start PowerShell once per reservation (its option values) and twice per policy (its
 # IP ranges, its option values). These scripts read a whole batch in one start: the client sends the reserved IPs or
-# policy names it has just listed, and each one is read in its own try/catch, so one reservation deleted mid-read
-# does not hide the others. Its error comes back next to it, tagged by IP or name, and the client raises it exactly
-# as the one-at-a-time read would have (NotFound for a missing object), so windows_state reads the scope again.
-# Each value is printed without its option name, scope or IP (the client fills those in) to keep the output small for
-# scopes with thousands of reservations.
-_BATCH_FUNC = r"""
-function ConvertTo-WdItemError($e) {
-    [ordered]@{
-        message  = "$($e.Exception.Message)"
-        category = "$($e.CategoryInfo.Category)"
-        id       = "$($e.FullyQualifiedErrorId)"
-        command  = "$($e.InvocationInfo.MyCommand.Name)"
-    }
+# policy names it has just listed and gets back one object per item, tagged by IP or name. The first error stops the
+# script and reaches the envelope, as the one-at-a-time reads did: when the DHCP service or RPC goes away mid-batch,
+# the read fails at once with the real error instead of every remaining item waiting for its own timeout. A
+# reservation or policy deleted mid-read is a not-found error, so windows_state reads the scope again.
+# Each value is printed without its option name, scope or IP to keep the output small for scopes with thousands of
+# reservations; the client fills in the scope and IP, and leaves the name empty (the sync never uses it).
+#
+# Over SSH a script prints nothing until it ends, and command_timeout is a silence timeout, so a whole batch must
+# finish within it. Two things keep each item fast:
+# * -Brief skips the lookup of each option's name, which the batch drops anyway;
+# * with computer_name, every cmdlet given -ComputerName opens its own CIM session (around a second each), so the
+#   script opens one session with New-CimSession and passes it as -CimSession through $cn instead, then removes it.
+_BATCH_SESSION_START = r"""
+$wdSession = $null
+if ($cn['ComputerName']) {
+    $wdSession = New-CimSession -ComputerName $cn['ComputerName']
+    $cn = @{ CimSession = $wdSession }
 }
+try {
+"""
+# SilentlyContinue: a failure to close the session must not hide the error that stopped the batch.
+_BATCH_SESSION_END = r"""
+} finally {
+    if ($wdSession) { Remove-CimSession -CimSession $wdSession -ErrorAction SilentlyContinue }
+}
+"""
+_VALUE_ITEM_V4 = r"""
 function ConvertTo-WdValueItem($o) {
     [ordered]@{
         option_id    = [int]$o.OptionId
@@ -1545,63 +1568,68 @@ function ConvertTo-WdValueItem($o) {
     }
 }
 """
+_VALUE_ITEM_V6 = r"""
+function ConvertTo-WdValueItem($o) {
+    [ordered]@{
+        option_id    = [int]$o.OptionId
+        value        = @($o.Value | Where-Object { $null -ne $_ } | ForEach-Object { "$_" })
+        vendor_class = "$($o.VendorClass)"
+        user_class   = "$($o.UserClass)"
+    }
+}
+"""
 
-# unverified: the per-item try/catch inside one script and the output shape on Windows PowerShell 5.1 (issue #100).
-# The cmdlet calls are the ones option.list makes for one reservation.
+# unverified: the output shape on Windows PowerShell 5.1, -Brief next to -All (and that it keeps VendorClass and
+# UserClass), and -CimSession in place of -ComputerName (issue #100). Otherwise the cmdlet call is the one option.list
+# makes for one reservation.
 S_OPTION_LIST_RESERVED = Script(
     "option.list_reserved",
-    _BATCH_FUNC
+    _VALUE_ITEM_V4
+    + _BATCH_SESSION_START
     + r"""
 $out = @(foreach ($ip in @($p.ips)) {
-    try {
-        $v = @(Get-DhcpServerv4OptionValue @cn -ReservedIP $ip -All | ForEach-Object { ConvertTo-WdValueItem $_ })
-        [ordered]@{ ip = "$ip"; values = $v }
-    } catch {
-        [ordered]@{ ip = "$ip"; error = ConvertTo-WdItemError $_ }
-    }
+    $v = @(Get-DhcpServerv4OptionValue @cn -ReservedIP $ip -All -Brief | ForEach-Object { ConvertTo-WdValueItem $_ })
+    [ordered]@{ ip = "$ip"; values = $v }
 })
-""",
+"""
+    + _BATCH_SESSION_END,
 )
 
 # unverified: as option.list_reserved. The cmdlet calls are the ones policyrange.list and option.list (with
-# -PolicyName and -All) make for one policy; a server-level policy has no IP ranges.
+# -PolicyName and -All) make for one policy, plus -Brief; a server-level policy has no IP ranges.
 S_POLICY_LIST_CONTENTS = Script(
     "policy.list_contents",
-    _BATCH_FUNC
+    _VALUE_ITEM_V4
+    + _BATCH_SESSION_START
     + r"""
 $out = @(foreach ($name in @($p.names)) {
-    try {
-        $sel = @{ PolicyName = $name; All = $true }
-        $ranges = @()
-        if ($p.scope_id) {
-            $sel['ScopeId'] = $p.scope_id
-            $ranges = @(Get-DhcpServerv4PolicyIPRange @cn -ScopeId $p.scope_id -Name $name | ForEach-Object {
-                [ordered]@{ start_range = "$($_.StartRange)"; end_range = "$($_.EndRange)" }
-            })
-        }
-        $v = @(Get-DhcpServerv4OptionValue @cn @sel | ForEach-Object { ConvertTo-WdValueItem $_ })
-        [ordered]@{ name = "$name"; ranges = $ranges; values = $v }
-    } catch {
-        [ordered]@{ name = "$name"; error = ConvertTo-WdItemError $_ }
+    $sel = @{ PolicyName = $name; All = $true; Brief = $true }
+    $ranges = @()
+    if ($p.scope_id) {
+        $sel['ScopeId'] = $p.scope_id
+        $ranges = @(Get-DhcpServerv4PolicyIPRange @cn -ScopeId $p.scope_id -Name $name | ForEach-Object {
+            [ordered]@{ start_range = "$($_.StartRange)"; end_range = "$($_.EndRange)" }
+        })
     }
+    $v = @(Get-DhcpServerv4OptionValue @cn @sel | ForEach-Object { ConvertTo-WdValueItem $_ })
+    [ordered]@{ name = "$name"; ranges = $ranges; values = $v }
 })
-""",
+"""
+    + _BATCH_SESSION_END,
 )
 
 # unverified: as option.list_reserved, for DHCPv6 reservations.
 S_V6OPTION_LIST_RESERVED = Script(
     "v6option.list_reserved",
-    _BATCH_FUNC
+    _VALUE_ITEM_V6
+    + _BATCH_SESSION_START
     + r"""
 $out = @(foreach ($ip in @($p.ips)) {
-    try {
-        $v = @(Get-DhcpServerv6OptionValue @cn -ReservedIP $ip -All | ForEach-Object { ConvertTo-WdValueItem $_ })
-        [ordered]@{ ip = "$ip"; values = $v }
-    } catch {
-        [ordered]@{ ip = "$ip"; error = ConvertTo-WdItemError $_ }
-    }
+    $v = @(Get-DhcpServerv6OptionValue @cn -ReservedIP $ip -All -Brief | ForEach-Object { ConvertTo-WdValueItem $_ })
+    [ordered]@{ ip = "$ip"; values = $v }
 })
-""",
+"""
+    + _BATCH_SESSION_END,
 )
 
 ALL_SCRIPTS: tuple[Script, ...] = tuple(v for k, v in list(globals().items()) if k.startswith("S_"))
@@ -1629,21 +1657,25 @@ def _objects(op: str, data: Any) -> list[dict]:
     return [d for d in data if d != {}]
 
 
-# How many reservations or policies one batched read sends (issue #100), and how many bytes of their IPs or names
-# (as UTF-8 JSON). They travel in the script input, which must stay well under the 64 KB SSH limit (#63): 256 DHCPv6
-# addresses are under 11 KB, policy names can be long, and the whole input is base64, a third larger. One batch must
-# also answer within command_timeout, since a script prints nothing until it ends: at a few tens of milliseconds per
-# reservation that is seconds, not minutes. 256 also reads a whole /24 in one go.
-READ_BATCH = 256
+# How many reservations or policies one batched read sends (issue #100), and how many bytes their IPs or names may take
+# in the script, as the escaped $p literal (UTF-8 JSON with every quote doubled). The input must stay well under the
+# 64 KB SSH limit (#63): with the script and base64 (a third larger) a batch sends at most about 22 KB. A batch must
+# also finish within command_timeout (120 s), since over SSH that is how long a script may stay silent and it prints
+# only at the end: at the 0.3 to 1 s per item seen with -ComputerName that allows about a hundred items, so 64 keeps
+# half the budget spare. tests/lab measures the time per item against this.
+READ_BATCH = 64
 READ_BATCH_BYTES = 12_000
 
 
 def _batches(keys: Sequence[str]) -> list[list[str]]:
-    """``keys`` cut into batches of at most READ_BATCH keys and READ_BATCH_BYTES bytes of JSON (one key at least)."""
+    """``keys`` cut into batches of at most READ_BATCH keys and READ_BATCH_BYTES bytes in the script."""
     out: list[list[str]] = []
     size = 0
     for key in keys:
-        n = len(json.dumps(key, ensure_ascii=False).encode()) + 1
+        n = len(_ps_quote_body(json.dumps(key, ensure_ascii=False)).encode()) + 1
+        if n > READ_BATCH_BYTES:
+            # No Windows reservation IP or policy name comes near this; refuse rather than send a script SSH refuses.
+            raise ValueError(f"name too long for a batched read: {key[:40]!r}...")
         if not out or len(out[-1]) >= READ_BATCH or size + n > READ_BATCH_BYTES:
             out.append([])
             size = 0
@@ -1826,10 +1858,9 @@ class DhcpClient:
         """
         Run a batched read (issue #100) over ``keys``, in ``_batches``, and return each key's result object.
 
-        The script answers one object per key, ``{tag: key, ...}`` or ``{tag: key, error: {...}}``. An item's error is
-        raised as the one-at-a-time read would raise it: ``PSNotFoundError`` (a ``NotFound``) when the object is gone,
-        ``PSError`` otherwise, which wins over a not-found in the same batch. A key with no answer is an
-        ``OutputError``, never an empty result: reading nothing for a reservation would look like "no options".
+        The script answers one object per key, ``{tag: key, ...}``, and stops at its first error, which ``_run``
+        raises like any script's (``NotFound`` for a missing object). A key with no answer is an ``OutputError``,
+        never an empty result: reading nothing for a reservation would look like "no options".
         """
         out: dict[str, dict] = {}
         # The parameter is the plural of the tag: "ip" -> "ips", "name" -> "names".
@@ -1842,30 +1873,22 @@ class DhcpClient:
                 if not isinstance(key, str):
                     raise OutputError(f"{script.op}: a result without its {tag}")
                 got[key] = row
-            not_found: PSError | None = None
             for key in chunk:
-                row = got.get(key)
-                if row is None:
+                if key not in got:
                     raise OutputError(f"{script.op}: no result for {key}")
-                if "error" in row:
-                    if not isinstance(row["error"], dict):
-                        raise OutputError(f"{script.op}: unreadable error for {key}")
-                    err = PSError.from_dict(row["error"])
-                    log.debug("DHCP script %s failed for %s: %s", script.op, key, err)
-                    if not err.not_found:
-                        raise err
-                    not_found = not_found or err
-                out[key] = row
-            if not_found is not None:
-                raise not_found
+                out[key] = got[key]
         return out
 
     @staticmethod
     def _values(op: str, row: Mapping[str, Any], field_name: str = "values") -> list[dict]:
-        """A list held by one batched result; a missing one is an error, not an empty list."""
-        if field_name not in row or row[field_name] is None:
-            raise OutputError(f"{op}: a result without its {field_name}")
-        return _objects(op, row[field_name])
+        """
+        A list held by one batched result. A missing one, or anything but a list, is an error, not an empty list: the
+        scripts build it with @(), which stays a list even with one or no element.
+        """
+        items = row.get(field_name)
+        if not isinstance(items, list):
+            raise OutputError(f"{op}: a result without its {field_name} list")
+        return _objects(op, items)
 
     def _do(self, script: Script, params: Mapping[str, Any] | None = None) -> None:
         self._run(script, params)

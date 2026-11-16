@@ -225,7 +225,7 @@ def test_v6_scope_refuses_timers_out_of_order(lab: Lab, probe_out) -> None:
 
 
 def test_v6_batched_reservation_option_values(lab: Lab, probe_out) -> None:
-    """client.py (issue #100): v6option.list_reserved, its output shape and not-found."""
+    """client.py (issue #100): v6option.list_reserved, its output shape, -Brief against reads without it, not-found."""
     lab.v6_scope("nbwd-test-v6batch")
     ips = ["2001:db8:4e42::30", "2001:db8:4e42::31"]
     for i, ip in enumerate(ips):
@@ -241,5 +241,14 @@ def test_v6_batched_reservation_option_values(lab: Lab, probe_out) -> None:
             (o.option_id, tuple(o.value), o.user_class) for o in single
         )
     assert [o.value for o in got[ips[0]] if o.option_id == 24] == [["batch.example"]]
-    with pytest.raises(wc.NotFound):
+    save_probe(probe_out, "v6-batched-one-empty", lab.client._run(wc.S_V6OPTION_LIST_RESERVED, {"ips": [ips[1]]})[1])
+    assert lab.client.list_v6_reservation_option_values(V6_PREFIX, [ips[1]]) == {ips[1]: []}
+    try:
         lab.client.list_v6_reservation_option_values(V6_PREFIX, [ips[0], "2001:db8:4e42::99"])
+    except PSError as e:
+        err = {**e.to_dict(), "not_found": e.not_found}
+    else:
+        err = {"raised": False}
+    save_probe(probe_out, "v6-batched-gone", err)
+    print(f"v6 reserved_batch: id={err.get('id')!r} category={err.get('category')!r}")
+    assert err.get("not_found"), err

@@ -735,20 +735,24 @@ def test_a_reservation_gone_from_a_batch_is_not_found(c: DhcpClient, fake: FakeD
         c.list_reservation_option_values("10.1.20.0", ips)
 
 
-def test_a_real_error_in_a_batch_wins_over_not_found(c: DhcpClient, fake: FakeDhcpServer) -> None:
-    ips = _reservations(c, 2)
-    c.remove_reservation(ips[0])
+def test_a_batch_stops_at_its_first_error(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    # As the one-at-a-time reads did: when the DHCP service goes away mid-batch the read fails at once with the real
+    # error, instead of every remaining reservation waiting for its own timeout.
+    ips = _reservations(c, 3)
     real = fake._op_option_list
+    asked = []
 
     def failing(p):
+        asked.append(p.get("reserved_ip"))
         if p.get("reserved_ip") == ips[1]:
-            raise _Fail(PSError(message="Access is denied.", category="PermissionDenied", id="DHCP 5,Get"))
+            raise _Fail(PSError(message="The RPC server is unavailable.", category="NotSpecified", id="DHCP 1722,Get"))
         return real(p)
 
     fake._op_option_list = failing
-    with pytest.raises(PSError, match="Access is denied") as err:
+    with pytest.raises(PSError, match="RPC server is unavailable") as err:
         c.list_reservation_option_values("10.1.20.0", ips)
     assert not isinstance(err.value, NotFound)
+    assert asked == ips[:2]
 
 
 def test_policy_contents(c: DhcpClient, fake: FakeDhcpServer) -> None:
@@ -798,8 +802,28 @@ def test_batches_also_stop_at_a_size(monkeypatch) -> None:
 
     monkeypatch.setattr(wc, "READ_BATCH_BYTES", 30)
     # "é" is two bytes in UTF-8: each name is 6 bytes of JSON with its quotes, plus a comma.
-    names = ["éé", "ab", "cd", "ef", "x" * 50]
-    assert wc._batches(names) == [["éé", "ab", "cd", "ef"], ["x" * 50]]
+    names = ["éé", "ab", "cd", "ef", "x" * 25]
+    assert wc._batches(names) == [["éé", "ab", "cd", "ef"], ["x" * 25]]
     monkeypatch.setattr(wc, "READ_BATCH", 2)
-    assert wc._batches(names) == [["éé", "ab"], ["cd", "ef"], ["x" * 50]]
+    assert wc._batches(names) == [["éé", "ab"], ["cd", "ef"], ["x" * 25]]
     assert wc._batches([]) == []
+    # Quotes are doubled in the script, so they count twice: 2 + 2 * 13 + 1 bytes, too many to add "a" (4 more).
+    assert wc._batches(["'" * 13, "a"]) == [["'" * 13], ["a"]]
+    with pytest.raises(ValueError, match="too long"):
+        wc._batches(["x" * 40])
+
+
+def test_a_batch_never_reaches_the_ssh_input_limit() -> None:
+    from netbox_windows_dhcp_plugin.windows import client as wc
+    from netbox_windows_dhcp_plugin.windows.psscript import prepare
+
+    # Typographic quotes are three bytes in UTF-8 and are doubled in the script: the worst case per character.
+    for script, key, items in (
+        (wc.S_POLICY_LIST_CONTENTS, "names", ["’" * 255] * 300),
+        (wc.S_POLICY_LIST_CONTENTS, "names", ["’" * 1900]),
+        (wc.S_V6OPTION_LIST_RESERVED, "ips", [f"2001:db8:ffff:ffff:ffff:ffff:ffff:{i:04x}" for i in range(300)]),
+    ):
+        for batch in wc._batches(items):
+            params = {key: batch, "scope_id": "10.1.20.0", "computer_name": "dhcp02.example.local"}
+            _, stdin = prepare(script.with_requirement(wc.DHCP_MODULE).wrap(), params)
+            assert len(stdin) < 24 * 1024

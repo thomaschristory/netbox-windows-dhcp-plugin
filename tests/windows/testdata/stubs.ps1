@@ -278,7 +278,7 @@ function Get-DhcpServerv4OptionValue {
     [CmdletBinding()]
     param([string]$VendorClass, [string]$ComputerName, [Parameter(Position = 0)][ipaddress]$ScopeId,
         [ipaddress]$ReservedIP, [Parameter(Position = 1)][uint32[]]$OptionId, [string]$UserClass, [switch]$All,
-        [string]$PolicyName)
+        [string]$PolicyName, [switch]$Brief, [object]$CimSession)
     Record 'Get-DhcpServerv4OptionValue' $PSBoundParameters
     if ($ReservedIP -and $global:GoneReservations -contains "$ReservedIP") {
         Write-DhcpError $PSCmdlet 20018 ObjectNotFound "Failed to get reservation $ReservedIP on DHCP server STUB."
@@ -618,6 +618,23 @@ function Remove-DhcpServerv4OptionDefinition {
     Record 'Remove-DhcpServerv4OptionDefinition' $PSBoundParameters
 }
 
+# ---- CIM sessions ----
+# The batched reads open one session for a remote server (issue #100). Remove-CimSession records the Id of the session it
+# closes, so tests can check it is the one New-CimSession made.
+
+function New-CimSession {
+    [CmdletBinding()]
+    param([Parameter(Position = 0)][string[]]$ComputerName)
+    Record 'New-CimSession' $PSBoundParameters
+    [pscustomobject]@{ Id = 7; ComputerName = "$ComputerName" }
+}
+
+function Remove-CimSession {
+    [CmdletBinding()]
+    param([Parameter(Mandatory, Position = 0)][object]$CimSession)
+    Record 'Remove-CimSession' @{ CimSession = $CimSession.Id }
+}
+
 # ---- Policies ----
 
 function Get-DhcpServerv4Policy {
@@ -674,7 +691,8 @@ function Remove-DhcpServerv4Policy {
 
 function Get-DhcpServerv4PolicyIPRange {
     [CmdletBinding()]
-    param([string]$ComputerName, [Parameter(Mandatory)][ipaddress]$ScopeId, [Parameter(Mandatory)][string]$Name)
+    param([string]$ComputerName, [Parameter(Mandatory)][ipaddress]$ScopeId, [Parameter(Mandatory)][string]$Name,
+        [object]$CimSession)
     Record 'Get-DhcpServerv4PolicyIPRange' $PSBoundParameters
     $global:PolicyRanges | Where-Object { "$($_.ScopeId)" -eq "$ScopeId" -and $_.Name -eq $Name }
 }
@@ -775,7 +793,7 @@ function Remove-DhcpServerv6Reservation {
 function Get-DhcpServerv6OptionValue {
     [CmdletBinding()]
     param([string]$ComputerName, [ipaddress]$Prefix, [ipaddress]$ReservedIP, [uint32[]]$OptionId,
-        [string]$VendorClass, [string]$UserClass, [switch]$All)
+        [string]$VendorClass, [string]$UserClass, [switch]$All, [switch]$Brief, [object]$CimSession)
     Record 'Get-DhcpServerv6OptionValue' $PSBoundParameters
     if ($ReservedIP -and $global:GoneReservations -contains "$ReservedIP") {
         Write-DhcpError $PSCmdlet 20018 ObjectNotFound "Failed to get reservation $ReservedIP on DHCP server STUB."
