@@ -2,11 +2,12 @@
 
 import uuid
 from types import SimpleNamespace
-from unittest import mock
+from unittest import mock, skipUnless
 
 from core.choices import JobNotificationChoices, JobStatusChoices
 from core.exceptions import JobFailed
 from core.models import Job
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import TestCase, override_settings
@@ -226,6 +227,7 @@ class RangeChangeWithNewFailoverTest(TestCase):
         self.assertIn("is shared with scope", errors(proposal)["10.1.0.0"])
         self.assertEqual(self.bounds(self.second), ("10.1.0.10/24", "10.1.0.200/24"))
 
+    @skipUnless(apps.is_installed("netbox_branching"), "imports into main need netbox-branching")
     def test_an_import_into_main_works_the_first_time(self):
         user = get_user_model().objects.create_user(username=f"importer-{uuid.uuid4().hex[:6]}", is_superuser=True)
         result = importer.import_to_main(self.first, windows_state.read(DhcpClient(self.fake)), user)
