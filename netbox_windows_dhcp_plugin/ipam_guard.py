@@ -164,6 +164,17 @@ def _refusal(fields, missing, user, branch=None):
     return " ".join(lines)
 
 
+def _no_user_refusal(fields, branch, codenames):
+    # Names no scope or reservation, nor how many: there is no user whose view permission would allow it.
+    kinds = [_KIND[codename] for codename in codenames]
+    permissions = " and ".join(f'"change {kind}"' for kind in kinds)
+    return (
+        f"Branch {branch} cannot be merged or reverted without a user: changing {', '.join(fields)} would change "
+        f"one or more {' and '.join(kind + 's' for kind in kinds)} on Windows. Merge or revert it as a user with the "
+        f"{permissions} permission on them."
+    )
+
+
 def _request_user():
     from netbox.context import current_request
 
@@ -219,9 +230,17 @@ def check_edit(sender, instance, raw=False, **kwargs):
         branch, user, request_ids = applying
         if all(is_import_request(r) for r in request_ids):
             return
-        # No merging user (a job whose user was deleted): fall back to the user the replay runs as.
-        user = user or _request_user()
         instance._nbwd_branch = branch
+        if user is None or not user.is_authenticated:
+            # No merging user (a merge job whose user was deleted, or code calling merge(user=None)): nobody whose
+            # permission could be checked, so a change Windows would see is refused. Not the user the replay runs as:
+            # squash runs it as the (missing) merging user, iterative as each change's author, who may have made the
+            # edit long ago. Someone with the permission can run the merge again.
+            if found := dependents(instance, using):
+                from utilities.exceptions import AbortRequest
+
+                raise AbortRequest(_no_user_refusal(fields, branch, [codename for codename, _ in found]))
+            return
     else:
         instance._nbwd_branch = None
         user = _request_user()

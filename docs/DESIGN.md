@@ -149,8 +149,9 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   its last request ID). The guard reads the stored row and the dependents from the database the save writes to (the
   `using` of the save), not wherever the router would read, so a merge run with a branch active (custom code such as a
   script running in a branch; the merge job itself runs with none) is checked against main. A merge or revert with no
-  user (a merge job whose user was deleted, a script calling `merge(user=None)`) falls back to the user the replay
-  runs as: each change's author under iterative, nobody under squash, so it is not checked (#116). A refusal aborts
+  user (a merge job whose user was deleted, a script calling `merge(user=None)`) is refused when a replayed change
+  alters a watched field that a scope or reservation uses, with a message naming no object (#116); the import's own
+  changes and changes no plugin object depends on still merge. A refusal aborts
   the merge, which netbox-branching rolls back and leaves the branch ready (owner's decision after the adversarial
   review of #112). It is NetBox's documented plugin mechanism (`docs/plugins/development/exceptions.md`);
   `CUSTOM_VALIDATORS` belong to the admin's configuration.
