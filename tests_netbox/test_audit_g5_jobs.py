@@ -40,6 +40,7 @@ from .test_push import PushTestMixin
 BRANCHING = "netbox_windows_dhcp_plugin.integrations.branching"
 RESERVATION_TABLE = Reservation._meta.db_table
 PLUGIN_TABLES = "netbox_windows_dhcp_plugin_"
+PROPOSAL = ImportDestinationChoices.PROPOSAL
 
 
 def _job(server, job_class, **kwargs):
@@ -408,11 +409,11 @@ class F27SchedulerTest(TestCase):
 
     def test_due_servers_reads_the_newest_import_of_each_server_at_once(self):
         now = timezone.now()
-        old = SyncRun.objects.create(windows_server=self.first, kind=SyncKindChoices.IMPORT)
+        old = SyncRun.objects.create(windows_server=self.first, kind=SyncKindChoices.IMPORT, destination=PROPOSAL)
         SyncRun.objects.filter(pk=old.pk).update(created=now - timedelta(hours=3))
-        SyncRun.objects.create(windows_server=self.first, kind=SyncKindChoices.IMPORT)
+        SyncRun.objects.create(windows_server=self.first, kind=SyncKindChoices.IMPORT, destination=PROPOSAL)
         # Only imports count: a recent push does not postpone the next import.
-        stale = SyncRun.objects.create(windows_server=self.second, kind=SyncKindChoices.IMPORT)
+        stale = SyncRun.objects.create(windows_server=self.second, kind=SyncKindChoices.IMPORT, destination=PROPOSAL)
         SyncRun.objects.filter(pk=stale.pk).update(created=now - timedelta(hours=3))
         SyncRun.objects.create(windows_server=self.second, kind=SyncKindChoices.PUSH)
         third = windows_server("dhcp3", import_interval=60)

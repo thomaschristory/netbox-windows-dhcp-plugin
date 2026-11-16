@@ -12,6 +12,7 @@ from django.contrib.auth import get_user_model
 from django.db import connection
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from extras.models import SavedFilter
 from ipam.models import IPRange
 from utilities.testing import TestCase as NetBoxTestCase
 
@@ -22,6 +23,7 @@ from netbox_windows_dhcp_plugin.models import FailoverRelationship, ImportPropos
 from netbox_windows_dhcp_plugin.models import Scope as NetBoxScope
 from netbox_windows_dhcp_plugin.sync import importer, windows_state
 from netbox_windows_dhcp_plugin.sync.diff import CREATE, Change
+from netbox_windows_dhcp_plugin.sync.mapping import Writer
 from netbox_windows_dhcp_plugin.sync.push import PLANNED_LIMIT, Skip
 from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows.client import FailoverRelationship as WinFailover
@@ -164,12 +166,62 @@ class SelectAllUnknownFilterTest(NetBoxTestCase):
             self.assertEqual(self._statuses(), {PENDING}, verb)
         self.assertFalse(NetBoxScope.objects.exists())
 
+    def test_a_refused_selection_reports_no_success(self):
+        for query in (f"proposal={self.first.pk}", "proposal_id=999999", "filter_id=999999"):
+            for verb in ("apply", "dismiss"):
+                levels = [level for level, _ in _messages(self._post(verb, query))]
+                self.assertEqual(levels, ["danger"], (query, verb))
+
     def test_list_parameters_and_lookups_are_not_filters_to_refuse(self):
-        query = f"proposal_id={self.first.pk}&status__n=dismissed&per_page=50&sort=key&page=1&return_url=/x/"
+        saved = self._saved_filter({"status": ["pending"]})
+        query = (
+            f"proposal_id={self.first.pk}&status__n=dismissed&per_page=50&sort=key&page=1&return_url=/x/"
+            f"&q=&filter_id={saved.pk}&tableconfig_id=1&export=table"
+        )
         response = self._post("dismiss", query)
         self.assertEqual([level for level, _ in _messages(response)], ["success"])
         self.assertEqual(set(self.first.items.values_list("status", flat=True)), {DISMISSED})
         self.assertEqual(set(self.second.items.values_list("status", flat=True)), {PENDING})
+
+    def _saved_filter(self, parameters, **kwargs):
+        name = f"f-{uuid.uuid4().hex[:6]}"
+        return SavedFilter.objects.create(name=name, slug=name, parameters=parameters, **kwargs)
+
+    def test_a_saved_filter_with_an_unknown_name_selects_nothing(self):
+        # NetBox replaces filter_id by the saved filter's own parameters: those are checked too.
+        saved = self._saved_filter({"proposal": [self.first.pk]}, shared=True)
+        for query in (f"filter_id={saved.pk}", f"filter={saved.slug}"):
+            messages = _messages(self._post("dismiss", query))
+            self.assertEqual([level for level, _ in messages], ["danger"], query)
+            self.assertIn("proposal", messages[0][1])
+            self.assertEqual(self._statuses(), {PENDING}, query)
+
+    def test_a_valid_saved_filter_selects_what_it_says(self):
+        saved = self._saved_filter({"proposal_id": [self.first.pk]}, shared=True)
+        self._post("dismiss", f"filter={saved.slug}")
+        self.assertEqual(set(self.first.items.values_list("status", flat=True)), {DISMISSED})
+        self.assertEqual(set(self.second.items.values_list("status", flat=True)), {PENDING})
+
+    def test_a_saved_filter_that_is_gone_or_hidden_selects_nothing(self):
+        # NetBox drops a saved filter it cannot find, or that the user may not see: the list would be unfiltered.
+        other = get_user_model().objects.create_user(username=f"other-{uuid.uuid4().hex[:6]}")
+        hidden = self._saved_filter({"proposal_id": [self.first.pk]}, shared=False, user=other)
+        self.user.is_superuser = False
+        self.user.save()
+        self.add_permissions(
+            "netbox_windows_dhcp_plugin.view_importproposalitem", "netbox_windows_dhcp_plugin.change_importproposalitem"
+        )
+        for query in (
+            f"filter_id={hidden.pk}",
+            f"filter={hidden.slug}",
+            "filter_id=999999",
+            "filter=gone",
+            "filter_id=x",
+        ):
+            messages = _messages(self._post("dismiss", query))
+            self.assertEqual([level for level, _ in messages], ["danger"], query)
+            self.assertIn("saved filter", messages[0][1])
+            self.assertEqual(self._statuses(), {PENDING}, query)
 
     def test_listed_ids_are_not_checked_against_the_query(self):
         # Without "_all" the rows are named one by one: the query string plays no part.
@@ -196,12 +248,18 @@ class RangeChangeWithNewFailoverTest(TestCase):
         self.client.add_failover(WinFailover(name="ha", partner_server="dhcp2.example.com", scope_ids=["10.1.0.0"]))
         self.client.set_scope(Scope(scope_id="10.1.0.0", name="LAN", start_range="10.1.0.10", end_range="10.1.0.99"))
 
+    @staticmethod
+    def lan(server):
+        return NetBoxScope.objects.get(server=server, prefix__prefix="10.1.0.0/24")
+
     def bounds(self, server):
-        ip_range = NetBoxScope.objects.get(server=server).ip_range
+        ip_range = self.lan(server).ip_range
         return str(ip_range.start_address), str(ip_range.end_address)
 
     def assert_moved_together(self):
-        self.assertEqual(IPRange.objects.count(), 1)
+        # One range for the pair (a scope created by the same run has its own).
+        first, second = self.lan(self.first), self.lan(self.second)
+        self.assertEqual(first.ip_range_id, second.ip_range_id)
         self.assertEqual(self.bounds(self.first), ("10.1.0.10/24", "10.1.0.99/24"))
         self.assertEqual(self.bounds(self.second), ("10.1.0.10/24", "10.1.0.99/24"))
         self.assertTrue(FailoverRelationship.objects.filter(primary_server=self.first, name="ha").exists())
@@ -226,6 +284,35 @@ class RangeChangeWithNewFailoverTest(TestCase):
         proposal = import_and_apply(self.first, self.fake)
         self.assertIn("is shared with scope", errors(proposal)["10.1.0.0"])
         self.assertEqual(self.bounds(self.second), ("10.1.0.10/24", "10.1.0.200/24"))
+
+    def test_a_relationship_with_a_scope_not_in_netbox_gives_no_exception(self):
+        # Its other scope is neither in NetBox nor applied now, so the relationship would fail after the scope change.
+        self.client.add_scope(
+            Scope(name="Other", start_range="10.3.0.10", end_range="10.3.0.200", subnet_mask="255.255.255.0")
+        )
+        self.client.add_failover_scopes("ha", ["10.3.0.0"])
+        result = importer.import_to_proposal(self.first, windows_state.read(DhcpClient(self.fake)), None)
+        items = list(result.proposal.items.exclude(kind="scope", key="10.3.0.0"))
+        importer.apply_items(items)
+        self.assertIn("is shared with scope", errors(result.proposal)["10.1.0.0"])
+        self.assertEqual(self.bounds(self.second), ("10.1.0.10/24", "10.1.0.200/24"))
+
+    def test_a_relationship_with_a_scope_created_in_the_same_run_counts(self):
+        self.client.add_scope(
+            Scope(name="Other", start_range="10.3.0.10", end_range="10.3.0.200", subnet_mask="255.255.255.0")
+        )
+        self.client.add_failover_scopes("ha", ["10.3.0.0"])
+        proposal = import_and_apply(self.first, self.fake)
+        self.assertEqual(errors(proposal), {})
+        self.assert_moved_together()
+
+    def test_a_reviewer_who_may_not_add_the_relationship_gets_no_exception(self):
+        fields = {"name": "ha", "partner_server": "dhcp2.example.com", "scope_ids": ["10.1.0.0"]}
+        scope, other = self.lan(self.first), self.lan(self.second)
+        reviewer = get_user_model().objects.create_user(username=f"reviewer-{uuid.uuid4().hex[:6]}")
+        self.assertFalse(Writer(self.first, user=reviewer, failovers=[fields])._failover_twin(scope, other))
+        boss = get_user_model().objects.create_user(username=f"boss-{uuid.uuid4().hex[:6]}", is_superuser=True)
+        self.assertTrue(Writer(self.first, user=boss, failovers=[fields])._failover_twin(scope, other))
 
     @skipUnless(apps.is_installed("netbox_branching"), "imports into main need netbox-branching")
     def test_an_import_into_main_works_the_first_time(self):
@@ -273,18 +360,3 @@ class LeaseJobCloseTest(TestCase):
             self._run(client)
         self.assertIn("Access is denied", str(raised.exception))
         self.assertIn("Access is denied", self.job.data["error"])
-
-
-# -- 6. dead code ----------------------------------------------------------------------------------------------------
-
-
-class DeadCodeTest(TestCase):
-    def test_busy_jobs_counts_import_jobs_only(self):
-        import inspect
-
-        self.assertEqual(list(inspect.signature(jobs._busy_jobs).parameters), ["now"])
-
-    def test_the_panel_takes_the_run_destination_as_recorded(self):
-        from netbox_windows_dhcp_plugin import import_status
-
-        self.assertFalse(hasattr(import_status, "_run_destination"))

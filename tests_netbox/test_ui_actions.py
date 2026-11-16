@@ -16,7 +16,7 @@ from netbox.registry import registry
 from utilities.testing import TestCase
 from utilities.views import get_viewname
 
-from netbox_windows_dhcp_plugin.choices import ProposalStatusChoices, SyncKindChoices
+from netbox_windows_dhcp_plugin.choices import ImportDestinationChoices, ProposalStatusChoices, SyncKindChoices
 from netbox_windows_dhcp_plugin.models import ImportProposal, ImportProposalItem, SyncRun
 
 from .fixtures import PLUGIN
@@ -84,7 +84,9 @@ class UIActionsTestBase(TestCase):
         self.user.save()
         self.server, self.proposal = make_proposal()
         self.item = self.proposal.items.get(kind="scope")
-        self.sync_run = SyncRun.objects.create(windows_server=self.server, kind=SyncKindChoices.IMPORT)
+        self.sync_run = SyncRun.objects.create(
+            windows_server=self.server, kind=SyncKindChoices.IMPORT, destination=ImportDestinationChoices.PROPOSAL
+        )
 
     def page(self, url, client=None):
         response = (client or self.client).get(url)

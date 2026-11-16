@@ -49,10 +49,14 @@ All notable changes to this project are documented here. The format follows
   limit), instead of one line for each. (#109)
 - "Select all matching" on the import proposal item list refuses a query parameter that is neither a filter of the
   list nor a paging, sorting or table parameter, and changes nothing: a mistyped filter name (`proposal=7` for
-  `proposal_id=7`) used to widen the selection to every open item. (#109)
-- A scope range change and a new failover relationship found in the same import go through together: the import
-  into a branch or into main, and applying both proposal items in one go, no longer fail the scope change once with
-  "import the failover relationship first". Applying the scope item alone still waits for the relationship. (#109)
+  `proposal_id=7`) used to widen the selection to every open item. A saved filter is checked the same way, and one
+  that does not exist or that the user may not see is refused too. A refused selection no longer also reports
+  "Applied 0 item(s)". (#109)
+- A scope range change and a new failover relationship found in the same import no longer fail the scope change once
+  with "import the failover relationship first": the import into a branch or into main, and applying both proposal
+  items in one go, write the scope as shared with the partner when the relationship's scopes are all in NetBox (or
+  created by the same run) and the user may add it. Applying the scope item alone still waits for the relationship.
+  If the relationship then fails, the range change stays (see [Known limitations](docs/limitations.md)). (#109)
 - The lease read job no longer lets an error while closing the connection hide its own outcome. (#109)
 
 ## [0.3.0] - 2026-11-15

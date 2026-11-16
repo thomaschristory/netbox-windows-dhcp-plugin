@@ -67,7 +67,7 @@ def _overlap(start, end, ip_range):
 class Writer:
     """Applies changes for one Windows server. Under activate_branch every read and write goes to the branch."""
 
-    def __init__(self, windows_server, user=None, failovers=()):
+    def __init__(self, windows_server, user=None, failovers=(), new_scopes=()):
         self.server = windows_server
         self.vrf = windows_server.import_vrf
         # When set (a reviewer applying proposal items), every object written is checked against this user's
@@ -77,6 +77,9 @@ class Writer:
         # scopes are written, since scopes come first). A scope range change in a new relationship is then shared
         # with the partner's scope as it will be once the relationship is written, not refused once.
         self.failovers = [f for f in failovers if f]
+        # The scope IDs this run creates: a relationship whose scopes are all in NetBox or created in the run can be
+        # written once the scopes are.
+        self.new_scopes = set(new_scopes)
 
     # -- writes ------------------------------------------------------------------------------------------------------
 
@@ -275,7 +278,8 @@ class Writer:
             return False
         scope_id = netbox_state.scope_id_of(scope)
         for fields in self.failovers:
-            if scope_id not in fields.get("scope_ids", ()):
+            scope_ids = fields.get("scope_ids", ())
+            if scope_id not in scope_ids or not self._failover_writable(fields, scope_ids):
                 continue
             try:
                 partner = self._partner(fields["partner_server"])
@@ -285,6 +289,19 @@ class Writer:
             if partner.pk == other.server_id:
                 return True
         return False
+
+    def _failover_writable(self, fields, scope_ids):
+        """
+        Whether a relationship of this run can be written after the scopes, as far as can be told now: each of its
+        scopes is in NetBox or created in the run, and the reviewer (when there is one) may add or change it. A
+        relationship that fails anyway still lets this scope's range change through: see docs/limitations.md.
+        """
+        if any(sid not in self.new_scopes and self.scope(sid, required=False) is None for sid in scope_ids):
+            return False
+        if self.user is None:
+            return True
+        action = "change" if self.failover(fields["name"]) is not None else "add"
+        return self.user.has_perm(f"netbox_windows_dhcp_plugin.{action}_failoverrelationship")
 
     def _ip_address(self, ip, prefixlen, vrf):
         """The IP address of a reservation, in ``vrf``: the VRF of its scope's prefix."""
