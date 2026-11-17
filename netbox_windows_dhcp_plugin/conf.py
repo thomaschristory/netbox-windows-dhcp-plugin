@@ -1,11 +1,14 @@
 import contextlib
 import ipaddress
+import logging
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 PLUGIN_NAME = "netbox_windows_dhcp_plugin"
+
+log = logging.getLogger(__name__)
 
 DEFAULTS = {
     # Credential profiles, referenced by name from WindowsServer.credential_profile and
@@ -39,8 +42,9 @@ DEFAULTS = {
     "sync_run_retention_days": 90,
     # Seconds to wait after a save before pushing, so a burst of edits becomes one push (without branching).
     "push_debounce": 10,
-    # Upper bound on the PowerShell commands one job runs at the same time against a server. It has no effect today:
-    # a job sends its commands one after another, and jobs for the same server wait for each other.
+    # How many scopes an import, push or dry run reads at the same time from one Windows server record, and the most
+    # PowerShell commands it has running there at once (each its own WinRM connection or SSH session). 1 reads one
+    # scope after another; 1 to 10 is sensible. Changes are always sent one after another.
     "max_concurrency": 4,
     # Seconds a single PowerShell command may stay silent before it is abandoned. Over WinRM this is one wait for
     # output; a command that keeps the connection alive without finishing is abandoned after ten times this long.
@@ -52,6 +56,19 @@ def get_setting(key):
     from netbox.plugins.utils import get_plugin_config
 
     return get_plugin_config(PLUGIN_NAME, key, DEFAULTS[key])
+
+
+def max_concurrency():
+    """
+    The max_concurrency setting. A value that is not a whole number of at least 1 is a configuration mistake: it is
+    logged and the default is used, so imports and pushes keep working.
+    """
+    value = get_setting("max_concurrency")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        default = DEFAULTS["max_concurrency"]
+        log.error(f"max_concurrency must be a whole number of at least 1, not {value!r}: using {default}")
+        return default
+    return value
 
 
 class CredentialError(Exception):

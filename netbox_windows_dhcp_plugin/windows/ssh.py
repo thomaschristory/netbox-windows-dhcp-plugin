@@ -10,7 +10,9 @@ Port of ``internal/runner/ssh.go``:
   offered are restricted to the types known for the host, so a server that also has an
   ed25519 key is not reported as a mismatch when only its RSA key is pinned;
 * one lazily opened connection is reused (under a lock), one channel per script; if
-  opening a channel fails the connection is dropped and re-opened once;
+  opening a channel fails on a dead connection, it is dropped and re-opened once. A
+  live connection whose server refuses one more session (sshd MaxSessions) is kept:
+  the other commands on it go on, and the open is tried again a few times;
 * a non-zero exit status is a result, not a transport error.
 
 paramiko is imported lazily so the rest of the Windows layer imports without it.
@@ -24,6 +26,7 @@ import io
 import os
 import socket
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -35,7 +38,26 @@ from .runner import MAX_OUTPUT, MAX_STDERR, ExecResult, RunnerError, execute
 # larger ones at once rather than hang.
 MAX_STDIN = 64 * 1024
 
-__all__ = ["SSHConfig", "SSHRunner", "key_algorithms"]
+# Waits between tries when the server refuses one more session on the connection (sshd MaxSessions, 10 by default):
+# the commands already running on it finish within seconds, freeing a session.
+SESSION_RETRY_DELAYS = (0.2, 0.5, 1.0, 2.0, 4.0)
+
+__all__ = ["SESSION_RETRY_DELAYS", "SSHConfig", "SSHRunner", "key_algorithms"]
+
+
+def _refused(paramiko: Any, e: Exception) -> bool:
+    """
+    Whether opening a session failed because the server refused it. paramiko keeps the refusal (ChannelException) in
+    one slot per connection, so when several sessions are opened at once another thread may take it, and this one
+    only gets "Unable to open channel." (paramiko 3 and 4).
+    """
+    if isinstance(e, paramiko.ChannelException):
+        return True
+    return type(e) is paramiko.SSHException and str(e) == "Unable to open channel."
+
+
+class _Stale(Exception):  # noqa: N818 - internal control flow
+    """The connection cannot open a session any more and must be replaced."""
 
 
 @dataclass
@@ -261,27 +283,49 @@ class SSHRunner:
 
     def _open_channel(self):
         addr = f"{self.cfg.host}:{self.port}"
+        t = self._connected(addr)
         try:
-            t = self._get_transport()
+            return self._open_session(t)
+        except _Stale:  # stale connection: reconnect once
+            self._drop(t)
+        t = self._connected(addr)
+        try:
+            return self._open_session(t)
+        except _Stale as e:
+            self._drop(t)
+            raise RunnerError(f"ssh: opening session: {e.__cause__}") from e.__cause__
+
+    def _connected(self, addr: str):
+        try:
+            return self._get_transport()
         except RunnerError:
             raise
         except Exception as e:  # noqa: BLE001
             raise RunnerError(f"ssh: connecting to {addr}: {e}") from e
-        try:
-            return t.open_session(timeout=self.cfg.timeout)
-        except Exception:  # noqa: BLE001 - stale connection: reconnect once
-            self._drop(t)
-        try:
-            t = self._get_transport()
-        except RunnerError:
-            raise
-        except Exception as e:  # noqa: BLE001
-            raise RunnerError(f"ssh: connecting to {addr}: {e}") from e
-        try:
-            return t.open_session(timeout=self.cfg.timeout)
-        except Exception as e:  # noqa: BLE001
-            self._drop(t)
-            raise RunnerError(f"ssh: opening session: {e}") from e
+
+    def _open_session(self, t):
+        """
+        A new session on ``t``. A refusal from the server on a live connection is a session limit, not a broken
+        connection: dropping it would kill every command running on it, so wait and try again. Anything else raises
+        _Stale.
+        """
+        # unverified: Windows OpenSSH past MaxSessions answers with a channel open failure, as OpenSSH does (checked
+        # against paramiko's own server only).
+        paramiko = _paramiko()
+        for delay in (*SESSION_RETRY_DELAYS, None):
+            try:
+                return t.open_session(timeout=self.cfg.timeout)
+            except Exception as e:  # noqa: BLE001 - paramiko raises SSHException, EOFError, socket errors...
+                if not (_refused(paramiko, e) and t.is_active()):
+                    raise _Stale from e
+                if delay is None:
+                    raise RunnerError(
+                        f"ssh: {self.cfg.host} refused another session on the connection ({e}): its sshd allows fewer "
+                        "sessions per connection (MaxSessions) than the plugin's max_concurrency uses; lower "
+                        "max_concurrency or raise MaxSessions"
+                    ) from e
+                time.sleep(delay)
+        raise AssertionError("not reached")
 
     def _exec(self, argv: list[str], stdin: str) -> ExecResult:
         if len(stdin) > MAX_STDIN:

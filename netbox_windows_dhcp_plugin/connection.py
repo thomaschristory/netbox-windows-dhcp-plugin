@@ -8,6 +8,7 @@ from .conf import (
     get_setting,
     host_allowed,
     insecure_credssp_allowed,
+    max_concurrency,
 )
 from .windows import DhcpClient, limit
 
@@ -80,7 +81,7 @@ def build_client(server, runner=None):
     check_connection_allowed(server)
     runner = runner if runner is not None else build_runner(server)
     # The real cap on commands in flight: an import or push reads up to max_concurrency scopes at the same time.
-    return DhcpClient(limit(runner, get_setting("max_concurrency")), computer_name=server.computer_name)
+    return DhcpClient(limit(runner, max_concurrency()), computer_name=server.computer_name)
 
 
 def failover_partner_check(server):

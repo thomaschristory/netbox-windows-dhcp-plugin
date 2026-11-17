@@ -135,30 +135,112 @@ def test_the_first_failing_scope_in_list_order_gives_the_error():
     assert str(parallel.value) == str(serial.value)
 
 
-def test_no_scope_after_a_failed_one_is_started():
+def with_more_scopes(total: int) -> FakeDhcpServer:
     fake = seeded()
-    for n in range(V4_SCOPES, 40):
+    for n in range(V4_SCOPES, total):
         DhcpClient(fake).add_scope(
             Scope(name=f"s{n}", start_range=f"10.{n}.0.10", end_range=f"10.{n}.0.20", subnet_mask="255.255.255.0")
         )
     fake.calls.clear()
+    return fake
+
+
+def commands_per_scope(fake: FakeDhcpServer) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for c in fake.calls:
+        if c.params.get("scope_id"):
+            out[c.params["scope_id"]] = out.get(c.params["scope_id"], 0) + 1
+    return out
+
+
+def test_after_a_failure_later_scopes_stop_at_their_next_command_and_earlier_ones_finish():
+    # 10.1.0.0 fails on its first command. 10.2.0.0 and 10.3.0.0 have one command in flight: they must not send
+    # another. 10.0.0.0 comes first in list order, so it goes on (a one-at-a-time read would have read it whole) and
+    # its own failure, on a later command, is the read's error.
+    fake = with_more_scopes(40)
 
     def broken(op, p):
-        if op == "exclusion.list" and p.get("scope_id") == "10.1.0.0":
-            return PSError(message="broken", category="InvalidOperation", command="Get-X")
+        sid = p.get("scope_id")
+        if (op, sid) in (("exclusion.list", "10.1.0.0"), ("option.list", "10.0.0.0")):
+            return PSError(message=f"broken {sid}", category="InvalidOperation", command="Get-X")
         return None
 
     fake.fail = broken
-    with pytest.raises(PSError, match="broken"):
-        ws.read(DhcpClient(limit(Slow(fake), 2)), workers=2)
-    read = {c.params.get("scope_id") for c in fake.calls if c.op == "exclusion.list"}
-    # Two at a time: by the time 10.1.0.0 fails, at most the next few have been sent, never the whole list.
-    assert "10.39.0.0" not in read
-    assert len(read) < 10
+    with pytest.raises(PSError, match="broken 10.0.0.0") as serial:
+        ws.read(DhcpClient(fake))
+    fake.calls.clear()
+    slow = Slow(fake, delay=0.01, delays={"10.0.0.0": 0.05, "10.2.0.0": 0.1, "10.3.0.0": 0.1})
+    with pytest.raises(PSError, match="broken 10.0.0.0") as parallel:
+        ws.read(DhcpClient(limit(slow, 4)), workers=4)
+    assert str(parallel.value) == str(serial.value)
+    sent = commands_per_scope(fake)
+    assert sent["10.0.0.0"] == 3  # exclusions, reservations, then the failing option list
+    assert sent["10.1.0.0"] == 1
+    assert sent["10.2.0.0"] == 1 and sent["10.3.0.0"] == 1
+    assert not {f"10.{n}.0.0" for n in range(4, 40)} & sent.keys()
     # Nothing is left running in the background once read() has raised.
     count = len(fake.calls)
-    time.sleep(0.1)
+    time.sleep(0.15)
     assert len(fake.calls) == count
+
+
+class JobTimeout(Exception):
+    """What RQ raises in the job's main thread when the job runs past its timeout."""
+
+
+def test_an_interrupted_read_waits_only_for_the_commands_in_flight(monkeypatch):
+    fake = with_more_scopes(40)
+    slow = Slow(fake, delay=0.03)
+    at_interrupt = {}
+
+    def interrupted(future):
+        time.sleep(0.05)
+        at_interrupt["calls"], at_interrupt["time"] = len(fake.calls), time.monotonic()
+        raise JobTimeout
+
+    monkeypatch.setattr(ws, "_wait", interrupted)
+    with pytest.raises(JobTimeout):
+        ws.read(DhcpClient(limit(slow, 4)), workers=4)
+    # A scope takes about five commands of 30 ms: waiting for whole scopes would take far longer than one command.
+    assert time.monotonic() - at_interrupt["time"] < 0.1
+    assert len(fake.calls) - at_interrupt["calls"] <= 4
+    count = len(fake.calls)
+    time.sleep(0.15)
+    assert len(fake.calls) == count
+
+
+def test_an_interrupted_parallel_run_starts_nothing_more(monkeypatch):
+    starts = []
+
+    def fn(item):
+        starts.append(item)
+        time.sleep(0.05)
+        return item
+
+    def interrupted(future):
+        raise JobTimeout
+
+    monkeypatch.setattr(ws, "_wait", interrupted)
+    with pytest.raises(JobTimeout):
+        ws._in_parallel(fn, list(range(20)), 2, ws._Stop())
+    # Only what was already running; the rest is cancelled, not run while the job waits for its threads.
+    assert len(starts) <= 2
+
+
+def test_a_failed_item_cancels_the_items_after_it_at_once():
+    starts = []
+
+    def fn(item):
+        starts.append(item)
+        if item == 1:
+            raise ValueError("broken 1")
+        time.sleep(0.1)
+        return item
+
+    with pytest.raises(ValueError, match="broken 1"):
+        ws._in_parallel(fn, list(range(20)), 2, ws._Stop())
+    # Item 0 was running and finishes; nothing after item 1 starts, even while the caller still waits for item 0.
+    assert sorted(starts) == [0, 1]
 
 
 def test_scopes_deleted_mid_read_are_left_out_in_order():

@@ -70,7 +70,10 @@ DHCP 20135 and 20136). A push of such a policy fails the same way, so fix it in 
 - Reading a server takes a few PowerShell calls per scope, `max_concurrency` scopes at a time: the option values
   of a scope's reservations and the IP ranges and values of its policies are read in batches of up to 64 per call,
   so the number of calls grows 64 times slower with the number of reservations or policies. The server-wide lists
-  are read one after another first. A push or an import of a server with thousands of scopes still takes minutes.
+  (IPv4 and DHCPv6, about 15 calls) are read one after another first. A push or an import of a server with
+  thousands of scopes still takes minutes.
+- `max_concurrency` caps the sessions of one job, not of one Windows host: several server records reaching the same
+  host, or several jobs at once, add up (see [Workers](workers.md#timeouts-and-concurrency)).
 - Two Windows servers that hold the same subnet without being failover partners share one IP range in NetBox when
   they are imported into the same VRF, and an import will not move that range for one of them: the scope change
   fails and names the other scope. To avoid the sharing, give each server its own import VRF before its first

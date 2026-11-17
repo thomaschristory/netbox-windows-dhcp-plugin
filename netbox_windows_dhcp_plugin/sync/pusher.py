@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from django.db import transaction
 
 from ..choices import SyncKindChoices
-from ..conf import get_setting
+from ..conf import max_concurrency
 from ..connection import failover_partner_check, failover_secret_lookup
 from ..models import FailoverRelationship, Scope, SyncRun, SyncState
 from ..windows.psscript import NotFound, WindowsLayerError
@@ -245,7 +245,7 @@ def _save_state(windows_server, result):
 def run(windows_server, client, dry_run=False, logger=log):
     """Push NetBox to the server, or only plan it with ``dry_run``. Errors reading Windows raise."""
     # Only the read runs scopes in parallel: the changes are sent one after another, in order.
-    state = windows_state.read(client, workers=get_setting("max_concurrency"))
+    state = windows_state.read(client, workers=max_concurrency())
     partners = netbox_state.partner_failovers(windows_server)
     codes6 = netbox_state.standard_codes6()
     target, notes = windows_state.to_records(
