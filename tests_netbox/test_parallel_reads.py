@@ -7,6 +7,7 @@ from core.choices import JobStatusChoices
 from core.models import Job
 from django.test import TestCase, override_settings
 
+from netbox_windows_dhcp_plugin import conf
 from netbox_windows_dhcp_plugin.choices import SyncStatusChoices
 from netbox_windows_dhcp_plugin.jobs import DryRunJob, ImportJob, PushJob
 from netbox_windows_dhcp_plugin.sync import windows_state
@@ -61,7 +62,8 @@ class ParallelReadJobTest(PushTestMixin, TestCase):
 
     @override_settings(PLUGINS_CONFIG=BROKEN)
     def test_a_bad_value_is_logged_and_the_default_used(self):
-        with self.assertLogs("netbox_windows_dhcp_plugin.conf", "ERROR") as logs:
+        # The log object itself, not assertLogs: a LOGGING setting may disable the module's logger.
+        with mock.patch.object(conf, "log") as log:
             read = self._job(PushJob)
         self.assert_workers(read, 4)
-        self.assertIn("max_concurrency must be a whole number of at least 1, not 'lots': using 4", logs.output[0])
+        log.error.assert_called_with("max_concurrency must be a whole number of at least 1, not 'lots': using 4")
