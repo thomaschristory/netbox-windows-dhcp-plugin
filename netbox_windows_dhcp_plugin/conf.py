@@ -58,16 +58,48 @@ def get_setting(key):
     return get_plugin_config(PLUGIN_NAME, key, DEFAULTS[key])
 
 
+# max_concurrency above this works but is rarely wise: see max_concurrency().
+MAX_CONCURRENCY_ADVISED = 10
+# ... and above this it is cut down: WinRM allows 30 shells per user by default (MaxShellsPerUser).
+MAX_CONCURRENCY_CAP = 30
+# Bad or high values already logged by this process: the setting is read by every job, the message is needed once.
+_concurrency_logged: set[str] = set()
+
+
+def _log_once(level: int, value, message: str) -> None:
+    key = f"{level}:{value!r}"
+    if key not in _concurrency_logged:
+        _concurrency_logged.add(key)
+        log.log(level, message)
+
+
 def max_concurrency():
     """
     The max_concurrency setting. A value that is not a whole number of at least 1 is a configuration mistake: it is
-    logged and the default is used, so imports and pushes keep working.
+    logged and the default is used, so imports and pushes keep working. Above MAX_CONCURRENCY_ADVISED a warning is
+    logged, and above MAX_CONCURRENCY_CAP the value is cut down to it. Each message is logged once per process.
     """
     value = get_setting("max_concurrency")
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         default = DEFAULTS["max_concurrency"]
-        log.error(f"max_concurrency must be a whole number of at least 1, not {value!r}: using {default}")
+        message = f"max_concurrency must be a whole number of at least 1, not {value!r}: using {default}"
+        _log_once(logging.ERROR, value, message)
         return default
+    if value > MAX_CONCURRENCY_CAP:
+        _log_once(
+            logging.WARNING,
+            value,
+            f"max_concurrency {value} is above {MAX_CONCURRENCY_CAP} (the default WinRM MaxShellsPerUser): using "
+            f"{MAX_CONCURRENCY_CAP}",
+        )
+        return MAX_CONCURRENCY_CAP
+    if value > MAX_CONCURRENCY_ADVISED:
+        _log_once(
+            logging.WARNING,
+            value,
+            f"max_concurrency {value} is above {MAX_CONCURRENCY_ADVISED}: each command is its own WinRM shell or SSH "
+            "session on the server, and Windows OpenSSH allows 10 sessions per connection by default (MaxSessions)",
+        )
     return value
 
 

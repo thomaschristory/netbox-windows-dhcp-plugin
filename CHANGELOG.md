@@ -51,13 +51,17 @@ All notable changes to this project are documented here. The format follows
   one after another (all of them first now, DHCPv6 included), and a push still sends its changes one after
   another. The cap is per job, not per Windows host: see [Workers](docs/workers.md#timeouts-and-concurrency) for
   WinRM and OpenSSH session limits. Set it to `1` to keep the old behaviour, for example when a firewall or the DHCP
-  server limits connections. A value that is not a whole number of at least 1 is now logged and the default used.
+  server limits connections. **Upgrading:** a `max_concurrency` left in `PLUGINS_CONFIG`, which did nothing until
+  now, takes effect. A value that is not a whole number of at least 1 is now logged and the default used; above 10
+  a warning is logged, and above 30 (the default WinRM `MaxShellsPerUser`) 30 is used. A job that times out waits
+  at most 30 seconds for the commands in flight.
   In the lab (two servers, WinRM with CredSSP; 7 scopes, 6 IPv4 and 1 DHCPv6, and 5 IPv4 scopes) a full read took
   28% less time with the default of 4, with no connection errors at up to 8. (#99)
-- SSH: when the server refuses one more session on the shared connection (sshd `MaxSessions`), the plugin keeps the
-  connection, so the commands running on it go on, and tries again for a few seconds; it then fails that command
-  with a message naming `MaxSessions` and `max_concurrency`. Until now any refusal dropped the connection and every
-  command running on it. (#99)
+- SSH: a session that fails to open on a live connection no longer drops that connection, which killed every
+  command running on it and hid the real error behind theirs; only that command fails. When the server refuses a
+  session while other commands run on the connection (sshd `MaxSessions`), it is tried again for a few seconds
+  first. The message gives the server's reason, then names `MaxSessions` and `max_concurrency` as a possible
+  cause. A dead connection is still opened again once. (#99)
 - The failover shared secret no longer appears in the PowerShell script sent to the DHCP server: it follows the
   script on the same input line and is handed to it in a variable. PowerShell script block logging (event 4104) on
   the DHCP server no longer records it, nor does module logging of `ConvertFrom-Json` (checked with PowerShell 7

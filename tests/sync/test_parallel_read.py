@@ -9,6 +9,7 @@ import pytest
 
 from netbox_windows_dhcp_plugin.sync import windows_state as ws
 from netbox_windows_dhcp_plugin.windows import DhcpClient
+from netbox_windows_dhcp_plugin.windows import runner as runner_mod
 from netbox_windows_dhcp_plugin.windows.client import (
     ExclusionRange,
     OptionKey,
@@ -241,6 +242,135 @@ def test_a_failed_item_cancels_the_items_after_it_at_once():
         ws._in_parallel(fn, list(range(20)), 2, ws._Stop())
     # Item 0 was running and finishes; nothing after item 1 starts, even while the caller still waits for item 0.
     assert sorted(starts) == [0, 1]
+
+
+def failing(*pairs):
+    def broken(op, p):
+        sid = p.get("scope_id")
+        if (op, sid) in pairs:
+            return PSError(message=f"broken {sid}", category="InvalidOperation", command="Get-X")
+        return None
+
+    return broken
+
+
+def test_the_lowest_failing_scope_wins_even_when_a_later_one_fails_first():
+    # 10.2.0.0 fails at once; 10.0.0.0 fails later, on its second command. From then on 10.1.0.0, which sits between
+    # them, must stop too: a one-at-a-time read would have stopped on 10.0.0.0 before reaching it.
+    fake = with_more_scopes(20)
+    fake.fail = failing(("exclusion.list", "10.2.0.0"), ("reservation.list", "10.0.0.0"))
+    slow = Slow(fake, delay=0.01, delays={"10.0.0.0": 0.1, "10.1.0.0": 0.15})
+    with pytest.raises(PSError, match="broken 10.0.0.0"):
+        ws.read(DhcpClient(limit(slow, 4)), workers=4)
+    sent = commands_per_scope(fake)
+    assert sent["10.0.0.0"] == 2
+    # Its first command (0 to 0.15 s) and the second one, sent before 10.0.0.0 failed at 0.2 s; nothing after.
+    assert sent["10.1.0.0"] <= 2
+
+
+def test_a_timeout_after_a_failure_stops_the_scopes_before_it_too(monkeypatch):
+    fake = with_more_scopes(20)
+    fake.fail = failing(("exclusion.list", "10.2.0.0"))
+    slow = Slow(fake, delay=0.01, delays={"10.0.0.0": 0.15, "10.1.0.0": 0.15})
+
+    def interrupted(future):
+        time.sleep(0.2)  # 10.2.0.0 failed long ago; 10.0.0.0 and 10.1.0.0 are on their second command
+        raise JobTimeout
+
+    monkeypatch.setattr(ws, "_wait", interrupted)
+    with pytest.raises(JobTimeout):
+        ws.read(DhcpClient(limit(slow, 4)), workers=4)
+    sent = commands_per_scope(fake)
+    # Without the timeout they would read on (they come before the failed scope); with it they stop.
+    assert sent["10.0.0.0"] <= 2 and sent["10.1.0.0"] <= 2
+
+
+def test_a_timeout_does_not_wait_for_a_hung_command_past_the_bound(monkeypatch):
+    fake = with_more_scopes(8)
+    release = threading.Event()
+
+    class Hung(Slow):
+        def run(self, script, params=None):
+            if (params or {}).get("scope_id") == "10.1.0.0":
+                release.wait(10)  # a WinRM command that never answers
+            return super().run(script, params)
+
+    def interrupted(future):
+        time.sleep(0.1)
+        raise JobTimeout
+
+    monkeypatch.setattr(ws, "_wait", interrupted)
+    monkeypatch.setattr(ws, "INTERRUPT_WAIT", 0.3)
+    started = time.monotonic()
+    try:
+        with pytest.raises(JobTimeout):
+            ws.read(DhcpClient(limit(Hung(fake, delay=0.01), 4)), workers=4)
+        # The serial lists take a moment first; then 0.1 s to the timeout and at most 0.3 s more.
+        assert time.monotonic() - started < 2
+    finally:
+        release.set()
+
+
+def test_a_timeout_while_queueing_still_stops_and_cancels(monkeypatch):
+    starts = []
+
+    def fn(item):
+        starts.append(item)
+        time.sleep(0.05)
+        return item
+
+    real = ws.ThreadPoolExecutor
+
+    class Interrupted(real):
+        submitted = 0
+
+        def submit(self, *args, **kwargs):
+            Interrupted.submitted += 1
+            if Interrupted.submitted == 6:
+                raise JobTimeout
+            return super().submit(*args, **kwargs)
+
+    monkeypatch.setattr(ws, "ThreadPoolExecutor", Interrupted)
+    with pytest.raises(JobTimeout):
+        ws._in_parallel(fn, list(range(20)), 2, ws._Stop())
+    time.sleep(0.2)
+    # Five were queued, two threads: the two running finish, the three waiting are cancelled.
+    assert len(starts) <= 2
+
+
+def test_a_command_waiting_for_a_free_slot_is_not_sent_once_stopped():
+    fake = FakeDhcpServer()
+    gate = threading.Event()
+
+    class Holding:
+        def run(self, script, params=None):
+            gate.wait(5)
+            return fake.run(script, params)
+
+    limited = limit(Holding(), 1)
+    stop = {"now": False}
+    first = threading.Thread(target=lambda: DhcpClient(limited).list_scopes())
+    first.start()
+    time.sleep(0.05)
+    outcome = []
+
+    def second():
+        runner_mod.set_stop_check(lambda: stop["now"])
+        try:
+            DhcpClient(limited).list_scopes()
+            outcome.append("sent")
+        except runner_mod.Stopped:
+            outcome.append("stopped")
+
+    t = threading.Thread(target=second)
+    t.start()
+    time.sleep(0.05)
+    stop["now"] = True  # the read stops while the command waits for the slot
+    gate.set()
+    first.join()
+    t.join()
+    assert outcome == ["stopped"]
+    assert fake.ops() == ["scope.list"]
 
 
 def test_scopes_deleted_mid_read_are_left_out_in_order():

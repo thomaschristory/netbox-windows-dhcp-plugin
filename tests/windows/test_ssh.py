@@ -20,6 +20,7 @@ import pytest
 
 paramiko = pytest.importorskip("paramiko")
 
+from netbox_windows_dhcp_plugin.windows import runner as runner_mod  # noqa: E402
 from netbox_windows_dhcp_plugin.windows import ssh as ssh_mod  # noqa: E402
 from netbox_windows_dhcp_plugin.windows.client import DhcpClient, Scope  # noqa: E402
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer  # noqa: E402
@@ -440,17 +441,34 @@ def _with_transports(monkeypatch, *transports: _FakeTransport) -> SSHRunner:
     return r
 
 
-def test_a_refused_session_on_a_live_connection_keeps_it(monkeypatch) -> None:
+def test_a_refused_session_while_others_run_is_tried_again_on_the_same_connection(monkeypatch) -> None:
     live = _FakeTransport(active=True, refuse=2)
     r = _with_transports(monkeypatch, live)
+    r._sessions = 1  # another command of ours is running on the connection
     assert r._open_channel() == "channel"
     assert not live.closed and live.opened == 1
+
+
+def test_a_refusal_with_nothing_else_open_fails_at_once_with_the_reason_first(monkeypatch) -> None:
+    # Nothing of ours will free a session (MaxSessions 0, or a server that refuses sessions): no waiting, and the
+    # message gives the server's reason before naming the likely cause.
+    live = _FakeTransport(active=True, refuse=99)
+    r = _with_transports(monkeypatch, live)
+    monkeypatch.setattr(ssh_mod, "SESSION_RETRY_DELAYS", (5.0,) * 3)
+    started = time.monotonic()
+    with pytest.raises(RunnerError) as err:
+        r._open_channel()
+    assert time.monotonic() - started < 1
+    assert str(err.value).startswith("ssh: dhcp.example.test refused to open a session: ")
+    assert "Administratively prohibited" in str(err.value) and "If it allows fewer sessions" in str(err.value)
+    assert not live.closed and live.refuse == 98
 
 
 def test_a_refusal_taken_by_another_thread_still_keeps_the_connection(monkeypatch) -> None:
     # paramiko keeps one refusal per connection: a thread whose refusal another took gets this plain error.
     live = _FakeTransport(active=True, refuse=0, error=paramiko.SSHException("Unable to open channel."))
     r = _with_transports(monkeypatch, live)
+    r._sessions = 1
     with pytest.raises(RunnerError, match="MaxSessions"):
         r._open_channel()
     assert not live.closed
@@ -463,13 +481,42 @@ def test_a_refused_session_on_a_dead_connection_reconnects(monkeypatch) -> None:
     assert dead.closed and fresh.opened == 1
 
 
-def test_any_other_open_error_reconnects_once(monkeypatch) -> None:
-    broken = _FakeTransport(active=True, refuse=0, error=paramiko.SSHException("SSH session not active"))
-    broken2 = _FakeTransport(active=True, refuse=0, error=EOFError())
+def test_another_open_error_on_a_live_connection_fails_only_that_command(monkeypatch) -> None:
+    # Dropping the shared connection would kill the other commands running on it, and hide this error behind theirs.
+    slow = _FakeTransport(active=True, refuse=0, error=paramiko.SSHException("Timeout opening channel."))
+    r = _with_transports(monkeypatch, slow)
+    with pytest.raises(RunnerError, match="ssh: opening session: Timeout opening channel."):
+        r._open_channel()
+    assert not slow.closed
+
+
+def test_a_connection_that_died_is_opened_again_once(monkeypatch) -> None:
+    # paramiko may still call the transport active when the socket has already reported the end.
+    broken = _FakeTransport(active=True, refuse=0, error=EOFError())
+    broken2 = _FakeTransport(active=True, refuse=0, error=OSError("connection reset"))
     r = _with_transports(monkeypatch, broken, broken2)
-    with pytest.raises(RunnerError, match="opening session"):
+    with pytest.raises(RunnerError, match="opening session: connection reset"):
         r._open_channel()
     assert broken.closed and broken2.closed
+
+
+def test_a_stopping_read_does_not_open_a_session_after_waiting(monkeypatch) -> None:
+    live = _FakeTransport(active=True, refuse=1)
+    r = _with_transports(monkeypatch, live)
+    r._sessions = 1
+    stop = {"now": False}
+
+    def sleep(seconds: float) -> None:
+        stop["now"] = True  # the read is told to stop while this thread waits
+
+    monkeypatch.setattr(ssh_mod.time, "sleep", sleep)
+    runner_mod.set_stop_check(lambda: stop["now"])
+    try:
+        with pytest.raises(runner_mod.Stopped):
+            r._open_channel()
+    finally:
+        runner_mod.set_stop_check(None)
+    assert live.opened == 0 and not live.closed
 
 
 def test_stdin_is_base64_script(ssh_server) -> None:

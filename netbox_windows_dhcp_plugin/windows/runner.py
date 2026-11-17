@@ -26,9 +26,12 @@ __all__ = [
     "Limited",
     "Runner",
     "RunnerError",
+    "Stopped",
     "clean_stderr",
     "execute",
     "limit",
+    "raise_if_stopped",
+    "set_stop_check",
 ]
 
 DEFAULT_MAX_CONCURRENCY = 4
@@ -55,6 +58,29 @@ class RunnerError(psscript.WindowsLayerError):
     """The script could not be run: connection, authentication or a crashed powershell.exe."""
 
 
+class Stopped(Exception):  # noqa: N818 - not an error: the caller asked for it
+    """The calling thread's commands must stop (see set_stop_check); nothing more is sent."""
+
+
+_stop_check = threading.local()
+
+
+def set_stop_check(check: Callable[[], bool] | None) -> None:
+    """
+    Make ``check()`` decide, for the calling thread, whether its next command may still be sent. The parallel read of
+    a server (sync/windows_state.py) uses it so a scope that must stop sends nothing more, including a command
+    waiting for a free slot (Limited) or retrying to open an SSH session.
+    """
+    _stop_check.check = check
+
+
+def raise_if_stopped() -> None:
+    """Raise Stopped when the calling thread's commands must stop."""
+    check = getattr(_stop_check, "check", None)
+    if check is not None and check():
+        raise Stopped
+
+
 class Limited:
     """Caps the number of scripts in flight on the wrapped runner (a bounded semaphore).
 
@@ -72,6 +98,8 @@ class Limited:
         if not self._sem.acquire(timeout=self.timeout):
             raise RunnerError(f"timed out after {self.timeout}s waiting for a free connection slot")
         try:
+            # It may have waited for the slot while its read was told to stop.
+            raise_if_stopped()
             return self.runner.run(script, params)
         finally:
             self._sem.release()

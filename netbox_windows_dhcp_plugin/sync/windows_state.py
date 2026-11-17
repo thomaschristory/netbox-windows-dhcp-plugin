@@ -13,6 +13,7 @@ import ipaddress
 import threading
 from collections.abc import Callable, Iterable
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
+from concurrent.futures import wait as futures_wait
 from dataclasses import dataclass, field, fields
 from typing import Any
 
@@ -38,6 +39,7 @@ from ..windows.client import (
     Superscope,
 )
 from ..windows.psscript import NotFound
+from ..windows.runner import Stopped, raise_if_stopped, set_stop_check
 from .diff import Record
 
 __all__ = (
@@ -173,7 +175,7 @@ def read(client: DhcpClient, workers: int = 1) -> WindowsState:
         stop: _Stop | None = _Stop()
         # A copy of the client whose commands are refused once its scope must stop (see _Stop).
         scoped = copy.copy(client)
-        scoped.runner = _Stopping(client.runner, stop)
+        scoped.runner = _Stopping(client.runner)
     else:
         stop, scoped = None, client
     # A scope can disappear while it is read, for example when a failover relationship is removed on its partner:
@@ -192,26 +194,32 @@ def read(client: DhcpClient, workers: int = 1) -> WindowsState:
     return state
 
 
-class _Skipped(Exception):  # noqa: N818 - internal control flow
-    """A command not sent because its scope's read is stopping."""
+# A command not sent because its scope's read is stopping (raised by the Windows layer's stop check).
+_Skipped = Stopped
+
+# After a job timeout, the longest the read waits for the commands already sent before it lets the timeout through.
+# RQ kills a job's process about a minute after its timeout, and the job still has to record the failed run.
+INTERRUPT_WAIT = 30
 
 
 class _Stop:
     """
     Which scopes of a parallel read may still send commands. When the scope at index ``i`` fails, the scopes after it
-    stop: a one-at-a-time read would never have reached them. The scopes before it go on, since the first of them to
-    fail gives the read's error, as it would one at a time. When the job itself is interrupted (a timeout), every
-    scope stops.
+    stop: a one-at-a-time read would never have reached them. The scopes before it go on, since the lowest failing
+    index gives the read's error, as it would one at a time, whichever failed first. When the job itself is
+    interrupted (a timeout), every scope stops.
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._first_failed: int | None = None
-        self._local = threading.local()
 
     def enter(self, index: int) -> None:
-        """The calling worker thread now reads the scope at ``index``."""
-        self._local.index = index
+        """The calling worker thread now reads the scope at ``index``: its commands are sent only while allowed."""
+        set_stop_check(lambda: self.stopped(index))
+
+    def leave(self) -> None:
+        set_stop_check(None)
 
     def fail(self, index: int) -> None:
         with self._lock:
@@ -225,25 +233,21 @@ class _Stop:
         with self._lock:
             return self._first_failed is not None and index > self._first_failed
 
-    def check(self) -> None:
-        """Raise _Skipped when the calling thread's scope must stop."""
-        if self.stopped(getattr(self._local, "index", -1)):
-            raise _Skipped
-
 
 class _Stopping:
     """
     A runner that refuses a scope's commands once that scope must stop (see _Stop). After a failure or a job timeout,
     the scopes still being read stop at their next command, so the read only waits for the commands already sent to
     Windows, not for whole scopes: a WinRM command can take minutes, and a job past its timeout has about a minute
-    before the worker is killed.
+    before the worker is killed. The Windows layer checks too while a command waits for a free slot or for an SSH
+    session.
     """
 
-    def __init__(self, runner: Any, stop: _Stop) -> None:
-        self.runner, self.stop = runner, stop
+    def __init__(self, runner: Any) -> None:
+        self.runner = runner
 
     def run(self, script: str, params: Any = None) -> bytes:
-        self.stop.check()
+        raise_if_stopped()
         return self.runner.run(script, params)
 
 
@@ -306,7 +310,7 @@ def _in_parallel(fn: Callable[[Any], Any], items: list, workers: int, stop: _Sto
 
     def guarded(index: int, item: Any) -> Any:
         queued.wait()
-        # A stopped item that starts anyway sends nothing: its first command is refused (_Stopping).
+        # A stopped item that starts anyway sends nothing: its first command is refused.
         stop.enter(index)
         try:
             return fn(item)
@@ -316,21 +320,43 @@ def _in_parallel(fn: Callable[[Any], Any], items: list, workers: int, stop: _Sto
             for f in futures[index + 1 :]:
                 f.cancel()
             raise
+        finally:
+            stop.leave()
 
-    with ThreadPoolExecutor(max_workers=min(workers, len(items)), thread_name_prefix="windows-dhcp-read") as pool:
+    # Not a with block: after a job timeout the read must not wait for the threads without a bound.
+    pool = ThreadPoolExecutor(max_workers=min(workers, len(items)), thread_name_prefix="windows-dhcp-read")
+    try:
         try:
             futures.extend(pool.submit(guarded, i, item) for i, item in enumerate(items))
         finally:
             queued.set()
-        try:
-            # In list order: every item before the one that raises here returned, so its error is the first one.
-            return [_wait(f) for f in futures]
-        except BaseException as exc:
-            stop.stop_all()
-            pool.shutdown(wait=True, cancel_futures=True)
+        # In list order: every item before the one that raises here returned, so its error is the first one.
+        results = [_wait(f) for f in futures]
+    except BaseException as exc:
+        stop.stop_all()
+        pool.shutdown(wait=False, cancel_futures=True)
+        if _raised_by_an_item(futures, exc) or isinstance(exc, _Skipped | CancelledError):
+            # An item failed: wait for the commands in flight, so nothing runs once the read has failed.
+            futures_wait(_not_cancelled(futures))
             if isinstance(exc, _Skipped | CancelledError):  # not expected: see above
                 raise _first_error(futures) from None
             raise
+        # Interrupted (a job timeout): wait a bounded time for the commands in flight, then let the interrupt through
+        # so the job can still record its failure. A command still running is left to its thread; the job closes the
+        # client, which ends an SSH command.
+        futures_wait(_not_cancelled(futures), timeout=INTERRUPT_WAIT)
+        raise
+    pool.shutdown(wait=True)
+    return results
+
+
+def _not_cancelled(futures: list[Future]) -> list[Future]:
+    # A future cancelled while queued never counts as done for concurrent.futures.wait: its thread never takes it.
+    return [f for f in futures if not f.cancelled()]
+
+
+def _raised_by_an_item(futures: list[Future], exc: BaseException) -> bool:
+    return any(f.done() and not f.cancelled() and f.exception() is exc for f in futures)
 
 
 def _first_error(futures: list[Future]) -> BaseException:

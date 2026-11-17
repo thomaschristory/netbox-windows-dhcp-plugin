@@ -61,19 +61,21 @@ transaction-pooling proxy (pgbouncer in transaction mode). Session pooling is fi
   batches of up to 64 per call). The server-wide lists (IPv4 and DHCPv6) are read first, one after another; then
   up to `max_concurrency` (4) scopes, IPv4 and DHCPv6 alike, are read at the same time, each command over its own
   WinRM connection or SSH session. The changes of a push are always sent one after another, in order. When a
-  scope fails, or the job times out, the scopes after it stop at their next command: the job only waits for the
-  commands already sent.
+  scope fails, the scopes after it stop at their next command and the job waits for the commands already sent.
+  When the job times out, every scope stops at its next command and the job waits at most 30 seconds for the
+  commands already sent, so it can still record the failed run before the worker kills it.
 - `max_concurrency` caps one job, not the Windows host. Imports and pushes of one Windows server record wait for
   each other (see above), but jobs of other records run alongside, and so do lease views and connection tests.
   Several records that reach Windows through the same host (one management host with `computer_name`, or the same
   DHCP server entered twice) and several workers can therefore open several times `max_concurrency` sessions on
   one host. Windows limits them: WinRM allows 30 shells per user by default (`MaxShellsPerUser`, and
   `MaxConcurrentOperationsPerUser`), and Windows OpenSSH allows 10 sessions per connection by default (`MaxSessions`
-  in `sshd_config`, often lower on hardened servers). A refused SSH session is tried again for a few seconds, then
-  that command fails with a message naming `MaxSessions`; a refused WinRM shell fails the command. Keep the
-  setting low (the default 4, at most about 10), lower it (`1` reads one scope at a time) if a server, a firewall
-  or a management host struggles, and raise it only when a server with many scopes reads too slowly and has
-  sessions to spare. The time still grows with the number of scopes, divided by the setting at best.
+  in `sshd_config`, often lower on hardened servers). An SSH session refused while other commands of the job run
+  on the same connection is tried again for a few seconds; a refusal with nothing else running, or one that lasts,
+  fails that command with the server's reason. A refused WinRM shell fails the command. Keep the setting low (the
+  default 4; above 10 a warning is logged, and above 30 it is cut down to 30), lower it (`1` reads one scope at a
+  time) if a server, a firewall or a management host struggles, and raise it only when a server with many scopes
+  reads too slowly and has sessions to spare. The time still grows with the number of scopes, divided by the setting at best.
 - A push, dry run or import job may run for an hour; with netbox-branching an import may run as long as its
   `job_timeout` when that is longer (provisioning a branch can be slow).
 

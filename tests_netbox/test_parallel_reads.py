@@ -1,5 +1,6 @@
 """Issue #99: the import, push and dry run jobs read Windows with max_concurrency scopes at a time."""
 
+import logging
 import uuid
 from unittest import mock
 
@@ -63,7 +64,9 @@ class ParallelReadJobTest(PushTestMixin, TestCase):
     @override_settings(PLUGINS_CONFIG=BROKEN)
     def test_a_bad_value_is_logged_and_the_default_used(self):
         # The log object itself, not assertLogs: a LOGGING setting may disable the module's logger.
-        with mock.patch.object(conf, "log") as log:
+        with mock.patch.object(conf, "log") as log, mock.patch.object(conf, "_concurrency_logged", set()):
             read = self._job(PushJob)
         self.assert_workers(read, 4)
-        log.error.assert_called_with("max_concurrency must be a whole number of at least 1, not 'lots': using 4")
+        log.log.assert_called_once_with(
+            logging.ERROR, "max_concurrency must be a whole number of at least 1, not 'lots': using 4"
+        )
