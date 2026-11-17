@@ -241,16 +241,24 @@ relationships, MAC filters, list switches.
   (`#<pk>` key); a scope policy whose stored
   `ip_ranges` do not parse (`netbox_state._policy_ranges` passes the stored value through instead of failing the
   whole read; `windows_state.ip_ranges` stays strict). For a clash, an object already on Windows as NetBox has it
-  (same key, same mask or client) keeps being pushed and only the others are left out; with none, all are. Nothing is
-  deleted because of a reason: `_replaced` holds the Windows objects NetBox no longer holds that an unpushable
-  object would replace (a scope sharing addresses with its prefix or holding its IP range, a reservation for the same
-  client in any scope or at the same address, every gone exclusion of the scope of an unpushable exclusion) and
-  everything hanging off them (`parents()`, failover relationships included, superscopes not: removing one leaves its
-  scopes), with a `not_pushed` delete entry when they are managed. Indexed by client, address and scope, so it stays
-  linear (4000 reservations of a moved /19: well under a second). Lab results (Windows Server 2025): range with the
+  (same key, same mask or client) keeps being pushed and only the others are left out; with none, all are. Children of
+  a refused object are refused too, transitively over `parents()` (`_waiting_children`), so nothing is created under
+  it. Scope policy IP ranges must parse (`_unpushable`), run upwards and sit in the scope's prefix (`_conflicts`);
+  `windows_writer` checks them again before any write, since a policy update removes old ranges before adding new
+  ones.
+- **Delete pause (#108, round 2).** While anything in a family cannot be pushed, nothing in that family is deleted; the dry run lists what is waiting and why. Families (`push.family`): v4 = scope, superscope, reservation, exclusion,
+  failover, scope policy, option values under a scope or reservation; v6 = scope6, reservation6, option6 under a
+  prefix; server-level objects are in none. `_pause_deletes` runs last in `plan`: the blocking set is the objects
+  refused for what they are (plan reasons, their children, `_scopes_in_other_relationships`), not policies refused by
+  `_order_policies` (those follow from the planned deletes, and pausing would keep them refused for good), nor
+  changes that still go ahead in another form (`_protect_memberships`). Every delete of a blocked family, and every
+  failover update that drops scopes, becomes a `not_pushed` entry (`waiting: ...`, first three blockers named, then
+  "and N more"); a delete outside the families that still holds a paused child waits with it. Paused objects stay in
+  `SyncState`, so the first push with nothing refused deletes them; nothing churns (a second plan is empty). This
+  replaced an address-matching heuristic (`_replaced`) that a review broke with a DHCPv6 prefix move, a move onto a
+  destination refused for another reason, and a /23 split. Lab results (Windows Server 2025): range with the
   network or broadcast address refused; overlapping and nested exclusions refused; duplicate IPv4 client refused
-  (ResourceExists); same DHCPv6 DUID and IAID refused, another IAID accepted. Only the scope overlap rule is still
-  `# unverified:` (lab test `test_overlapping_scopes`). No `pre_save` veto on core IPAM models: the guard in
+  (ResourceExists); same DHCPv6 DUID and IAID refused, another IAID accepted. Two scopes sharing addresses refused (ResourceExists, a /25 inside a /24). No `pre_save` veto on core IPAM models: the guard in
   `ipam_guard.py` is about permissions only.
 - **Model checks (#108).** `WindowsServer.clean()` refuses a second row for one DHCP server (normalised host, port
   with its default, normalised remote DHCP server; hosts compared in Python, so IPv6 spellings match), one query,

@@ -34,9 +34,13 @@ All notable changes to this project are documented here. The format follows
   one server sharing addresses (a scope made on Windows by hand included); exclusion ranges of one scope sharing
   addresses; two reservations of one scope for the same client (DHCPv6: the same DUID and IAID). These mostly come
   from IPAM edits, which the plugin's forms do not see. When one of the clashing objects is already on Windows, it
-  keeps being pushed. The Windows object a left-out object would replace (the scope still holding the range when its
-  prefix was moved in IPAM, the client's old reservation, the scope's other exclusion ranges) is kept with everything
-  in it, so nothing is deleted on Windows for an object that cannot be written. Imports are not affected. (#108)
+  keeps being pushed. What hangs off a left-out object is left out with it, and a scope policy IP range must run
+  upwards inside the scope's prefix. Imports are not affected. (#108)
+- **Delete pause:** While anything in a family cannot be pushed, nothing in that family is deleted; the dry run lists what is waiting and why. The families are the IPv4 scopes (with their reservations, exclusions, policies, option
+  values, superscopes and failover relationships) and the DHCPv6 scopes; server-level objects are not held up. A
+  scope whose prefix moved in IPAM, or a reservation that changed address, looks to the push like a new object plus a
+  deleted one, so when the new one cannot be pushed the old one now stays on Windows instead of being deleted. The
+  waiting deletes happen on the first push with nothing left out in their family. (#108)
 - The Windows server form refuses a second server for one DHCP server (same host ignoring case and a trailing dot,
   same port, same remote DHCP server), and the failover relationship form refuses a new partner the primary server's
   credential profile does not allow (`allowed_hosts`), which the push already refused. Imports are not affected.

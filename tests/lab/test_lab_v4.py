@@ -751,8 +751,8 @@ def test_reservation_outside_the_scope_range(lab: Lab, probe_out) -> None:
 
 
 def test_overlapping_scopes(lab: Lab, probe_out) -> None:
-    """push.py (#108): whether Windows refuses a scope sharing addresses with another scope of the server (a /25
-    inside a /24). The push assumes it does (`# unverified:` in push._conflicts)."""
+    """push.py (#108): Windows refuses a scope sharing addresses with another scope of the server, a /25 inside a
+    /24 (Server 2025 lab run: ResourceExists)."""
     s = lab.scope("nbwd-test-scope-overlap")
     base = s.scope_id.rsplit(".", 1)[0]
     inner = f"{base}.128"
@@ -768,7 +768,6 @@ def test_overlapping_scopes(lab: Lab, probe_out) -> None:
     seen = {"inner": _attempt(lambda: lab.client.add_scope(scope))}
     seen["listed"] = sorted(x.scope_id for x in lab.client.list_scopes() if x.scope_id.startswith(f"{base}."))
     save_probe(probe_out, "v4-scope-overlap", seen)
-    # If Windows accepts it, drop the overlap rule in push._conflicts.
     assert seen["inner"].startswith("refused"), seen
 
 

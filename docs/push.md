@@ -225,12 +225,21 @@ Other refusals happen at two moments.
 ### Refused when the push is planned
 
 These show in `not_pushed`, with the reason, in the dry run as well as the push. The push goes on with the rest and
-the Windows object is kept as it is. So is the Windows object a NetBox object left out this way would replace, with
-everything in it (reservations, exclusions, policies, option values, and a failover relationship holding it; not a
-superscope, whose removal leaves its scopes alone): a Windows scope sharing addresses with the left-out scope's prefix
-or holding its IP range (the prefix was moved in IPAM and the range left behind), the client's reservation at its old
-address or in its old scope, and the other exclusion ranges of the scope when one of them is left out. The push never
-deletes something on Windows to make room for an object it cannot write. The entries for these start with `kept`.
+the Windows object is kept as it is. What hangs off a left-out object is left out with it ("waits for scope ..."): the
+reservations and option values of a left-out scope, the option values of a left-out reservation, a failover
+relationship holding a left-out scope, and so on.
+
+**The delete pause.** While anything in a family cannot be pushed, nothing in that family is deleted; the dry run lists what is waiting and why. The two families are the IPv4 scopes (scopes, superscopes, reservations, exclusion
+ranges, scope and reservation option values, scope policies with their values and IP ranges, failover relationships)
+and the DHCPv6 scopes (DHCPv6 scopes, reservations and their option values). Server-level objects (classes, option
+definitions, server option values and policies, MAC filters) are in neither and are deleted as usual. NetBox objects
+have no identity a push can follow: a scope is known by its network, a reservation by its address, so a scope whose
+prefix moved in IPAM, or a reservation that changed address, looks like a new object plus a deleted one. When the new
+one cannot be pushed, deleting the old one would leave nothing on Windows; rather than guess which delete belongs to
+which refusal, every delete of the family waits. A failover relationship that would lose scopes waits too, since
+leaving the relationship removes a scope from the partner. Creates and updates that need nothing left out still go
+ahead. Each waiting delete is listed under `not_pushed` with a reason starting `waiting:` that names up to three of the
+objects holding it up. The objects stay managed, so the first push with nothing left out in their family deletes them.
 
 **Deletes that could lose data:**
 
@@ -247,7 +256,8 @@ deletes something on Windows to make room for an object it cannot write. The ent
 - a reservation without a MAC address or client ID, or a DHCPv6 reservation without an address, a DUID or an IAID;
 - objects that no longer fit their scope, typically after an edit of the prefix, IP range or IP address in IPAM
   (the plugin's forms refuse these, but IPAM edits do not go through them): an IPv4 scope whose range is outside its
-  prefix, ends before it starts, or holds the network or broadcast address; a reservation outside its scope's
+  prefix, ends before it starts, or holds the network or broadcast address; a scope policy IP range that runs
+  backwards or leaves the scope's prefix; a reservation outside its scope's
   prefix (an IPv4 reservation outside the scope's IP range but inside the prefix is fine, as on Windows); an
   exclusion range outside the scope's prefix, or ending before it starts (one reaching past the IP range inside the
   prefix is fine);

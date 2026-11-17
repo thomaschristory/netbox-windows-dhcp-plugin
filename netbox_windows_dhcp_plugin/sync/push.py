@@ -470,8 +470,8 @@ def _conflicts(
         )
 
     # Scopes of one server sharing addresses (a /23 over a /24, say), with the Windows scopes the push leaves alone.
-    # unverified: that Windows refuses a scope sharing addresses with another (lab test
-    # test_lab_v4.py::test_overlapping_scopes records it).
+    # Windows refuses a scope sharing addresses with another (lab, Windows Server 2025: a /25 inside a /24 gives
+    # ResourceExists).
     networks = {("scope", key): n for key, r in scopes.items() if (n := _scope_network(r)) is not None}
     for key, r in target.items():
         if key[0] == "scope" and key[1] not in scopes and key not in managed and (n := _scope_network(r)) is not None:
@@ -493,6 +493,9 @@ def _conflicts(
     by_scope: defaultdict[str, list[tuple[Key, int, int]]] = defaultdict(list)
     for r in live:
         key = (r.kind, r.key)
+        if r.kind == "policy" and (reason := _policy_ranges_place(r, scopes.get(r.fields.get("scope_id") or ""))):
+            out.setdefault(key, reason)
+            continue
         if r.kind not in ("reservation", "reservation6", "exclusion"):
             continue
         if _scope_of(r) in doubled or f"v6/{_scope_of(r)}" in doubled:
@@ -565,6 +568,22 @@ def _reservation_place(record: Record, scope: Record | None) -> str | None:
     return None
 
 
+def _policy_ranges_place(record: Record, scope: Record | None) -> str | None:
+    """A scope policy's IP ranges must run upwards and sit inside the scope's prefix (shape: see _unpushable)."""
+    network = _scope_network(scope) if scope is not None else None
+    ranges = record.fields.get("ip_ranges")
+    if network is None or not _valid_policy_ranges(ranges):
+        return None
+    for start, end in ranges:
+        first, last = ipaddress.IPv4Address(start), ipaddress.IPv4Address(end)
+        if first > last or first not in network or last not in network:
+            return (
+                f"policy {record.fields.get('name')}: its IP range {start}-{end} is reversed or outside the scope's "
+                f"prefix {network}; fix it in NetBox"
+            )
+    return None
+
+
 def _reservation6_place(record: Record, scope: Record | None) -> str | None:
     if scope is None or not record.fields.get("ip_address"):
         return None
@@ -594,78 +613,112 @@ def _exclusion_place(record: Record, scope: Record | None) -> str | None:
     return None
 
 
-def _replaced(skipped: Iterable[Record], source: set[Key], target: Mapping[Key, Record]) -> dict[Key, str]:
+# -- the delete pause -------------------------------------------------------------------------------------------------
+
+# What the delete pause covers: the IPv4 scope tree and the DHCPv6 scope tree. Server-level objects (classes,
+# definitions, server option values and policies, MAC filters) are not in either.
+FAMILIES = {"v4": "IPv4 scopes", "v6": "DHCPv6 scopes"}
+# How many blocking objects a pause reason names before "and N more".
+PAUSE_NAMES = 3
+
+
+def family(kind: str, fields: Mapping[str, Any]) -> str | None:
+    """The scope tree an object belongs to ("v4", "v6"), or None for a server-level object."""
+    if kind in ("scope", "superscope", "reservation", "exclusion", "failover"):
+        return "v4"
+    if kind == "policy":
+        return "v4" if fields.get("scope_id") else None
+    if kind == "option":
+        scope_id, _ = option_target(fields.get("parent") or "server")
+        return "v4" if scope_id else None
+    if kind in ("scope6", "reservation6"):
+        return "v6"
+    if kind == "option6":
+        prefix, _ = option6_target(fields.get("parent") or "server")
+        return "v6" if prefix else None
+    return None
+
+
+def _waiting_children(source: list[Record], refused: dict[Key, str]) -> dict[Key, str]:
     """
-    Windows objects that an unpushable NetBox object would replace: kept, rather than deleted with nothing to take
-    their place. A NetBox object has no lasting identity in the records (a scope is keyed by its network, a
-    reservation by its address), so a scope whose prefix changed in IPAM looks like a new scope plus a deleted one;
-    when the new one cannot be pushed, the plain diff would delete the old one on Windows and create nothing.
-
-    Only Windows objects NetBox no longer holds are looked at (the others are not deleted anyway). Kept, with
-    everything that hangs off them:
-
-    - a scope sharing addresses with an unpushable scope's prefix, or holding its IP range (the prefix moved away
-      from a range left in place);
-    - a reservation for the same client (in any scope), or at the same address, as an unpushable reservation;
-    - every exclusion range of a scope one of whose exclusion ranges cannot be pushed (it may have been moved
-      anywhere in the scope).
+    Objects whose parent cannot be pushed cannot be pushed either (a reservation of a refused scope, a value of a
+    refused reservation, a failover relationship holding a refused scope...), however far down.
     """
-    gone = {k: r for k, r in target.items() if k not in source}
-    if not gone:
-        return {}
-    gone_scopes = [(k, n) for k, r in gone.items() if k[0] == "scope" and (n := _scope_network(r)) is not None]
-    by_client: defaultdict[tuple[str, ...], list[Key]] = defaultdict(list)
-    by_address: defaultdict[tuple[str, str], list[Key]] = defaultdict(list)
-    exclusions: defaultdict[str, list[Key]] = defaultdict(list)
-    for k, r in gone.items():
-        if k[0] in ("reservation", "reservation6"):
-            if (client := _client_of(r)) is not None:
-                by_client[client].append(k)
-            if r.fields.get("ip_address"):
-                by_address[k[0], str(r.fields["ip_address"]).lower()].append(k)
-        elif k[0] == "exclusion":
-            exclusions[str(r.fields.get("scope_id"))].append(k)
-
     out: dict[Key, str] = {}
-    for record in skipped:
-        if DUPLICATE in record.fields:
-            continue
-        name = f"{record.kind} {record.key}"
-        if record.kind == "scope":
-            network = _scope_network(record)
-            addresses = [a for a in _scope_range(record) or () if a is not None]
-            for k, n in gone_scopes:
-                if (network is not None and n.overlaps(network)) or any(a in n for a in addresses):
-                    out.setdefault(k, f"kept: NetBox scope {record.key}, which uses its addresses, cannot be pushed")
-        elif record.kind in ("reservation", "reservation6"):
-            why = f"kept: NetBox {name}, for the same client or address, cannot be pushed"
-            client = _client_of(record)
-            for k in by_client.get(client, []) if client is not None else []:
-                out.setdefault(k, why)
-            if record.fields.get("ip_address"):
-                for k in by_address.get((record.kind, str(record.fields["ip_address"]).lower()), []):
-                    out.setdefault(k, why)
-        elif record.kind == "exclusion":
-            for k in exclusions.get(str(record.fields.get("scope_id")), []):
-                out.setdefault(k, f"kept: NetBox {name} of the same scope cannot be pushed")
-
-    # What hangs off a kept object stays with it: a scope's reservations, exclusions, policies and option values, a
-    # reservation's option values, and a failover relationship holding the scope (removing it would take the scope
-    # off the partner server). A superscope is not kept for its scopes: removing it on Windows leaves them in place.
-    children: defaultdict[Key, list[Key]] = defaultdict(list)
-    for k, r in gone.items():
-        if k[0] == "superscope":
-            continue
-        for parent in parents(r.kind, r.fields):
-            children[parent].append(k)
-    queue = list(out)
-    while queue:
-        parent = queue.pop()
-        for k in children.get(parent, []):
-            if k not in out:
-                out[k] = f"kept with {parent[0]} {parent[1]}, which NetBox cannot replace yet"
-                queue.append(k)
+    pending = [r for r in source if (r.kind, r.key) not in refused]
+    grown = True
+    while grown:
+        grown = False
+        rest = []
+        for r in pending:
+            parent = next((p for p in parents(r.kind, r.fields) if p in refused or p in out), None)
+            if parent is None:
+                rest.append(r)
+                continue
+            out[r.kind, r.key] = f"waits for {parent[0]} {parent[1]}, which cannot be pushed"
+            grown = True
+        pending = rest
     return out
+
+
+def _pause_deletes(plan: Plan, changes: list[Change], refusals: set[Key]) -> list[Change]:
+    """
+    While anything in a scope tree cannot be pushed, nothing in that tree is deleted. A NetBox object has no lasting
+    identity in the records (a scope is keyed by its network, a reservation by its address), so an object moved in
+    IPAM looks like a new object plus a deleted one; when the new one cannot be pushed, deleting the old one would
+    leave nothing on Windows. Rather than guess which deletes belong to which refusal, every delete of the tree waits
+    (shown with the reason) until nothing there is refused; creates and updates that do not need a refused object
+    still go ahead. A failover relationship losing scopes waits too: leaving it removes the scopes from the partner.
+
+    ``refusals`` are the NetBox objects refused for what they are (``plan``'s reasons, their children, a scope held
+    in a relationship NetBox does not manage). A policy refused because the planned deletes leave its processing order
+    past the end is not one: it follows from the deletes, and pausing them would keep it refused for good.
+    """
+    blocking: dict[str, list[Key]] = {}
+    for s in plan.skipped:
+        key = (s.change.kind, s.change.key)
+        if s.change.action == DELETE or key not in refusals:
+            continue
+        fam = family(s.change.kind, s.change.after or s.change.before or {})
+        if fam is not None and key not in blocking.setdefault(fam, []):
+            blocking[fam].append(key)
+    blocking = {fam: keys for fam, keys in blocking.items() if keys}
+    if not blocking:
+        return changes
+
+    def reason(fam: str) -> str:
+        keys = blocking[fam]
+        names = ", ".join(f"{k} {n}" for k, n in keys[:PAUSE_NAMES])
+        if len(keys) > PAUSE_NAMES:
+            names += f" and {len(keys) - PAUSE_NAMES} more"
+        return (
+            f"waiting: nothing in the {FAMILIES[fam]} is deleted while {names} cannot be pushed; fix them in NetBox "
+            "and the next push deletes it"
+        )
+
+    out = []
+    paused: set[Key] = set()
+    for c in changes:
+        fam = family(c.kind, c.before or c.after or {})
+        key = (c.kind, c.key)
+        dropped = c.action == UPDATE and c.kind == "failover" and _drops_scopes(c)
+        if fam in blocking and (c.action == DELETE or dropped):
+            plan.skipped.append(Skip(c, reason(fam)))
+            paused.add(key)
+            continue
+        # Deletes come children first: a parent outside the tree (a class) holding a paused child stays too.
+        held = [k for k in plan.children.get(key, []) if k in paused] if c.action == DELETE else []
+        if held:
+            plan.skipped.append(Skip(c, f"waiting: still holds {held[0][0]} {held[0][1]}, whose delete waits"))
+            paused.add(key)
+            continue
+        out.append(c)
+    return out
+
+
+def _drops_scopes(change: Change) -> bool:
+    before, after = (change.before or {}).get("scope_ids") or [], (change.after or {}).get("scope_ids") or []
+    return bool(set(before) - set(after))
 
 
 def _shared_orders(source: list[Record]) -> dict[Key, str]:
@@ -807,8 +860,7 @@ def plan(
     orders = _shared_orders(source)
     conflicts = _conflicts(source, target_index, managed)
     policies = {r.key for r in source if r.kind == "policy"}
-    pushable = []
-    unpushable = []
+    refused: dict[Key, str] = {}
     for record in source:
         reason = (
             _unpushable(record, skipped_ids, defined, (record.kind, record.key) in target_index)
@@ -816,10 +868,15 @@ def plan(
             or _missing_policy(record, policies)
             or conflicts.get((record.kind, record.key))
         )
+        if reason is not None:
+            refused[record.kind, record.key] = reason
+    refused.update(_waiting_children(source, refused))
+    pushable = []
+    for record in source:
+        reason = refused.get((record.kind, record.key))
         if reason is None:
             pushable.append(_prepare(record, target_index))
         else:
-            unpushable.append(record)
             result.skipped.append(Skip(Change(CREATE, record.kind, record.key, after=dict(record.fields)), reason))
     source_index = index(pushable)
 
@@ -827,14 +884,8 @@ def plan(
         for parent in parents(record.kind, record.fields):
             result.children.setdefault(parent, []).append((record.kind, record.key))
 
-    # A NetBox object that cannot be pushed still says "keep this": never delete its Windows counterpart, nor the
-    # Windows object it would replace (the same scope under its old prefix, the same client's old reservation).
+    # A NetBox object that cannot be pushed still says "keep this": never delete its Windows counterpart.
     held = {(s.change.kind, s.change.key) for s in result.skipped}
-    replaced = _replaced(unpushable, {(r.kind, r.key) for r in source}, target_index)
-    for key, reason in replaced.items():
-        if key in managed and key not in held:
-            result.skipped.append(Skip(Change(DELETE, *key, before=dict(target_index[key].fields)), reason))
-    held |= set(replaced)
     changes = diff(pushable, [r for k, r in target_index.items() if k not in held], equal_records=records_equal)
     changed = {(c.kind, c.key) for c in changes}
     changes = _protect_memberships(changes, managed, source_index, target_index, result)
@@ -875,9 +926,12 @@ def plan(
             deleting.discard(key)
             continue
         result.changes.append(change)
+    already = len(result.skipped)
     result.changes = _scopes_in_other_relationships(result.changes, target_index, result)
+    refusals = set(refused) | {(s.change.kind, s.change.key) for s in result.skipped[already:]}
     result.changes = _membership_updates_first(result.changes, target_index)
     result.changes = _order_policies(result.changes, source_index, target_index, result)
+    result.changes = _pause_deletes(result, result.changes, refusals)
     return result
 
 

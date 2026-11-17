@@ -133,7 +133,13 @@ def test_policy_fingerprint_leaves_the_processing_order_out():
 def test_policy_ordering_does_not_rescan_every_record_for_each_level(monkeypatch):
     def policy_at(n, name, order):
         sid = f"10.{n}.0.0"
-        fields = {**policy(scope_id=sid).fields, "name": name, "scope_id": sid, "processing_order": order}
+        fields = {
+            **policy(scope_id=sid).fields,
+            "name": name,
+            "scope_id": sid,
+            "processing_order": order,
+            "ip_ranges": [],
+        }
         return Record("policy", ws.policy_key(sid, name), fields)
 
     scopes = [scope_at(f"10.{n}.0.0") for n in range(1, 31)]

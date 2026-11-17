@@ -9,6 +9,7 @@ take. Every call goes through ``DhcpClient``, so values only ever reach PowerShe
 from __future__ import annotations
 
 import contextlib
+import ipaddress
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -57,6 +58,18 @@ def option_target(parent: str) -> tuple[str, str]:
         return "", ""
     scope_id, _, ip = parent.partition("/")
     return scope_id, ip
+
+
+def _check_policy_ranges(key: str, ranges: Any) -> None:
+    """Refuse policy IP ranges that are not [start, end] IPv4 pairs running upwards (the plan refuses them first)."""
+    try:
+        bad = not all(
+            len(pair) == 2 and ipaddress.IPv4Address(pair[0]) <= ipaddress.IPv4Address(pair[1]) for pair in ranges or []
+        )
+    except (TypeError, ValueError):
+        bad = True
+    if bad:
+        raise PushRefused(f"policy {key}: its IP ranges are not [start, end] IPv4 address pairs; fix them in NetBox")
 
 
 def _folded(value: Any) -> Any:
@@ -374,6 +387,9 @@ class WindowsWriter:
             self.client.remove_policy(f["name"], f["scope_id"])
             return
         f = change.after or {}
+        # Refuse ranges Windows could never take before writing anything: an update removes the old ranges first, so
+        # a bad new one would leave the policy with none.
+        _check_policy_ranges(change.key, f.get("ip_ranges"))
         if change.action == CREATE:
             self.client.add_policy(self._policy(f))
             self._policy_ranges(f, f["ip_ranges"], add=True)

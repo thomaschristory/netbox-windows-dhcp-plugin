@@ -60,8 +60,8 @@ Edits of a prefix, IP range or IP address in IPAM are not checked against the sc
 a reservation outside its scope's prefix, is left out of the next push with a reason in the dry run, and the Windows
 object stays as it was until NetBox is fixed. The same goes for scopes of one server sharing addresses, overlapping
 exclusion ranges and two reservations for one client in a scope: NetBox accepts them, the push leaves them out (see
-[Push](push.md#refused-when-the-push-is-planned)). Not yet checked on a real server: that Windows refuses two scopes
-sharing addresses (the push assumes it does). A scope sharing addresses with a scope NetBox manages but no longer
+[Push](push.md#refused-when-the-push-is-planned)). While anything in a family cannot be pushed, nothing in that family is deleted; the dry run lists what is waiting and why. So a single object left out (in any scope of the
+server) holds back every IPv4 delete, or every DHCPv6 delete, until it is fixed. A scope sharing addresses with a scope NetBox manages but no longer
 holds is not left out: the push deletes the old one first, and if that delete is held back (changed on Windows,
 hand-made objects in it) the new scope fails at Windows.
 
