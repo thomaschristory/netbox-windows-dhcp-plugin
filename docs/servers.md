@@ -34,7 +34,10 @@ state and device](images/servers-list.webp)
 | Import interval | empty | Minutes between [scheduled imports](import.md#scheduled-imports); empty or 0 means none |
 
 The form refuses a device and a virtual machine together, a host the credential profile does not allow, Basic over HTTP or without verification, Kerberos
-without a realm, and SSH without host verification.
+without a realm, SSH without host verification, and a second Windows server for one DHCP server: keep one server per
+DHCP server, since two would push conflicting changes to it. Two servers count as the same when host (ignoring case
+and a trailing dot), port and remote DHCP server match; another DNS name or an address for the same machine is not
+caught, and servers behind one NAT address need different ports.
 
 Windows servers can be created, edited and deleted in bulk, and imported from CSV, like other NetBox objects. The
 CSV import takes the SSH host key in an `ssh_host_key` column.

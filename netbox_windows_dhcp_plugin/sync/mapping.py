@@ -635,8 +635,13 @@ class Writer:
                     f"failover relationship {fields['name']} is already in NetBox with {values['partner_server']} as "
                     "its primary; it is synced from that server"
                 )
-            obj = self._save(FailoverRelationship(primary_server=self.server, **values))
+            obj = FailoverRelationship(primary_server=self.server, **values)
+            # Windows already has this relationship with this partner: the partner check is for partners chosen in
+            # NetBox, which the push would hand the primary's credentials to.
+            obj.check_partner_host = False
+            obj = self._save(obj)
         else:
+            obj.check_partner_host = False
             obj = self._update(obj, **values)
         if {s.pk for s in obj.scopes.all()} != {s.pk for s in scopes}:
             self._check(obj, "change")

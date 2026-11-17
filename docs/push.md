@@ -225,7 +225,9 @@ Other refusals happen at two moments.
 ### Refused when the push is planned
 
 These show in `not_pushed`, with the reason, in the dry run as well as the push. The push goes on with the rest and
-the Windows object is kept as it is.
+the Windows object is kept as it is. So is the Windows object a NetBox object left out this way would replace: the
+scope under its old prefix, the client's reservation at its old address, an exclusion range the new one overlaps,
+with everything in them. The push never deletes something on Windows to make room for an object it cannot write.
 
 **Deletes that could lose data:**
 
@@ -240,6 +242,18 @@ the Windows object is kept as it is.
 - an IPv4 scope without an IP range, or a DHCPv6 scope whose prefix is not a /64 (NetBox refuses to save one, so
   this only happens when the prefix length was changed in IPAM afterwards);
 - a reservation without a MAC address or client ID, or a DHCPv6 reservation without an address, a DUID or an IAID;
+- objects that no longer fit their scope, typically after an edit of the prefix, IP range or IP address in IPAM
+  (the plugin's forms refuse these, but IPAM edits do not go through them): an IPv4 scope whose range is outside its
+  prefix, ends before it starts, or holds the network or broadcast address; a reservation outside its scope's
+  prefix or, for IPv4, outside the scope's IP range (Windows only takes reservations inside the range; inside an
+  exclusion range is fine); an exclusion range that reaches past the scope's IP range;
+- two IPv4 scopes of one server sharing addresses (a /23 over a /24), two exclusion ranges of one scope sharing
+  addresses, two reservations of one scope for the same client (MAC address or client ID; for DHCPv6 the same DUID
+  and IAID). When one of them is already on Windows as NetBox has it, that one keeps being pushed and only the
+  others are left out;
+- a scope policy whose stored IP ranges are not a list of `[start, end]` IPv4 address pairs (only a raw save can store
+  that: a branch merge, a script, nbshell). The rest of the server is still pushed, and an import proposes Windows'
+  ranges for it;
 - options 1 and 51 (they come from the prefix and the scope's lease duration), values of codes Windows has no
   definition for, and a definition of a code Windows defines itself;
 - two NetBox objects for one Windows object (two classes or policies whose names differ only in case);

@@ -69,7 +69,8 @@ reservation page follows the same lab: [Reservations](reservations.md).
   The partner does not need them; Windows copies them there when the relationship is created.
 - The primary server's credential profile covers the partner in its `allowed_hosts`, when it has the list: creating
   the relationship makes the primary contact the partner as that account, and the push refuses to create it
-  otherwise.
+  otherwise. The form already refuses a new partner the profile does not cover (an imported relationship, or one whose
+  partner did not change, is not checked again: Windows already has it).
 - For message authentication, a credential profile holds the shared secret and its `allowed_hosts` cover both
   partners (here `lab-failover`, see [Shared secret](#shared-secret)).
 

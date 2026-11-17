@@ -1088,6 +1088,17 @@ class FailoverRelationship(PrimaryModel):
     def get_mode_color(self):
         return FailoverModeChoices.colors.get(self.mode)
 
+    # Whether clean() checks the partner against the primary's credential profile (see _clean_partner_host).
+    check_partner_host = True
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        # The partner as stored, so clean() can tell a partner chosen now from one already on Windows.
+        if "partner_server_id" in instance.__dict__:  # not deferred
+            instance._loaded_partner_id = instance.partner_server_id
+        return instance
+
     @staticmethod
     def scope_error(primary_server, scopes):
         """
@@ -1116,7 +1127,40 @@ class FailoverRelationship(PrimaryModel):
                 raise ValidationError({"load_balance_percent": _("Load balance only applies to load balance mode.")})
             if self.reserve_percent is not None and self.reserve_percent > 100:
                 raise ValidationError({"reserve_percent": _("Must be between 0 and 100.")})
+        self._clean_partner_host()
         self._clean_secret_profile()
+
+    def _clean_partner_host(self):
+        # Creating the relationship makes the primary talk to the partner as the account of the primary's credential
+        # profile, so the partner is one more host those credentials reach: the push refuses a partner outside the
+        # profile's allowed_hosts (connection.failover_partner_check). Saying it here saves a merge and a failed push.
+        # Only a partner chosen in NetBox is judged (a new relationship, or a new partner), as the push only names the
+        # partner when it creates the relationship; an import records what Windows already has and turns this off.
+        # An unknown profile is reported when a job runs, as for the server itself.
+        if not self.check_partner_host or self.primary_server_id is None or self.partner_server_id is None:
+            return
+        if not self._state.adding and self.partner_server_id == getattr(self, "_loaded_partner_id", None):
+            return
+        from ..conf import CredentialError, get_setting, host_allowed
+
+        primary = self.primary_server
+        profile = get_setting("credentials").get(primary.credential_profile)
+        if profile is None:
+            return
+        partner = self.partner_server.dhcp_host
+        try:
+            allowed = host_allowed(primary.credential_profile, profile, partner)
+        except CredentialError as exc:
+            raise ValidationError({"partner_server": str(exc)}) from exc
+        if not allowed:
+            raise ValidationError(
+                {
+                    "partner_server": _(
+                        "Credential profile {profile} of the primary server may not be used with the partner host "
+                        "{host}; add it to the profile's allowed_hosts."
+                    ).format(profile=primary.credential_profile, host=partner)
+                }
+            )
 
     def _clean_secret_profile(self):
         # The secret goes to both partners, so the profile must allow both hosts, as for connection credentials. The

@@ -385,11 +385,23 @@ def _policies(windows_server, scope_ids):
                 "condition": p.condition,
                 "criteria": windows_state.criteria(p.criteria or {}),
                 "lease_seconds": p.lease_duration,
-                "ip_ranges": windows_state.ip_ranges(p.ip_ranges or []) if scope_id else [],
+                "ip_ranges": _policy_ranges(p) if scope_id else [],
             },
         )
         pairs.append((record, p.pk))
     return [record for record, _ in _unique(pairs)]
+
+
+def _policy_ranges(policy):
+    """
+    A scope policy's IP ranges in the order both sides use. A row that does not parse (only a raw save can store one:
+    a branch merge, a script, nbshell) is passed on as stored: the push then refuses that policy alone, naming it, and
+    an import shows Windows' ranges as a change to it, instead of every push, dry run and import of the server failing.
+    """
+    try:
+        return windows_state.ip_ranges(policy.ip_ranges or [])
+    except (TypeError, ValueError):
+        return policy.ip_ranges
 
 
 def partner_failovers(windows_server):

@@ -229,6 +229,26 @@ relationships, MAC filters, list switches.
   NetBox keeps the Windows one. A policy without conditions is not pushed (Windows requires one), nor are policies
   sharing a processing order. A policy value is only pushed when NetBox holds its policy at the same level, since
   Windows names the policy by name only; the models check the policy's server and level too.
+- **Containment and clashes (#108).** IPAM edits bypass the plugin's `clean()` checks, and cross-object rules in
+  model validation would make proposal items apply in an order-dependent way, so these are push-side reasons instead
+  (`_unpushable` per record, `_conflicts` across records; pure, in the dry run, never blocking an import): an IPv4
+  scope range outside its prefix, reversed, or holding the network or broadcast address (prefixes up to /30); a
+  reservation outside its scope's prefix, or for IPv4 outside the scope's range (Microsoft KB 2005980); an exclusion
+  past the scope's range; IPv4 scopes of one server sharing addresses; exclusions of one scope sharing addresses;
+  two reservations of one scope for one client (client ID; DHCPv6 DUID and IAID); a scope policy whose stored
+  `ip_ranges` do not parse (`netbox_state._policy_ranges` passes the stored value through instead of failing the
+  whole read; `windows_state.ip_ranges` stays strict). For a clash, an object already on Windows as NetBox has it
+  (same key, same mask or client) keeps being pushed and only the others are left out; with none, all are. Nothing is
+  deleted because of a reason: `_replaced` holds the Windows objects an unpushable object would replace (scopes
+  sharing addresses with it, the same client's reservation in the scope, overlapping exclusions) and what hangs off
+  them, with a `not_pushed` delete entry when they are managed. The network/broadcast, exclusion and duplicate-client
+  rules are `# unverified:` until the lab tests named there run. No `pre_save` veto on core IPAM models: the guard in
+  `ipam_guard.py` is about permissions only.
+- **Model checks (#108).** `WindowsServer.clean()` refuses a second row for one DHCP server (normalised host, port
+  with its default, normalised remote DHCP server), one query. `FailoverRelationship.clean()` refuses a partner whose
+  DHCP host the primary's credential profile does not allow (`conf.host_allowed`), only for a new relationship or a
+  new partner, as the push only names the partner on create; skipped for an unknown profile and for imports
+  (`check_partner_host = False` in `mapping`), which record what Windows already has.
 - **Policy criteria (#21).** Windows Server 2025 stores a MAC prefix as whole bytes with a separator before the
   wildcard (`02-4e-42-ab*` reads back `02-4e-42-ab-*`) and host names in lowercase. `normalize
   .canonical_policy_criterion` gives that form; `windows_state.equal` and `push.fingerprint` compare and hash criteria
