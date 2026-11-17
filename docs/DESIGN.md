@@ -233,21 +233,30 @@ relationships, MAC filters, list switches.
   model validation would make proposal items apply in an order-dependent way, so these are push-side reasons instead
   (`_unpushable` per record, `_conflicts` across records; pure, in the dry run, never blocking an import): an IPv4
   scope range outside its prefix, reversed, or holding the network or broadcast address (prefixes up to /30); a
-  reservation outside its scope's prefix, or for IPv4 outside the scope's range (Microsoft KB 2005980); an exclusion
-  past the scope's range; IPv4 scopes of one server sharing addresses; exclusions of one scope sharing addresses;
-  two reservations of one scope for one client (client ID; DHCPv6 DUID and IAID); a scope policy whose stored
+  reservation outside its scope's prefix (inside the prefix but outside the range is accepted by Windows Server
+  2025, lab, despite Microsoft KB 2005980); an exclusion outside the prefix or reversed (past the range inside the
+  prefix is accepted, lab); IPv4 scopes of one server sharing addresses, Windows scopes NetBox neither holds nor
+  manages included; exclusions of one scope sharing even one address; two reservations of one scope for one client
+  (client ID compared without separators or case; DHCPv6 DUID and IAID); children of a second scope on one network
+  (`#<pk>` key); a scope policy whose stored
   `ip_ranges` do not parse (`netbox_state._policy_ranges` passes the stored value through instead of failing the
   whole read; `windows_state.ip_ranges` stays strict). For a clash, an object already on Windows as NetBox has it
   (same key, same mask or client) keeps being pushed and only the others are left out; with none, all are. Nothing is
-  deleted because of a reason: `_replaced` holds the Windows objects an unpushable object would replace (scopes
-  sharing addresses with it, the same client's reservation in the scope, overlapping exclusions) and what hangs off
-  them, with a `not_pushed` delete entry when they are managed. The network/broadcast, exclusion and duplicate-client
-  rules are `# unverified:` until the lab tests named there run. No `pre_save` veto on core IPAM models: the guard in
+  deleted because of a reason: `_replaced` holds the Windows objects NetBox no longer holds that an unpushable
+  object would replace (a scope sharing addresses with its prefix or holding its IP range, a reservation for the same
+  client in any scope or at the same address, every gone exclusion of the scope of an unpushable exclusion) and
+  everything hanging off them (`parents()`, failover relationships included, superscopes not: removing one leaves its
+  scopes), with a `not_pushed` delete entry when they are managed. Indexed by client, address and scope, so it stays
+  linear (4000 reservations of a moved /19: well under a second). Lab results (Windows Server 2025): range with the
+  network or broadcast address refused; overlapping and nested exclusions refused; duplicate IPv4 client refused
+  (ResourceExists); same DHCPv6 DUID and IAID refused, another IAID accepted. Only the scope overlap rule is still
+  `# unverified:` (lab test `test_overlapping_scopes`). No `pre_save` veto on core IPAM models: the guard in
   `ipam_guard.py` is about permissions only.
 - **Model checks (#108).** `WindowsServer.clean()` refuses a second row for one DHCP server (normalised host, port
-  with its default, normalised remote DHCP server), one query. `FailoverRelationship.clean()` refuses a partner whose
-  DHCP host the primary's credential profile does not allow (`conf.host_allowed`), only for a new relationship or a
-  new partner, as the push only names the partner on create; skipped for an unknown profile and for imports
+  with its default, normalised remote DHCP server; hosts compared in Python, so IPv6 spellings match), one query,
+  without naming the other server. `FailoverRelationship.clean()` refuses a partner whose DHCP host the primary's
+  credential profile does not allow (`conf.host_allowed`), only for a new relationship or a new primary or partner,
+  as the push only names the partner on create; skipped for an unknown profile and for imports
   (`check_partner_host = False` in `mapping`), which record what Windows already has.
 - **Policy criteria (#21).** Windows Server 2025 stores a MAC prefix as whole bytes with a separator before the
   wildcard (`02-4e-42-ab*` reads back `02-4e-42-ab-*`) and host names in lowercase. `normalize

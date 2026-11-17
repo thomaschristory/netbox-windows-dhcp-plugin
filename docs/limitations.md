@@ -57,12 +57,13 @@ DHCP 20135 and 20136). A push of such a policy fails the same way, so fix it in 
 
 Edits of a prefix, IP range or IP address in IPAM are not checked against the scopes and reservations that use them
 (only the permission to change them is, see [IPAM edits](ipam-edits.md)). A range that ends up outside its prefix, or
-a reservation outside its scope's range, is left out of the next push with a reason in the dry run, and the Windows
+a reservation outside its scope's prefix, is left out of the next push with a reason in the dry run, and the Windows
 object stays as it was until NetBox is fixed. The same goes for scopes of one server sharing addresses, overlapping
 exclusion ranges and two reservations for one client in a scope: NetBox accepts them, the push leaves them out (see
-[Push](push.md#refused-when-the-push-is-planned)). Not yet checked on a real server: that Windows refuses a range
-holding the network or broadcast address, an exclusion range reaching past the scope's range, overlapping exclusion
-ranges, and a second reservation for one client (the push assumes it does).
+[Push](push.md#refused-when-the-push-is-planned)). Not yet checked on a real server: that Windows refuses two scopes
+sharing addresses (the push assumes it does). A scope sharing addresses with a scope NetBox manages but no longer
+holds is not left out: the push deletes the old one first, and if that delete is held back (changed on Windows,
+hand-made objects in it) the new scope fails at Windows.
 
 ## NetBox and branching
 

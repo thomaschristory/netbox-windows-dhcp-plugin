@@ -18,9 +18,10 @@ from netbox_windows_dhcp_plugin.models import (
 from netbox_windows_dhcp_plugin.sync import importer, netbox_state
 from netbox_windows_dhcp_plugin.sync.windows_state import policy_key
 
-from .fixtures import ip_address, windows_server
+from .fixtures import ip_address, prefix, scope, windows_server
+from .test_import import ImportTestMixin
 from .test_jobs import CREDENTIALS
-from .test_remaining import RemainingObjectsMixin
+from .test_remaining import RemainingObjectsMixin, seed_more
 
 
 def config(**lab):
@@ -45,7 +46,7 @@ class SameServerTwiceTest(TestCase):
         for host in ("dhcp1.example.com", "DHCP1.Example.com", "dhcp1.example.com."):
             with self.subTest(host=host):
                 other = WindowsServer(name="copy", host=host, credential_profile="lab")
-                self.assertIn("Windows server dhcp1 already connects", field_errors(other)["host"][0])
+                self.assertIn("Another Windows server already connects", field_errors(other)["host"][0])
 
     def test_explicit_default_port_is_the_same_port(self):
         other = WindowsServer(name="copy", host="dhcp1.example.com", port=5986, credential_profile="lab")
@@ -68,6 +69,15 @@ class SameServerTwiceTest(TestCase):
             name="other", host="dhcp1.example.com", computer_name="dhcp9.example.com.", credential_profile="lab"
         )
         self.assertIn("host", field_errors(other))
+
+    def test_ip_addresses_compare_in_any_spelling(self):
+        windows_server("v6", host="2001:DB8:0::1")
+        other = WindowsServer(name="copy", host="2001:db8::1", credential_profile="lab")
+        self.assertIn("host", field_errors(other))
+
+    def test_unknown_transport_is_left_to_its_own_error(self):
+        other = WindowsServer(name="copy", host="dhcp1.example.com", transport="telnet", credential_profile="lab")
+        self.assertNotIn("host", field_errors(other))
 
     def test_a_server_does_not_clash_with_itself(self):
         server = WindowsServer.objects.get(pk=self.first.pk)
@@ -117,6 +127,15 @@ class FailoverPartnerHostTest(TestCase):
             stored.partner_server = third
             self.assertIn("partner_server", field_errors(stored))
 
+    def test_a_new_primary_is_checked_too(self):
+        third = windows_server("dhcp3")
+        with override_settings(PLUGINS_CONFIG=config()):
+            self.relationship().save()
+        with override_settings(PLUGINS_CONFIG=config(allowed_hosts=["dhcp1.example.com", "dhcp3.example.com"])):
+            stored = FailoverRelationship.objects.get()
+            stored.primary_server = third
+            self.assertIn("partner_server", field_errors(stored))
+
     def test_import_records_the_partner_windows_already_has(self):
         relationship = self.relationship()
         relationship.check_partner_host = False
@@ -136,7 +155,7 @@ class DryRunReasonsTest(RemainingObjectsMixin, TestCase):
         lan = Scope.objects.get(name="LAN")
         printer = Reservation.objects.get(scope=lan)
         # Edits made outside the plugin's forms: an IPAM edit of the address, raw saves of the rest.
-        IPAddress.objects.filter(pk=printer.ip_address_id).update(address=IPNetwork("10.1.0.5/24"))
+        IPAddress.objects.filter(pk=printer.ip_address_id).update(address=IPNetwork("10.9.0.5/24"))
         Reservation.objects.create(scope=lan, ip_address=ip_address("10.1.0.60/24"), client_id="aa-bb-cc-00-11-22")
         ExclusionRange.objects.create(scope=lan, start_address="10.1.0.15", end_address="10.1.0.25")
         WindowsPolicy.objects.filter(name="Printers").update(ip_ranges=[["10.1.0.100"]])
@@ -144,7 +163,7 @@ class DryRunReasonsTest(RemainingObjectsMixin, TestCase):
         dry = self._run(DryRunJob)
         self.assertEqual(dry.status, SyncStatusChoices.COMPLETED, dry.error)
         reasons = {(e["kind"], e["key"]): e["reason"] for e in dry.summary["not_pushed"]}
-        self.assertIn("outside the scope's IP range", reasons["reservation", "10.1.0.0/10.1.0.5"])
+        self.assertIn("outside the scope's prefix", reasons["reservation", "10.1.0.0/10.9.0.5"])
         self.assertIn("is for the same client", reasons["reservation", "10.1.0.0/10.1.0.60"])
         self.assertIn("cannot be pushed", reasons["reservation", "10.1.0.0/10.1.0.50"])
         self.assertIn("shares addresses with exclusion range", reasons["exclusion", "10.1.0.0/10.1.0.15-10.1.0.25"])
@@ -165,3 +184,37 @@ class DryRunReasonsTest(RemainingObjectsMixin, TestCase):
         changes = importer.compute(self.server, self.state())[0]
         update = next(c for c in changes if c.kind == "policy" and c.key == record.key)
         self.assertEqual(update.after["ip_ranges"], [["10.1.0.100", "10.1.0.120"]])
+
+
+class FailoverImportPartnerTest(ImportTestMixin, TestCase):
+    """An import records the relationship Windows has, whatever the primary's profile allows (#127 review)."""
+
+    def setUp(self):
+        self.partner = windows_server("dhcp2")
+        super().setUp()
+        seed_more(self.fake)
+
+    def test_import_and_reimport_with_another_partner_under_a_tight_profile(self):
+        third = windows_server("dhcp3")
+        with override_settings(PLUGINS_CONFIG=config(allowed_hosts=["dhcp1.example.com"])):
+            self.apply_all()
+            self.assertEqual(FailoverRelationship.objects.get().partner_server, self.partner)
+            self.fake.failovers["ha"]["partner_server"] = "dhcp3.example.com"
+            self.apply_all()
+            self.assertEqual(FailoverRelationship.objects.get().partner_server, third)
+
+
+@override_settings(PLUGINS_CONFIG=CREDENTIALS)
+class PrefixChangeWithUnreadablePolicyRangesTest(TestCase):
+    def test_prefix_change_names_the_policy_instead_of_crashing(self):
+        server = windows_server()
+        lan = scope(server)
+        WindowsPolicy.objects.create(
+            server=server, scope=lan, name="Printers", criteria={"mac_address": ["EQ", "00-15-5d*"]}
+        )
+        WindowsPolicy.objects.filter(name="Printers").update(ip_ranges=[["10.1.0.100"]])
+        lan = Scope.objects.get(pk=lan.pk)
+        lan.prefix = prefix("10.1.0.0/23")
+        with self.assertRaises(ValidationError) as caught:
+            lan.full_clean()
+        self.assertIn("policy Printers", str(caught.exception))

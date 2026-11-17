@@ -30,17 +30,18 @@ All notable changes to this project are documented here. The format follows
 
 - A push (and its dry run) now leaves out, with a reason under **Not pushed**, what Windows would refuse instead of
   failing on it: an IPv4 scope range outside its prefix, reversed, or holding the network or broadcast address; a
-  reservation outside its scope's prefix or, for IPv4, outside the scope's IP range; an exclusion range reaching past
-  the scope's range; IPv4 scopes of one server sharing addresses; exclusion ranges of one scope sharing addresses;
-  two reservations of one scope for the same client (DHCPv6: the same DUID and IAID). These mostly come from IPAM
-  edits, which the plugin's forms do not see. When one of the clashing objects is already on Windows, it keeps being
-  pushed. The Windows object a left-out object would replace (the scope under its old prefix, the client's reservation
-  at its old address) is kept with what it holds, so nothing is deleted on Windows for an object that cannot be
-  written. Imports are not affected. (#108)
+  reservation outside its scope's prefix; an exclusion range outside its scope's prefix or reversed; IPv4 scopes of
+  one server sharing addresses (a scope made on Windows by hand included); exclusion ranges of one scope sharing
+  addresses; two reservations of one scope for the same client (DHCPv6: the same DUID and IAID). These mostly come
+  from IPAM edits, which the plugin's forms do not see. When one of the clashing objects is already on Windows, it
+  keeps being pushed. The Windows object a left-out object would replace (the scope still holding the range when its
+  prefix was moved in IPAM, the client's old reservation, the scope's other exclusion ranges) is kept with everything
+  in it, so nothing is deleted on Windows for an object that cannot be written. Imports are not affected. (#108)
 - The Windows server form refuses a second server for one DHCP server (same host ignoring case and a trailing dot,
   same port, same remote DHCP server), and the failover relationship form refuses a new partner the primary server's
   credential profile does not allow (`allowed_hosts`), which the push already refused. Imports are not affected.
-  (#108)
+  **Upgrading:** two existing Windows servers for one DHCP server can no longer be edited until one of them is
+  deleted or pointed elsewhere. (#108)
 
 ### Changed
 
@@ -89,7 +90,8 @@ All notable changes to this project are documented here. The format follows
 
 - A scope policy whose stored IP ranges do not parse (written by a branch merge, a script or nbshell) no longer fails
   every push, dry run and import of its server: the push leaves that policy out with a reason naming it, and an
-  import proposes Windows' ranges for it. (#108)
+  import proposes Windows' ranges for it. Changing the prefix of its scope says which policy to fix instead of
+  failing with a server error. (#108)
 
 - A scheduled import that finds its server busy (another import or a push running) is queued again a minute later,
   for up to half an hour, instead of waiting a whole import interval. The waiting attempts leave no failed sync run

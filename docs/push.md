@@ -225,9 +225,12 @@ Other refusals happen at two moments.
 ### Refused when the push is planned
 
 These show in `not_pushed`, with the reason, in the dry run as well as the push. The push goes on with the rest and
-the Windows object is kept as it is. So is the Windows object a NetBox object left out this way would replace: the
-scope under its old prefix, the client's reservation at its old address, an exclusion range the new one overlaps,
-with everything in them. The push never deletes something on Windows to make room for an object it cannot write.
+the Windows object is kept as it is. So is the Windows object a NetBox object left out this way would replace, with
+everything in it (reservations, exclusions, policies, option values, and a failover relationship holding it; not a
+superscope, whose removal leaves its scopes alone): a Windows scope sharing addresses with the left-out scope's prefix
+or holding its IP range (the prefix was moved in IPAM and the range left behind), the client's reservation at its old
+address or in its old scope, and the other exclusion ranges of the scope when one of them is left out. The push never
+deletes something on Windows to make room for an object it cannot write. The entries for these start with `kept`.
 
 **Deletes that could lose data:**
 
@@ -245,12 +248,16 @@ with everything in them. The push never deletes something on Windows to make roo
 - objects that no longer fit their scope, typically after an edit of the prefix, IP range or IP address in IPAM
   (the plugin's forms refuse these, but IPAM edits do not go through them): an IPv4 scope whose range is outside its
   prefix, ends before it starts, or holds the network or broadcast address; a reservation outside its scope's
-  prefix or, for IPv4, outside the scope's IP range (Windows only takes reservations inside the range; inside an
-  exclusion range is fine); an exclusion range that reaches past the scope's IP range;
-- two IPv4 scopes of one server sharing addresses (a /23 over a /24), two exclusion ranges of one scope sharing
-  addresses, two reservations of one scope for the same client (MAC address or client ID; for DHCPv6 the same DUID
-  and IAID). When one of them is already on Windows as NetBox has it, that one keeps being pushed and only the
-  others are left out;
+  prefix (an IPv4 reservation outside the scope's IP range but inside the prefix is fine, as on Windows); an
+  exclusion range outside the scope's prefix, or ending before it starts (one reaching past the IP range inside the
+  prefix is fine);
+- two IPv4 scopes of one server sharing addresses (a /23 over a /24), including a scope made on Windows by hand that
+  NetBox does not manage; two exclusion ranges of one scope sharing addresses, even a single one; two reservations of
+  one scope for the same client (MAC address or client ID, compared without separators or case; for DHCPv6 the same
+  DUID and IAID, while another IAID is fine). When one of them is already on Windows as NetBox has it, that one keeps
+  being pushed and only the others are left out;
+- reservations and exclusion ranges of a second NetBox scope on one network address (two prefix lengths, or two
+  VRFs), which Windows cannot hold;
 - a scope policy whose stored IP ranges are not a list of `[start, end]` IPv4 address pairs (only a raw save can store
   that: a branch merge, a script, nbshell). The rest of the server is still pushed, and an import proposes Windows'
   ranges for it;

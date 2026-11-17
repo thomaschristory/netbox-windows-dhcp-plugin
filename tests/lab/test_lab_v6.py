@@ -256,7 +256,8 @@ def test_v6_batched_reservation_option_values(lab: Lab, probe_out) -> None:
 
 
 def test_two_reservations_for_one_duid_and_iaid(lab: Lab, probe_out) -> None:
-    """push.py (#108): a second DHCPv6 reservation for one DUID and IAID in a prefix is left out of a push."""
+    """push.py (#108): Windows refuses a second DHCPv6 reservation for one DUID and IAID in a prefix, and takes
+    another IAID of the same DUID (Server 2025 lab run)."""
     lab.v6_scope("nbwd-test-v6twice")
     lab.client.add_v6_reservation(wc.ReservationV6(V6_PREFIX, "2001:db8:4e42::30", DUID, 7, "nbwd-test-v6a", ""))
     seen = {}
@@ -267,6 +268,4 @@ def test_two_reservations_for_one_duid_and_iaid(lab: Lab, probe_out) -> None:
         except PSError as exc:
             seen[label] = f"refused: {exc}"
     save_probe(probe_out, "v6-reservation-same-client", seen)
-    # If Windows accepts the same DUID and IAID twice, relax the rule in push._conflicts. Another IAID is another
-    # identity association of the client, which the push allows.
     assert seen["same_iaid"].startswith("refused") and seen["other_iaid"] == "accepted", seen

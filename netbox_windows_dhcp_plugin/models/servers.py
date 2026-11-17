@@ -209,31 +209,34 @@ class WindowsServer(JobsMixin, PrimaryModel):
 
     def _clean_same_server(self):
         """
-        Two rows for one DHCP server would push conflicting state to it. Same host (without case or a trailing dot),
-        port and remote DHCP server means the same server. Aliases (another DNS name, an address) are not caught, and
-        two servers behind one NAT address need different ports.
+        Two rows for one DHCP server would push conflicting state to it. Same host, port and remote DHCP server means
+        the same server; hosts compare as the connection check reads them (no case, no trailing dot, one spelling per
+        IP address). Aliases (another DNS name, an address for a name) are not caught, nor the same server reached
+        through another port, transport or management host; servers behind one NAT address need different ports.
         """
         host = normalise_host(self.host) if self.host else None
-        if host is None:
-            return  # an invalid host has its own error already
+        port = self.port or DEFAULT_PORTS.get((self.transport, self.winrm_https))
+        if host is None or port is None:
+            return  # an invalid host or transport has its own error
         computer = normalise_host(self.computer_name) if self.computer_name else ""
-        # One small query (servers are few) on the host as typed and normalised, with or without the trailing dot;
-        # port and remote DHCP server are compared in Python, since the port may be left to its default.
-        candidates = WindowsServer.objects.filter(
-            models.Q(host__iexact=host) | models.Q(host__iexact=f"{host}.") | models.Q(host__iexact=self.host)
-        )
-        if self.pk is not None:
-            candidates = candidates.exclude(pk=self.pk)
-        port = self.effective_port
-        for other in candidates.only("name", "host", "port", "transport", "winrm_https", "computer_name"):
-            other_computer = normalise_host(other.computer_name) if other.computer_name else ""
-            if normalise_host(other.host) == host and other.effective_port == port and other_computer == computer:
+        # Every other server in one query: there are few, and an IPv6 address has many spellings the database cannot
+        # compare.
+        others = WindowsServer.objects.exclude(pk=self.pk) if self.pk is not None else WindowsServer.objects.all()
+        for other_host, other_port, transport, https, other_computer in others.values_list(
+            "host", "port", "transport", "winrm_https", "computer_name"
+        ):
+            if (
+                normalise_host(other_host) == host
+                and (other_port or DEFAULT_PORTS.get((transport, https))) == port
+                and (normalise_host(other_computer) if other_computer else "") == computer
+            ):
+                # Not named: the user may not be allowed to see it.
                 raise ValidationError(
                     {
                         "host": _(
-                            "Windows server {name} already connects to this host, port and remote DHCP server; "
-                            "keep one server per DHCP server."
-                        ).format(name=other.name)
+                            "Another Windows server already connects to this host, port and remote DHCP server; keep "
+                            "one server per DHCP server."
+                        )
                     }
                 )
 

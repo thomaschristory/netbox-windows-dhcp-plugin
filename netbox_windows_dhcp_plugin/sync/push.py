@@ -24,6 +24,7 @@ import ipaddress
 import itertools
 import json
 import logging
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -391,8 +392,8 @@ def _scope_range_problem(record: Record) -> str | None:
     if start > end:
         return f"the IP range {start}-{end} ends before it starts; fix it in NetBox"
     # /31 and /32 have no network or broadcast address to leave out.
-    # unverified: whether Windows refuses a range holding the network or broadcast address (lab test
-    # test_lab_v4.py::test_range_with_network_or_broadcast_address records it); no client can use either address.
+    # Windows refuses a range holding the network or broadcast address (lab, Windows Server 2025); no client could
+    # use either address anyway.
     if network.prefixlen <= 30 and (start == network.network_address or end == network.broadcast_address):
         which = "network" if start == network.network_address else "broadcast"
         return (
@@ -419,27 +420,48 @@ def _overlaps(items: Iterable[tuple[Key, int, int]]) -> dict[Key, Key]:
     return out
 
 
+def _identity(value: Any) -> str:
+    """A client ID or DUID compared the way Windows reads it: hex digits, without separators or case."""
+    return re.sub(r"[\s:.-]", "", str(value)).lower()
+
+
 def _client_of(record: Record) -> tuple[str, ...] | None:
-    """What Windows matches a reservation on in its scope: the client ID (IPv4), or the DUID and IAID (DHCPv6)."""
+    """
+    Who a reservation is for, wherever it sits: the client ID (IPv4), or the DUID and IAID (DHCPv6). Windows holds one
+    reservation per client in a scope.
+    """
     f = record.fields
     if record.kind == "reservation":
-        return (f["scope_id"], str(f["client_id"]).lower()) if f.get("client_id") else None
+        return ("v4", _identity(f["client_id"])) if f.get("client_id") else None
     if f.get("client_duid") and f.get("iaid") is not None:
-        return (f["prefix"], str(f["client_duid"]).lower(), str(f["iaid"]))
+        return ("v6", _identity(f["client_duid"]), str(f["iaid"]))
     return None
 
 
-def _conflicts(source: list[Record], target: Mapping[Key, Record]) -> dict[Key, str]:
+def _scope_of(record: Record) -> str:
+    """The scope key a reservation or exclusion record hangs off (the prefix for DHCPv6)."""
+    return str(record.fields.get("scope_id") or record.fields.get("prefix") or "")
+
+
+def _conflicts(
+    source: list[Record], target: Mapping[Key, Record], managed: Mapping[Key, str] | None = None
+) -> dict[Key, str]:
     """
     Reasons that need more than one record: an object outside its scope, two scopes or two exclusion ranges sharing
     addresses, two reservations for one client in a scope. Windows refuses all of these, so the push leaves them out
     and says why. When one of the clashing objects is already on Windows as NetBox has it, that one keeps being
-    pushed and only the newcomers are left out; otherwise all of them are.
+    pushed and only the newcomers are left out; otherwise all of them are. A scope on Windows that NetBox neither holds
+    nor manages counts as already there: the push leaves it alone, so a NetBox scope sharing its addresses could never
+    be created.
     """
+    managed = managed or {}
     out: dict[Key, str] = {}
     live = [r for r in source if DUPLICATE not in r.fields]
     scopes = {r.key: r for r in live if r.kind == "scope"}
     scopes6 = {r.fields.get("prefix"): r for r in live if r.kind == "scope6"}
+    # Second NetBox scopes for one Windows scope ("#<pk>" keys): their own reason is CONFLICT, and what hangs off them
+    # gets a reason saying so, rather than a check against a scope that cannot exist on Windows.
+    doubled = {r.key for r in source if r.kind in ("scope", "scope6") and DUPLICATE in r.fields}
 
     def on_windows(record: Record, *names: str) -> bool:
         current = target.get((record.kind, record.key))
@@ -447,36 +469,53 @@ def _conflicts(source: list[Record], target: Mapping[Key, Record]) -> dict[Key, 
             str(current.fields.get(n)).lower() == str(record.fields.get(n)).lower() for n in names
         )
 
-    # Scopes of one server sharing addresses (a /23 over a /24, say).
-    networks = {key: n for key, r in scopes.items() if (n := _scope_network(r)) is not None}
-    pairs = _overlaps((("scope", key), int(n.network_address), int(n.broadcast_address)) for key, n in networks.items())
-    for (kind, key), (_, other) in pairs.items():
-        if not on_windows(scopes[key], "subnet_mask"):
-            out[kind, key] = (
-                f"the scope {networks[key]} shares addresses with scope {networks[other]} on this server, which "
-                "Windows refuses; fix the prefixes in NetBox"
-            )
+    # Scopes of one server sharing addresses (a /23 over a /24, say), with the Windows scopes the push leaves alone.
+    # unverified: that Windows refuses a scope sharing addresses with another (lab test
+    # test_lab_v4.py::test_overlapping_scopes records it).
+    networks = {("scope", key): n for key, r in scopes.items() if (n := _scope_network(r)) is not None}
+    for key, r in target.items():
+        if key[0] == "scope" and key[1] not in scopes and key not in managed and (n := _scope_network(r)) is not None:
+            networks[("windows", key[1])] = n
+    pairs = _overlaps((key, int(n.network_address), int(n.broadcast_address)) for key, n in networks.items())
+    for (kind, key), other in pairs.items():
+        if kind != "scope" or on_windows(scopes[key], "subnet_mask"):
+            continue
+        where = (
+            "a scope made on Windows outside NetBox (import it, or remove it there)"
+            if other[0] == "windows"
+            else ("another scope of this server in NetBox")
+        )
+        out[kind, key] = (
+            f"the scope {networks[kind, key]} shares addresses with scope {networks[other]}, {where}; Windows refuses "
+            "two scopes sharing addresses: fix the prefixes in NetBox"
+        )
 
     by_scope: defaultdict[str, list[tuple[Key, int, int]]] = defaultdict(list)
     for r in live:
         key = (r.kind, r.key)
+        if r.kind not in ("reservation", "reservation6", "exclusion"):
+            continue
+        if _scope_of(r) in doubled or f"v6/{_scope_of(r)}" in doubled:
+            out.setdefault(
+                key,
+                f"its scope {_scope_of(r)} is a second NetBox scope for one Windows scope (same network address); "
+                "fix the scopes in NetBox",
+            )
+            continue
         if r.kind == "reservation":
             reason = _reservation_place(r, scopes.get(r.fields["scope_id"]))
         elif r.kind == "reservation6":
             reason = _reservation6_place(r, scopes6.get(r.fields.get("prefix")))
-        elif r.kind == "exclusion":
+        else:
             reason = _exclusion_place(r, scopes.get(r.fields["scope_id"]))
             start, end = _ipv4(r.fields.get("start_range")), _ipv4(r.fields.get("end_range"))
             if reason is None and start is not None and end is not None:
                 by_scope[r.fields["scope_id"]].append((key, int(start), int(end)))
-        else:
-            continue
         if reason:
             out.setdefault(key, reason)
 
-    # unverified: whether Windows refuses an exclusion range overlapping another one of the scope (lab test
-    # test_lab_v4.py::test_overlapping_exclusion_ranges records it). Windows' message for a refused exclusion speaks of
-    # a range that "overlaps with an existing range or is invalid".
+    # Windows refuses an exclusion range sharing even one address with another of the scope, and one inside another
+    # (lab, Windows Server 2025: "overlaps with an existing range or is invalid").
     by_key = {(r.kind, r.key): r for r in live}
     for scope_id, ranges in by_scope.items():
         for key, other in _overlaps(ranges).items():
@@ -488,13 +527,12 @@ def _conflicts(source: list[Record], target: Mapping[Key, Record]) -> dict[Key, 
                     "merge or fix them in NetBox",
                 )
 
-    # unverified: whether Windows refuses a second reservation for one client in a scope (lab tests
-    # test_lab_v4.py::test_two_reservations_for_one_client and
-    # test_lab_v6.py::test_two_reservations_for_one_duid_and_iaid record it).
+    # Windows refuses a second reservation for one client in a scope (lab, Windows Server 2025: ResourceExists for
+    # IPv4; the same DUID and IAID for DHCPv6, while another IAID of the same DUID is accepted).
     clients: defaultdict[tuple[str, ...], list[Record]] = defaultdict(list)
     for r in live:
         if r.kind in ("reservation", "reservation6") and (client := _client_of(r)) is not None:
-            clients[client].append(r)
+            clients[(_scope_of(r), *client)].append(r)
     for records in clients.values():
         if len(records) < 2:
             continue
@@ -515,22 +553,15 @@ def _conflicts(source: list[Record], target: Mapping[Key, Record]) -> dict[Key, 
 
 def _reservation_place(record: Record, scope: Record | None) -> str | None:
     """
-    An IPv4 reservation must be inside its scope's IP range, not only its prefix (Microsoft KB 2005980: Windows
-    refuses a reservation outside the range since Server 2008 R2; inside an exclusion range is fine).
+    An IPv4 reservation must be inside its scope's prefix. Inside the prefix but outside the scope's IP range is
+    accepted (lab, Windows Server 2025), whatever older documentation says.
     """
     ip = _ipv4(record.fields.get("ip_address"))
-    bounds = _scope_range(scope)
-    if ip is None or scope is None or bounds is None:
+    network = _scope_network(scope) if scope is not None else None
+    if ip is None or network is None:
         return None
-    network = _scope_network(scope)
-    if network is not None and ip not in network:
+    if ip not in network:
         return f"the address {ip} is outside the scope's prefix {network}; fix the address or the scope in NetBox"
-    start, end = bounds
-    if not start <= ip <= end:
-        return (
-            f"the address {ip} is outside the scope's IP range {start}-{end}, and Windows only takes reservations "
-            "inside the range (inside an exclusion range is fine); widen the range or fix the address in NetBox"
-        )
     return None
 
 
@@ -548,64 +579,92 @@ def _reservation6_place(record: Record, scope: Record | None) -> str | None:
 
 
 def _exclusion_place(record: Record, scope: Record | None) -> str | None:
-    """An exclusion range must sit inside its scope's IP range: Windows refuses one that reaches past it."""
-    # unverified: refused past the range but inside the subnet (lab test test_lab_v4.py::
-    # test_overlapping_exclusion_ranges, "outside_range", records it).
+    """
+    An exclusion range must be inside its scope's prefix and run upwards. One reaching past the scope's IP range but
+    inside the prefix is accepted (lab, Windows Server 2025).
+    """
     start, end = _ipv4(record.fields.get("start_range")), _ipv4(record.fields.get("end_range"))
-    bounds = _scope_range(scope)
-    if start is None or end is None or bounds is None:
+    network = _scope_network(scope) if scope is not None else None
+    if start is None or end is None or network is None:
         return None
-    first, last = bounds
-    if not (first <= start <= end <= last):
-        return f"the exclusion range {start}-{end} is not inside the scope's IP range {first}-{last}; fix it in NetBox"
+    if start not in network or end not in network:
+        return f"the exclusion range {start}-{end} is outside the scope's prefix {network}; fix it in NetBox"
+    if start > end:
+        return f"the exclusion range {start}-{end} ends before it starts; fix it in NetBox"
     return None
 
 
 def _replaced(skipped: Iterable[Record], source: set[Key], target: Mapping[Key, Record]) -> dict[Key, str]:
     """
     Windows objects that an unpushable NetBox object would replace: kept, rather than deleted with nothing to take
-    their place. A scope whose prefix changed in NetBox has a new scope ID, a reservation whose address changed a new
-    key, so the plain diff would delete the old one on Windows and then fail to create the new one. Only Windows
-    objects NetBox no longer holds are looked at (the others are not deleted anyway): scopes sharing addresses with an
-    unpushable scope, reservations of the same client in the same scope, exclusion ranges overlapping an unpushable
-    one in the same scope.
+    their place. A NetBox object has no lasting identity in the records (a scope is keyed by its network, a
+    reservation by its address), so a scope whose prefix changed in IPAM looks like a new scope plus a deleted one;
+    when the new one cannot be pushed, the plain diff would delete the old one on Windows and create nothing.
+
+    Only Windows objects NetBox no longer holds are looked at (the others are not deleted anyway). Kept, with
+    everything that hangs off them:
+
+    - a scope sharing addresses with an unpushable scope's prefix, or holding its IP range (the prefix moved away
+      from a range left in place);
+    - a reservation for the same client (in any scope), or at the same address, as an unpushable reservation;
+    - every exclusion range of a scope one of whose exclusion ranges cannot be pushed (it may have been moved
+      anywhere in the scope).
     """
-    gone = [r for k, r in target.items() if k not in source]
+    gone = {k: r for k, r in target.items() if k not in source}
+    if not gone:
+        return {}
+    gone_scopes = [(k, n) for k, r in gone.items() if k[0] == "scope" and (n := _scope_network(r)) is not None]
+    by_client: defaultdict[tuple[str, ...], list[Key]] = defaultdict(list)
+    by_address: defaultdict[tuple[str, str], list[Key]] = defaultdict(list)
+    exclusions: defaultdict[str, list[Key]] = defaultdict(list)
+    for k, r in gone.items():
+        if k[0] in ("reservation", "reservation6"):
+            if (client := _client_of(r)) is not None:
+                by_client[client].append(k)
+            if r.fields.get("ip_address"):
+                by_address[k[0], str(r.fields["ip_address"]).lower()].append(k)
+        elif k[0] == "exclusion":
+            exclusions[str(r.fields.get("scope_id"))].append(k)
+
     out: dict[Key, str] = {}
     for record in skipped:
         if DUPLICATE in record.fields:
             continue
-        why = f"kept: {record.kind} {record.key} in NetBox replaces it but cannot be pushed"
-        if record.kind == "scope" and (network := _scope_network(record)) is not None:
-            for r in gone:
-                if r.kind == "scope" and (n := _scope_network(r)) is not None and n.overlaps(network):
-                    out.setdefault((r.kind, r.key), why)
-        elif record.kind in ("reservation", "reservation6") and (client := _client_of(record)) is not None:
-            for r in gone:
-                if r.kind == record.kind and _client_of(r) == client:
-                    out.setdefault((r.kind, r.key), why)
+        name = f"{record.kind} {record.key}"
+        if record.kind == "scope":
+            network = _scope_network(record)
+            addresses = [a for a in _scope_range(record) or () if a is not None]
+            for k, n in gone_scopes:
+                if (network is not None and n.overlaps(network)) or any(a in n for a in addresses):
+                    out.setdefault(k, f"kept: NetBox scope {record.key}, which uses its addresses, cannot be pushed")
+        elif record.kind in ("reservation", "reservation6"):
+            why = f"kept: NetBox {name}, for the same client or address, cannot be pushed"
+            client = _client_of(record)
+            for k in by_client.get(client, []) if client is not None else []:
+                out.setdefault(k, why)
+            if record.fields.get("ip_address"):
+                for k in by_address.get((record.kind, str(record.fields["ip_address"]).lower()), []):
+                    out.setdefault(k, why)
         elif record.kind == "exclusion":
-            start, end = _ipv4(record.fields.get("start_range")), _ipv4(record.fields.get("end_range"))
-            if start is None or end is None:
-                continue
-            for r in gone:
-                if r.kind != "exclusion" or r.fields.get("scope_id") != record.fields.get("scope_id"):
-                    continue
-                s, e = _ipv4(r.fields.get("start_range")), _ipv4(r.fields.get("end_range"))
-                if s is not None and e is not None and s <= end and start <= e:
-                    out.setdefault((r.kind, r.key), why)
-    # What hangs off a kept object stays with it (the old reservation's option values, the old scope's reservations).
-    grown = bool(out)
-    while grown:
-        grown = False
-        for r in gone:
-            key = (r.kind, r.key)
-            if key in out:
-                continue
-            parent = next((p for p in parents(r.kind, r.fields) if p in out), None)
-            if parent is not None:
-                out[key] = f"kept with {parent[0]} {parent[1]}, which NetBox cannot replace yet"
-                grown = True
+            for k in exclusions.get(str(record.fields.get("scope_id")), []):
+                out.setdefault(k, f"kept: NetBox {name} of the same scope cannot be pushed")
+
+    # What hangs off a kept object stays with it: a scope's reservations, exclusions, policies and option values, a
+    # reservation's option values, and a failover relationship holding the scope (removing it would take the scope
+    # off the partner server). A superscope is not kept for its scopes: removing it on Windows leaves them in place.
+    children: defaultdict[Key, list[Key]] = defaultdict(list)
+    for k, r in gone.items():
+        if k[0] == "superscope":
+            continue
+        for parent in parents(r.kind, r.fields):
+            children[parent].append(k)
+    queue = list(out)
+    while queue:
+        parent = queue.pop()
+        for k in children.get(parent, []):
+            if k not in out:
+                out[k] = f"kept with {parent[0]} {parent[1]}, which NetBox cannot replace yet"
+                queue.append(k)
     return out
 
 
@@ -746,7 +805,7 @@ def plan(
         defined = {str(c) for c in defined_options} | {r.key for r in source if r.kind == "optiondef"}
     skipped_ids = set(skipped_option_ids)
     orders = _shared_orders(source)
-    conflicts = _conflicts(source, target_index)
+    conflicts = _conflicts(source, target_index, managed)
     policies = {r.key for r in source if r.kind == "policy"}
     pushable = []
     unpushable = []
