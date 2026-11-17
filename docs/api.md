@@ -85,6 +85,47 @@ be applied again. The [permission rules](permissions.md#applying-proposal-items)
 Both apply actions answer `409` with a `detail` when the request is sent in a branch (the `X-NetBox-Branch`
 header): proposals are applied to main. Dismissing works either way.
 
+### Large reviews run as a job
+
+When a request picks more open items than the [`review_job_threshold`](configuration.md#settings) setting (100 by
+default), the work is not done in the request: it is queued as a background job (**Windows DHCP import review**) that
+runs as you, and the answer is `202` instead of the counts above:
+
+- `import-proposals/<id>/apply/` and `/dismiss/` answer with the job, as `test-connection` and `import` do (its `id`,
+  `url`, `status`...);
+- `import-proposal-items/apply/` and `/dismiss/` answer `{"jobs": [...]}`, one job per proposal the items belong to.
+
+Follow the job either at `GET /api/core/jobs/<id>/` (this needs `core.view_job`) or through the proposal: every
+`import-proposals/` object has `review_job`, the newest review job's `status`, `created`, `started`, `completed` and
+`data` (`null` when there was none), readable by anyone who may view the proposal. Once the job has finished, its
+`data` holds what it did:
+`{"action": "apply", "items": 2400, "superseded": 0, "applied": ..., "failed": ..., "missing_permissions": [...],
+"remaining": ...}` (`"dismissed"` in place of the three apply counts for a dismissal).
+
+- `superseded` counts the picked items that were no longer open when the job started: a newer import of the server
+  replaced them (an import replaces every open item of the proposal with new ones), or another reviewer decided them.
+  Review the proposal again. When none of the picked items is left, the job fails and says so.
+- `remaining` counts the picked items that were open when the job started and still are: failed (so `failed` is
+  part of `remaining`), left pending for a missing permission, or no longer yours to change. Superseded items are not
+  in it. Once the job has finished, `superseded` also counts the items someone else decided while it ran, so
+  `superseded` + `applied` (or `dismissed`) + `remaining` = `items`.
+- `error` says why the job could not run at all (the proposal is gone, your permissions changed, every picked item
+  was superseded, or an import or push of the same server was running); the job then failed. The proposal's
+  `review_job` leaves `error` out for users who did not queue the job and may not view it.
+- `interrupted` is `true` when the job stopped halfway (it timed out, lost its database connection, or hit a bug):
+  NetBox marks the job errored and records why in the job's own `error` field, readable at `/api/core/jobs/<id>/`
+  with `core.view_job` (the proposal's `review_job` does not include it). The counts are what it had done until then
+  (absent if they could not be read), every one of those items is committed, and webhooks heard of them.
+
+The job checks your permissions when it starts (not again for each item), and only acts on the items picked when it
+was queued.
+
+While a review job of a proposal waits or runs, a request that would queue another one for the same proposal answers
+`409` with a `detail`, and the waiting job's ID in `job` when you queued it or may view it (`null` otherwise). A job
+that no worker finishes stops blocking new reviews 2 hours after it was queued. Below the threshold nothing changes:
+the request applies or dismisses the items itself and answers `200` with the counts. Clients that send large reviews
+must handle both.
+
 List the pending items of a proposal with `GET import-proposal-items/?proposal_id=<id>&status=pending`. Each item
 has its `action`, `kind`, `key`, `before` and `after` values, and the NetBox object it touches.
 

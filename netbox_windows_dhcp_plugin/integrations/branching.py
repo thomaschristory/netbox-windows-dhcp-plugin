@@ -5,7 +5,7 @@ Everything that imports those plugins lives here, so the plugin keeps working wh
 """
 
 import logging
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
 from typing import NamedTuple
 
@@ -581,6 +581,31 @@ def writing_main(user):
 
     with on_main(), event_tracking(_request(user)):
         yield
+
+
+@contextmanager
+def acting_as(user, request_id=None):
+    """
+    Write into main with change tracking, as ``user``, from a background job, with or without netbox-branching. The
+    change log records ``user`` and ``request_id``, and webhooks hear of the changes when the block ends. Main is
+    used whatever branch is active, as in ``writing_main``.
+
+    Unlike a web request, the queued events are sent even when the block fails: a job commits one change at a time,
+    and one that dies halfway (a timeout, a lost connection) must not hide from webhooks the changes it already
+    committed. So the block must keep events of uncommitted work out of the queue, as importer._one_change does.
+    """
+    from netbox import context_managers
+    from netbox.context import events_queue
+
+    with (
+        on_main() if branching_installed() else nullcontext(),
+        context_managers.event_tracking(_request(user, request_id)),
+    ):
+        try:
+            yield
+        except BaseException:
+            context_managers.flush_events(list(events_queue.get().values()))
+            raise
 
 
 def close_connection(branch):

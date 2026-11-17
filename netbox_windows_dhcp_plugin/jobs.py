@@ -727,6 +727,184 @@ def _queue_import(server, user, destination, branch, delay=0, scheduled=False, a
     return job
 
 
+class ReviewBusy(Exception):
+    """A review job for the proposal is already waiting or running. ``job`` is that job (None if it just ended)."""
+
+    def __init__(self, proposal, job):
+        super().__init__(f"applying or dismissing items of {proposal} is already queued or running")
+        self.job = job
+
+
+class ReviewServerBusy(ServerBusy):
+    pass
+
+
+# Why picked items are no longer there to review, for the job log, its data and the proposal page.
+SUPERSEDED = "replaced by a newer import or decided by someone else meanwhile: review again"
+
+
+class ReviewJob(JobRunner):
+    """
+    Apply or dismiss many items of one import proposal in the background (#101), as the user who asked. Below the
+    review_job_threshold setting the web request does this itself (review.py); a large first import would make it
+    run for minutes and time out the browser or the reverse proxy.
+
+    Permissions are checked again here, as that user: they may have changed while the job waited. The change log
+    records the user and the job's ID as the request ID, so the changes of one review can be listed together.
+    """
+
+    class Meta:
+        name = "Windows DHCP import review"
+
+    def run(self, *args, item_ids=(), dismiss=False, whole_proposal=False, **kwargs):
+        from .models import ImportProposal
+
+        self.job.data = {**(self.job.data or {}), "action": "dismiss" if dismiss else "apply", "items": len(item_ids)}
+        proposal = self.job.object
+        user = self.job.user
+        if proposal is None:
+            self._fail("the import proposal no longer exists")
+        if user is None or not user.is_active:
+            self._fail("the user who asked for this review no longer exists or is inactive")
+        # Permissions are read once, here: one taken away while the job runs is honoured by the next review.
+        if whole_proposal and not (
+            ImportProposal.objects.restrict(user, "view").restrict(user, "change").filter(pk=proposal.pk).exists()
+        ):
+            self._fail(f"the requesting user may no longer view and change import proposal {proposal}")
+        try:
+            # An import holds this lock too while it rewrites the proposal, so the items read below stay as read.
+            with server_lock(proposal.windows_server, ReviewServerBusy):
+                self._review(proposal, user, item_ids, dismiss)
+        except ReviewServerBusy as exc:
+            self._fail(f"{exc}: try again once it has finished")
+
+    def _review(self, proposal, user, item_ids, dismiss):
+        from . import review
+        from .integrations import branching
+        from .models import ImportProposalItem
+
+        # A newer import replaces the open items of a proposal with new ones (new IDs), and another reviewer may
+        # have decided some meanwhile: neither is this job's to touch, and the user must know they were skipped.
+        still_open = list(
+            review.open_items(ImportProposalItem.objects.filter(pk__in=item_ids)).values_list("pk", flat=True)
+        )
+        superseded = len(item_ids) - len(still_open)
+        self.job.data["superseded"] = superseded
+        if superseded:
+            self.logger.warning(f"{superseded} picked item(s) were {SUPERSEDED}")
+        if not still_open:
+            self._fail(f"none of the picked items is still open: they were {SUPERSEDED}")
+        # Only the items picked when the job was queued: a new import may have proposed others since, which the
+        # user has not seen. Items they may no longer change are left alone.
+        items = review.open_items(
+            ImportProposalItem.objects.restrict(user, "change").filter(proposal=proposal, pk__in=still_open)
+        )
+        try:
+            with branching.acting_as(user, self.job.job_id):
+                if dismiss:
+                    summary = {"dismissed": review.dismiss(user, items)}
+                else:
+                    applied, failed, denied = review.apply(user, items)
+                    summary = {"applied": applied, "failed": failed, "missing_permissions": denied}
+        except BaseException:
+            # Killed or broken halfway (a timeout, a lost database connection, a bug): every item decided so far is
+            # committed, so say how far it got before NetBox marks the job errored. Reading that needs the database,
+            # which may be what failed: then only say it stopped, and let the original error through.
+            self.job.data["interrupted"] = True
+            try:
+                self.job.data.update(self._progress(still_open, dismiss))
+            except Exception as exc:
+                self.logger.error(f"Could not count what was done before the job stopped: {type(exc).__name__}")
+            raise
+        # What the user picked and is still open: denied, failed, or left untouched (a permission went away).
+        summary["remaining"] = review.open_items(ImportProposalItem.objects.filter(pk__in=still_open)).count()
+        # Items another reviewer decided while this job ran were not this job's: count them with the ones decided
+        # before it started, so the counts add up to the items picked. A failed item still open is in both "failed"
+        # and "remaining", so only "applied" is added for an apply.
+        done = summary["dismissed"] if dismiss else summary["applied"]
+        summary["superseded"] = self.job.data["superseded"] + len(still_open) - done - summary["remaining"]
+        self.job.data.update(summary)
+        if dismiss:
+            self.logger.info(f"Dismissed {summary['dismissed']} item(s) of {proposal}")
+        else:
+            self.logger.info(f"Applied {summary['applied']} item(s) of {proposal}")
+            if summary["failed"]:
+                self.logger.warning(f"{summary['failed']} item(s) failed, see their error")
+            if summary["missing_permissions"]:
+                self.logger.warning(f"Not applied, missing permission: {', '.join(summary['missing_permissions'])}")
+        if summary["remaining"]:
+            self.logger.info(f"{summary['remaining']} picked item(s) still open")
+
+    @staticmethod
+    def _progress(item_ids, dismiss):
+        """What became of these items so far, read from the database."""
+        from . import review
+        from .choices import ProposalItemStatusChoices
+        from .models import ImportProposalItem
+
+        done = ProposalItemStatusChoices.DISMISSED if dismiss else ProposalItemStatusChoices.APPLIED
+        picked = ImportProposalItem.objects.filter(pk__in=item_ids)
+        return {
+            "dismissed" if dismiss else "applied": picked.filter(status=done).count(),
+            "remaining": review.open_items(picked).count(),
+        }
+
+    def _fail(self, message):
+        # Job.terminate saves the job, data included: the proposal page and the API show the reason.
+        self.job.data = {**(self.job.data or {}), "error": message}
+        self.logger.error(message)
+        raise JobFailed(message)
+
+
+# Advisory lock (with the proposal's key) taken while deciding whether to queue a review job.
+_REVIEW_LOCK_CLASS = 0x57444852  # "WDHR"
+
+
+def review_jobs(proposal):
+    """Review jobs of the proposal still waiting or running, newest first; abandoned ones no longer count."""
+    from core.choices import JobStatusChoices
+
+    return (
+        ReviewJob.get_jobs(proposal)
+        .filter(status__in=JobStatusChoices.ENQUEUED_STATE_CHOICES, created__gte=timezone.now() - ABANDONED_JOB)
+        .order_by("-created")
+    )
+
+
+def enqueue_review(user, item_ids_by_proposal, dismiss=False, whole_proposal=False):
+    """
+    Queue one review job per proposal for the given item IDs ({proposal: [item id, ...]}). Raises ReviewBusy, and
+    queues nothing, if one of the proposals already has a review job waiting or running: two jobs on the same items
+    would only fight over them. Returns the jobs.
+    """
+    from django.db import transaction
+
+    proposals = sorted(item_ids_by_proposal, key=lambda p: p.pk)
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            for proposal in proposals:
+                cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_REVIEW_LOCK_CLASS, proposal.pk])
+        for proposal in proposals:
+            if (busy := review_jobs(proposal).first()) is not None:
+                raise ReviewBusy(proposal, busy)
+        jobs = []
+        for proposal in proposals:
+            ids = sorted(item_ids_by_proposal[proposal])
+            job = ReviewJob.enqueue(
+                instance=proposal,
+                user=user,
+                job_timeout=PUSH_TIMEOUT,
+                item_ids=ids,
+                dismiss=dismiss,
+                whole_proposal=whole_proposal,
+            )
+            # Known before a worker picks the job up: the proposal page says what is waiting.
+            job.data = {"action": "dismiss" if dismiss else "apply", "items": len(ids)}
+            job.save(update_fields=["data"])
+            jobs.append(job)
+    return jobs
+
+
 def _import_user():
     """The user scheduled imports run as (the import_user setting), or None."""
     from django.contrib.auth import get_user_model

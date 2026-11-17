@@ -9,7 +9,6 @@ No Windows I/O here: the job reads the server and passes the ``WindowsState`` in
 import json
 import logging
 from contextlib import contextmanager, nullcontext
-from copy import copy
 from dataclasses import dataclass, field
 
 from django.core.exceptions import ValidationError
@@ -127,20 +126,44 @@ def _one_change():
 
     The queue is put back whatever the error is, not only for the errors callers expect: an unexpected one in a web
     request becomes an error page, after which NetBox still sends what is queued (GHSA-5x5m-vqw4-wq85).
+
+    The change queues its events in a queue of its own, merged into the request's queue only once it succeeded. The
+    request's queue is never copied: copying it for every change made applying thousands of items cost more than
+    linear time (#101).
     """
     from netbox.context import events_queue
 
-    # EventContext lazily serializes data: converting it to dict loses that behavior. Coalescing an event also
-    # updates its snapshots in place, so those need their own copy.
-    queued = {key: copy(event) for key, event in events_queue.get().items()}
-    for event in queued.values():
-        if "snapshots" in event:
-            event["snapshots"] = dict(event["snapshots"])
+    outer = events_queue.get()
+    token = events_queue.set({})
     try:
         yield
-    except BaseException:
-        events_queue.set(queued)
-        raise
+        own = events_queue.get()
+    finally:
+        events_queue.reset(token)
+    _merge_events(outer, own)
+
+
+def _merge_events(queue, events):
+    """
+    Add one change's events to the request's queue, coalescing them as NetBox's enqueue_event() does when an object
+    already has an event there (extras/events.py): the first event's type and "before" snapshot stay, the "after"
+    snapshot and the data come from the newest one, and a delete wins.
+    """
+    from core.events import OBJECT_DELETED
+
+    for key, event in events.items():
+        first = queue.get(key)
+        if first is None:
+            queue[key] = event
+            continue
+        first["snapshots"]["postchange"] = event["snapshots"]["postchange"]
+        if event["event_type"] == OBJECT_DELETED:
+            first["event_type"] = OBJECT_DELETED
+            # The delete froze its data before the row went away: keep that, not a lazy serialization of a ghost.
+            first.data["data"] = event.data["data"]
+            first._serialization_source = None
+        else:
+            first.refresh_serialization_source(getattr(event, "_serialization_source", None) or event.data["object"])
 
 
 def _message(exc):
@@ -309,8 +332,11 @@ def _set_item(item, status, error=""):
     the copy in hand was loaded when the request started, and since then a new import may have replaced the item
     (saving the copy would bring it back) or another reviewer may have applied or dismissed it (their decision
     stands).
+
+    Its change log event goes through _one_change too: a background review sends the events it queued even when it
+    dies (integrations/branching.acting_as), so the event of a write rolled back here must not stay queued.
     """
-    with transaction.atomic():
+    with _one_change(), transaction.atomic():
         locked = ImportProposalItem.objects.select_for_update().filter(pk=item.pk, status__in=_OPEN).first()
         if locked is None:
             return False

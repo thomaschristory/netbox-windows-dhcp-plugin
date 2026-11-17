@@ -304,3 +304,40 @@ class ImportStatusPanel(panels.ObjectPanel):
 
     def should_render(self, context):
         return context["status"] is not None
+
+
+class ReviewJobPanel(panels.ObjectPanel):
+    """
+    On a proposal page: the newest background review of its items (#101), while it runs and after. Anyone who may
+    view the proposal sees its status and counts; who asked, the error and the link only show to the user who asked
+    and to users who may view that job.
+    """
+
+    title = _("Background review")
+    template_name = "netbox_windows_dhcp_plugin/inc/review_job.html"
+
+    def get_context(self, context):
+        from core.choices import JobStatusChoices
+        from django.utils import timezone
+
+        from .. import review
+        from ..jobs import ABANDONED_JOB, ReviewJob
+
+        ctx = super().get_context(context)
+        job = ReviewJob.get_jobs(ctx["object"]).select_related("user").order_by("-created").first()
+        ctx["job"] = job
+        if job is None:
+            return ctx
+        waiting = job.status in JobStatusChoices.ENQUEUED_STATE_CHOICES
+        # Past this a job no worker finished is no longer waited for (jobs.review_jobs): a new review may start.
+        ctx["running"] = waiting and job.created >= timezone.now() - ABANDONED_JOB
+        ctx["lost"] = waiting and not ctx["running"]
+        ctx["result"] = job.data if isinstance(job.data, dict) else {}
+        # The same rule as the REST API's review_job and 409: the requester, or a user who may view the job.
+        ctx["viewable"] = review.visible_job(ctx["request"].user, job) is not None
+        # A job NetBox marked errored (a crash or a timeout) has its reason on the job, not in its data.
+        ctx["error"] = ctx["result"].get("error") or job.error
+        return ctx
+
+    def should_render(self, context):
+        return context["job"] is not None

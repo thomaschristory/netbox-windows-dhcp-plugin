@@ -3,6 +3,7 @@ from django.db.models import Count
 from django.http import HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils.html import format_html, format_html_join
 from django.utils.translation import gettext_lazy as _
 from extras.models import SavedFilter
 from extras.ui.panels import CustomFieldsPanel, TagsPanel
@@ -28,6 +29,7 @@ from .choices import ClassTypeChoices, ImportDestinationChoices
 from .integrations import branching
 from .jobs import (
     ImportRefused,
+    ReviewBusy,
     enqueue_import,
     enqueue_leases,
     enqueue_push,
@@ -659,6 +661,7 @@ _register(
     filterset_form=forms.ImportProposalFilterForm,
     layout=layout.SimpleLayout(
         left_panels=[panels.ImportProposalPanel()],
+        right_panels=[panels.ReviewJobPanel()],
         bottom_panels=[
             ObjectsTablePanel(
                 model="netbox_windows_dhcp_plugin.ImportProposalItem",
@@ -692,6 +695,8 @@ class _ReviewView(GetReturnURLMixin, BaseObjectView):
 
     queryset = ImportProposalItem.objects.all()
     dismiss = False
+    # Apply all / Dismiss all: a background job then also checks "change" on the proposal again (jobs.ReviewJob).
+    whole_proposal = False
 
     def get_required_permission(self):
         return "netbox_windows_dhcp_plugin.change_importproposalitem"
@@ -707,15 +712,18 @@ class _ReviewView(GetReturnURLMixin, BaseObjectView):
         obj = get_object_or_404(self.queryset.restrict(request.user, "change"), pk=pk) if pk is not None else None
         selected = self._items(request, obj)
         if selected is None:
-            # Refused, and the error already says why: a "0 item(s)" success next to it would read as done.
+            # Refused, and the error already says why: a "0 item(s)" success next to it would read as done. Checked
+            # before the background path too: a refused selection must never become a job.
             return redirect(self.get_return_url(request, obj))
         items = review.open_items(selected)
-        if self.dismiss:
-            count = review.dismiss(request.user, items)
-            messages.success(request, _("Dismissed {count} item(s)").format(count=count))
-        elif refusal := review.apply_refusal():
+        if not self.dismiss and (refusal := review.apply_refusal()):
             # In a branch the objects would go to the branch and the sync state to main: say so and apply nothing.
             messages.error(request, refusal)
+        elif review.in_background(items):
+            self._queue(request, items)
+        elif self.dismiss:
+            count = review.dismiss(request.user, items)
+            messages.success(request, _("Dismissed {count} item(s)").format(count=count))
         else:
             applied, failed, denied = review.apply(request.user, items)
             messages.success(request, _("Applied {applied} item(s)").format(applied=applied))
@@ -725,9 +733,31 @@ class _ReviewView(GetReturnURLMixin, BaseObjectView):
                 messages.error(request, _("Not applied, missing permission: {perms}").format(perms=", ".join(denied)))
         return redirect(self.get_return_url(request, obj))
 
+    def _queue(self, request, items):
+        """Too many items for one request: hand them to background jobs and link them (#101)."""
+        try:
+            jobs = review.queue(request.user, items, dismiss=self.dismiss, whole_proposal=self.whole_proposal)
+        except ReviewBusy as exc:
+            text = _(
+                "Applying or dismissing these items is already queued or running. A job that no worker finishes "
+                "stops blocking new reviews 2 hours after it was queued."
+            )
+            if (job := review.visible_job(request.user, exc.job)) is not None:
+                text = format_html('{} (<a href="{}">job #{}</a>)', text, job.get_absolute_url(), job.pk)
+            messages.warning(request, text)
+            return
+        links = format_html_join(", ", '<a href="{}">job #{}</a>', ((j.get_absolute_url(), j.pk) for j in jobs))
+        if self.dismiss:
+            text = _("Dismissing the items in the background")
+        else:
+            text = _("Applying the items in the background")
+        after = _("The proposal page shows it, with the result once it has finished.")
+        messages.success(request, format_html("{}: {}. {}", text, links, after))
+
 
 class _ProposalReviewView(_ReviewView):
     queryset = ImportProposal.objects.all()
+    whole_proposal = True
 
     def get_required_permission(self):
         return "netbox_windows_dhcp_plugin.change_importproposal"

@@ -15,6 +15,7 @@ environment variables and the files they name exist for both.
 | `import_change_request` | `True` | Open a change request for each import branch when netbox-change-control is installed |
 | `import_direct` | `True` | With netbox-branching, offer **Import directly** (an import written straight into main). `False` allows branch imports only. Change control's `protect_main` applies either way |
 | `import_user` | `None` | User name [scheduled imports](import.md#scheduled-imports) run as. With branching, scheduled imports fail without it |
+| `review_job_threshold` | `100` | Applying or dismissing more open [import proposal](import.md#without-branching-import-proposals) items than this at once (Apply all, Dismiss all, a bulk selection, or the REST API) runs as a background job instead of in the web request, so a large first import cannot time out the browser or a reverse proxy. `None` keeps every review in the request |
 | `sync_run_retention_days` | `90` | Days to keep [sync runs](servers.md#sync-runs). The import scheduler deletes older runs, oldest first, except the ones the plugin still reads and runs with a journal entry (see [Workers](workers.md#sync-run-retention)). 1 to 36500; `0` or `None` keeps every run |
 | `push_debounce` | `10` | Seconds to wait after a save before pushing, so a burst of edits becomes one push (saves outside branching) |
 | `max_concurrency` | `4` | Upper bound on the PowerShell commands one job runs at the same time against a server. A job sends its commands one after another, so changing it makes no difference |

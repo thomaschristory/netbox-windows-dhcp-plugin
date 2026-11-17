@@ -7,15 +7,32 @@ may not apply are left pending); every object written, prefixes and addresses in
 saved, constraints included, and an item that breaks a permission is rolled back and marked failed.
 
 Nothing is applied while the request works in a netbox-branching branch (see ``apply_refusal``).
+
+More open items than the review_job_threshold setting are not handled in the request: ``queue`` hands them to a
+background job (jobs.ReviewJob) that runs as the same user and checks the same permissions (#101).
 """
+
+import logging
 
 from django.contrib.contenttypes.models import ContentType
 
 from .choices import ProposalItemStatusChoices
+from .conf import get_setting
 from .integrations import branching
 from .sync import importer
 
-__all__ = ("apply", "apply_refusal", "dismiss", "missing_permission", "open_items")
+__all__ = (
+    "apply",
+    "apply_refusal",
+    "dismiss",
+    "in_background",
+    "missing_permission",
+    "open_items",
+    "queue",
+    "visible_job",
+)
+
+log = logging.getLogger(__name__)
 
 _PERMISSION = {"create": "add", "update": "change", "delete": "delete"}
 
@@ -78,3 +95,53 @@ def apply(user, items):
 
 def dismiss(user, items):
     return importer.dismiss_items(list(items))
+
+
+def review_job_threshold():
+    """
+    The review_job_threshold setting, or None when every review stays in the request. A value that is not a whole
+    number of at least 0 is a configuration mistake: it is logged and treated as None, so reviews keep working.
+    """
+    value = get_setting("review_job_threshold")
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        log.error(f"review_job_threshold must be None or a whole number of at least 0, not {value!r}: ignored")
+        return None
+    return value
+
+
+def in_background(items):
+    """Whether these open items are too many for the request and go to a background job."""
+    threshold = review_job_threshold()
+    if threshold is None:
+        return False
+    # Only counted up to the threshold: a selection of thousands needs no full count to know it is too large.
+    return items[: threshold + 1].count() > threshold
+
+
+def visible_job(user, job):
+    """The job, if the user asked for it or may view it; None otherwise (its ID is not theirs to learn)."""
+    from core.models import Job
+
+    if job is None:
+        return None
+    if job.user_id == user.pk or Job.objects.restrict(user, "view").filter(pk=job.pk).exists():
+        return job
+    return None
+
+
+def queue(user, items, dismiss=False, whole_proposal=False):
+    """
+    Hand these open items to background jobs, one per proposal, and return the jobs. The job checks again what the
+    user may do when it runs. ``whole_proposal`` is for Apply all and Dismiss all, which also need "change" on the
+    proposal. Raises jobs.ReviewBusy if a proposal already has a review job waiting or running.
+    """
+    from .jobs import enqueue_review
+    from .models import ImportProposal
+
+    ids = {}
+    for pk, proposal_id in items.values_list("pk", "proposal_id"):
+        ids.setdefault(proposal_id, []).append(pk)
+    proposals = ImportProposal.objects.in_bulk(ids)
+    return enqueue_review(user, {proposals[pk]: ids[pk] for pk in ids}, dismiss=dismiss, whole_proposal=whole_proposal)

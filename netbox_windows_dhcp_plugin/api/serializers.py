@@ -386,11 +386,43 @@ class ImportProposalSerializer(NetBoxModelSerializer):
     windows_server = WindowsServerSerializer(nested=True, read_only=True)
     sync_run = SyncRunSerializer(nested=True, read_only=True)
     status = ChoiceField(choices=ProposalStatusChoices, read_only=True)
+    review_job = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = ImportProposal
-        fields = (*COMMON, "windows_server", "sync_run", "status", *TAIL)
+        fields = (*COMMON, "windows_server", "sync_run", "status", "review_job", *TAIL)
         brief_fields = ("id", "url", "display", "status")
+
+    def get_review_job(self, obj) -> dict | None:
+        """
+        The newest background review of the proposal (#101): its status, times and data (the counts), so a client
+        can follow it without core.view_job. Not who asked, the job's ID or its error: those are for viewers of the
+        job, as on the proposal page.
+        """
+        jobs = getattr(obj, "review_jobs", None)
+        if jobs is None:
+            from ..jobs import ReviewJob
+
+            jobs = list(ReviewJob.get_jobs(obj).order_by("-created")[:1])
+        if not jobs:
+            return None
+        job = jobs[0]
+        data = job.data
+        if isinstance(data, dict) and "error" in data and not self._may_view(job):
+            data = {k: v for k, v in data.items() if k != "error"}
+        return {
+            "status": job.status,
+            "created": job.created,
+            "started": job.started,
+            "completed": job.completed,
+            "data": data,
+        }
+
+    def _may_view(self, job):
+        from .. import review
+
+        request = self.context.get("request")
+        return request is not None and review.visible_job(request.user, job) is not None
 
 
 class ImportProposalItemSerializer(NetBoxModelSerializer):

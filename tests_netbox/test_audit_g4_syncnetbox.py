@@ -78,8 +78,10 @@ class F39EventQueueTest(TestCase):
         token = events_queue.set({"kept": {"snapshots": {"postchange": {"a": 1}}}})
         try:
             with self.assertRaises(RuntimeError), importer._one_change():
+                # The change queues into a queue of its own (#101): earlier events are out of its reach.
+                self.assertNotIn("kept", events_queue.get())
                 events_queue.get()["rolled-back"] = {"snapshots": {}}
-                events_queue.get()["kept"]["snapshots"]["postchange"] = {"a": 2}
+                events_queue.get()["kept"] = {"snapshots": {"postchange": {"a": 2}}}
                 raise RuntimeError("deadlock detected")
             self.assertEqual(list(events_queue.get()), ["kept"])
             self.assertEqual(events_queue.get()["kept"]["snapshots"]["postchange"], {"a": 1})

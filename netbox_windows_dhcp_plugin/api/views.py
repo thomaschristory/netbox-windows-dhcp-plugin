@@ -159,6 +159,17 @@ SyncRunViewSet = _viewset(
 )
 
 
+def _review_jobs():
+    from core.models import Job
+    from django.db.models import Prefetch
+
+    from ..jobs import ReviewJob
+
+    return Prefetch(
+        "jobs", queryset=Job.objects.filter(name=ReviewJob.name).order_by("-created"), to_attr="review_jobs"
+    )
+
+
 class _ReviewActionsMixin:
     """Apply or dismiss proposal items as the requesting user (see review.py for the permission rules)."""
 
@@ -168,21 +179,55 @@ class _ReviewActionsMixin:
             return [TokenWritePermission()]
         return super().get_permissions()
 
+    # Apply all / Dismiss all answer with the one job of the proposal; a list of items may span proposals.
+    whole_proposal = False
+
     def _review(self, request, items, dismiss):
         items = review.open_items(items)
+        # In a branch the objects would go to the branch and the sync state to main (see review.apply_refusal).
+        if not dismiss and (refusal := review.apply_refusal()):
+            return Response({"detail": refusal}, status=409)
+        if review.in_background(items):
+            return self._queue(request, items, dismiss)
         if dismiss:
             return Response({"dismissed": review.dismiss(request.user, items)})
-        # In a branch the objects would go to the branch and the sync state to main (see review.apply_refusal).
-        if refusal := review.apply_refusal():
-            return Response({"detail": refusal}, status=409)
         applied, failed, denied = review.apply(request.user, items)
         return Response({"applied": applied, "failed": failed, "missing_permissions": denied})
+
+    def _queue(self, request, items, dismiss):
+        """More open items than review_job_threshold: 202 with the background job(s) instead of the counts (#101)."""
+        from ..jobs import ReviewBusy
+
+        try:
+            jobs = review.queue(request.user, items, dismiss=dismiss, whole_proposal=self.whole_proposal)
+        except ReviewBusy as exc:
+            job = review.visible_job(request.user, exc.job)
+            return Response(
+                {
+                    "detail": "applying or dismissing items of this proposal is already queued or running (a job "
+                    "that no worker finishes stops blocking new reviews 2 hours after it was queued)",
+                    # Only a job the requester asked for or may view: another user's job ID is not theirs to learn.
+                    "job": job.pk if job else None,
+                },
+                status=409,
+            )
+        context = {"request": request}
+        if self.whole_proposal:
+            return Response(JobSerializer(jobs[0], context=context).data, status=202)
+        return Response({"jobs": JobSerializer(jobs, many=True, context=context).data}, status=202)
 
 
 class ImportProposalViewSet(
     _ReviewActionsMixin,
-    _viewset(models.ImportProposal, models.ImportProposal.objects.all(), base=NetBoxReadOnlyModelViewSet),
+    _viewset(
+        models.ImportProposal,
+        # The newest review job of each proposal, for the serializer's review_job, in one query for the page.
+        models.ImportProposal.objects.prefetch_related(_review_jobs()),
+        base=NetBoxReadOnlyModelViewSet,
+    ),
 ):
+    whole_proposal = True
+
     def _proposal(self, request):
         # NetBox has already restricted the queryset to "add" (what POST maps to); start again from "change".
         self.queryset = models.ImportProposal.objects.restrict(request.user, "change").restrict(request.user, "view")
@@ -190,13 +235,13 @@ class ImportProposalViewSet(
 
     @action(detail=True, methods=["post"])
     def apply(self, request, pk):
-        """Apply every pending item of the proposal."""
+        """Apply every pending item of the proposal (202 with a job above review_job_threshold)."""
         items = self._proposal(request).items.restrict(request.user, "change")
         return self._review(request, items, dismiss=False)
 
     @action(detail=True, methods=["post"])
     def dismiss(self, request, pk):
-        """Dismiss every pending item of the proposal."""
+        """Dismiss every pending item of the proposal (202 with a job above review_job_threshold)."""
         items = self._proposal(request).items.restrict(request.user, "change")
         return self._review(request, items, dismiss=True)
 
@@ -213,10 +258,10 @@ class ImportProposalItemViewSet(
 
     @action(detail=False, methods=["post"])
     def apply(self, request):
-        """Apply the items listed in {"ids": [...]}."""
+        """Apply the items listed in {"ids": [...]} (202 with {"jobs": [...]} above review_job_threshold)."""
         return self._review(request, self._selected(request), dismiss=False)
 
     @action(detail=False, methods=["post"])
     def dismiss(self, request):
-        """Dismiss the items listed in {"ids": [...]}."""
+        """Dismiss the items listed in {"ids": [...]} (202 with {"jobs": [...]} above review_job_threshold)."""
         return self._review(request, self._selected(request), dismiss=True)

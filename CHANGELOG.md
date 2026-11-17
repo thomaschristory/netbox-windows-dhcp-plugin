@@ -19,8 +19,22 @@ All notable changes to this project are documented here. The format follows
   Runs with a journal entry are kept; a deleted run's tags and bookmarks go with it, and users subscribed to it may
   get a deletion notification. Adds migration `0005` (two indexes). (#106)
 
+- Applying or dismissing many import proposal items at once runs in the background: above the new
+  `review_job_threshold` setting (100 open items by default), Apply all, Dismiss all and the bulk buttons queue a
+  **Windows DHCP import review** job of the proposal, run as the requesting user with the same permission checks
+  (made again when it starts), instead of working inside the web request, where a large first import timed out the
+  browser or the reverse proxy. The message links the job, and the proposal page shows it in a Background review
+  panel and on a new Jobs tab, and the REST API gives its status and counts as `review_job` on each import
+  proposal. One review job per proposal at a time. Items a newer import replaced before the job started are skipped
+  and counted (`superseded`). (#101)
+
 ### Changed
 
+- **REST API:** above `review_job_threshold`, `POST import-proposals/<id>/apply/` and `/dismiss/` answer `202` with
+  the job instead of `200` with the counts, and `POST import-proposal-items/apply/` and `/dismiss/` answer `202` with
+  `{"jobs": [...]}` (one per proposal); the counts are in the job's `data` once it has finished. A second large
+  review of a proposal while one waits or runs answers `409`. Below the threshold the answers are unchanged. Clients
+  that apply large proposals through the API must handle the `202`, or raise the setting. (#101)
 - Reading a Windows server (import, push, dry run) no longer starts PowerShell once per reservation and twice per
   policy: the option values of a scope's reservations, and the IP ranges and option values of its policies (and of
   the server-level policies), are read in batches of up to 64 per call, with one CIM session per batch when
@@ -75,6 +89,12 @@ All notable changes to this project are documented here. The format follows
   created by the same run) and the user may add it. Applying the scope item alone still waits for the relationship.
   If the relationship then fails, the range change stays (see [Known limitations](docs/limitations.md)). (#109)
 - The lease read job no longer lets an error while closing the connection hide its own outcome. (#109)
+
+### Performance
+
+- Applying proposal items (and importing into main) no longer copies every queued change log event for each item:
+  each item's events are kept apart and added to the request's once it succeeds, so the cost grows linearly with the
+  number of items. (#101)
 
 ## [0.3.0] - 2026-11-15
 
