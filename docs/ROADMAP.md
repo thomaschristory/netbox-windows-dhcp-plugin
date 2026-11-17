@@ -106,3 +106,5 @@ netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
    (#92 to #96) and security fixes; stricter validation and `allowed_hosts` matching; migrations `0002` (text sync
    keys, sync run index) and `0003` (removes the 0.1.x content types left on upgraded databases). Security fixes
    backported to the 0.1.x line as 0.1.4.
+9. **In progress: 0.4.0.** `max_concurrency` (#99): a read of a whole server reads up to that many scopes at the same
+   time (option 1 of the issue, chosen over removing the setting); pushes still send their changes one after another.

@@ -281,7 +281,7 @@ class ImportJob(JobRunner):
                 target, _ = branching.chosen_branch(branch, user)
             with server_lock(server, ImportBusy):
                 client = build_client(server, runner=runner)
-                state = windows_state.read(client)
+                state = windows_state.read(client, workers=get_setting("max_concurrency"))
                 record_names(server, client, self.logger)
                 # Everything is read: a connection that will not close (an SSH transport already torn down) is no
                 # reason to fail the import.

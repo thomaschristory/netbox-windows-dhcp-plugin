@@ -44,6 +44,13 @@ All notable changes to this project are documented here. The format follows
   instead (Windows answers DHCP 20016, which is now taken as "deleted" for these reads only). A server-level policy or
   a DHCPv6 reservation (Windows answers with a database error code) deleted during the read still fails it, as
   before; the next run works. Checked on Windows Server 2025. (#100)
+- `max_concurrency` now does something: reading a server (import, push, dry run) reads up to that many scopes (4 by
+  default) at the same time, each PowerShell command over its own WinRM connection or SSH channel, instead of one
+  after another. The result is the same as before, in the same order, and a failing scope fails the read with the
+  same error. The server-wide lists are still read one after another, and a push still sends its changes one after
+  another. Set it to `1` to keep the old behaviour, for example when a firewall or the DHCP server limits
+  connections. In the lab (two servers, WinRM with CredSSP, 5 and 6 scopes) a full read took 28%
+  less time with the default of 4, with no connection errors at up to 8. (#99)
 - The failover shared secret no longer appears in the PowerShell script sent to the DHCP server: it follows the
   script on the same input line and is handed to it in a variable. PowerShell script block logging (event 4104) on
   the DHCP server no longer records it, nor does module logging of `ConvertFrom-Json` (checked with PowerShell 7

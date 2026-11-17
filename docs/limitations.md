@@ -67,10 +67,10 @@ DHCP 20135 and 20136). A push of such a policy fails the same way, so fix it in 
 - A DHCPv6 reservation deleted on Windows while a server is being read fails that read (import, push or dry run):
   Windows reports it with a database error code (DHCP 20013), which the plugin does not take for "deleted". The
   next run works. An IPv4 reservation or a policy deleted during a read only makes its scope be read again.
-- Reading a server takes a few PowerShell calls per scope, sent one after another: the option values of a scope's
-  reservations and the IP ranges and values of its policies are read in batches of up to 64 per call, so the number
-  of calls grows 64 times slower with the number of reservations or policies. A push or an import of a server with
-  thousands of scopes still takes minutes.
+- Reading a server takes a few PowerShell calls per scope, `max_concurrency` scopes at a time: the option values
+  of a scope's reservations and the IP ranges and values of its policies are read in batches of up to 64 per call,
+  so the number of calls grows 64 times slower with the number of reservations or policies. The server-wide lists
+  are read one after another first. A push or an import of a server with thousands of scopes still takes minutes.
 - Two Windows servers that hold the same subnet without being failover partners share one IP range in NetBox when
   they are imported into the same VRF, and an import will not move that range for one of them: the scope change
   fails and names the other scope. To avoid the sharing, give each server its own import VRF before its first

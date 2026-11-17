@@ -57,9 +57,12 @@ transaction-pooling proxy (pgbouncer in transaction mode). Session pooling is fi
   stay silent before it is abandoned. SSH connections must open within 30 seconds. Over WinRM it bounds one wait
   for output, so a command that keeps the connection alive without finishing is abandoned after ten times that
   long, and never before 10 minutes (20 minutes with the default).
-- A job sends its commands to a server one after another: `max_concurrency` (4) is only an upper bound and changing
-  it makes no difference. Reading a server makes a few calls per scope (reservations and policies are read in
-  batches of up to 64 per call), so the time grows with the number of scopes.
+- Reading a server (import, push, dry run) makes a few calls per scope (reservations and policies are read in
+  batches of up to 64 per call), and reads up to `max_concurrency` (4) scopes at the same time, each command over
+  its own WinRM connection or SSH channel. The server-wide lists are read first, one after another, and the changes
+  of a push are always sent one after another, in order. Raise the setting for a server with many scopes behind a
+  slow link; lower it (`1` reads one scope at a time) if the DHCP server or a firewall limits connections. The
+  time still grows with the number of scopes, divided by the setting at best.
 - A push, dry run or import job may run for an hour; with netbox-branching an import may run as long as its
   `job_timeout` when that is longer (provisioning a branch can be slow).
 

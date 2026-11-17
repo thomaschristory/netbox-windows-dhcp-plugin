@@ -58,8 +58,8 @@ class RunnerError(psscript.WindowsLayerError):
 class Limited:
     """Caps the number of scripts in flight on the wrapped runner (a bounded semaphore).
 
-    Nothing in the plugin runs scripts from several threads yet (jobs send their commands one after another), so the
-    cap is never reached today. It is kept as the place where parallel reads would be limited.
+    The read of a whole server (sync/windows_state.read) runs several scopes at once on the same client; this is the
+    cap that holds whatever the caller does. Writes are sent one after another.
     """
 
     def __init__(self, runner: Runner, n: int = DEFAULT_MAX_CONCURRENCY, timeout: float | None = None) -> None:
