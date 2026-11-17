@@ -54,7 +54,9 @@ The reservation's own name and description, the scope's name, lease time and opt
 scope and reservation, edited on the plugin's pages, which already need `change_scope` or `change_reservation`.
 
 Deleting a prefix, range, IP address or MAC address that a scope or reservation uses is not possible at all (NetBox
-reports it as protected); delete or re-point the scope or reservation first.
+reports it as protected); delete or re-point the scope or reservation first. The same goes for a device, virtual
+machine or interface holding a reserved address: their pages list those reservations in a **DHCP reservations**
+panel (see [Reservations](reservations.md#deleting-a-device-or-address-a-reservation-uses)).
 
 ## How the check works
 

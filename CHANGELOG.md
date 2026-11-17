@@ -27,6 +27,11 @@ All notable changes to this project are documented here. The format follows
   panel and on a new Jobs tab, and the REST API gives its status and counts as `review_job` on each import
   proposal. One review job per proposal at a time. Items a newer import replaced before the job started are skipped
   and counted (`superseded`). (#101)
+- The pages of a device, virtual machine, interface, IP address and MAC address show a **DHCP reservations** panel
+  listing the reservations (IPv4 and DHCPv6) that use the object or, for a device or virtual machine, the addresses
+  of its interfaces, with their server, scope, IP address and MAC address. NetBox still refuses to delete these
+  objects while a reservation uses them; the panel shows why before the delete is tried. Only reservations the user
+  may view are listed, and the panel is hidden when there is none. (#107)
 
 ### Changed
 

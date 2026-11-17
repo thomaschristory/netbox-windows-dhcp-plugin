@@ -1,0 +1,29 @@
+{% load i18n %}
+<div class="card">
+  <h2 class="card-header">{% trans "DHCP reservations" %}</h2>
+  <table class="table table-hover attr-table">
+    <thead>
+      <tr>
+        <th>{% trans "Reservation" %}</th>
+        <th>{% trans "Server" %}</th>
+        <th>{% trans "Scope" %}</th>
+        <th>{% trans "IP address" %}</th>
+        <th>{% trans "MAC address" %}</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for reservation in reservations %}
+        <tr>
+          <td><a href="{{ reservation.get_absolute_url }}">{{ reservation.name|default:reservation }}</a></td>
+          <td><a href="{{ reservation.scope.server.get_absolute_url }}">{{ reservation.scope.server.name }}</a></td>
+          <td class="font-monospace"><a href="{{ reservation.scope.get_absolute_url }}">{{ reservation.scope.prefix.prefix }}</a></td>
+          <td class="font-monospace">{{ reservation.ip_address.address }}</td>
+          <td class="font-monospace">{{ reservation.mac_address.mac_address|placeholder }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="card-footer text-body-secondary small">
+    {% trans "NetBox refuses to delete an address a reservation uses, or the device, virtual machine or interface holding it. Delete the reservation first, or unassign the address from the interface (after clearing it as a primary or out-of-band address)." %}
+  </div>
+</div>

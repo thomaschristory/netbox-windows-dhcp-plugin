@@ -83,4 +83,11 @@ DHCP 20135 and 20136). A push of such a policy fails the same way, so fix it in 
   range change stays: NetBox has the new range for both servers but no relationship. Import or apply the relationship
   again, or put the range back by hand.
 - Deleting a device, virtual machine or interface whose IP address or MAC address a reservation uses is refused by
-  NetBox. Delete the reservation, or unassign the address, first.
+  NetBox, on purpose: removing the reservation with it would also remove it from Windows on the next push. The
+  refusal links the reservation, and the pages of the device, virtual machine, interface, IP address and MAC address
+  list the reservations that use them in a **DHCP reservations** panel (see
+  [Reservations](reservations.md#deleting-a-device-or-address-a-reservation-uses)). Delete the reservation, or
+  unassign the address from the interface, first (a primary or out-of-band IP, or an interface's primary MAC
+  address, must stop being primary before NetBox lets it be unassigned). Deleting a module or an FHRP group is
+  refused the same way when a reservation uses one of its interfaces' addresses or its virtual IP address; those
+  pages have no panel, so look at the interface or IP address page.
