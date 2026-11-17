@@ -55,17 +55,20 @@ def _assigned_to(interfaces):
 class _ReservationsPanel(PluginTemplateExtension):
     """The reservations (IPv4 and DHCPv6) that use this object, on its page (nothing when there is none)."""
 
-    def lookup(self, obj):
+    def lookup(self, obj, user):
         raise NotImplementedError
 
     def right_page(self):
         from .models import Reservation
 
         obj = self.context["object"]
-        # One query: the reservations the user may view, with everything the table shows joined in.
+        user = self.context["request"].user
+        # One query: the reservations the user may view, with everything the table shows joined in. The interfaces
+        # a device or virtual machine is searched through are restricted too, so the panel never reveals that a
+        # reservation sits on an interface the user may not see.
         reservations = list(
-            Reservation.objects.restrict(self.context["request"].user, "view")
-            .filter(self.lookup(obj))
+            Reservation.objects.restrict(user, "view")
+            .filter(self.lookup(obj, user))
             .select_related("scope__server", "scope__prefix", "ip_address", "mac_address")
             .order_by("scope__server__name", "ip_address__address", "pk")
         )
@@ -77,39 +80,40 @@ class _ReservationsPanel(PluginTemplateExtension):
 class DeviceReservations(_ReservationsPanel):
     models = ["dcim.device"]
 
-    def lookup(self, obj):
+    def lookup(self, obj, user):
         from dcim.models import Interface
 
-        return _assigned_to(Interface.objects.filter(device=obj))
+        return _assigned_to(Interface.objects.restrict(user, "view").filter(device=obj))
 
 
 class VirtualMachineReservations(_ReservationsPanel):
     models = ["virtualization.virtualmachine"]
 
-    def lookup(self, obj):
+    def lookup(self, obj, user):
         from virtualization.models import VMInterface
 
-        return _assigned_to(VMInterface.objects.filter(virtual_machine=obj))
+        return _assigned_to(VMInterface.objects.restrict(user, "view").filter(virtual_machine=obj))
 
 
 class InterfaceReservations(_ReservationsPanel):
     models = ["dcim.interface", "virtualization.vminterface"]
 
-    def lookup(self, obj):
+    def lookup(self, obj, user):
+        # The user is on this interface's page, so they may view it.
         return _assigned_to(type(obj).objects.filter(pk=obj.pk))
 
 
 class IPAddressReservations(_ReservationsPanel):
     models = ["ipam.ipaddress"]
 
-    def lookup(self, obj):
+    def lookup(self, obj, user):
         return Q(ip_address=obj)
 
 
 class MACAddressReservations(_ReservationsPanel):
     models = ["dcim.macaddress"]
 
-    def lookup(self, obj):
+    def lookup(self, obj, user):
         return Q(mac_address=obj)
 
 

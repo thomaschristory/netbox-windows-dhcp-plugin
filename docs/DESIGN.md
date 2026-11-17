@@ -418,10 +418,12 @@ while queued) and `SyncRun.destination`. Without branching the only destination 
   (`template_content.py`) on device, virtual machine, interface (dcim and virtualization), IP address and MAC
   address pages lists the reservations (v4 and v6) using the object: by IP address or MAC address for those two
   pages; for an interface, its assigned IP and MAC addresses; for a device or virtual machine, those of all its
-  interfaces. Read as the viewing user (`restrict(user, "view")`), hidden when empty, one query per page whatever
-  the number of reservations (the generic assignment is matched by object type and an interface ID subquery, so a
-  reservation with both addresses on the device is one row). NetBox's own protected error already names and links
-  the reservation; the plugin does not change it.
+  interfaces. Read as the viewing user (`restrict(user, "view")` on the reservations and on the interfaces
+  searched), hidden when empty, one query per page whatever the number of reservations (the generic assignment is
+  matched by object type and an interface ID subquery, so a reservation with both addresses on the device is one
+  row). NetBox's own protected error already names and links the reservation; the plugin does not change it.
+  Modules and FHRP groups (which cascade to interfaces and a virtual IP) get no panel; the docs point to the
+  interface or IP address page.
 - The scope form can create its prefix and IP range, and the reservation form its IP address and MAC address, in a
   pop-up ("+" next to the field, NetBox's `quick_add`).
 - **Live leases (milestone 5).** A Leases tab on the scope page, shown to users who can view both the scope and its

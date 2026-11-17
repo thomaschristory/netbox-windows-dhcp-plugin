@@ -133,11 +133,18 @@ linked to the reservation's page.
 To see this before trying, open the device, virtual machine, interface, IP address or MAC address: a **DHCP
 reservations** panel lists every reservation (IPv4 and DHCPv6) that uses it, directly or through one of the
 device's interfaces, with its server, scope, IP address and MAC address. The panel only appears when there is one,
-and only lists reservations you may view: a reservation you cannot see still blocks the delete, and the refusal
-still lists its IP address, but its page will not open for you; ask whoever manages that DHCP server.
+and only lists reservations you may view, through interfaces you may view: a reservation you cannot see still
+blocks the delete, and the refusal still lists its IP address, but its page will not open for you; ask whoever
+manages that DHCP server.
+
+Deleting a module (it takes its interfaces with it) or an FHRP group (it takes its virtual IP address with it) is
+refused the same way when a reservation uses one of those addresses. Their pages have no panel: open the module's
+interfaces, or the group's virtual IP address, to see the reservation.
 
 To go ahead, delete the reservation (the next push removes it from Windows, see below), or unassign the IP address
-and MAC address from the interface so they stay in NetBox for the reservation.
+and MAC address from the interface so they stay in NetBox for the reservation. NetBox will not unassign an IP
+address that is the device's or virtual machine's primary IPv4, primary IPv6 or out-of-band IP, nor a MAC address
+that is the interface's primary MAC address: clear that setting on the device, virtual machine or interface first.
 
 ## Delete a reservation
 

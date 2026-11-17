@@ -5,6 +5,8 @@ use them, since NetBox refuses to delete those objects while a reservation does 
 
 from core.models import ObjectType
 from dcim.models import Device, DeviceRole, DeviceType, Interface, MACAddress, Manufacturer, Site
+from django.contrib import messages
+from django.contrib.messages import get_messages
 from django.db import connection
 from django.test.utils import CaptureQueriesContext
 from ipam.models import IPAddress
@@ -150,6 +152,24 @@ class ReservationPanelTest(TestCase):
         self.assertContains(response, ">mine</a>")
         self.assertNotContains(response, "theirs")
 
+    def test_interfaces_the_user_may_not_view_are_left_out(self):
+        # The device page must not reveal a reservation through an interface the viewer may not see.
+        self._allow_reservations()
+        Reservation.objects.create(
+            scope=self.scope, ip_address=self._ip("10.107.0.93/24", on=self.eth0), client_id="13", name="on-eth0"
+        )
+        Reservation.objects.create(
+            scope=self.scope, ip_address=self._ip("10.107.0.94/24", on=self.eth1), client_id="14", name="on-eth1"
+        )
+        interface_type = ObjectType.objects.get_for_model(Interface)
+        ObjectPermission.objects.filter(users=self.user, object_types=interface_type).delete()
+        perm = ObjectPermission.objects.create(name="eth0 only", actions=["view"], constraints={"name": "eth0"})
+        perm.object_types.add(interface_type)
+        perm.users.add(self.user)
+        response = self._page(self.device)
+        self.assertContains(response, ">on-eth0</a>")
+        self.assertNotContains(response, "on-eth1")
+
     # -- cost --------------------------------------------------------------------------------------------------------
 
     def _count(self, obj):
@@ -189,9 +209,11 @@ class ReservationPanelTest(TestCase):
         held = Reservation.objects.create(
             scope=self.scope, ip_address=self._ip("10.107.0.95/24", on=self.eth0), client_id="12", name="keeper"
         )
-        response = self.client.post(f"{self.device.get_absolute_url()}delete/", {"confirm": True}, follow=True)
-        self.assertEqual(response.status_code, 200)
+        response = self.client.post(f"{self.device.get_absolute_url()}delete/", {"confirm": True})
         self.assertTrue(Device.objects.filter(pk=self.device.pk).exists())
         self.assertTrue(Reservation.objects.filter(pk=held.pk).exists())
-        # NetBox's protected error links the reservation that holds the address.
-        self.assertContains(response, held.get_absolute_url())
+        # NetBox's protected error itself (not the panel) lists the reservation by its IP address, with a link.
+        errors = [str(m) for m in get_messages(response.wsgi_request) if m.level == messages.ERROR]
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("Unable to delete", errors[0])
+        self.assertIn(f'<a href="{held.get_absolute_url()}">10.107.0.95</a>', errors[0])
