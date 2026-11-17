@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import threading
 
 import pytest
@@ -23,7 +24,7 @@ from netbox_windows_dhcp_plugin.windows.client import (
     ScopeV6,
     Superscope,
 )
-from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
+from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer, _Fail
 from netbox_windows_dhcp_plugin.windows.psscript import NotFound, PSError
 from netbox_windows_dhcp_plugin.windows.runner import Runner, limit
 
@@ -677,3 +678,186 @@ def test_v6_leases_have_no_state(c: DhcpClient, fake: FakeDhcpServer) -> None:
     (lease,) = c.list_v6_leases("2001:db8:1::")
     assert "address_state" not in lease.to_dict()
     assert "address_state" not in fake.v6_leases["2001:db8:1::"][0]
+
+
+# ---- issue #100: batched reads ----
+
+
+def unnamed(values: list) -> list:
+    return [dataclasses.replace(v, name="") for v in values]
+
+
+def _reservations(c: DhcpClient, n: int) -> list[str]:
+    c.add_scope(scope())
+    ips = [f"10.1.20.{20 + i}" for i in range(n)]
+    for i, ip in enumerate(ips):
+        c.add_reservation(Reservation(scope_id="10.1.20.0", ip_address=ip, client_id=f"02-00-00-00-00-{i:02x}"))
+    return ips
+
+
+def test_reservation_values_in_one_call(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    ips = _reservations(c, 3)
+    c.set_option_value(OptionKey(15, reserved_ip=ips[0]), ["a.example"])
+    c.set_option_value(OptionKey(6, reserved_ip=ips[0], user_class="phones"), ["10.0.0.53"])
+    c.set_option_value(OptionKey(15, reserved_ip=ips[2]), ["c.example"])
+    fake.calls.clear()
+    got = c.list_reservation_option_values("10.1.20.0", ips)
+    assert fake.ops() == ["option.list_reserved"]
+    assert list(got) == ips
+    assert got[ips[1]] == []
+    # The same values, with the same context, as one read per reservation (the batch leaves out the option names).
+    for ip in ips:
+        assert got[ip] == unnamed(c.list_option_values(scope_id="10.1.20.0", reserved_ip=ip, all=True))
+
+
+def test_batched_reads_split_into_batches(c: DhcpClient, fake: FakeDhcpServer, monkeypatch) -> None:
+    monkeypatch.setattr("netbox_windows_dhcp_plugin.windows.client.READ_BATCH", 2)
+    ips = _reservations(c, 5)
+    c.set_option_value(OptionKey(15, reserved_ip=ips[4]), ["e.example"])
+    fake.calls.clear()
+    got = c.list_reservation_option_values("10.1.20.0", ips)
+    assert [call.params["ips"] for call in fake.calls] == [ips[0:2], ips[2:4], ips[4:]]
+    assert [v.value for v in got[ips[4]]] == [["e.example"]]
+
+
+def test_empty_batches_send_nothing(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    assert c.list_reservation_option_values("10.1.20.0", []) == {}
+    assert c.list_v6_reservation_option_values("2001:db8:1::", []) == {}
+    assert c.list_policy_contents([], "10.1.20.0") == {}
+    assert fake.calls == []
+
+
+def test_a_reservation_gone_from_a_batch_is_not_found(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    ips = _reservations(c, 2)
+    c.remove_reservation(ips[0])
+    # Not "no options": the caller must learn the reservation went away. Windows says so with DHCP 20016, which only
+    # these reads take as not found (issue #100).
+    with pytest.raises(NotFound) as err:
+        c.list_reservation_option_values("10.1.20.0", ips)
+    assert err.value.id.startswith("DHCP 20016")
+    with pytest.raises(NotFound):
+        c.list_option_values(scope_id="10.1.20.0", reserved_ip=ips[0], all=True)
+
+
+def test_a_batch_stops_at_its_first_error(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    # As the one-at-a-time reads did: when the DHCP service goes away mid-batch the read fails at once with the real
+    # error, instead of every remaining reservation waiting for its own timeout.
+    ips = _reservations(c, 3)
+    real = fake._op_option_list
+    asked = []
+
+    def failing(p):
+        asked.append(p.get("reserved_ip"))
+        if p.get("reserved_ip") == ips[1]:
+            raise _Fail(PSError(message="The RPC server is unavailable.", category="NotSpecified", id="DHCP 1722,Get"))
+        return real(p)
+
+    fake._op_option_list = failing
+    with pytest.raises(PSError, match="RPC server is unavailable") as err:
+        c.list_reservation_option_values("10.1.20.0", ips)
+    assert not isinstance(err.value, NotFound)
+    assert asked == ips[:2]
+
+
+def test_policy_contents(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    c.add_scope(scope())
+    c.add_policy(Policy(name="Printers", scope_id="10.1.20.0", criteria={"mac_address": ["EQ", "aa*"]}))
+    c.add_policy(Policy(name="empty", scope_id="10.1.20.0", criteria={"mac_address": ["EQ", "bb*"]}))
+    c.add_policy_ip_range(PolicyIPRange("10.1.20.0", "Printers", "10.1.20.100", "10.1.20.110"))
+    c.set_option_value(OptionKey(15, "10.1.20.0", policy_name="Printers"), ["print.example"])
+    c.add_policy(Policy(name="srv", criteria={"mac_address": ["EQ", "cc*"]}))
+    c.set_option_value(OptionKey(6, policy_name="srv"), ["10.0.0.53"])
+    fake.calls.clear()
+    got = c.list_policy_contents(["Printers", "empty"], "10.1.20.0")
+    assert fake.ops() == ["policy.list_contents"]
+    assert got["Printers"].ip_ranges == c.list_policy_ip_ranges("10.1.20.0", "Printers")
+    single = c.list_option_values(scope_id="10.1.20.0", policy_name="Printers", all=True)
+    assert got["Printers"].options == unnamed(single)
+    assert got["empty"].ip_ranges == [] and got["empty"].options == []
+    srv = c.list_policy_contents(["srv"])
+    assert srv["srv"].ip_ranges == [] and [o.value for o in srv["srv"].options] == [["10.0.0.53"]]
+    with pytest.raises(NotFound):
+        c.list_policy_contents(["gone"], "10.1.20.0")
+    with pytest.raises(NotFound):
+        c.list_policy_contents(["gone"])
+
+
+def test_v6_reservation_values_in_one_call(c: DhcpClient, fake: FakeDhcpServer) -> None:
+    c.add_v6_scope(ScopeV6(prefix="2001:db8:1::", name="v6"))
+    for i in (10, 11):
+        c.add_v6_reservation(ReservationV6("2001:db8:1::", f"2001:db8:1::{i}", "00-01-00-01-aa", i))
+    c.set_v6_option_value(OptionKeyV6(24, reserved_ip="2001:db8:1::10"), ["lab.example"])
+    fake.calls.clear()
+    # Any spelling of the address goes in; the result is keyed by the spelling given.
+    got = c.list_v6_reservation_option_values("2001:DB8:1::", ["2001:DB8:1::10", "2001:db8:1::11"])
+    assert fake.ops() == ["v6option.list_reserved"]
+    assert fake.calls[0].params["ips"] == ["2001:db8:1::10", "2001:db8:1::11"]
+    (v,) = got["2001:DB8:1::10"]
+    assert (v.option_id, v.value, v.prefix, v.reserved_ip) == (24, ["lab.example"], "2001:db8:1::", "2001:db8:1::10")
+    assert got["2001:db8:1::11"] == []
+    c.remove_v6_reservation("2001:db8:1::11")
+    # DHCPv6 answers a gone reservation with DHCP 20013, a database error code: a real error, never "not found".
+    with pytest.raises(PSError) as err:
+        c.list_v6_reservation_option_values("2001:db8:1::", ["2001:db8:1::10", "2001:db8:1::11"])
+    assert err.value.id.startswith("DHCP 20013") and not isinstance(err.value, NotFound)
+
+
+def test_batches_also_stop_at_a_size(monkeypatch) -> None:
+    # Long (or non-ASCII) policy names must not push one script's input past the SSH limit (#63).
+    from netbox_windows_dhcp_plugin.windows import client as wc
+
+    monkeypatch.setattr(wc, "READ_BATCH_BYTES", 30)
+    # "é" is two bytes in UTF-8: each name is 6 bytes of JSON with its quotes, plus a comma.
+    names = ["éé", "ab", "cd", "ef", "x" * 25]
+    assert wc._batches(names) == [["éé", "ab", "cd", "ef"], ["x" * 25]]
+    monkeypatch.setattr(wc, "READ_BATCH", 2)
+    assert wc._batches(names) == [["éé", "ab"], ["cd", "ef"], ["x" * 25]]
+    assert wc._batches([]) == []
+    # Quotes are doubled in the script, so they count twice: 2 + 2 * 13 + 1 bytes, too many to add "a" (4 more).
+    assert wc._batches(["'" * 13, "a"]) == [["'" * 13], ["a"]]
+    with pytest.raises(ValueError, match="too long"):
+        wc._batches(["x" * 40])
+
+
+def test_a_batch_never_reaches_the_ssh_input_limit() -> None:
+    from netbox_windows_dhcp_plugin.windows import client as wc
+    from netbox_windows_dhcp_plugin.windows.psscript import prepare
+
+    # Typographic quotes are three bytes in UTF-8 and are doubled in the script: the worst case per character.
+    for script, key, items in (
+        (wc.S_POLICY_LIST_CONTENTS, "names", ["’" * 255] * 300),
+        (wc.S_POLICY_LIST_CONTENTS, "names", ["’" * 1900]),
+        (wc.S_V6OPTION_LIST_RESERVED, "ips", [f"2001:db8:ffff:ffff:ffff:ffff:ffff:{i:04x}" for i in range(300)]),
+    ):
+        for batch in wc._batches(items):
+            params = {key: batch, "scope_id": "10.1.20.0", "computer_name": "dhcp02.example.local"}
+            _, stdin = prepare(script.with_requirement(wc.DHCP_MODULE).wrap(), params)
+            assert len(stdin) < 24 * 1024
+
+
+def test_dhcp_20016_is_not_found_only_for_reservation_option_reads() -> None:
+    # Other reads keep it a real error: elsewhere an invalid client is not a missing object.
+    from netbox_windows_dhcp_plugin.windows.psscript import PSError as PSE
+
+    err = {"message": "x", "category": "InvalidType", "id": "DHCP 20016,Get-Thing", "command": "Get-Thing"}
+
+    class Failing:
+        def run(self, script, params=None):
+            import json
+
+            return json.dumps({"ok": False, "error": err}).encode()
+
+    c = DhcpClient(Failing())
+    with pytest.raises(NotFound):
+        c.list_option_values(scope_id="10.1.20.0", reserved_ip="10.1.20.5", all=True)
+    with pytest.raises(NotFound):
+        c.list_reservation_option_values("10.1.20.0", ["10.1.20.5"])
+    for read in (
+        lambda: c.list_option_values(scope_id="10.1.20.0", all=True),
+        lambda: c.get_option_value(OptionKey(15, reserved_ip="10.1.20.5")),
+        lambda: c.list_reservations("10.1.20.0"),
+        lambda: c.list_v6_reservation_option_values("2001:db8:1::", ["2001:db8:1::10"]),
+    ):
+        with pytest.raises(PSE) as e:
+            read()
+        assert not isinstance(e.value, NotFound)

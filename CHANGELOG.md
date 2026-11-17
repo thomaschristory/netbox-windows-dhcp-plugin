@@ -10,6 +10,14 @@ All notable changes to this project are documented here. The format follows
 - Each push's sync run lists what queued it ("Triggered by"): the edits it carries, with the user and a link to the
   change log entries of that request, a Sync now click, or a branch merge or revert. Edits made while a push waits to
   start are added to that push. Also in the REST API (`triggers` on sync runs). Adds migration `0004`.
+- Old sync runs are now deleted: new setting `sync_run_retention_days` (default 90, `0` keeps every run). The import
+  scheduler deletes older runs, oldest first, at most 500 a minute, and keeps the runs the plugin still reads
+  whatever their age (the newest of each kind per server, the newest push that reached Windows, the runs of open
+  import proposals, the newest runs of the two newest import branches, runs still queued or running, runs with a
+  journal entry). Until now the
+  history grew without limit. **Upgrading deletes sync runs older than 90 days** unless the setting says otherwise.
+  Runs with a journal entry are kept; a deleted run's tags and bookmarks go with it, and users subscribed to it may
+  get a deletion notification. Adds migration `0005` (two indexes). (#106)
 
 - Applying or dismissing many import proposal items at once runs in the background: above the new
   `review_job_threshold` setting (100 open items by default), Apply all, Dismiss all and the bulk buttons queue a
@@ -27,6 +35,15 @@ All notable changes to this project are documented here. The format follows
   `{"jobs": [...]}` (one per proposal); the counts are in the job's `data` once it has finished. A second large
   review of a proposal while one waits or runs answers `409`. Below the threshold the answers are unchanged. Clients
   that apply large proposals through the API must handle the `202`, or raise the setting. (#101)
+- Reading a Windows server (import, push, dry run) no longer starts PowerShell once per reservation and twice per
+  policy: the option values of a scope's reservations, and the IP ranges and option values of its policies (and of
+  the server-level policies), are read in batches of up to 64 per call, with one CIM session per batch when
+  `computer_name` is set. A scope with 3,000 reservations and 10 policies took more than 3,020 calls; it now takes
+  about 52, and a server's import or push holds its lock for far less time. An IPv4 reservation or a scope policy
+  deleted on Windows during the read makes that scope be read again; an IPv4 reservation used to fail the read
+  instead (Windows answers DHCP 20016, which is now taken as "deleted" for these reads only). A server-level policy or
+  a DHCPv6 reservation (Windows answers with a database error code) deleted during the read still fails it, as
+  before; the next run works. Checked on Windows Server 2025. (#100)
 - The failover shared secret no longer appears in the PowerShell script sent to the DHCP server: it follows the
   script on the same input line and is handed to it in a variable. PowerShell script block logging (event 4104) on
   the DHCP server no longer records it, nor does module logging of `ConvertFrom-Json` (checked with PowerShell 7

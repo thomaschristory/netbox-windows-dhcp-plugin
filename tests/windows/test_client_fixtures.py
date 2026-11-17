@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -475,3 +476,86 @@ def test_v6_leases_have_no_state() -> None:
     c, _ = new_client("v6lease_list.json")
     (lease,) = c.list_v6_leases("2001:db8:1::")
     assert "address_state" not in lease.to_dict()
+
+
+# ---- issue #100: batched reads ----
+
+
+class JsonRunner:
+    def __init__(self, data: Any) -> None:
+        self.data = data
+        self.params: dict[str, Any] = {}
+
+    def run(self, script: str, params: Any = None) -> bytes:
+        self.params = dict(params or {})
+        return json.dumps({"ok": True, "data": self.data}).encode()
+
+
+def test_reservation_option_values_batch() -> None:
+    c, r = new_client("option_list_reserved.json")
+    got = c.list_reservation_option_values("10.1.20.0", ["10.1.20.5", "10.1.20.6"])
+    assert r.op == "option.list_reserved" and r.params == {"ips": ["10.1.20.5", "10.1.20.6"]}
+    assert "Get-DhcpServerv4OptionValue @cn -ReservedIP $ip -All -Brief" in r.script
+    a, b = got["10.1.20.5"]
+    assert (a.option_id, a.value, a.scope_id, a.reserved_ip) == (15, ["pc.example"], "10.1.20.0", "10.1.20.5")
+    assert (b.option_id, b.value, b.user_class) == (6, ["10.0.0.53", "10.0.1.53"], "phones")
+    assert got["10.1.20.6"] == []
+
+
+def test_reservation_gone_in_a_batch_is_not_found() -> None:
+    # The error Windows Server 2025 gave for an IP that is not reserved (lab probe, issue #100).
+    c, _ = new_client("option_list_reserved_gone.json")
+    with pytest.raises(NotFound):
+        c.list_reservation_option_values("10.1.20.0", ["10.1.20.5", "10.1.20.6"])
+    with pytest.raises(NotFound):
+        c.list_option_values(scope_id="10.1.20.0", reserved_ip="10.1.20.6", all=True)
+
+
+def test_v6_reservation_gone_in_a_batch_is_a_real_error() -> None:
+    # DHCP 20013 is ERROR_DHCP_JET_ERROR, a database error: never read as "the reservation is gone".
+    c, _ = new_client("v6option_list_reserved_gone.json")
+    with pytest.raises(PSError) as err:
+        c.list_v6_reservation_option_values("2001:db8:1::", ["2001:db8:1::10"])
+    assert err.value.category == "OpenError" and not isinstance(err.value, NotFound)
+
+
+def test_policy_contents_batch_reads_a_lost_array_wrapper() -> None:
+    # Windows PowerShell 5.1 can drop the array around a single result object.
+    c, r = new_client("policy_list_contents.json")
+    got = c.list_policy_contents(["printers"], "10.1.20.0")
+    assert r.op == "policy.list_contents" and r.params == {"scope_id": "10.1.20.0", "names": ["printers"]}
+    p = got["printers"]
+    assert [(x.scope_id, x.policy_name, x.start_range, x.end_range) for x in p.ip_ranges] == [
+        ("10.1.20.0", "printers", "10.1.20.100", "10.1.20.110")
+    ]
+    assert [(o.option_id, o.value, o.policy_name, o.scope_id) for o in p.options] == [
+        (15, ["print.example"], "printers", "10.1.20.0"),
+        (51, ["86400"], "printers", "10.1.20.0"),
+    ]
+
+
+def test_v6_reservation_option_values_batch() -> None:
+    c, r = new_client("v6option_list_reserved.json")
+    (v,) = c.list_v6_reservation_option_values("2001:db8:1::", ["2001:db8:1::10"])["2001:db8:1::10"]
+    assert r.op == "v6option.list_reserved"
+    assert (v.option_id, v.value, v.prefix, v.reserved_ip) == (24, ["lab.example"], "2001:db8:1::", "2001:db8:1::10")
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        None,  # nothing at all
+        [{"ip": "10.1.20.5", "values": []}],  # an IP left out
+        [{"values": []}, {"ip": "10.1.20.6", "values": []}],  # an item without its IP
+        [{"ip": "10.1.20.5"}, {"ip": "10.1.20.6", "values": []}],  # an item without its values
+        [{"ip": "10.1.20.5", "values": None}, {"ip": "10.1.20.6", "values": []}],
+        [{"ip": "10.1.20.5", "error": "boom"}, {"ip": "10.1.20.6", "values": []}],
+        [{"ip": "10.1.20.5", "values": {}}, {"ip": "10.1.20.6", "values": []}],  # not a list
+        [{"ip": "10.1.20.5", "values": {"option_id": 3}}, {"ip": "10.1.20.6", "values": []}],
+        {"value": [{"ip": "10.1.20.5", "values": []}], "Count": 1},
+    ],
+)
+def test_a_batch_answer_that_breaks_the_contract_is_an_error_not_no_options(data: Any) -> None:
+    c = DhcpClient(JsonRunner(data))
+    with pytest.raises(wc.OutputError):
+        c.list_reservation_option_values("10.1.20.0", ["10.1.20.5", "10.1.20.6"])

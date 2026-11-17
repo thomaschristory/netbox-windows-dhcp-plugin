@@ -4,15 +4,19 @@ from netbox_windows_dhcp_plugin.sync import windows_state as ws
 from netbox_windows_dhcp_plugin.sync.diff import Record, diff
 from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows.client import (
+    READ_BATCH,
     DhcpClass,
     ExclusionRange,
     FailoverRelationship,
     MacFilter,
     OptionDefinition,
     OptionKey,
+    OptionKeyV6,
     Policy,
+    PolicyContents,
     PolicyIPRange,
     Reservation,
+    ReservationV6,
     Scope,
     ScopeV6,
     Superscope,
@@ -358,29 +362,184 @@ def test_a_reservation_deleted_during_the_read_keeps_its_scope(client):
     # Review of #55: a NotFound for something inside the scope (here a reservation deleted between the list and the
     # read of its options) must not make the whole scope look deleted. The scope is read again.
     c = client
-    real = c.list_option_values
+    real = c.list_reservation_option_values
     calls = {"n": 0}
 
-    def flaky(**kw):
-        if kw.get("reserved_ip") == "10.1.0.50" and calls["n"] == 0:
+    def flaky(scope_id, ips):
+        if "10.1.0.50" in ips and calls["n"] == 0:
             calls["n"] += 1
             raise NotFound("Get-DhcpServerv4OptionValue: Failed to get reservation 10.1.0.50 (ObjectNotFound)")
-        return real(**kw)
+        return real(scope_id, ips)
 
-    c.list_option_values = flaky
+    c.list_reservation_option_values = flaky
     state = ws.read(c)
     assert [s.scope_id for s in state.scopes] == ["10.1.0.0"]
     assert [r.ip_address for r in state.reservations] == ["10.1.0.50"]
+    assert ws.option_key("10.1.0.0/10.1.0.50", 15) in by_kind(ws.to_records(state)[0])["option"]
 
 
 def test_a_scope_that_keeps_failing_to_read_fails_the_read(client):
     c = client
 
-    def broken(**kw):
-        if kw.get("reserved_ip"):
-            raise NotFound("Get-DhcpServerv4OptionValue: (ObjectNotFound)")
-        return []
+    def broken(scope_id, ips):
+        raise NotFound("Get-DhcpServerv4OptionValue: (ObjectNotFound)")
 
-    c.list_option_values = broken
+    c.list_reservation_option_values = broken
     with pytest.raises(NotFound):
         ws.read(c)
+
+
+# -- issue #100: batched reads -------------------------------------------------------------------------------------
+
+
+def _seed(c: DhcpClient, sid_base: str, reservations: int, policies: int) -> None:
+    """A scope with ``reservations`` reservations (each with a value) and ``policies`` policies (range + value)."""
+    c.add_scope(
+        Scope(name="big", start_range=f"{sid_base}.1", end_range=f"{sid_base}.254", subnet_mask="255.255.255.0")
+    )
+    sid = f"{sid_base}.0"
+    for i in range(reservations):
+        ip = f"{sid_base}.{10 + i}"
+        c.add_reservation(
+            Reservation(scope_id=sid, ip_address=ip, client_id=f"02-00-00-00-{i // 256:02x}-{i % 256:02x}")
+        )
+        c.set_option_value(OptionKey(15, sid, reserved_ip=ip), [f"h{i}.example"])
+    for i in range(policies):
+        name = f"pol{i}"
+        c.add_policy(Policy(name=name, scope_id=sid, criteria={"mac_address": ["EQ", f"02-4e-{i:02x}*"]}))
+        c.add_policy_ip_range(PolicyIPRange(sid, name, f"{sid_base}.{200 + i}", f"{sid_base}.{200 + i}"))
+        c.set_option_value(OptionKey(15, sid, policy_name=name), [f"p{i}.example"])
+
+
+def _read_calls(reservations: int, policies: int, server_policies: int = 0) -> tuple[int, ws.WindowsState]:
+    fake = FakeDhcpServer()
+    c = DhcpClient(fake)
+    _seed(c, "10.7.0", reservations, policies)
+    for i in range(server_policies):
+        c.add_policy(Policy(name=f"srv{i}", criteria={"mac_address": ["EQ", f"02-4f-{i:02x}*"]}))
+        c.set_option_value(OptionKey(6, policy_name=f"srv{i}"), ["10.0.0.53"])
+    fake.calls.clear()
+    state = ws.read(c)
+    return len(fake.calls), state
+
+
+def test_the_number_of_calls_does_not_grow_with_reservations_and_policies():
+    small, _ = _read_calls(reservations=1, policies=1, server_policies=1)
+    full, _ = _read_calls(reservations=READ_BATCH, policies=20, server_policies=10)
+    assert full == small
+    big, state = _read_calls(reservations=200, policies=20, server_policies=10)
+    # One more call per extra batch of reservations: 200 is four batches.
+    assert big == small + 3
+    # Before issue #100 the same read made one call per reservation and two per policy: 1 + 200 + 2 * 20 + 10 more.
+    assert len(state.reservations) == 200 and len(state.policies) == 30 and len(state.policy_ranges) == 20
+    records = by_kind(ws.to_records(state)[0])
+    assert records["option"]["10.7.0.0/10.7.0.209/15"]["value"] == ["h199.example"]
+    assert records["option"]["10.7.0.0/15;policy=pol19"]["value"] == ["p19.example"]
+    assert records["option"]["server/6;policy=srv9"]["value"] == ["10.0.0.53"]
+    assert records["policy"]["10.7.0.0/pol19"]["ip_ranges"] == [["10.7.0.219", "10.7.0.219"]]
+
+
+def test_a_scope_without_reservations_or_policies_sends_no_batch():
+    fake = FakeDhcpServer()
+    c = DhcpClient(fake)
+    c.add_scope(Scope(name="empty", start_range="10.8.0.10", end_range="10.8.0.20", subnet_mask="255.255.255.0"))
+    fake.calls.clear()
+    ws.read(c)
+    assert not {"option.list_reserved", "policy.list_contents", "v6option.list_reserved"} & set(fake.ops())
+
+
+def test_batched_reads_give_the_same_state_as_single_reads(client):
+    # The records are what an import or push compares: built from batched reads, they match the one-at-a-time ones.
+    c = client
+    _seed(c, "10.7.0", reservations=3, policies=2)
+    c.add_policy(Policy(name="srv", criteria={"mac_address": ["EQ", "02-4f-00*"]}))
+    c.set_option_value(OptionKey(6, policy_name="srv"), ["10.0.0.53"])
+    c.add_v6_scope(ScopeV6(prefix="2001:db8:7::", name="v6"))
+    c.add_v6_reservation(ReservationV6("2001:db8:7::", "2001:db8:7::10", "00-01-00-01-aa", 3))
+    c.set_v6_option_value(OptionKeyV6(24, reserved_ip="2001:db8:7::10"), ["v6.example"])
+    batched = ws.to_records(ws.read(c))[0]
+
+    def single(scope_id, ips):
+        return {ip: c.list_option_values(scope_id=scope_id, reserved_ip=ip, all=True) for ip in ips}
+
+    def single6(prefix, ips):
+        return {ip: c.list_v6_option_values(prefix=prefix, reserved_ip=ip, all=True) for ip in ips}
+
+    def single_policies(names, scope_id=""):
+        return {
+            n: PolicyContents(
+                n,
+                c.list_policy_ip_ranges(scope_id, n) if scope_id else [],
+                c.list_option_values(scope_id=scope_id, policy_name=n, all=True),
+            )
+            for n in names
+        }
+
+    c.list_reservation_option_values = single
+    c.list_v6_reservation_option_values = single6
+    c.list_policy_contents = single_policies
+    assert ws.to_records(ws.read(c))[0] == batched
+    keys = {r.key for r in batched}
+    assert {"10.7.0.0/10.7.0.12/15", "10.7.0.0/15;policy=pol1", "server/6;policy=srv"} <= keys
+    assert "v6/2001:db8:7::/2001:db8:7::10/24" in keys
+
+
+def test_a_reservation_deleted_on_windows_mid_read_is_left_out_after_the_scope_is_read_again(client):
+    # The real thing, not a patched client: the batch reports the deleted reservation's own not-found error, the
+    # scope is read again, and the second read no longer lists it. The other reservation keeps its value.
+    fake = client.runner
+    _seed(client, "10.7.0", reservations=2, policies=0)
+    gone = {"done": False}
+
+    def delete_first(op, p):
+        if op == "option.list_reserved" and "10.7.0.10" in p["ips"] and not gone["done"]:
+            gone["done"] = True
+            fake._drop_reservation("10.7.0.10")
+        return None
+
+    fake.fail = delete_first
+    state = ws.read(client)
+    assert gone["done"]
+    assert [r.ip_address for r in state.reservations if r.scope_id == "10.7.0.0"] == ["10.7.0.11"]
+    options = by_kind(ws.to_records(state)[0])["option"]
+    assert "10.7.0.0/10.7.0.11/15" in options and "10.7.0.0/10.7.0.10/15" not in options
+    assert state.notes == []
+
+
+def test_a_policy_deleted_on_windows_mid_read_is_left_out_after_the_scope_is_read_again(client):
+    fake = client.runner
+    _seed(client, "10.7.0", reservations=0, policies=2)
+    gone = {"done": False}
+
+    def delete_policy(op, p):
+        if op == "policy.list_contents" and p.get("scope_id") and not gone["done"]:
+            gone["done"] = True
+            del fake.policies[("10.7.0.0", "pol0")]
+        return None
+
+    fake.fail = delete_policy
+    state = ws.read(client)
+    assert gone["done"]
+    assert [p.name for p in state.policies if p.scope_id == "10.7.0.0"] == ["pol1"]
+
+
+def test_a_v6_reservation_deleted_mid_read_fails_the_read(client):
+    # Windows answers DHCP 20013 (a database error code) for it, which is never read as "gone": the read fails and the
+    # next one, which no longer lists the reservation, works (lab, Windows Server 2025, issue #100).
+    from netbox_windows_dhcp_plugin.windows.psscript import PSError
+
+    fake = client.runner
+    client.add_v6_scope(ScopeV6(prefix="2001:db8:7::", name="v6"))
+    client.add_v6_reservation(ReservationV6("2001:db8:7::", "2001:db8:7::10", "00-01-00-01-aa", 3))
+
+    def delete_it(op, p):
+        if op == "v6option.list_reserved":
+            fake.v6_reservations.pop("2001:db8:7::10", None)
+        return None
+
+    fake.fail = delete_it
+    with pytest.raises(PSError) as err:
+        ws.read(client)
+    assert not isinstance(err.value, NotFound)
+    fake.fail = None
+    assert ws.read(client).v6_reservations == []
