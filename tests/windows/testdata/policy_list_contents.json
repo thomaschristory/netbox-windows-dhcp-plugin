@@ -1,0 +1,1 @@
+{"ok":true,"data":{"name":"printers","ranges":[{"start_range":"10.1.20.100","end_range":"10.1.20.110"}],"values":[{"option_id":15,"value":["print.example"],"vendor_class":"","user_class":"","policy_name":"printers"},{"option_id":51,"value":["86400"],"vendor_class":"","user_class":"","policy_name":"printers"}]}}

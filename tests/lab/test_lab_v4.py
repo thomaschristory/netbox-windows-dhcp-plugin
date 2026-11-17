@@ -6,8 +6,11 @@ name shows up as an empty field. Raw property dumps go to .lab/probe/ (gitignore
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
+from netbox_windows_dhcp_plugin.conf import DEFAULTS
 from netbox_windows_dhcp_plugin.sync import windows_state
 from netbox_windows_dhcp_plugin.sync.diff import Change
 from netbox_windows_dhcp_plugin.sync.windows_writer import WindowsWriter
@@ -543,3 +546,161 @@ $out = @{ secret = $p.shared_secret; in_src = $src.Contains($p.shared_secret);
     save_probe(probe_out, "secret-logging", {k: v for k, v in got.items() if k != "secret"})
     assert got["secret"] == marker and got["in_src"] is False, got
     assert got["logged"] == 0, got
+
+
+def _values(values: list[wc.OptionValue]) -> list[tuple]:
+    return sorted((o.option_id, tuple(o.value), o.vendor_class, o.user_class, o.policy_name) for o in values)
+
+
+def _error_of(fn) -> dict:
+    """The exact error a call raises (id, category, command), recorded so NOT_FOUND_IDS can be checked against it."""
+    try:
+        fn()
+    except PSError as e:
+        return {**e.to_dict(), "not_found": e.not_found}
+    except wc.NotFound as e:
+        return {"message": str(e), "not_found": True}
+    return {"raised": False}
+
+
+def test_batched_reads_match_single_reads(lab: Lab, probe_out) -> None:
+    """
+    client.py (issue #100): option.list_reserved and policy.list_contents, their output shape on Windows PowerShell
+    5.1, -Brief (the values must match the reads without it, class names included) and the not-found errors.
+    """
+    s = lab.scope("nbwd-test-batch")
+    sid = s.scope_id
+    base = sid.rsplit(".", 1)[0]
+    ips = [f"{base}.20", f"{base}.21"]
+    for i, ip in enumerate(ips):
+        lab.client.add_reservation(
+            wc.Reservation(scope_id=sid, ip_address=ip, client_id=MAC_PREFIX + f"0b-00-{i:02x}", name=f"nbwd-test-b{i}")
+        )
+    uc = lab.user_class("nbwd-test-batch-user", "nbwd-batch")
+    lab.client.set_option_value(wc.OptionKey(15, sid, reserved_ip=ips[0]), ["batch.example"])
+    lab.client.set_option_value(wc.OptionKey(15, sid, reserved_ip=ips[0], user_class=uc.name), ["user.example"])
+    p = lab.policy(wc.Policy(name="nbwd-test-batchpol", scope_id=sid, criteria={"mac_address": ["EQ", "02-4e-42-ba*"]}))
+    lab.client.add_policy_ip_range(wc.PolicyIPRange(sid, p.name, f"{base}.50", f"{base}.60"))
+    lab.client.set_option_value(wc.OptionKey(15, sid, policy_name=p.name), ["policy.example"])
+    empty = lab.policy(
+        wc.Policy(name="nbwd-test-batchempty", scope_id=sid, criteria={"mac_address": ["EQ", "02-4e-42-bc*"]})
+    )
+    srv = lab.policy(
+        wc.Policy(name="nbwd-test-batchsrv", enabled=False, criteria={"mac_address": ["EQ", "02-4e-42-bb*"]})
+    )
+    lab.client.set_option_value(wc.OptionKey(15, policy_name=srv.name), ["server-policy.example"])
+
+    # Raw shapes, including one item with no values and no ranges (how Windows PowerShell 5.1 prints @() there).
+    raw = {
+        "reserved": lab.client._run(wc.S_OPTION_LIST_RESERVED, {"ips": ips})[1],
+        "reserved_one_empty": lab.client._run(wc.S_OPTION_LIST_RESERVED, {"ips": [ips[1]]})[1],
+        "policy": lab.client._run(wc.S_POLICY_LIST_CONTENTS, {"scope_id": sid, "names": [p.name]})[1],
+        "policy_one_empty": lab.client._run(wc.S_POLICY_LIST_CONTENTS, {"scope_id": sid, "names": [empty.name]})[1],
+        "server_policy": lab.client._run(wc.S_POLICY_LIST_CONTENTS, {"scope_id": "", "names": [srv.name]})[1],
+    }
+    save_probe(probe_out, "v4-batched-reads", raw)
+
+    got = lab.client.list_reservation_option_values(sid, ips)
+    assert list(got) == ips
+    for ip in ips:
+        # The batch reads with -Brief, the single read without it: same values, same classes.
+        assert _values(got[ip]) == _values(lab.client.list_option_values(scope_id=sid, reserved_ip=ip, all=True))
+    assert sorted((o.user_class, o.value) for o in got[ips[0]] if o.option_id == 15) == [
+        ("", ["batch.example"]),
+        (uc.name, ["user.example"]),
+    ]
+    assert got[ips[1]] == []
+    assert lab.client.list_reservation_option_values(sid, [ips[1]]) == {ips[1]: []}
+
+    c = lab.client.list_policy_contents([p.name, empty.name], sid)
+    assert c[p.name].ip_ranges == lab.client.list_policy_ip_ranges(sid, p.name)
+    assert _values(c[p.name].options) == _values(
+        lab.client.list_option_values(scope_id=sid, policy_name=p.name, all=True)
+    )
+    assert ["policy.example"] in [o.value for o in c[p.name].options if o.option_id == 15]
+    assert c[empty.name].ip_ranges == []
+    assert _values(c[empty.name].options) == _values(
+        lab.client.list_option_values(scope_id=sid, policy_name=empty.name, all=True)
+    )
+    c = lab.client.list_policy_contents([srv.name])[srv.name]
+    assert c.ip_ranges == []
+    assert _values(c.options) == _values(lab.client.list_option_values(policy_name=srv.name, all=True))
+    assert ["server-policy.example"] in [o.value for o in c.options]
+
+    # The exact errors for things that are not there, recorded before any assertion so the probe always has them.
+    gone_ip, gone_policy = f"{base}.99", "nbwd-test-nopolicy"
+    errors = {
+        "reserved_batch": _error_of(lambda: lab.client.list_reservation_option_values(sid, [ips[0], gone_ip])),
+        "reserved_single": _error_of(
+            lambda: lab.client.list_option_values(scope_id=sid, reserved_ip=gone_ip, all=True)
+        ),
+        "scope_policy_batch": _error_of(lambda: lab.client.list_policy_contents([gone_policy], sid)),
+        "scope_policy_options": _error_of(
+            lambda: lab.client.list_option_values(scope_id=sid, policy_name=gone_policy, all=True)
+        ),
+        "scope_policy_ranges": _error_of(lambda: lab.client.list_policy_ip_ranges(sid, gone_policy)),
+        "server_policy_batch": _error_of(lambda: lab.client.list_policy_contents([gone_policy])),
+        "server_policy_options": _error_of(lambda: lab.client.list_option_values(policy_name=gone_policy, all=True)),
+    }
+    save_probe(probe_out, "v4-batched-gone", errors)
+    for name, err in errors.items():
+        print(f"{name}: id={err.get('id')!r} category={err.get('category')!r} not_found={err.get('not_found')}")
+    # A gone item must read as gone, never as "no option values": windows_state then reads the scope again. Windows
+    # Server 2025 answers an IP that is not reserved with DHCP 20016 (InvalidType), which the reservation option reads
+    # alone take as not found, and a missing policy with DHCP 20111 (ObjectNotFound) on both cmdlets.
+    for k in ("reserved_batch", "reserved_single"):
+        assert errors[k].get("not_found") and errors[k]["id"].startswith("DHCP 20016,"), errors
+    for k in errors:
+        if "policy" in k:
+            assert errors[k].get("not_found") and errors[k]["id"].startswith("DHCP 20111,"), errors
+
+
+def test_batched_read_time(lab: Lab, probe_out) -> None:
+    """
+    client.py (issue #100): the time per reservation in a batch, with and without -Brief. Over SSH a batch must end
+    within command_timeout (a silence timeout), so READ_BATCH items must take at most half of it.
+    """
+    s = lab.scope("nbwd-test-batchtime")
+    sid = s.scope_id
+    base = sid.rsplit(".", 1)[0]
+    ips = [f"{base}.{20 + i}" for i in range(30)]
+    for i, ip in enumerate(ips):
+        lab.client.add_reservation(
+            wc.Reservation(scope_id=sid, ip_address=ip, client_id=MAC_PREFIX + f"0c-00-{i:02x}", name=f"nbwd-test-t{i}")
+        )
+        lab.client.set_option_value(wc.OptionKey(15, sid, reserved_ip=ip), [f"t{i}.example"])
+
+    def timed(fn) -> float:
+        start = time.monotonic()
+        fn()
+        return time.monotonic() - start
+
+    def per_item(fn) -> float:
+        # A batch of one against a batch of all: the difference leaves out PowerShell's own start-up.
+        return max(timed(lambda: fn(ips)) - timed(lambda: fn(ips[:1])), 0.0) / (len(ips) - 1)
+
+    def without_brief(batch: list[str]) -> None:
+        lab.raw(
+            "probe.nobrief",
+            "$out = @(foreach ($ip in @($p.ips)) { @(Get-DhcpServerv4OptionValue @cn -ReservedIP $ip -All).Count })",
+            {"ips": batch},
+        )
+
+    brief = per_item(lambda batch: lab.client.list_reservation_option_values(sid, batch))
+    plain = per_item(without_brief)
+    got = lab.client.list_reservation_option_values(sid, ips)
+    single = timed(lambda: [lab.client.list_option_values(scope_id=sid, reserved_ip=ip, all=True) for ip in ips])
+    budget = DEFAULTS["command_timeout"] / 2
+    result = {
+        "reservations": len(ips),
+        "per_item_brief_s": brief,
+        "per_item_without_brief_s": plain,
+        "single_reads_s": single,
+        "read_batch": wc.READ_BATCH,
+        "batch_estimate_s": wc.READ_BATCH * brief,
+        "budget_s": budget,
+    }
+    save_probe(probe_out, "v4-batched-time", result)
+    print(result)
+    assert all([o.value for o in got[ip] if o.option_id == 15] == [[f"t{i}.example"]] for i, ip in enumerate(ips))
+    assert wc.READ_BATCH * brief <= budget, result

@@ -935,3 +935,106 @@ def test_v6_reservation_option_is_named_by_its_ip_alone(pw: PwshRunner) -> None:
     c.set_v6_option_value(OptionKeyV6(24, prefix="2001:db8:1::"), ["scope.example"])
     st = find_call(pw.last_calls(), "Set-DhcpServerv6OptionValue")
     assert st["Prefix"] == "2001:db8:1::" and "ReservedIP" not in st
+
+
+# ---- issue #100: batched reads ----
+
+SEED_RESERVATIONS = (
+    SEED_SCOPE
+    + "Add-DhcpServerv4Reservation -ScopeId 10.1.20.0 -IPAddress 10.1.20.5 -ClientId aa-bb-cc-dd-ee-05\n"
+    + "Add-DhcpServerv4Reservation -ScopeId 10.1.20.0 -IPAddress 10.1.20.6 -ClientId aa-bb-cc-dd-ee-06\n"
+    + "Set-DhcpServerv4OptionValue -ReservedIP 10.1.20.5 -OptionId 15 -Value pc.example\n"
+)
+
+
+def test_batched_reservation_option_values(pw: PwshRunner) -> None:
+    pw.seed = SEED_RESERVATIONS
+    c = DhcpClient(pw)
+    got = c.list_reservation_option_values("10.1.20.0", ["10.1.20.5", "10.1.20.6"])
+    (v,) = got["10.1.20.5"]
+    assert (v.option_id, v.value, v.scope_id, v.reserved_ip) == (15, ["pc.example"], "10.1.20.0", "10.1.20.5")
+    assert got["10.1.20.6"] == []
+    calls = [x for x in pw.last_calls() if x["cmd"] == "Get-DhcpServerv4OptionValue"]
+    assert [x["ReservedIP"] for x in calls] == ["10.1.20.5", "10.1.20.6"]
+    assert all(x["All"] is True and x["Brief"] is True and "ScopeId" not in x for x in calls)
+    assert not [x for x in calls if "CimSession" in x or "ComputerName" in x]
+
+
+def test_batched_read_stops_at_a_gone_reservation(pw: PwshRunner) -> None:
+    pw.seed = SEED_RESERVATIONS + "$global:GoneReservations = @('10.1.20.5')\n"
+    c = DhcpClient(pw)
+    with pytest.raises(NotFound) as err:  # DHCP 20016, which these reads take as not found
+        c.list_reservation_option_values("10.1.20.0", ["10.1.20.5", "10.1.20.6"])
+    assert err.value.id.startswith("DHCP 20016")
+    # The first error ends the script, as the one-at-a-time reads did: the next reservation is not read.
+    calls = [x for x in pw.last_calls() if x["cmd"] == "Get-DhcpServerv4OptionValue"]
+    assert [x["ReservedIP"] for x in calls] == ["10.1.20.5"]
+
+
+def test_batched_read_shares_one_cim_session_with_computer_name(pw: PwshRunner) -> None:
+    pw.seed = SEED_RESERVATIONS + "$global:GoneReservations = @('10.1.20.6')\n"
+    c = DhcpClient(pw, "dhcp02.example.local")
+    with pytest.raises(NotFound):
+        c.list_reservation_option_values("10.1.20.0", ["10.1.20.5", "10.1.20.6"])
+    calls = pw.last_calls()
+    assert [x["cmd"] for x in calls] == [
+        "New-CimSession",
+        "Get-DhcpServerv4OptionValue",
+        "Get-DhcpServerv4OptionValue",
+        "Remove-CimSession",  # removed even though the batch failed
+    ]
+    assert calls[0]["ComputerName"] == ["dhcp02.example.local"]
+    assert all(x["CimSession"]["Id"] == 7 and "ComputerName" not in x for x in calls[1:3])
+    assert calls[3]["CimSession"] == 7
+
+
+def test_batched_policy_contents(pw: PwshRunner) -> None:
+    pw.seed = (
+        SEED_SCOPE
+        + "Add-DhcpServerv4Policy -Name printers -Condition OR -ScopeId 10.1.20.0 -MacAddress EQ,aa*\n"
+        + "Add-DhcpServerv4PolicyIPRange -ScopeId 10.1.20.0 -Name printers -StartRange 10.1.20.100 "
+        + "-EndRange 10.1.20.110\n"
+        + "Set-DhcpServerv4OptionValue -ScopeId 10.1.20.0 -PolicyName printers -OptionId 15 -Value print.example\n"
+        + "Set-DhcpServerv4OptionValue -ScopeId 10.1.20.0 -OptionId 15 -Value scope.example\n"
+        + "Add-DhcpServerv4Policy -Name srv -Condition OR -MacAddress EQ,bb*\n"
+        + "Set-DhcpServerv4OptionValue -PolicyName srv -OptionId 6 -Value 10.0.0.53\n"
+    )
+    c = DhcpClient(pw)
+    p = c.list_policy_contents(["printers"], "10.1.20.0")["printers"]
+    assert [(r.start_range, r.end_range, r.policy_name) for r in p.ip_ranges] == [
+        ("10.1.20.100", "10.1.20.110", "printers")
+    ]
+    assert [(o.option_id, o.value) for o in p.options] == [(15, ["print.example"])]
+    calls = pw.last_calls()
+    rng = find_call(calls, "Get-DhcpServerv4PolicyIPRange")
+    assert rng["ScopeId"] == "10.1.20.0" and rng["Name"] == "printers"
+    opt = find_call(calls, "Get-DhcpServerv4OptionValue")
+    assert opt["ScopeId"] == "10.1.20.0" and opt["PolicyName"] == "printers" and opt["All"] is True
+    assert opt["Brief"] is True
+
+    srv = c.list_policy_contents(["srv"])["srv"]
+    assert srv.ip_ranges == [] and [(o.option_id, o.value) for o in srv.options] == [(6, ["10.0.0.53"])]
+    calls = pw.last_calls()
+    assert not [x for x in calls if x["cmd"] == "Get-DhcpServerv4PolicyIPRange"]
+    opt = find_call(calls, "Get-DhcpServerv4OptionValue")
+    assert "ScopeId" not in opt and opt["PolicyName"] == "srv"
+
+
+def test_batched_v6_reservation_option_values(pw: PwshRunner) -> None:
+    pw.seed = (
+        SEED_V6
+        + "Set-DhcpServerv6OptionValue -ReservedIP 2001:db8:1::10 -OptionId 24 -Value lab.example\n"
+        + "$global:GoneReservations = @()\n"
+    )
+    c = DhcpClient(pw)
+    got = c.list_v6_reservation_option_values("2001:db8:1::", ["2001:db8:1::10", "2001:db8:1::11"])
+    (v,) = got["2001:db8:1::10"]
+    assert (v.option_id, v.value, v.prefix, v.reserved_ip) == (24, ["lab.example"], "2001:db8:1::", "2001:db8:1::10")
+    assert got["2001:db8:1::11"] == []
+    calls = [x for x in pw.last_calls() if x["cmd"] == "Get-DhcpServerv6OptionValue"]
+    assert [x["ReservedIP"] for x in calls] == ["2001:db8:1::10", "2001:db8:1::11"]
+    assert all(x["All"] is True and x["Brief"] is True and "Prefix" not in x for x in calls)
+    pw.seed += "$global:GoneReservations = @('2001:db8:1::11')\n"
+    with pytest.raises(PSError) as err:  # DHCP 20013, a database error code: stays a real error
+        c.list_v6_reservation_option_values("2001:db8:1::", ["2001:db8:1::10", "2001:db8:1::11"])
+    assert err.value.id.startswith("DHCP 20013") and not isinstance(err.value, NotFound)

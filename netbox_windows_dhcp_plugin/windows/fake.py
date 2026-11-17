@@ -27,6 +27,11 @@ Modelled server behaviour:
   (``filter_add_fails`` forces that refusal);
 * ``empty_result_as_object`` prints ``{}`` instead of ``null`` for "nothing found", the
   shape Windows PowerShell 5.1 gave before the envelope fixed it (issue #15);
+* the batched reads (``option.list_reserved``, ``policy.list_contents``,
+  ``v6option.list_reserved``) stop at the first item that fails, as the scripts do;
+* listing the option values of an IP that is not reserved fails with DHCP 20016
+  (InvalidType) for IPv4 and DHCP 20013 (OpenError) for DHCPv6, as Windows Server 2025
+  does; a missing policy is DHCP 20111 (ObjectNotFound);
 * ``fail`` injects an error for any op; ``calls`` records every call.
 
 The fake trusts the client to send canonical values (it does not re-validate every
@@ -541,6 +546,10 @@ class FakeDhcpServer:
         return self.options.get(self._option_key(p))
 
     def _op_option_list(self, p: dict) -> Any:
+        ip = _s(p, "reserved_ip")
+        if ip and ip not in self.reservations:
+            # What Windows answers a list for an IP that is not reserved (lab, Windows Server 2025, issue #100).
+            raise _err("Get-DhcpServerv4OptionValue", 20016, "InvalidType", "Failed to get option values")
         self._check_option_level(p)
         sid, rip, vc, uc, pol = self._option_level(p)
         out = []
@@ -577,6 +586,27 @@ class FakeDhcpServer:
             raise _err("Remove-DhcpServerv4OptionValue", 20010, "NotSpecified", "Failed to delete option value")
         del self.options[k]
         return None
+
+    # -- batched reads (issue #100) ------------------------------------------------------------
+    # One item per name asked for, read in order; the first error fails the whole call, as the scripts do.
+
+    _VALUE_ITEM = ("option_id", "value", "vendor_class", "user_class", "policy_name")
+
+    @classmethod
+    def _value_items(cls, values: list[dict[str, Any]], v6: bool = False) -> list[dict[str, Any]]:
+        names = cls._VALUE_ITEM[:-1] if v6 else cls._VALUE_ITEM
+        return [{k: v.get(k, "") for k in names} for v in values]
+
+    @staticmethod
+    def _batch(tag: str, keys: Any, read: Callable[[str], dict[str, Any]]) -> list[dict[str, Any]]:
+        return [{tag: key, **read(key)} for key in keys or []]
+
+    def _op_option_list_reserved(self, p: dict) -> Any:
+        return self._batch(
+            "ip",
+            p.get("ips"),
+            lambda ip: {"values": self._value_items(self._op_option_list({"reserved_ip": ip, "all": True}))},
+        )
 
     def set_option(self, option_id: int, value: list[str], **level: str) -> None:
         """Seed an option value directly (level keys as in OptionKey; a reservation's scope is dropped)."""
@@ -1066,6 +1096,24 @@ class FakeDhcpServer:
         self.policy_ranges.setdefault(k, []).append(r)
         return r
 
+    def _op_policy_list_contents(self, p: dict) -> Any:
+        sid = _s(p, "scope_id")
+
+        def read(name: str) -> dict[str, Any]:
+            if sid:
+                ranges = self._op_policyrange_list({"scope_id": sid, "policy_name": name})
+            elif ("", name.lower()) not in self.policies:
+                raise _err("Get-DhcpServerv4OptionValue", 20111, "ObjectNotFound", f"Failed to get policy {name}.")
+            else:
+                ranges = []
+            values = self._op_option_list({"scope_id": sid, "policy_name": name, "all": True})
+            return {
+                "ranges": [{"start_range": r["start_range"], "end_range": r["end_range"]} for r in ranges],
+                "values": self._value_items(values),
+            }
+
+        return self._batch("name", p.get("names"), read)
+
     def _op_policyrange_remove(self, p: dict) -> Any:
         cmd = "Remove-DhcpServerv4PolicyIPRange"
         k, _ = self._policy_for_range(cmd, p)
@@ -1247,6 +1295,10 @@ class FakeDhcpServer:
         return self.v6_options.get(self._v6option_key(p))
 
     def _op_v6option_list(self, p: dict) -> Any:
+        ip = _s(p, "reserved_ip")
+        if ip and ip not in self.v6_reservations:
+            # DHCPv6 answers with a database error code instead (lab, Windows Server 2025, issue #100).
+            raise _err("Get-DhcpServerv6OptionValue", 20013, "OpenError", "Failed to get option values")
         self._check_v6option_level(p)
         key = self._v6option_key(p)
         # -All: every class at that level; otherwise only the values of the class asked for (none: standard ones).
@@ -1280,6 +1332,13 @@ class FakeDhcpServer:
             raise _err("Remove-DhcpServerv6OptionValue", 20010, "NotSpecified", "Failed to delete option value")
         del self.v6_options[k]
         return None
+
+    def _op_v6option_list_reserved(self, p: dict) -> Any:
+        return self._batch(
+            "ip",
+            p.get("ips"),
+            lambda ip: {"values": self._value_items(self._op_v6option_list({"reserved_ip": ip, "all": True}), v6=True)},
+        )
 
     # -- DHCPv6 exclusions, leases and classes ---------------------------------------------
 

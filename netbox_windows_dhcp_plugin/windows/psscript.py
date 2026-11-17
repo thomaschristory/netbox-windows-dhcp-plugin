@@ -68,6 +68,7 @@ NOT_FOUND_IDS: tuple[str, ...] = (
     "DHCP 20005",  # ERROR_DHCP_SUBNET_NOT_PRESENT
     "DHCP 20010",  # ERROR_DHCP_OPTION_NOT_PRESENT
     "DHCP 20018",  # ERROR_DHCP_NOT_RESERVED_CLIENT
+    "DHCP 20111",  # policy not found; Windows also files it under ObjectNotFound (lab, Windows Server 2025)
 )
 
 # Parameter names whose values are secrets. They are never logged by the plugin, and never written into the script
@@ -348,6 +349,11 @@ class PSError(WindowsLayerError):
 
 class PSNotFoundError(PSError, NotFound):
     """A PowerShell error that means the object does not exist. Catch it as ``NotFound``."""
+
+    @property
+    def not_found(self) -> bool:
+        # Also true for an id that means not found for one read only (client.RESERVATION_GONE_IDS).
+        return True
 
 
 def _is_not_found(category: str, err_id: str) -> bool:

@@ -22,6 +22,9 @@ $global:Reservations = [ordered]@{}
 $global:Exclusions = [System.Collections.ArrayList]::new()
 $global:Options = [System.Collections.ArrayList]::new()
 $global:Leases = [System.Collections.ArrayList]::new()
+# Reserved IPs whose option values a Get refuses as Windows does once the reservation is gone (DHCP 20016 for IPv4,
+# 20013 for DHCPv6), as for a reservation deleted while a batched read runs (issue #100). Seeds fill it.
+$global:GoneReservations = @()
 
 # Common parameters (added by [CmdletBinding()]) that Record leaves out, so
 # tests only see the DHCP-specific parameters a script passed.
@@ -267,7 +270,7 @@ function Remove-DhcpServerv4ExclusionRange {
 
 # ---- Option values ----
 # Each stored option has a Level string: "" for server, the scope ID, or the
-# reserved IP. Get returns every option at the requested level. A reservation
+# reserved IP. Get returns every option at the requested level and policy. A reservation
 # is named by its IP alone: Get tolerates a ScopeId next to ReservedIP (seen on
 # Windows Server 2025) and ignores it, while Set and Remove refuse the pair with
 # InvalidArgument, as the real cmdlets do (issue #20).
@@ -275,10 +278,15 @@ function Get-DhcpServerv4OptionValue {
     [CmdletBinding()]
     param([string]$VendorClass, [string]$ComputerName, [Parameter(Position = 0)][ipaddress]$ScopeId,
         [ipaddress]$ReservedIP, [Parameter(Position = 1)][uint32[]]$OptionId, [string]$UserClass, [switch]$All,
-        [string]$PolicyName)
+        [string]$PolicyName, [switch]$Brief, [object]$CimSession)
     Record 'Get-DhcpServerv4OptionValue' $PSBoundParameters
+    if ($ReservedIP -and $global:GoneReservations -contains "$ReservedIP") {
+        # What Windows Server 2025 answers for an IP that is not reserved (issue #100): not a not-found code.
+        Write-DhcpError $PSCmdlet 20016 InvalidType "Failed to get option values on DHCP server STUB."
+        return
+    }
     $level = if ($ReservedIP) { "$ReservedIP" } else { "$ScopeId" }
-    $global:Options | Where-Object { "$($_.Level)" -eq $level }
+    $global:Options | Where-Object { "$($_.Level)" -eq $level -and "$($_.PolicyName)" -eq "$PolicyName" }
 }
 
 # Appends an option (does not replace an existing one; tests never set the
@@ -294,7 +302,7 @@ function Set-DhcpServerv4OptionValue {
         return
     }
     [void]$global:Options.Add([pscustomobject]@{ Level = "$ScopeId$ReservedIP"; OptionId = $OptionId; Name = 'Router'
-        Value = $Value; VendorClass = $VendorClass; UserClass = $UserClass })
+        Value = $Value; VendorClass = $VendorClass; UserClass = $UserClass; PolicyName = $PolicyName })
 }
 
 # Records the call and refuses ScopeId with ReservedIP; tests check the parameters it received.
@@ -611,6 +619,23 @@ function Remove-DhcpServerv4OptionDefinition {
     Record 'Remove-DhcpServerv4OptionDefinition' $PSBoundParameters
 }
 
+# ---- CIM sessions ----
+# The batched reads open one session for a remote server (issue #100). Remove-CimSession records the Id of the session it
+# closes, so tests can check it is the one New-CimSession made.
+
+function New-CimSession {
+    [CmdletBinding()]
+    param([Parameter(Position = 0)][string[]]$ComputerName)
+    Record 'New-CimSession' $PSBoundParameters
+    [pscustomobject]@{ Id = 7; ComputerName = "$ComputerName" }
+}
+
+function Remove-CimSession {
+    [CmdletBinding()]
+    param([Parameter(Mandatory, Position = 0)][object]$CimSession)
+    Record 'Remove-CimSession' @{ CimSession = $CimSession.Id }
+}
+
 # ---- Policies ----
 
 function Get-DhcpServerv4Policy {
@@ -667,7 +692,8 @@ function Remove-DhcpServerv4Policy {
 
 function Get-DhcpServerv4PolicyIPRange {
     [CmdletBinding()]
-    param([string]$ComputerName, [Parameter(Mandatory)][ipaddress]$ScopeId, [Parameter(Mandatory)][string]$Name)
+    param([string]$ComputerName, [Parameter(Mandatory)][ipaddress]$ScopeId, [Parameter(Mandatory)][string]$Name,
+        [object]$CimSession)
     Record 'Get-DhcpServerv4PolicyIPRange' $PSBoundParameters
     $global:PolicyRanges | Where-Object { "$($_.ScopeId)" -eq "$ScopeId" -and $_.Name -eq $Name }
 }
@@ -768,8 +794,13 @@ function Remove-DhcpServerv6Reservation {
 function Get-DhcpServerv6OptionValue {
     [CmdletBinding()]
     param([string]$ComputerName, [ipaddress]$Prefix, [ipaddress]$ReservedIP, [uint32[]]$OptionId,
-        [string]$VendorClass, [string]$UserClass, [switch]$All)
+        [string]$VendorClass, [string]$UserClass, [switch]$All, [switch]$Brief, [object]$CimSession)
     Record 'Get-DhcpServerv6OptionValue' $PSBoundParameters
+    if ($ReservedIP -and $global:GoneReservations -contains "$ReservedIP") {
+        # DHCPv6 answers with a database error code instead (Windows Server 2025, issue #100).
+        Write-DhcpError $PSCmdlet 20013 OpenError "Failed to get option values on DHCP server STUB."
+        return
+    }
     # Like IPv4: Get tolerates -Prefix next to -ReservedIP; Set and Remove refuse the pair (issue #17).
     $level = if ($ReservedIP) { "$ReservedIP" } else { "$Prefix" }
     $global:V6Options | Where-Object { "$($_.Level)" -eq $level }
