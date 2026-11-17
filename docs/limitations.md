@@ -83,4 +83,8 @@ DHCP 20135 and 20136). A push of such a policy fails the same way, so fix it in 
   range change stays: NetBox has the new range for both servers but no relationship. Import or apply the relationship
   again, or put the range back by hand.
 - Deleting a device, virtual machine or interface whose IP address or MAC address a reservation uses is refused by
-  NetBox. Delete the reservation, or unassign the address, first.
+  NetBox, on purpose: removing the reservation with it would also remove it from Windows on the next push. The
+  refusal links the reservation, and the pages of the device, virtual machine, interface, IP address and MAC address
+  list the reservations that use them in a **DHCP reservations** panel (see
+  [Reservations](reservations.md#deleting-a-device-or-address-a-reservation-uses)). Delete the reservation, or
+  unassign the address from the interface, first.

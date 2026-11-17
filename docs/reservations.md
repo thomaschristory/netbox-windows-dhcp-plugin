@@ -122,6 +122,23 @@ name renames the reservation on Windows. An update keeps the reservation's optio
 ID and type only when they change, and puts back any option value Windows drops (see
 [Push to Windows](push.md#order)).
 
+## Deleting a device or address a reservation uses
+
+A reservation's IP address and MAC address are protected: NetBox refuses to delete them, or the device, virtual
+machine or interface they are assigned to, while a reservation uses them. Deleting them anyway would leave a
+reservation without an address, or remove it from Windows on the next push as a side effect of a decommission.
+NetBox's refusal ("Unable to delete ... dependent objects were found") lists the reservation by its IP address,
+linked to the reservation's page.
+
+To see this before trying, open the device, virtual machine, interface, IP address or MAC address: a **DHCP
+reservations** panel lists every reservation (IPv4 and DHCPv6) that uses it, directly or through one of the
+device's interfaces, with its server, scope, IP address and MAC address. The panel only appears when there is one,
+and only lists reservations you may view: a reservation you cannot see still blocks the delete, and the refusal
+still lists its IP address, but its page will not open for you; ask whoever manages that DHCP server.
+
+To go ahead, delete the reservation (the next push removes it from Windows, see below), or unassign the IP address
+and MAC address from the interface so they stay in NetBox for the reservation.
+
 ## Delete a reservation
 
 Delete the reservation in NetBox (its option values go with it; the IP and MAC address objects stay in NetBox). The
