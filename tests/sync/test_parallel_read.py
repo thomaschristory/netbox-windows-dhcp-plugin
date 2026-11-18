@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import threading
 import time
 
@@ -10,6 +11,7 @@ import pytest
 from netbox_windows_dhcp_plugin.sync import windows_state as ws
 from netbox_windows_dhcp_plugin.windows import DhcpClient
 from netbox_windows_dhcp_plugin.windows import runner as runner_mod
+from netbox_windows_dhcp_plugin.windows import winrm as winrm_mod
 from netbox_windows_dhcp_plugin.windows.client import (
     ExclusionRange,
     OptionKey,
@@ -23,7 +25,10 @@ from netbox_windows_dhcp_plugin.windows.client import (
 )
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
-from netbox_windows_dhcp_plugin.windows.runner import limit
+from netbox_windows_dhcp_plugin.windows.runner import ExecResult, RunnerError, limit
+from netbox_windows_dhcp_plugin.windows.winrm import WinRMConfig, WinRMRunner
+
+from ..windows.remote import fake_host_response, split_rendered
 
 V4_SCOPES = 12
 V6_SCOPES = 5
@@ -410,3 +415,103 @@ def test_a_scope_whose_reservation_goes_mid_read_is_read_again_in_parallel():
     assert gone["done"]
     assert [r.ip_address for r in state.reservations if r.scope_id == "10.3.0.0"] == ["10.3.0.51", "10.3.0.52"]
     assert state.notes == []
+
+
+# Issue #132 during a parallel read: a WinRM connection refused before its command was sent is tried again.
+
+
+def requests_refusal() -> Exception:
+    """What requests raises for a refused connect: ConnectionError(MaxRetryError(NewConnectionError))."""
+    requests = pytest.importorskip("requests")
+    from urllib3.exceptions import MaxRetryError, NewConnectionError
+
+    try:
+        try:
+            raise ConnectionRefusedError(111, "Connection refused")
+        except OSError as e:
+            raise NewConnectionError(None, f"Failed to establish a new connection: {e}") from e
+    except NewConnectionError as e:
+        try:
+            raise MaxRetryError(None, "/wsman", e) from e
+        except MaxRetryError as m:
+            return requests.exceptions.ConnectionError(m)
+
+
+class RefusingWinRM(WinRMRunner):
+    """
+    The real WinRM runner (its retry and error handling) with the network replaced: each command is answered by the
+    fake DHCP server, except that the connection for a command of a scope in ``refusals`` is refused that many times
+    before anything is sent, as a NAT router or Docker's port forwarding sometimes does under parallel connections.
+    """
+
+    def __init__(self, server: FakeDhcpServer, refusals: dict[str, int], hold=None) -> None:
+        super().__init__(WinRMConfig(host="dhcp01.example.com", username="EXAMPLE\\svc", password="pw"))
+        self.server, self.refusals, self.hold = server, dict(refusals), hold
+        self.refused: list[str] = []
+        self.lock = threading.Lock()
+
+    def _exec_once(self, argv, stdin, sent):
+        params, _ = split_rendered(base64.b64decode(stdin.strip().split(".")[0]).decode())
+        sid = params.get("scope_id")
+        with self.lock:
+            refuse = self.refusals.get(sid, 0) > 0
+            if refuse:
+                self.refusals[sid] -= 1
+                self.refused.append(sid)
+        if refuse:
+            raise requests_refusal()
+        if self.hold is not None:
+            self.hold(sid)
+        sent.append(True)
+        return ExecResult(*fake_host_response(self.server, stdin))
+
+
+@pytest.fixture
+def backoff(monkeypatch) -> list[float]:
+    # The waits between tries are recorded, not slept.
+    waited: list[float] = []
+    monkeypatch.setattr(winrm_mod.time, "sleep", waited.append)
+    return waited
+
+
+def test_a_refusal_before_sending_is_tried_again_and_the_read_matches_a_serial_one(backoff):
+    serial = ws.read(DhcpClient(seeded()))
+    winrm = RefusingWinRM(seeded(), {"10.2.0.0": 1})
+    parallel = ws.read(DhcpClient(limit(winrm, 4)), workers=4)
+    assert winrm.refused == ["10.2.0.0"]
+    assert backoff == [winrm_mod.CONNECT_RETRY_DELAYS[0]]
+    assert parallel == serial
+    assert everything(parallel) == everything(serial)
+
+
+def test_a_refusal_that_lasts_fails_the_read_and_stops_the_other_scopes(backoff, monkeypatch):
+    # 10.0.0.0 comes first, so its failure stops every other scope. The other scopes' first commands are held until
+    # the read has recorded that failure, so whatever they do next is decided by it, not by thread timing.
+    fake = with_more_scopes(20)
+    failed = threading.Event()
+    real_fail = ws._Stop.fail
+
+    def fail(self, index):
+        real_fail(self, index)
+        failed.set()
+
+    monkeypatch.setattr(ws._Stop, "fail", fail)
+
+    def hold(sid):
+        if sid and sid != "10.0.0.0":
+            assert failed.wait(10), "the refused scope never failed"
+
+    winrm = RefusingWinRM(fake, {"10.0.0.0": 100}, hold=hold)
+    with pytest.raises(RunnerError, match=r"winrm: running PowerShell: .*Connection refused") as error:
+        ws.read(DhcpClient(limit(winrm, 4)), workers=4)
+    # The cause stays attached for the logs.
+    assert winrm_mod.refused_connect(error.value)
+    # Tried once, then once after each wait, never sent.
+    assert winrm.refused == ["10.0.0.0"] * (len(winrm_mod.CONNECT_RETRY_DELAYS) + 1)
+    assert backoff == list(winrm_mod.CONNECT_RETRY_DELAYS)
+    sent = commands_per_scope(fake)
+    assert "10.0.0.0" not in sent
+    # The scopes already running when it failed sent the one command they had started, and nothing more; no other
+    # scope sent anything.
+    assert set(sent) <= {"10.1.0.0", "10.2.0.0", "10.3.0.0"}
+    assert all(count == 1 for count in sent.values())
