@@ -488,6 +488,26 @@ def test_a_refusal_long_after_the_last_close_fails_at_once(monkeypatch) -> None:
     assert time.monotonic() - started < 1
 
 
+def test_a_refusal_while_another_open_is_pending_is_tried_again(monkeypatch) -> None:
+    # Another thread's session is accepted by the server but its answer has not reached us yet: nothing is counted
+    # as open, yet the server is full of ours, so the refused open must wait (this raced in CI).
+    live = _FakeTransport(active=True, refuse=2)
+    r = _with_transports(monkeypatch, live)
+    r._opening = 1  # the other thread's open, still in flight
+    assert r._open_channel() == "channel"
+    assert not live.closed and live.opened == 1
+    assert r._opening == 1 and r._sessions == 1
+
+
+def test_an_interrupted_open_leaves_no_count_behind(monkeypatch) -> None:
+    # A leftover count would make every later refusal on this runner look like a full server and wait.
+    live = _FakeTransport(active=True, refuse=0, error=KeyboardInterrupt())
+    r = _with_transports(monkeypatch, live)
+    with pytest.raises(KeyboardInterrupt):
+        r._open_channel()
+    assert r._opening == 0 and r._sessions == 0
+
+
 class _ClosableChannel:
     def close(self) -> None:
         pass

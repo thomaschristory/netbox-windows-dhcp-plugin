@@ -332,37 +332,43 @@ class SSHRunner:
             raise_if_stopped()
             # Counted while it opens: another thread refused meanwhile must see this one as ours, even before the
             # server's answer reaches us.
+            chan, error = None, None
             with self._lock:
                 self._opening += 1
             try:
                 chan = t.open_session(timeout=self.cfg.timeout)
             except Exception as e:  # noqa: BLE001 - paramiko raises SSHException, EOFError, socket errors...
+                error = e
+            finally:
+                # Also on an interrupt, or a leftover count would make every later refusal look like a full server.
                 with self._lock:
                     self._opening -= 1
-                # The connection itself is gone (paramiko may not have noticed yet when the socket reports it).
-                if not t.is_active() or isinstance(e, EOFError | OSError):
-                    raise _Stale from e
-                if not _refused(paramiko, e):
-                    raise RunnerError(f"ssh: opening session: {e}") from e
-                with self._lock:
-                    busy = (
-                        self._sessions > 0
-                        or self._opening > 0
-                        or time.monotonic() - self._last_closed < SESSION_CLOSE_GRACE
-                    )
-                if delay is None or not busy:
-                    # Nothing of ours to wait for (or waited long enough): the reason first, the likely cause after.
-                    raise RunnerError(
-                        f"ssh: {self.cfg.host} refused to open a session: {e}. If it allows fewer sessions per "
-                        "connection (sshd MaxSessions, 10 by default) than the plugin runs at once (max_concurrency), "
-                        "lower max_concurrency or raise MaxSessions"
-                    ) from e
-                time.sleep(delay)
-                continue
+                    if chan is not None:
+                        self._sessions += 1
+            if chan is not None:
+                return chan
+            # The connection itself is gone (paramiko may not have noticed yet when the socket reports it).
+            if not t.is_active() or isinstance(error, EOFError | OSError):
+                raise _Stale from error
+            if not _refused(paramiko, error):
+                raise RunnerError(f"ssh: opening session: {error}") from error
             with self._lock:
-                self._opening -= 1
-                self._sessions += 1
-            return chan
+                # Ours fill the server if any are open, being opened by another thread, or just closed (the server
+                # frees a slot a moment after the close). Several threads refused at once see each other opening,
+                # so a server that refuses every session takes up to the whole retry budget to report it.
+                busy = (
+                    self._sessions > 0
+                    or self._opening > 0
+                    or time.monotonic() - self._last_closed < SESSION_CLOSE_GRACE
+                )
+            if delay is None or not busy:
+                # Nothing of ours to wait for (or waited long enough): the reason first, the likely cause after.
+                raise RunnerError(
+                    f"ssh: {self.cfg.host} refused to open a session: {error}. If it allows fewer sessions per "
+                    "connection (sshd MaxSessions, 10 by default) than the plugin runs at once (max_concurrency), "
+                    "lower max_concurrency or raise MaxSessions"
+                ) from error
+            time.sleep(delay)
         raise AssertionError("not reached")
 
     def _close_channel(self, chan) -> None:
