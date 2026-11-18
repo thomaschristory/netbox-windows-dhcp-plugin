@@ -23,7 +23,10 @@ logged under 4, deletes under 5, failover under 6.)
 Safety: before every real push, a dry run must only touch test objects, decided per kind from the record key
 (``is_test``: scope IDs in 198.19.0.0/16, the DHCPv6 test prefix, ``nbwd-test-`` names, ``02-4e-42-`` MACs), and the
 changes the push applied are checked again afterwards. Anything else aborts the run before Windows is written.
-Objects the lab server already had are imported into NetBox (read only) and never pushed. The test objects are
+Objects the lab server already had (the ``make lab-seed`` data, say) are never imported: the import applies only the
+test objects and leaves the rest pending in the review queue, so NetBox never manages them, a push leaves them alone
+(it only deletes what SyncState records) and the seed's failover relationships never make the run's server a failover
+primary. The import checks look at the test objects only. The test objects are
 swept from Windows at the end, pass or fail. The NetBox server record is created with sync_enabled off, so saves
 never queue pushes of their own.
 """
@@ -44,9 +47,14 @@ from django.urls import reverse  # noqa: E402
 from netbox_windows_dhcp_plugin.conf import max_concurrency, normalise_host  # noqa: E402
 from netbox_windows_dhcp_plugin.connection import build_client  # noqa: E402
 from netbox_windows_dhcp_plugin.jobs import enqueue_leases, record_names  # noqa: E402
-from netbox_windows_dhcp_plugin.models import FailoverRelationship, SyncRun, WindowsServer  # noqa: E402
+from netbox_windows_dhcp_plugin.models import (  # noqa: E402
+    FailoverRelationship,
+    MacFilterLists,
+    SyncRun,
+    WindowsServer,
+)
 from netbox_windows_dhcp_plugin.sync import importer, netbox_state, pusher, windows_state  # noqa: E402
-from netbox_windows_dhcp_plugin.sync.diff import DELETE, UPDATE, Change  # noqa: E402
+from netbox_windows_dhcp_plugin.sync.diff import CREATE, DELETE, UPDATE, Change  # noqa: E402
 from netbox_windows_dhcp_plugin.sync.mapping import Writer  # noqa: E402
 from netbox_windows_dhcp_plugin.windows import client as wc  # noqa: E402
 from tests.lab.labkit import MAC_PREFIX, V6_PREFIX, Lab, lab_env, make_runner  # noqa: E402
@@ -214,9 +222,14 @@ def import_into_netbox(server):
     if result.proposal is None:
         log("import: nothing to apply")
         return 0
-    applied, failed = importer.apply_items(list(result.proposal.items.all()))
+    items = list(result.proposal.items.all())
+    ours = [i for i in items if is_test(i.kind, i.key)]
+    if not ours:
+        log(f"import: no test object to apply ({len(items)} other item(s) left pending)")
+        return 0
+    applied, failed = importer.apply_items(ours)
     failures = [f"{i.action} {i.kind} {i.key}: {i.error}" for i in result.proposal.items.filter(status="failed")]
-    log(f"import: {applied} applied, {failed} failed")
+    log(f"import: {applied} applied, {failed} failed, {len(items) - len(ours)} other item(s) left pending")
     if failures:
         raise Abort("import failures:\n  " + "\n  ".join(failures))
     return applied
@@ -224,10 +237,19 @@ def import_into_netbox(server):
 
 def expect_import_noop(server, step):
     changes, _ = importer.compute(server, read_state(server))
+    # What else the server holds is never imported, so it only ever shows up as creates, plus the MAC filter list
+    # switches (the seed turns the deny list on): with no MacFilterLists row in NetBox the import compares them with
+    # "both off" and sees an update, while a push leaves them alone. Anything more means NetBox holds objects of this
+    # server outside the test set: stop, as the pushes would then manage them.
+    no_lists = not MacFilterLists.objects.filter(server=server).exists()
+    others = [c for c in changes if not is_test(c.kind, c.key)]
+    changes = [c for c in changes if is_test(c.kind, c.key)] + [
+        c for c in others if c.action != CREATE and not (c.kind == "filterlists" and no_lists)
+    ]
     if changes:
         lines = [f"{c.action} {c.kind} {c.key} {c.changed_fields}" for c in changes]
         raise Abort(f"{step}: import still sees {len(changes)} difference(s):\n  " + "\n  ".join(lines))
-    log(f"{step}: import sees no difference")
+    log(f"{step}: import sees no difference in the test objects ({len(others)} other object(s) not imported)")
 
 
 def dry_run(server):
