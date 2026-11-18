@@ -837,8 +837,7 @@ def test_taker_failing_at_windows_puts_the_scope_back(client, fake):
     ((change, error),) = result.failed
     assert change.key == "ha2" and "scope(s) 10.1.0.0 put back into failover HA" in error
     assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0"]
-    # The relationship is as NetBox last recorded it: no new fingerprint, so it is not taken for a change on Windows.
-    assert ("failover", "ha") not in result.upserts
+    # The relationship is recorded as Windows now holds it, so it is not taken for a change made on Windows.
     state = {**managed, **result.upserts}
     assert push.unchanged(state["failover", "ha"], next(r for r in windows_records(client) if r.kind == "failover"))
     # Once the partner answers, the move goes through.
@@ -865,23 +864,32 @@ def test_scopes_swapped_between_relationships_are_refused_and_pause(client, fake
     assert not result.failed and not result.applied
 
 
-def test_chained_moves_converge(client, fake):
-    third = failover(name="HA3", scope_ids=[], partner_server="dhcp3.example.com")
+@pytest.mark.parametrize("names", [("HA", "HA2", "HA3"), ("HB", "HA", "HC"), ("Z1", "M1", "A1")])
+def test_chained_moves_converge(client, fake, names):
+    # first lets 10.1 go to second, which lets 10.2 go to third: the order follows the moves, not the names.
+    first, second, third = names
     managed = pushed(
-        client, [scope(), S2, failover(scope_ids=["10.1.0.0"]), failover(name="HA2", scope_ids=["10.2.0.0"]), third]
+        client,
+        [
+            scope(),
+            S2,
+            failover(name=first, scope_ids=["10.1.0.0"]),
+            failover(name=second, scope_ids=["10.2.0.0"]),
+            failover(name=third, scope_ids=[], partner_server="dhcp3.example.com"),
+        ],
     )
     moved = [
         scope(),
         S2,
-        failover(scope_ids=[]),
-        failover(name="HA2", scope_ids=["10.1.0.0"]),
-        failover(name="HA3", scope_ids=["10.2.0.0"], partner_server="dhcp3.example.com"),
+        failover(name=first, scope_ids=[]),
+        failover(name=second, scope_ids=["10.1.0.0"]),
+        failover(name=third, scope_ids=["10.2.0.0"], partner_server="dhcp3.example.com"),
     ]
     push_until_done(client, moved, managed, limit=1)
     assert {k: v["scope_ids"] for k, v in fake.failovers.items()} == {
-        "ha": [],
-        "ha2": ["10.1.0.0"],
-        "ha3": ["10.2.0.0"],
+        first.lower(): [],
+        second.lower(): ["10.1.0.0"],
+        third.lower(): ["10.2.0.0"],
     }
 
 
@@ -936,3 +944,153 @@ def test_many_rekeyed_scopes_plan_quickly():
     p = push.plan([at(i, True) for i in range(6000)] + [refused], target, managed)
     assert time.monotonic() - started < 2.0
     assert p.summary()["waiting_count"] == 12000
+
+
+# -- put-back records what Windows holds ------------------------------------------------------------------------------
+
+S4 = scope_at("10.4.0.0", "255.255.255.0", "10.4.0.10", "10.4.0.200")
+S5 = scope_at("10.5.0.0", "255.255.255.0", "10.5.0.10", "10.5.0.200")
+
+
+def only_ha2_fails(op, p):
+    from netbox_windows_dhcp_plugin.windows.psscript import PSError
+
+    if op == "failover.add_scope" and p.get("name", "").lower() == "ha2":
+        return PSError("partner unreachable", "ConnectionError", "", op)
+    return None
+
+
+def failed_once_then_converges(client, fake, before, moved, expected):
+    """Push ``moved`` with HA2 failing at Windows, then without: it converges on the next push, nothing after."""
+    managed = pushed(client, before)
+    fake.fail = only_ha2_fails
+    p = push.plan(moved, windows_records(client), managed)
+    result = push.execute(p, WindowsWriter(client))
+    assert any("put back into failover HA" in error for _, error in result.failed), result.failed
+    state = {**managed, **result.upserts}
+    for k in result.removals:
+        state.pop(k, None)
+    fake.fail = None
+    push_until_done(client, moved, state, limit=1)
+    assert {k: sorted(v["scope_ids"]) for k, v in fake.failovers.items()} == expected
+
+
+HA2 = dict(name="HA2", partner_server="dhcp3.x")
+
+
+def test_put_back_when_the_releaser_also_changed_a_setting(client, fake):
+    failed_once_then_converges(
+        client,
+        fake,
+        [scope(), S2, S4, failover(scope_ids=["10.1.0.0", "10.2.0.0"]), failover(scope_ids=["10.4.0.0"], **HA2)],
+        [
+            scope(),
+            S2,
+            S4,
+            failover(scope_ids=["10.2.0.0"], max_client_lead_time=7200),
+            failover(scope_ids=["10.1.0.0", "10.4.0.0"], **HA2),
+        ],
+        {"ha": ["10.2.0.0"], "ha2": ["10.1.0.0", "10.4.0.0"]},
+    )
+    assert fake.failovers["ha"]["max_client_lead_time"] == 7200
+
+
+def test_put_back_when_the_releaser_also_let_another_scope_go(client, fake):
+    failed_once_then_converges(
+        client,
+        fake,
+        [scope(), S2, S4, failover(scope_ids=["10.1.0.0", "10.2.0.0"]), failover(scope_ids=["10.4.0.0"], **HA2)],
+        [scope(), S2, S4, failover(scope_ids=[]), failover(scope_ids=["10.1.0.0", "10.4.0.0"], **HA2)],
+        {"ha": [], "ha2": ["10.1.0.0", "10.4.0.0"]},
+    )
+
+
+def test_put_back_when_another_scope_of_the_releaser_was_deleted(client, fake):
+    failed_once_then_converges(
+        client,
+        fake,
+        [scope(), S2, S4, failover(scope_ids=["10.1.0.0", "10.2.0.0"]), failover(scope_ids=["10.4.0.0"], **HA2)],
+        [scope(), S4, failover(scope_ids=[]), failover(scope_ids=["10.1.0.0", "10.4.0.0"], **HA2)],
+        {"ha": [], "ha2": ["10.1.0.0", "10.4.0.0"]},
+    )
+    assert "10.2.0.0" not in fake.scopes
+
+
+def test_put_back_with_one_releaser_and_two_takers(client, fake):
+    ha3 = dict(name="HA3", partner_server="dhcp4.x")
+    failed_once_then_converges(
+        client,
+        fake,
+        [
+            scope(),
+            S2,
+            S4,
+            S5,
+            failover(scope_ids=["10.1.0.0", "10.2.0.0"]),
+            failover(scope_ids=["10.4.0.0"], **HA2),
+            failover(scope_ids=["10.5.0.0"], **ha3),
+        ],
+        [
+            scope(),
+            S2,
+            S4,
+            S5,
+            failover(scope_ids=[]),
+            failover(scope_ids=["10.1.0.0", "10.4.0.0"], **HA2),
+            failover(scope_ids=["10.2.0.0", "10.5.0.0"], **ha3),
+        ],
+        {"ha": [], "ha2": ["10.1.0.0", "10.4.0.0"], "ha3": ["10.2.0.0", "10.5.0.0"]},
+    )
+
+
+def test_put_back_does_not_leave_other_deletes_waiting(client, fake):
+    before = [
+        scope(),
+        S2,
+        S3,
+        S4,
+        failover(scope_ids=["10.1.0.0", "10.2.0.0"]),
+        failover(scope_ids=["10.4.0.0"], **HA2),
+    ]
+    moved = [scope(), S2, S4, failover(scope_ids=["10.2.0.0"], max_client_lead_time=7200)]
+    moved.append(failover(scope_ids=["10.1.0.0", "10.4.0.0"], **HA2))
+    failed_once_then_converges(client, fake, before, moved, {"ha": ["10.2.0.0"], "ha2": ["10.1.0.0", "10.4.0.0"]})
+    assert "10.3.0.0" not in fake.scopes
+
+
+def test_lost_connection_on_the_taker_says_where_the_scope_is(client, fake):
+    from netbox_windows_dhcp_plugin.windows.runner import RunnerError
+
+    managed = pushed(client, [scope(), S4, failover(scope_ids=["10.1.0.0"]), failover(scope_ids=["10.4.0.0"], **HA2)])
+    moved = [scope(), S4, failover(scope_ids=[]), failover(scope_ids=["10.1.0.0", "10.4.0.0"], **HA2)]
+    p = push.plan(moved, windows_records(client), managed)
+
+    class Writer(WindowsWriter):
+        def apply(self, change):
+            if change.key == "ha2":
+                raise RunnerError("connection lost")
+            super().apply(change)
+
+    result = push.execute(p, Writer(client))
+    assert result.aborted
+    ((_, error),) = result.failed
+    assert "10.1.0.0" in error and "in no failover relationship now, and the next push adds them to HA2" in error
+    state = {**managed, **result.upserts}
+    push_until_done(client, moved, state, limit=1)
+    assert sorted(fake.failovers["ha2"]["scope_ids"]) == ["10.1.0.0", "10.4.0.0"]
+
+
+def test_values_under_a_policy_refused_only_for_its_order_are_still_written(client, fake):
+    old = option("10.1.0.0", 3, ["10.1.0.1"], policy="Printers")
+    managed = pushed(client, [scope(), policy(), old])
+    # The policy is on Windows already: refused for its number only, so its new value is created as usual and the old
+    # one goes, never leaving the policy without either.
+    source = [scope(), policy(processing_order=9), option("10.1.0.0", 6, ["10.1.0.1"], policy="Printers")]
+    p = push.plan(source, windows_records(client), managed)
+    assert [(c.action, c.key) for c in p.changes] == [
+        ("delete", "10.1.0.0/3;policy=printers"),
+        ("create", "10.1.0.0/6;policy=printers"),
+    ]
+    result = push.execute(p, WindowsWriter(client))
+    assert not result.failed
+    assert {k[0] for k in fake.options if "printers" in str(k).lower()} == {6}

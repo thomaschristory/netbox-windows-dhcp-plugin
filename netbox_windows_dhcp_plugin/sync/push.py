@@ -777,7 +777,9 @@ def _pause_deletes(plan: Plan, changes: list[Change], refusals: set[Key]) -> lis
         out.append(c)
     index = _PausedIndex(paused)
     final = []
-    late = {(s.change.kind, s.change.key) for s in plan.skipped if s.change.action != DELETE and not s.waiting}
+    # Objects refused as creates (a new policy whose number does not fit): nothing can be written under them. A refused
+    # update's object is on Windows already, so what hangs off it can still be written.
+    late = {(s.change.kind, s.change.key) for s in plan.skipped if s.change.action == CREATE and not s.waiting}
     waiting: set[Key] = set()  # creates and updates held back here; what hangs off them waits with them
     for c in out:
         if c.action == DELETE:
@@ -1245,9 +1247,19 @@ def _scopes_in_other_relationships(changes: list[Change], target: Mapping[Key, R
             plan.skipped.append(Skip(c, refused[c.key]))
             continue
         out.append(c)
-    # Relationships letting scopes go come before the other relationship creates and updates, in place.
+    # Each relationship comes after the ones whose release it needs (a chain of moves, whatever the names), in the
+    # places the relationship creates and updates already hold. Cycles were refused above.
     slots = [i for i, c in enumerate(out) if c.kind == "failover" and c.action != DELETE]
-    ordered = sorted((out[i] for i in slots), key=lambda c: not (c.action == UPDATE and released.get(c.key)))
+    pending = [out[i] for i in slots]
+    ordered: list[Change] = []
+    done: set[str] = set()
+    while pending:
+        ready = [c for c in pending if not (deps.get(c.key, set()) & {p.key for p in pending}) - done]
+        if not ready:  # cannot happen once cycles are refused; keep the rest as they are
+            ready = pending
+        ordered.extend(ready)
+        done.update(c.key for c in ready)
+        pending = [c for c in pending if c.key not in done]
     for i, c in zip(slots, ordered, strict=True):
         out[i] = c
     return out
@@ -1468,12 +1480,14 @@ def execute(plan: Plan, writer: Any) -> Result:
     # Scopes whose delete comes later in the plan, and those refused ahead of time because they still have leases.
     pending = {c.key for c in plan.changes if c.action == DELETE and c.kind == "scope"}
     refused: dict[str, str] = {}
-    released: set[str] = set()  # relationships whose update ran in this push
+    released: dict[str, Change] = {}  # relationships whose update ran in this push, as written
 
-    def put_back(change: Change, entries: list[tuple[Change, str]]) -> None:
+    def put_back(change: Change, entries: list[tuple[Change, str]], usable: bool = True) -> None:
         """
         A relationship taking scopes another one let go in this push failed: put the scopes back where they were, so
-        they do not end up in no relationship at all (best effort; the message says how it went).
+        they do not end up in no relationship at all (best effort; the message says how it went). Without a usable
+        connection (lost, or the push stopped on an unexpected error) nothing more is sent: the message says where
+        the scopes are.
         """
         if change.kind != "failover" or not entries or entries[-1][0] is not change:
             return
@@ -1481,16 +1495,33 @@ def execute(plan: Plan, writer: Any) -> Result:
         for releaser, name, scope_id in plan.moves.get(change.key, []):
             if releaser in released:
                 back[releaser, name].append(scope_id)
+        taker = (change.after or {}).get("name") or change.key
         notes = []
         for (releaser, name), scope_ids in back.items():
+            scopes = ", ".join(scope_ids)
             try:
+                if not usable:
+                    raise RuntimeError("the push stopped before it could")
                 writer.restore_failover_scopes(name, scope_ids)
             except Exception as exc:  # noqa: BLE001 - reported with the failure it follows
-                notes.append(f"putting scope(s) {', '.join(scope_ids)} back into failover {name} failed too: {exc}")
+                notes.append(
+                    f"putting scope(s) {scopes} back into failover {name} failed too ({exc}): they are in no failover "
+                    f"relationship now, and the next push adds them to {taker}"
+                )
                 continue
-            # Windows has the relationship as before again: keep the fingerprint recorded before this push.
-            result.upserts.pop(("failover", releaser), None)
-            notes.append(f"scope(s) {', '.join(scope_ids)} put back into failover {name}")
+            # Record the relationship as Windows now holds it: as this push wrote it, plus the scopes put back. Its
+            # other changes stay written, and the next push finds it in step and tries the move again.
+            written = released[releaser]
+            after = {**(written.after or {})}
+            after["scope_ids"] = windows_scope_ids([*(after.get("scope_ids") or []), *scope_ids])
+            again = Change(written.action, written.kind, written.key, written.before, after)
+            released[releaser] = again
+            rkey = ("failover", releaser)
+            if rkey in plan.protected:
+                result.upserts[rkey] = _fingerprint_without(again, plan.protected[rkey])
+            else:
+                result.upserts[rkey] = fingerprint(Record(again.kind, again.key, _as_on_windows(again)))
+            notes.append(f"scope(s) {scopes} put back into failover {name}")
         if notes:
             entries[-1] = (change, f"{entries[-1][1]}; {'; '.join(notes)}")
 
@@ -1499,6 +1530,7 @@ def execute(plan: Plan, writer: Any) -> Result:
         key = (change.kind, change.key)
         if result.aborted:
             result.skipped.append((change, f"not attempted: {stopped}"))
+            put_back(change, result.skipped, usable=False)
             continue
         if change.action == DELETE and change.kind == "scope":
             pending.discard(change.key)
@@ -1533,6 +1565,7 @@ def execute(plan: Plan, writer: Any) -> Result:
             result.maybe_written.append(change)
             result.aborted, stopped = True, "the connection to the server failed"
             block(change)
+            put_back(change, result.failed, usable=False)
             continue
         except (PushRefused, WindowsLayerError, ValueError) as exc:
             result.failed.append((change, str(exc)))
@@ -1555,10 +1588,11 @@ def execute(plan: Plan, writer: Any) -> Result:
             result.maybe_written.append(change)
             result.aborted, stopped = True, "the push stopped on an unexpected error"
             block(change)
+            put_back(change, result.failed, usable=False)
             continue
         result.applied.append(change)
         if change.kind == "failover" and change.action == UPDATE:
-            released.add(change.key)
+            released[change.key] = change
         if change.action == DELETE:
             result.removals.add(key)
             result.upserts.pop(key, None)

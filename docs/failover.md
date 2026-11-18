@@ -264,10 +264,13 @@ profile to turn authentication on or to send a new secret.
 
 Changing the partner is refused when the push is planned (the dry run shows it): Windows only allows it by removing the
 relationship. A scope moved from one relationship to another in NetBox moves in one push: the relationship letting it go
-is updated first. Two relationships swapping scopes are refused: move one scope at a time (remove it from one
-relationship, push, then add it to the other). If the relationship taking the scope fails at Windows (its partner cannot
-be reached, say), the push puts the scope back into the relationship it left and says so in the error; the next push
-tries again.
+is updated first (in a chain of moves, each relationship after the one it takes from, whatever the names). Two
+relationships swapping scopes are refused: move one scope at a time (remove it from one relationship, push, then add it
+to the other). Until then the refusal holds back every IPv4 delete of the server, and the other moves wait with it. If
+the relationship taking the scope fails at Windows (its partner cannot be reached, say), the push puts the scope back
+into the relationship it left and says so in the error; the next push tries again. If the connection to the server is
+lost at that moment (or the push stops on an unexpected error), nothing more is sent: the error says the scope is in no
+failover relationship now, and the next push adds it to the relationship that should take it.
 
 A relationship can be left with no scopes: Windows keeps it, empty, on both partners.
 

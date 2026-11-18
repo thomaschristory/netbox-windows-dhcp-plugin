@@ -280,7 +280,12 @@ relationships, MAC filters, list switches.
   (`_failover_update_problem`), so such a taker never lets the other relationship release a scope for nothing. When the
   taker fails at Windows anyway (partner unreachable, secret missing, profile refusing the partner), `execute` puts the
   scopes back into the relationship that let them go (`WindowsWriter.restore_failover_scopes`, best effort, said in the
-  error) and keeps its old fingerprint, so the next push tries the move again.
+  error) and records the relationship as Windows now holds it (as this push wrote it, plus the scopes put back), so
+  its other changes stay recorded and the next push finds it in step and tries the move again. Without a usable
+  connection (lost, or the push stopped on an unexpected error) nothing more is sent; the error says the scopes are in
+  no relationship and the next push adds them to the taker. Relationship creates and updates are ordered by the moves
+  (a topological sort of who takes from whom), not by name. A child of a policy refused as a create waits with it; a
+  policy already on Windows refused for its order does not stop what hangs off it.
 - **Lab results (Windows Server 2025).** Range with the network or broadcast address refused; overlapping and nested
   exclusions refused (InvalidData); duplicate IPv4 client refused (ResourceExists); same DHCPv6 DUID and IAID refused,
   another IAID accepted; two scopes sharing addresses refused (ResourceExists, a /25 inside a /24). The fake server
