@@ -19,6 +19,7 @@ Safety rules, because a push can delete on a production DHCP server:
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import ipaddress
 import itertools
@@ -46,6 +47,7 @@ from .windows_state import (
     policy_key,
     records_equal,
     reservation6_key,
+    same_host,
     scope6_key,
     with_option_types,
 )
@@ -130,6 +132,8 @@ class Plan:
     # Policies refused for a processing order that would not fit even without this push's deletes: they count for
     # the delete pause (see _order_level), unlike those the deletes alone push past the end.
     order_refusals: set[Key] = field(default_factory=set)
+    # Scopes moved from one relationship to another in this push: taker key -> [(releaser key, releaser name, scope)].
+    moves: dict[str, list[tuple[str, str, str]]] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -328,6 +332,12 @@ def _unpushable(
             return "the partner server has no Windows server (host) in NetBox; add one"
         if f["mode"] == "hotstandby" and not f.get("server_role"):
             return "a hot standby relationship needs the primary server's role (active or standby); set it in NetBox"
+        if current is not None:
+            # What the writer would refuse on an update (windows_writer._apply_failover), refused here so that it
+            # counts for the delete pause and never lets another relationship release a scope for nothing.
+            reason = _failover_update_problem(f, current.fields)
+            if reason:
+                return reason
     if record.kind == "scope6" and f.get("prefix_length") != V6_PREFIX_LENGTH:
         return f"Windows DHCPv6 scopes are /{V6_PREFIX_LENGTH} prefixes; this scope is /{f.get('prefix_length')}"
     if record.kind == "reservation6":
@@ -357,6 +367,24 @@ def _unpushable(
                 f"Windows has no definition for {what}; add an option definition for it in NetBox, or create it on "
                 "Windows"
             )
+    return None
+
+
+def _failover_update_problem(f: Mapping[str, Any], current: Mapping[str, Any]) -> str | None:
+    """Why Windows cannot turn the relationship it has (``current``) into this one in place, or None."""
+    if current.get("partner_server") and not same_host(str(current["partner_server"]), str(f["partner_server"])):
+        return (
+            "the partner server cannot change on Windows; delete the relationship in NetBox and push, then create it "
+            "again with the new partner"
+        )
+    hot, was_hot = f.get("mode") == "hotstandby", current.get("mode") == "hotstandby"
+    if hot and was_hot and (current.get("server_role") or "") != (f.get("server_role") or ""):
+        return (
+            "Windows cannot change a hot standby server's role (active or standby) in place; delete the relationship "
+            "in NetBox and push, then create it again with the new role"
+        )
+    if current.get("auth") and f.get("auth") is False:
+        return "Windows cannot turn message authentication off through this cmdlet; turn it off by hand on Windows"
     return None
 
 
@@ -718,8 +746,6 @@ def _pause_deletes(plan: Plan, changes: list[Change], refusals: set[Key]) -> lis
         if fam is not None and key not in blocking.setdefault(fam, []):
             blocking[fam].append(key)
     blocking = {fam: keys for fam, keys in blocking.items() if keys}
-    if not blocking:
-        return changes
 
     def reason(fam: str) -> str:
         keys = blocking[fam]
@@ -749,22 +775,28 @@ def _pause_deletes(plan: Plan, changes: list[Change], refusals: set[Key]) -> lis
             paused[key] = c
             continue
         out.append(c)
-    if not paused:
-        return out
     index = _PausedIndex(paused)
     final = []
+    late = {(s.change.kind, s.change.key) for s in plan.skipped if s.change.action != DELETE and not s.waiting}
+    waiting: set[Key] = set()  # creates and updates held back here; what hangs off them waits with them
     for c in out:
-        blocker = index.blocker(c) if c.action != DELETE else None
-        if blocker is None:
+        if c.action == DELETE:
             final.append(c)
             continue
-        plan.skipped.append(
-            Skip(
-                c,
-                f"waiting: needs {blocker[0]} {blocker[1]} gone from Windows first, and that delete waits",
-                waiting=True,
-            )
-        )
+        if (blocker := index.blocker(c)) is not None:
+            why = f"waiting: needs {blocker[0]} {blocker[1]} gone from Windows first, and that delete waits"
+        elif (parent := next((p for p in parents(c.kind, c.after or {}) if p in waiting), None)) is not None:
+            why = f"waiting: needs {parent[0]} {parent[1]} first, which waits"
+        elif (parent := next((p for p in parents(c.kind, c.after or {}) if p in late), None)) is not None:
+            # A parent refused after the first pass (a policy whose processing order does not fit): not a wait.
+            late.add((c.kind, c.key))
+            plan.skipped.append(Skip(c, f"waits for {parent[0]} {parent[1]}, which cannot be pushed"))
+            continue
+        else:
+            final.append(c)
+            continue
+        waiting.add((c.kind, c.key))
+        plan.skipped.append(Skip(c, why, waiting=True))
     return final
 
 
@@ -772,7 +804,9 @@ class _PausedIndex:
     """The paused deletes and relationship updates, looked up by what a create or update could clash with."""
 
     def __init__(self, paused: Mapping[Key, Change]) -> None:
-        self.scopes: list[tuple[Key, ipaddress.IPv4Network]] = []
+        # (first address, last address, key), in address order: the scopes on Windows never share addresses, so the
+        # one starting last at or before a new scope's end is the only one that can overlap it.
+        self.scopes: list[tuple[int, int, Key]] = []
         self.exclusions: defaultdict[str, list[tuple[Key, int, int]]] = defaultdict(list)
         self.clients: dict[tuple[str, ...], Key] = {}
         self.held_scopes: dict[str, Key] = {}
@@ -785,7 +819,7 @@ class _PausedIndex:
             elif c.action != DELETE:
                 continue
             elif c.kind == "scope" and (n := _scope_network(Record("scope", c.key, before))) is not None:
-                self.scopes.append((key, n))
+                self.scopes.append((int(n.network_address), int(n.broadcast_address), key))
             elif c.kind == "exclusion":
                 s, e = _ipv4(before.get("start_range")), _ipv4(before.get("end_range"))
                 if s is not None and e is not None:
@@ -795,13 +829,21 @@ class _PausedIndex:
                 if (client := _client_of(record)) is not None:
                     self.clients.setdefault((c.kind, _scope_of(record), *client), key)
 
+        self.scopes.sort()
+        self.starts = [first for first, _, _ in self.scopes]
+
     def blocker(self, change: Change) -> Key | None:
         """The paused change ``change`` would clash with on Windows, or None."""
         f = change.after or {}
         record = Record(change.kind, change.key, f)
         if change.kind == "scope" and change.action == CREATE:
             mine = _scope_network(record)
-            return next((k for k, n in self.scopes if mine is not None and n.overlaps(mine)), None)
+            if mine is None:
+                return None
+            i = bisect.bisect_right(self.starts, int(mine.broadcast_address)) - 1
+            if i >= 0 and self.scopes[i][1] >= int(mine.network_address):
+                return self.scopes[i][2]
+            return None
         if change.kind == "exclusion":
             s, e = _ipv4(f.get("start_range")), _ipv4(f.get("end_range"))
             if s is None or e is None:
@@ -1139,50 +1181,90 @@ def _scopes_in_other_relationships(changes: list[Change], target: Mapping[Key, R
     Windows puts a scope in one failover relationship at most, and refuses to add it to a second one. A relationship
     NetBox does not know about (made by hand, or renamed on Windows) would make every push fail on it: leave such a
     create or update out with a reason instead, unless this push deletes the other relationship first, or updates it
-    without that scope (a scope moved from one relationship to another in NetBox): then the change that lets the scope
-    go is put before the ones taking it.
+    without that scope (a simple move from one relationship to another in NetBox): then the change that lets the scope
+    go is put before the ones taking it, and ``plan.moves`` records the move so a taker failing at Windows can put the
+    scope back (see execute).
+
+    Only a release this push really makes counts: a refused update releases nothing, so its takers are refused too.
+    Moves that go round in a circle (two relationships swapping scopes) cannot be done one change at a time, since each
+    taker needs the other's release first; they are refused, asking for one scope at a time.
     """
     deleted = {c.key for c in changes if c.kind == "failover" and c.action == DELETE}
-    released = {
-        c.key: set((c.before or {}).get("scope_ids") or []) - set((c.after or {}).get("scope_ids") or [])
-        for c in changes
-        if c.kind == "failover" and c.action == UPDATE
-    }
-    holder = {}
+    holder: dict[str, tuple[str, str]] = {}  # scope ID -> (name, key) of the relationship holding it on Windows
     for (kind, key), record in target.items():
         if kind == "failover" and key not in deleted:
             for scope_id in record.fields.get("scope_ids") or []:
-                if scope_id not in released.get(key, ()):
-                    holder[scope_id] = record.fields.get("name") or key
+                holder[scope_id] = (record.fields.get("name") or key, key)
+    upserts = [c for c in changes if c.kind == "failover" and c.action != DELETE]
+    refused: dict[str, str] = {}
+    while True:
+        released = {
+            c.key: set((c.before or {}).get("scope_ids") or []) - set((c.after or {}).get("scope_ids") or [])
+            for c in upserts
+            if c.action == UPDATE and c.key not in refused
+        }
+        deps: defaultdict[str, set[str]] = defaultdict(set)  # taker -> relationships whose release it needs
+        moves: defaultdict[str, list[tuple[str, str, str]]] = defaultdict(list)
+        grown = False
+        for c in upserts:
+            if c.key in refused:
+                continue
+            new = [
+                s
+                for s in (c.after or {}).get("scope_ids") or []
+                if s not in set((c.before or {}).get("scope_ids") or []) and s in holder and holder[s][1] != c.key
+            ]
+            taken = [s for s in new if s not in released.get(holder[s][1], ())]
+            if taken:
+                others = ", ".join(sorted({holder[s][0] for s in taken}))
+                refused[c.key] = (
+                    f"scope(s) {', '.join(taken)} are already in failover relationship {others} on Windows, which a "
+                    "scope can only be in once; import that relationship into NetBox, or remove the scopes from it "
+                    "on Windows"
+                )
+                grown = True
+                continue
+            for s in new:
+                deps[c.key].add(holder[s][1])
+                moves[c.key].append((holder[s][1], holder[s][0], s))
+        for key in list(deps):
+            if _in_cycle(key, deps):
+                names = sorted({key, *deps[key]})
+                refused[key] = (
+                    f"scopes move both ways between failover relationships {', '.join(names)}; Windows holds a scope "
+                    "in one relationship at a time, so move one scope at a time: remove it from one relationship in "
+                    "NetBox, push, then add it to the other"
+                )
+                grown = True
+        if not grown:
+            break
+    plan.moves = {k: v for k, v in moves.items() if v}
     out = []
     for c in changes:
-        if c.kind != "failover" or c.action == DELETE:
-            out.append(c)
+        if c.kind == "failover" and c.action != DELETE and c.key in refused:
+            plan.skipped.append(Skip(c, refused[c.key]))
             continue
-        before = set((c.before or {}).get("scope_ids") or [])
-        taken = [
-            s
-            for s in (c.after or {}).get("scope_ids") or []
-            if s not in before and s in holder and holder[s].lower() != c.key
-        ]
-        if not taken:
-            out.append(c)
-            continue
-        others = ", ".join(sorted({holder[s] for s in taken}))
-        plan.skipped.append(
-            Skip(
-                c,
-                f"scope(s) {', '.join(taken)} are already in failover relationship {others} on Windows, which a "
-                "scope can only be in once; import that relationship into NetBox, or remove the scopes from it on "
-                "Windows",
-            )
-        )
+        out.append(c)
     # Relationships letting scopes go come before the other relationship creates and updates, in place.
     slots = [i for i, c in enumerate(out) if c.kind == "failover" and c.action != DELETE]
     ordered = sorted((out[i] for i in slots), key=lambda c: not (c.action == UPDATE and released.get(c.key)))
     for i, c in zip(slots, ordered, strict=True):
         out[i] = c
     return out
+
+
+def _in_cycle(start: str, deps: Mapping[str, set[str]]) -> bool:
+    """Whether ``start`` can reach itself through ``deps``."""
+    seen: set[str] = set()
+    stack = list(deps.get(start, ()))
+    while stack:
+        node = stack.pop()
+        if node == start:
+            return True
+        if node not in seen:
+            seen.add(node)
+            stack.extend(deps.get(node, ()))
+    return False
 
 
 def _membership_updates_first(changes: list[Change], target: Mapping[Key, Record]) -> list[Change]:
@@ -1280,8 +1362,13 @@ def _order_level(
     # refuses a number past the end) the way Add does (lab, Windows Server 2022).
     current = [r.key for r in windows if r.key not in deleted]
     # How many of the level's policies this push deletes: a number that only fails to fit because of them is the
-    # deletes' doing, not the policy's (see _pause_deletes).
+    # deletes' doing, not the policy's (see _pause_deletes). A number past the count NetBox itself holds at the level
+    # can never fit, deletes or not.
     removed = len(windows) - len(current)
+
+    def never_fits(order: int, room: int) -> bool:
+        return order > room + removed or order > len(wanted)
+
     where = f"scope {level}" if level else "the server level"
     out: list[Change] = []
     restored: list[str] = []  # policies NetBox did not change, set back after an insert moved them down
@@ -1303,7 +1390,7 @@ def _order_level(
                 restored.append(key)
             if order > len(current):
                 stuck.append(Skip(change, _past_the_end(order, where, len(current))))
-                if order > len(current) + removed:
+                if never_fits(order, len(current)):
                     plan.order_refusals.add(("policy", key))
                 continue
             current.remove(key)
@@ -1315,7 +1402,7 @@ def _order_level(
         elif order > len(current) + 1:
             # A new policy that does not fit is simply not created: the plan carries on as if it did not exist.
             plan.skipped.append(Skip(change, _past_the_end(order, where, len(current) + 1)))
-            if order > len(current) + 1 + removed:
+            if never_fits(order, len(current) + 1):
                 plan.order_refusals.add(("policy", key))
             continue
         else:
@@ -1381,6 +1468,31 @@ def execute(plan: Plan, writer: Any) -> Result:
     # Scopes whose delete comes later in the plan, and those refused ahead of time because they still have leases.
     pending = {c.key for c in plan.changes if c.action == DELETE and c.kind == "scope"}
     refused: dict[str, str] = {}
+    released: set[str] = set()  # relationships whose update ran in this push
+
+    def put_back(change: Change, entries: list[tuple[Change, str]]) -> None:
+        """
+        A relationship taking scopes another one let go in this push failed: put the scopes back where they were, so
+        they do not end up in no relationship at all (best effort; the message says how it went).
+        """
+        if change.kind != "failover" or not entries or entries[-1][0] is not change:
+            return
+        back: defaultdict[tuple[str, str], list[str]] = defaultdict(list)
+        for releaser, name, scope_id in plan.moves.get(change.key, []):
+            if releaser in released:
+                back[releaser, name].append(scope_id)
+        notes = []
+        for (releaser, name), scope_ids in back.items():
+            try:
+                writer.restore_failover_scopes(name, scope_ids)
+            except Exception as exc:  # noqa: BLE001 - reported with the failure it follows
+                notes.append(f"putting scope(s) {', '.join(scope_ids)} back into failover {name} failed too: {exc}")
+                continue
+            # Windows has the relationship as before again: keep the fingerprint recorded before this push.
+            result.upserts.pop(("failover", releaser), None)
+            notes.append(f"scope(s) {', '.join(scope_ids)} put back into failover {name}")
+        if notes:
+            entries[-1] = (change, f"{entries[-1][1]}; {'; '.join(notes)}")
 
     stopped = ""
     for change in plan.changes:
@@ -1403,6 +1515,7 @@ def execute(plan: Plan, writer: Any) -> Result:
             verb = "kept" if change.action == DELETE else "not created"
             result.skipped.append((change, f"not attempted: {kind} {name} was {verb}"))
             block(change)
+            put_back(change, result.skipped)
             continue
         try:
             if change.action == UPDATE and change.kind == "failover":
@@ -1412,6 +1525,7 @@ def execute(plan: Plan, writer: Any) -> Result:
             if change.action != DELETE:
                 result.failed.append((change, "not found on Windows"))
                 block(change)
+                put_back(change, result.failed)
                 continue
             # Already gone: the delete is done.
         except RunnerError as exc:
@@ -1427,6 +1541,7 @@ def execute(plan: Plan, writer: Any) -> Result:
             if getattr(exc, "wrote", False) or isinstance(exc, WindowsLayerError):
                 result.maybe_written.append(change)
             block(change)
+            put_back(change, result.failed)
             continue
         except Exception as exc:
             # A bug, or an answer from Windows nothing here expected. Stop, but keep the record of what was already
@@ -1442,6 +1557,8 @@ def execute(plan: Plan, writer: Any) -> Result:
             block(change)
             continue
         result.applied.append(change)
+        if change.kind == "failover" and change.action == UPDATE:
+            released.add(change.key)
         if change.action == DELETE:
             result.removals.add(key)
             result.upserts.pop(key, None)

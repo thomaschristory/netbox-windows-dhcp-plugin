@@ -197,7 +197,8 @@ If a replication fails, the push is marked failed and the next push to the prima
   scopes are left pending. A failed change to the relationship itself triggers no replication.
 - A push to the partner server leaves the relationship's scopes alone: they belong to the primary.
 - **Primary server role** is set when the relationship is created. Windows cannot change it afterwards
-  (`Set-DhcpServerv4Failover` has no role parameter), so a push that changes it in NetBox is refused. To change it,
+  (`Set-DhcpServerv4Failover` has no role parameter), so a push that changes it in NetBox is refused (in the dry
+  run too). To change it,
   delete the relationship in NetBox and let that push finish, then create it again with the new role: a delete and
   a create of the same name in one push (or one branch merge) count as a change, and are refused. Switching a
   relationship from load balance to hot standby lets Windows pick the roles; if it picks another role than NetBox
@@ -261,8 +262,12 @@ profile to turn authentication on or to send a new secret.
   is refused before anything changes, and a later push deletes it once the leases are gone.
 - Removing a relationship removes its scopes from the partner, as Windows documents.
 
-Changing the partner is refused: Windows only allows it by removing the
-relationship.
+Changing the partner is refused when the push is planned (the dry run shows it): Windows only allows it by removing the
+relationship. A scope moved from one relationship to another in NetBox moves in one push: the relationship letting it go
+is updated first. Two relationships swapping scopes are refused: move one scope at a time (remove it from one
+relationship, push, then add it to the other). If the relationship taking the scope fails at Windows (its partner cannot
+be reached, say), the push puts the scope back into the relationship it left and says so in the error; the next push
+tries again.
 
 A relationship can be left with no scopes: Windows keeps it, empty, on both partners.
 

@@ -254,21 +254,31 @@ relationships, MAC filters, list switches.
   refused for what they are: plan reasons (a scope mask change included, since Set-DhcpServerv4Scope cannot change it),
   their children (`_waiting_children`, transitively over `parents()`), a scope held by a relationship this push does not
   release (`_scopes_in_other_relationships`), and a policy whose processing order would not fit even if the push deleted
-  nothing (`Plan.order_refusals`). A policy that only falls past the end because the planned deletes close the gaps
-  before it is left out of the blocking set: pausing those deletes would keep it refused for good. Changes that still go
+  nothing, or that is past the number of policies NetBox holds at the level (`Plan.order_refusals`). Only a
+  policy that falls past the end because the planned deletes close the gaps before it, while its number would fit
+  both without those deletes and among NetBox's own policies, is left out of the blocking set: pausing those
+  deletes would keep it refused for good. Changes that still go
   ahead in another form (`_protect_memberships`) do not block either. Every delete of a blocked family, and every
   failover update that drops scopes, becomes a `not_pushed` entry (`waiting: ...`, first three blockers named, then "and
   N more"); a delete outside the families that still holds a paused child waits with it; a create that would clash on
   Windows with a waiting delete (the same client's reservation in the scope, an exclusion or a scope over its addresses,
-  a relationship taking a scope a waiting relationship holds) waits too, instead of failing at Windows on every push.
+  a relationship taking a scope a waiting relationship holds) waits too, instead of failing at Windows on every push,
+  and so does whatever would be created under a waiting create. The job log's last line counts what waits.
   Waiting entries come first in `not_pushed` and the job log, and `waiting_count` counts them whatever the 1000-entry
   cap. Paused objects stay in `SyncState`, so the first push with nothing refused deletes them; nothing churns (a second
   plan is empty). This replaced an address-matching heuristic (`_replaced`), which missed a DHCPv6 prefix move, a move
   onto a destination refused for another reason, and a /23 split.
-- **Failover moves (#108).** A scope moved from one relationship to another in NetBox: the relationship letting it go
-  releases it in the same push (its update runs before the other relationship creates and updates), so the taker is not
-  refused and the move converges in one push. A scope held by a relationship NetBox does not manage, or one this push
-  keeps, still refuses the taker and blocks the IPv4 deletes.
+- **Failover moves (#108).** A simple move of a scope from one relationship to another in NetBox: the relationship
+  letting it go releases it in the same push (its update runs before the other relationship creates and updates), so the
+  taker is not refused and the move converges in one push. Only an update that is not refused releases anything
+  (`_scopes_in_other_relationships` repeats until nothing more is refused). Moves that go round in a circle (two
+  relationships swapping scopes) are refused, asking for one scope at a time; a scope held by a relationship NetBox does
+  not manage, or one this push keeps, still refuses the taker. Both block the IPv4 deletes. What the writer refuses on a
+  relationship update (a new partner, a new hot standby role, turning authentication off) is refused in the plan
+  (`_failover_update_problem`), so such a taker never lets the other relationship release a scope for nothing. When the
+  taker fails at Windows anyway (partner unreachable, secret missing, profile refusing the partner), `execute` puts the
+  scopes back into the relationship that let them go (`WindowsWriter.restore_failover_scopes`, best effort, said in the
+  error) and keeps its old fingerprint, so the next push tries the move again.
 - **Lab results (Windows Server 2025).** Range with the network or broadcast address refused; overlapping and nested
   exclusions refused (InvalidData); duplicate IPv4 client refused (ResourceExists); same DHCPv6 DUID and IAID refused,
   another IAID accepted; two scopes sharing addresses refused (ResourceExists, a /25 inside a /24). The fake server
@@ -314,7 +324,8 @@ relationships, MAC filters, list switches.
   refuses a relationship already held with the other server as primary. The shared secret comes from the
   credential profile in `shared_secret_profile` (key `secret`), is checked against both partners' hosts when saved
   and before each push, and only travels from the profile to the cmdlet; records only say whether authentication is
-  on, so a rotated secret is not noticed. Changing the partner or turning authentication off is refused. A scope a
+  on, so a rotated secret is not noticed. Changing the partner or turning authentication off is refused (when the
+  push is planned). A scope a
   managed relationship no longer lists may be deleted: it leaves the relationship first in the same push (after a
   lease check, so a refused delete changes nothing; a scope whose delete fails stays in the relationship). A scope
   only leaves a relationship that NetBox manages and that is unchanged on Windows since the last push, and never

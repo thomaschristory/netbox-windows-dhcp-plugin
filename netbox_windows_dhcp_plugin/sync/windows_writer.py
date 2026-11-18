@@ -437,6 +437,10 @@ class WindowsWriter:
             )
         return secret
 
+    def restore_failover_scopes(self, name: str, scope_ids: list[str]) -> None:
+        """Put scopes back into a relationship this push took them out of (the push's rollback of a failed move)."""
+        self.client.add_failover_scopes(name, sorted(scope_ids))
+
     def _apply_failover(self, change: Change) -> None:
         if change.action == DELETE:
             # Windows also removes the relationship's scopes from the partner server, as the cmdlet documents.

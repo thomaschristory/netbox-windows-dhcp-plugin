@@ -244,7 +244,8 @@ exclusion range over the old one's addresses, a renamed failover relationship). 
 left out still go ahead. Each waiting change is listed first under `not_pushed` (and counted in `waiting_count`) with a
 reason starting `waiting:` that names up to three of the objects holding it up. The objects stay managed, so the first
 push with nothing left out in their family deletes them. A policy refused only because the planned deletes close the
-gaps before its processing order does not hold anything up.
+gaps before its processing order (while the number would fit both without those deletes and among the policies
+NetBox holds at that level) does not hold anything up. The job log's last line counts what waits.
 
 **Deletes that could lose data:**
 
@@ -289,7 +290,13 @@ gaps before its processing order does not hold anything up.
 - a superscope or new failover relationship without scopes, a failover relationship whose partner has no Windows server
   in NetBox, or a hot standby relationship without the primary server's role;
 - a failover relationship that would take a scope Windows already holds in another relationship NetBox does not
-  manage (a scope is in one relationship at most): import that relationship, or remove the scope from it on Windows;
+  manage, or one this push does not let go (a scope is in one relationship at most): import that relationship, or
+  remove the scope from it on Windows. A simple move between two relationships NetBox manages goes through in one
+  push; scopes swapped between relationships are refused (move one scope at a time). If the relationship taking the
+  scope then fails at Windows, the push puts the scope back where it was and says so;
+- a failover relationship whose partner or hot standby role changes, or whose authentication would be turned off:
+  Windows only allows it by deleting the relationship (delete it in NetBox and push, then create it again; see
+  [Failover](failover.md#how-it-syncs));
 - DHCPv6 vendor classes, and a DHCPv6 option value with a policy (Windows has no DHCPv6 policies).
 
 ### Refused while pushing
@@ -299,10 +306,9 @@ ordinary planned updates or deletes. The push refuses the change, goes on with t
 **failed** with the reason in its `errors`.
 
 - Changes Windows only allows by removing the object with everything in it: an option definition's type or array
-  flag, removing a policy condition, a failover relationship's partner. Make them on Windows by hand, then import. (A
-  scope's subnet mask is refused earlier, when the push is planned, see above.)
-- A hot standby relationship's role (active or standby), which Windows only sets when the relationship is created:
-  delete it in NetBox and push, then create it again (see [Failover](failover.md#how-it-syncs)).
+  flag, removing a policy condition. Make them on Windows by hand, then import. (A scope's subnet mask, a failover
+  relationship's partner or hot standby role, and turning its authentication off are refused earlier, when the push
+  is planned, see above.)
 - Policy conditions and contents Windows refuses: a wildcard anywhere but at the start or the end of a condition
   value, and IP ranges (DHCP 20135) or ordinary option values (DHCP 20136) on a policy with an FQDN condition.
 - Creating a failover relationship whose partner is outside the `allowed_hosts` of the primary server's

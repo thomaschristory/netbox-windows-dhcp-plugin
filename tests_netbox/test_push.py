@@ -213,6 +213,17 @@ class PushJobTest(PushTestMixin, TestCase):
             push_log_line("dhcp1", PushOutcome(plan=empty, result=push.Result()), dry_run=False),
             "Push to dhcp1: nothing to change",
         )
+        # Everything held back by the delete pause is not "nothing to change".
+        waits = [push.Skip(change=None, reason="waiting: ...", waiting=True)] * 2
+        paused = SimpleNamespace(changes=[], skipped=[*waits, push.Skip(change=None, reason="refused")])
+        self.assertEqual(
+            push_log_line("dhcp1", PushOutcome(plan=paused, result=push.Result()), dry_run=False),
+            "Push to dhcp1: 2 waiting",
+        )
+        self.assertEqual(
+            push_log_line("dhcp1", PushOutcome(plan=paused), dry_run=True),
+            "Push to dhcp1: would change 0 object(s), 2 waiting",
+        )
         replication = PushOutcome(plan=empty, result=push.Result(), replication_errors=["campus: denied"])
         self.assertEqual(
             push_log_line("dhcp1", replication, dry_run=False), "Push to dhcp1, failover replication failed (1)"

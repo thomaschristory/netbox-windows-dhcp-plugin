@@ -247,7 +247,11 @@ class PushRemainingTest(RemainingObjectsMixin, TestCase):
         # cannot change: every push of the relationship would fail.
         self._run()
         self.fake.failovers["ha"]["partner_server"] = "DHCP-B"
-        self.assertEqual(self._run(DryRunJob).summary["changes"], 1)
+        # Read as a new partner, which the plan refuses (Windows cannot change it): shown in the dry run.
+        dry = self._run(DryRunJob).summary
+        self.assertEqual(dry["changes"], 0)
+        reasons = {(e["kind"], e["key"]): e["reason"] for e in dry["not_pushed"]}
+        self.assertIn("partner server cannot change", reasons["failover", "ha"])
         WindowsServer.objects.filter(pk=self.partner.pk).update(reported_names=["dhcp-b", "dhcp-b.corp.example"])
         run = self._run()
         self.assertEqual(run.status, SyncStatusChoices.COMPLETED, run.error)

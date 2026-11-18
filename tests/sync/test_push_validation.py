@@ -766,3 +766,173 @@ def test_fake_refuses_what_windows_refuses(client):
     with pytest.raises(PSError, match="ResourceExists"):
         client.add_v6_reservation(wc.ReservationV6("2001:db8:1::", "2001:db8:1::11", duid, 7, "b", ""))
     client.add_v6_reservation(wc.ReservationV6("2001:db8:1::", "2001:db8:1::12", duid, 8, "c", ""))
+
+
+# -- final review round -----------------------------------------------------------------------------------------------
+
+S2 = scope_at("10.2.0.0", "255.255.255.0", "10.2.0.10", "10.2.0.200")
+S3 = scope_at("10.3.0.0", "255.255.255.0", "10.3.0.10", "10.3.0.200")
+
+
+def three_policies(scope_id="10.1.0.0"):
+    ranges = (lambda a, b: [[f"10.1.0.{a}", f"10.1.0.{b}"]]) if scope_id else (lambda a, b: [])
+    return [
+        policy(name="A", scope_id=scope_id, processing_order=1, ip_ranges=ranges(100, 105)),
+        policy(name="B", scope_id=scope_id, processing_order=2, ip_ranges=ranges(110, 115)),
+        policy(name="C", scope_id=scope_id, processing_order=3, ip_ranges=ranges(120, 125)),
+    ]
+
+
+@pytest.mark.parametrize("scope_id", ["10.1.0.0", ""])
+def test_policy_renamed_to_an_order_that_can_never_fit_keeps_the_old_one(client, fake, scope_id):
+    a, b, c = three_policies(scope_id)
+    parent = scope_id or "server"
+    managed = pushed(client, [scope(), a, b, c, option(parent, 3, ["10.1.0.1"], policy="A")])
+    # NetBox holds three policies at the level, so order 4 never fits, whatever the deletes.
+    p_new = policy(name="P", scope_id=scope_id, processing_order=4, ip_ranges=a.fields["ip_ranges"])
+    source = [scope(), p_new, b, c, option(parent, 3, ["10.1.0.1"], policy="P")]
+    p = push.plan(source, windows_records(client), managed)
+    assert deletes(p) == []
+    assert {("policy", a.key), ("option", f"{parent}/3;policy=a")} <= waiting(p)
+    assert "waits for policy" in reasons(p)["option", f"{parent}/3;policy=p"]
+    result = push.execute(p, WindowsWriter(client))
+    assert not result.failed and not result.applied
+    assert sorted((v["processing_order"], v["name"]) for v in fake.policies.values()) == [(1, "A"), (2, "B"), (3, "C")]
+
+
+def test_failover_changes_the_writer_refuses_are_refused_in_the_plan(client):
+    managed = pushed(client, [scope(), failover(mode="hotstandby", server_role="active", load_balance_percent=None)])
+    on_windows = windows_records(client)
+    cases = {
+        "partner": failover(mode="hotstandby", server_role="active", load_balance_percent=None, partner_server="x.y"),
+        "role": failover(mode="hotstandby", server_role="standby", load_balance_percent=None),
+    }
+    for name, new in cases.items():
+        reason = reasons(push.plan([scope(), new], on_windows, managed))["failover", "ha"]
+        assert "cannot change" in reason, name
+
+
+def test_scope_move_to_a_relationship_whose_partner_changes_waits(client, fake):
+    managed = pushed(
+        client, [scope(), S2, failover(scope_ids=["10.1.0.0"]), failover(name="HA2", scope_ids=["10.2.0.0"])]
+    )
+    taker = failover(name="HA2", scope_ids=["10.1.0.0", "10.2.0.0"], partner_server="dhcp3.example.com")
+    p = push.plan([scope(), S2, failover(scope_ids=[]), taker], windows_records(client), managed)
+    assert "partner server cannot change" in reasons(p)["failover", "ha2"]
+    assert ("failover", "ha") in {(s.change.kind, s.change.key) for s in p.skipped if s.waiting}
+    push.execute(p, WindowsWriter(client))
+    assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0"]
+
+
+def test_taker_failing_at_windows_puts_the_scope_back(client, fake):
+    from netbox_windows_dhcp_plugin.windows.psscript import PSError
+
+    managed = pushed(client, [scope(), failover(scope_ids=["10.1.0.0"])])
+    moved = [scope(), failover(scope_ids=[]), failover(name="HA2", scope_ids=["10.1.0.0"], partner_server="dhcp3.x")]
+    fake.fail = lambda op, p: (
+        PSError("partner unreachable", "ConnectionError", "", op) if op == "failover.add" else None
+    )
+    p = push.plan(moved, windows_records(client), managed)
+    result = push.execute(p, WindowsWriter(client))
+    ((change, error),) = result.failed
+    assert change.key == "ha2" and "scope(s) 10.1.0.0 put back into failover HA" in error
+    assert fake.failovers["ha"]["scope_ids"] == ["10.1.0.0"]
+    # The relationship is as NetBox last recorded it: no new fingerprint, so it is not taken for a change on Windows.
+    assert ("failover", "ha") not in result.upserts
+    state = {**managed, **result.upserts}
+    assert push.unchanged(state["failover", "ha"], next(r for r in windows_records(client) if r.kind == "failover"))
+    # Once the partner answers, the move goes through.
+    fake.fail = None
+    push_until_done(client, moved, state)
+    assert fake.failovers["ha2"]["scope_ids"] == ["10.1.0.0"]
+
+
+def test_scopes_swapped_between_relationships_are_refused_and_pause(client, fake):
+    before = [
+        scope(),
+        S2,
+        reservation(),
+        failover(scope_ids=["10.1.0.0"]),
+        failover(name="HA2", scope_ids=["10.2.0.0"]),
+    ]
+    managed = pushed(client, before)
+    swapped = [scope(), S2, failover(scope_ids=["10.2.0.0"]), failover(name="HA2", scope_ids=["10.1.0.0"])]
+    p = push.plan(swapped, windows_records(client), managed)
+    for key in ("ha", "ha2"):
+        assert "move one scope at a time" in reasons(p)["failover", key]
+    assert ("reservation", "10.1.0.0/10.1.0.50") in waiting(p)
+    result = push.execute(p, WindowsWriter(client))
+    assert not result.failed and not result.applied
+
+
+def test_chained_moves_converge(client, fake):
+    third = failover(name="HA3", scope_ids=[], partner_server="dhcp3.example.com")
+    managed = pushed(
+        client, [scope(), S2, failover(scope_ids=["10.1.0.0"]), failover(name="HA2", scope_ids=["10.2.0.0"]), third]
+    )
+    moved = [
+        scope(),
+        S2,
+        failover(scope_ids=[]),
+        failover(name="HA2", scope_ids=["10.1.0.0"]),
+        failover(name="HA3", scope_ids=["10.2.0.0"], partner_server="dhcp3.example.com"),
+    ]
+    push_until_done(client, moved, managed, limit=1)
+    assert {k: v["scope_ids"] for k, v in fake.failovers.items()} == {
+        "ha": [],
+        "ha2": ["10.1.0.0"],
+        "ha3": ["10.2.0.0"],
+    }
+
+
+def test_a_refused_relationship_releases_nothing(client, fake):
+    managed = pushed(
+        client, [scope(), S2, S3, failover(scope_ids=["10.1.0.0"]), failover(name="HA2", scope_ids=["10.2.0.0"])]
+    )
+    WindowsWriter(client).apply(
+        push.Change("create", "failover", "hm", after=failover(name="HM", scope_ids=["10.3.0.0"]).fields)
+    )
+    # HA lets 10.1.0.0 go but takes 10.3.0.0, held by a hand-made relationship: HA is refused, so HA2 cannot take
+    # 10.1.0.0 either, rather than failing at Windows on every push.
+    moved = [
+        scope(),
+        S2,
+        S3,
+        failover(scope_ids=["10.3.0.0"]),
+        failover(name="HA2", scope_ids=["10.1.0.0", "10.2.0.0"]),
+    ]
+    p = push.plan(moved, windows_records(client), managed)
+    assert "relationship HM" in reasons(p)["failover", "ha"]
+    assert "relationship HA on Windows" in reasons(p)["failover", "ha2"]
+    result = push.execute(p, WindowsWriter(client))
+    assert not result.failed
+
+
+def test_children_of_a_waiting_create_wait_too(client):
+    managed = pushed(client, [scope(), reservation()])
+    narrow = scope_at("10.1.0.128", "255.255.255.128", "10.1.0.130", "10.1.0.200")
+    p = push.plan(
+        [narrow, reservation("10.1.0.150", scope_id="10.1.0.128"), UNRELATED], windows_records(client), managed
+    )
+    assert p.changes == []
+    assert reasons(p)["scope", "10.1.0.128"].startswith("waiting: needs scope 10.1.0.0")
+    assert reasons(p)["reservation", "10.1.0.128/10.1.0.150"].startswith("waiting: needs scope 10.1.0.128")
+    assert p.summary()["waiting_count"] == len(waiting(p)) + 2
+
+
+def test_many_rekeyed_scopes_plan_quickly():
+    import time
+
+    def at(i, half):
+        a, b = divmod(i, 256)
+        key = f"{10 + a}.{b}.0.{128 if half else 0}"
+        mask = "255.255.255.128" if half else "255.255.255.0"
+        return scope_at(key, mask, f"{10 + a}.{b}.0.{130 if half else 10}", f"{10 + a}.{b}.0.200")
+
+    target = [at(i, False) for i in range(6000)]
+    managed = {(r.kind, r.key): push.fingerprint(r) for r in target}
+    started = time.monotonic()
+    refused = scope_at("172.16.0.0", "255.255.255.0", "", "")  # outside the 10.x scopes above
+    p = push.plan([at(i, True) for i in range(6000)] + [refused], target, managed)
+    assert time.monotonic() - started < 2.0
+    assert p.summary()["waiting_count"] == 12000

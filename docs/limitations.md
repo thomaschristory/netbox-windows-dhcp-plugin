@@ -68,7 +68,10 @@ one of those deletes first (the same client's reservation at a new address in th
 its old addresses, a renamed failover relationship) waits with it. A scope sharing addresses with a scope NetBox manages
 but no longer holds is not left out: the push deletes the old one first, and if that delete is held back (changed on
 Windows, hand-made objects in it) the new scope fails at Windows. A scope's subnet mask still cannot change through a
-push: split or merge the scope on Windows, then import.
+push: split or merge the scope on Windows, then import. Scopes swapped between two failover relationships in one go
+are refused: move one scope at a time. A relationship taking a scope another one lets go can still fail at Windows
+(partner unreachable, missing secret); the push then puts the scope back where it was, and if that fails too the error
+says so and the scope is in no relationship until the next push.
 
 ## NetBox and branching
 
