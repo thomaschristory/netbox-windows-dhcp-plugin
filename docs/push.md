@@ -243,9 +243,10 @@ does a create that could only work once a waiting delete is done (the same clien
 exclusion range over the old one's addresses, a renamed failover relationship). Creates and updates that need nothing
 left out still go ahead. Each waiting change is listed first under `not_pushed` (and counted in `waiting_count`) with a
 reason starting `waiting:` that names up to three of the objects holding it up. The objects stay managed, so the first
-push with nothing left out in their family deletes them. A policy refused only because the planned deletes close the
-gaps before its processing order (while the number would fit both without those deletes and among the policies
-NetBox holds at that level) does not hold anything up. The job log's last line counts what waits.
+push with nothing left out in their family deletes them. A policy refused for its processing order holds deletes back
+only when it is new on Windows (a new name, or a renamed policy): then a delete may be what it replaces. A policy
+already on Windows refused for its number holds nothing back, so deleting order 1 of 3 without renumbering the others
+still deletes it, and the others wait for the renumbering. The job log's last line counts what waits.
 
 **Deletes that could lose data:**
 

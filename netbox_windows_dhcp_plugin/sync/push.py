@@ -1361,9 +1361,11 @@ def _order_level(
     # Remove-DhcpServerv4Policy closes the gap, and Set-DhcpServerv4Policy -ProcessingOrder moves the others down (and
     # refuses a number past the end) the way Add does (lab, Windows Server 2022).
     current = [r.key for r in windows if r.key not in deleted]
-    # How many of the level's policies this push deletes: a number that only fails to fit because of them is the
-    # deletes' doing, not the policy's (see _pause_deletes). A number past the count NetBox itself holds at the level
-    # can never fit, deletes or not.
+    # A new policy (a new name: a rename's new policy too) refused for its number holds the deletes back (see
+    # _pause_deletes), since one of them may be what it replaces; unless the number only fails to fit because of
+    # those deletes, and fits among the policies NetBox holds at the level. A policy already on Windows refused for
+    # its number never does: it stays on Windows whatever happens, so no delete can be its replacement, and holding
+    # the deletes back would keep a NetBox that did not renumber after a delete stuck for good.
     removed = len(windows) - len(current)
 
     def never_fits(order: int, room: int) -> bool:
@@ -1390,8 +1392,6 @@ def _order_level(
                 restored.append(key)
             if order > len(current):
                 stuck.append(Skip(change, _past_the_end(order, where, len(current))))
-                if never_fits(order, len(current)):
-                    plan.order_refusals.add(("policy", key))
                 continue
             current.remove(key)
             current.insert(order - 1, key)
@@ -1420,8 +1420,8 @@ def _order_level(
             "applying the rest alone would reorder the policies Windows holds; renumber the policies in NetBox"
         )
         plan.skipped.extend(Skip(c, reason) for c in out if c.key in upserts)
-        if any((s.change.kind, s.change.key) in plan.order_refusals for s in stuck):
-            plan.order_refusals.update(("policy", c.key) for c in out if c.key in upserts)
+        # New policies held back with them are refused creates: they hold the deletes back.
+        plan.order_refusals.update(("policy", c.key) for c in out if c.key in upserts and c.action == CREATE)
         return []
     for key in restored:
         plan.in_sync.pop(("policy", key), None)

@@ -50,7 +50,8 @@ All notable changes to this project are documented here. The format follows
   deleted. A create that needs a waiting delete first waits too, instead of failing at Windows on every push. A scope
   subnet mask change (a split or a merge) is now refused when the push is planned, so it holds deletes back too. Waiting
   changes come first in the dry run's list. The waiting deletes happen on the first push with nothing left out in their
-  family. A simple move of a scope from one failover relationship to another now goes through in one push; if the
+  family; a policy refused for its processing order holds deletes back only when it is new on Windows (a renamed
+  policy, say). A simple move of a scope from one failover relationship to another now goes through in one push; if the
   relationship taking it fails at Windows, the push puts the scope back where it was. Scopes swapped between
   relationships are refused (move one at a time). A new partner, a new hot standby role or turning authentication
   off on a failover relationship is now refused in the dry run too. (#108)

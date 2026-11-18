@@ -253,11 +253,13 @@ relationships, MAC filters, list switches.
   option values and MAC filters are in none. `_pause_deletes` runs last in `plan`. The blocking set is the objects
   refused for what they are: plan reasons (a scope mask change included, since Set-DhcpServerv4Scope cannot change it),
   their children (`_waiting_children`, transitively over `parents()`), a scope held by a relationship this push does not
-  release (`_scopes_in_other_relationships`), and a policy whose processing order would not fit even if the push deleted
-  nothing, or that is past the number of policies NetBox holds at the level (`Plan.order_refusals`). Only a
-  policy that falls past the end because the planned deletes close the gaps before it, while its number would fit
-  both without those deletes and among NetBox's own policies, is left out of the blocking set: pausing those
-  deletes would keep it refused for good. Changes that still go
+  release (`_scopes_in_other_relationships`), and a new policy (a new name, a rename's new policy included) refused
+  for its processing order (`Plan.order_refusals`): one of the deletes may be what it replaces. Such a new policy is
+  left out only when its number fails to fit just because the planned deletes close the gaps before it, and fits
+  among the policies NetBox holds at the level. A policy already on Windows refused for its number never blocks: it
+  stays on Windows whatever happens, so no delete replaces it, and holding the deletes back would keep a NetBox that
+  did not renumber after deleting order 1 of 3 stuck for good (that delete goes ahead, and the others wait for the
+  renumbering with a reason, as before the pause existed). Changes that still go
   ahead in another form (`_protect_memberships`) do not block either. Every delete of a blocked family, and every
   failover update that drops scopes, becomes a `not_pushed` entry (`waiting: ...`, first three blockers named, then "and
   N more"); a delete outside the families that still holds a paused child waits with it; a create that would clash on

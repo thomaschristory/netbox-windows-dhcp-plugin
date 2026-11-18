@@ -458,39 +458,43 @@ def test_deleting_a_policy_closes_the_gap(client, fake):
 
 def test_deleting_a_policy_without_renumbering_keeps_the_others_in_order(client, fake):
     """
-    NetBox does not renumber when a policy is deleted: removing order 1 of 3 leaves 2 and 3. Order 3 is then past the
-    number of policies NetBox holds at the level, which never fits on Windows: a real refusal, so the delete of order 1
-    waits too (the delete pause), and nothing moves until NetBox numbers its policies 1, 2, 3... again.
+    NetBox does not renumber when a policy is deleted: removing order 1 of 3 leaves 2 and 3. Windows closes the gap, so
+    order 3 no longer fits; moving 2 alone would put it below 3 and reverse the order clients are matched in.
     """
     _, first = run(client, [scope(), lab_policy("A", 1), lab_policy("B", 2), lab_policy("C", 3)])
     managed = state_after({}, first)
     source = [scope(), lab_policy("B", 2), lab_policy("C", 3)]
     p, result = run(client, source, managed)
-    assert not result.failed and not result.applied, (result.failed, result.applied)
-    reasons = by_key(p)
-    assert "past the end" in reasons["policy", "10.1.0.0/c"]
-    assert reasons["policy", "10.1.0.0/a"].startswith("waiting:")
-    assert orders(fake) == [("A", 1), ("B", 2), ("C", 3)]
+    assert not result.failed, result.failed
+    assert [(c.action, c.key) for c in p.changes] == [("delete", "10.1.0.0/a")]
+    assert "past the end" in by_key(p)["policy", "10.1.0.0/c"]
+    assert orders(fake) == [("B", 1), ("C", 2)]
+    # The next push still leaves them alone, and changes to them wait for the renumbering it asks for.
     managed = state_after(managed, result)
-    # Renumbered in NetBox: A goes, the edit goes through, and the order is the one NetBox asks for.
+    source = [scope(), lab_policy("B", 2, description="edited"), lab_policy("C", 3)]
+    p2, result2 = run(client, source, managed)
+    assert not result2.applied and not result2.failed, (result2.applied, result2.failed)
+    reasons = by_key(p2)
+    assert "past the end" in reasons["policy", "10.1.0.0/c"]
+    assert "renumber" in reasons["policy", "10.1.0.0/b"]
+    assert orders(fake) == [("B", 1), ("C", 2)]
+    # Renumbered in NetBox: the edit goes through and nothing moves.
     source = [scope(), lab_policy("B", 1, description="edited"), lab_policy("C", 2)]
-    p, result = run(client, source, managed)
-    assert not p.skipped and not result.failed, (p.skipped, result.failed)
+    p3, result3 = run(client, source, managed)
+    assert not p3.skipped and not result3.failed, (p3.skipped, result3.failed)
     assert orders(fake) == [("B", 1), ("C", 2)]
     assert fake.policies["10.1.0.0", "b"]["description"] == "edited"
-    managed = state_after(managed, result)
-    p, _ = run(client, source, managed)
-    assert p.changes == [] and p.skipped == []
 
 
 def test_policies_renumbered_by_windows_can_still_be_deleted(client, fake):
     """
-    Windows renumbers the policies below a deleted one by itself. Those it moved are not taken for policies changed on
-    Windows when NetBox deletes them later.
+    Windows renumbers the policies below a deleted one by itself. Those it moved, even ones the push left alone, are
+    not taken for policies changed on Windows when NetBox deletes them later.
     """
     _, first = run(client, [scope(), lab_policy("A", 1), lab_policy("B", 2), lab_policy("C", 3)])
     managed = state_after({}, first)
-    _, second = run(client, [scope(), lab_policy("B", 1), lab_policy("C", 2)], managed)
+    # A deleted in NetBox without renumbering: B and C are held back (past the end) while Windows moves them up.
+    _, second = run(client, [scope(), lab_policy("B", 2), lab_policy("C", 3)], managed)
     managed = state_after(managed, second)
     assert orders(fake) == [("B", 1), ("C", 2)]
     p, result = run(client, [scope()], managed)
