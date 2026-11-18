@@ -5,16 +5,18 @@ over WinRM or SSH.
 
 **Documentation: https://thomaschristory.github.io/netbox-windows-dhcp-plugin/**
 
-> **Status: 0.3.0.** The plugin no longer needs netbox-plugin-dhcp: it holds the whole Windows
+> **Status: 0.4.0.** The plugin no longer needs netbox-plugin-dhcp: it holds the whole Windows
 > DHCP configuration in its own models. 0.2.0 is a fresh start from 0.1.x (see the [upgrade
-> notes](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-01x)). 0.3.0
-> comes from a code audit and refuses some settings 0.2.0 accepted, `allowed_hosts` patterns among them (see the
-> [changelog](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/changelog/)). Every v1
+> notes](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-01x)). 0.4.0
+> reads faster, guards IPAM edits that change Windows, and holds deletes back while a push leaves something out; it
+> changes a few defaults and API answers, so read the [upgrade
+> notes](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-030-to-040) and the
+> [changelog](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/changelog/) first. Every v1
 > feature is built and tested against an in-memory fake server and PowerShell stubs. The Windows side (scripts,
 > transports, sync rules) is that of 0.1.x, apart from option values now being lists; 0.1.0's lab tests ran in full
 > against two Windows Server 2022 DHCP servers (import, push, leases and failover, over WinRM HTTP and HTTPS and over
 > SSH). 0.2.0 passed the full lab tests (`make test-lab`, `make lab-e2e`) on two Windows Server 2025 servers over WinRM
-> HTTP with CredSSP. Kerberos and SSH key authentication have not been tried on a real server yet (see the
+> HTTP with CredSSP, and 0.4.0's lab tests (`make test-lab`) passed there too. Kerberos and SSH key authentication have not been tried on a real server yet (see the
 > [limitations](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/limitations/)). Try it on a lab server
 > first.
 
@@ -42,7 +44,7 @@ over WinRM or SSH.
 
 | Plugin | NetBox | netbox-plugin-dhcp | netbox-branching | Python |
 |---|---|---|---|---|
-| 0.2.x, 0.3.x | 4.7 | not used | 1.2.2+ (optional) | 3.12 to 3.14 |
+| 0.2.x to 0.4.x | 4.7 | not used | 1.2.2+ (optional) | 3.12 to 3.14 |
 | 0.1.x | 4.7 | 0.2.x (required) | 1.2.2+ (optional) | 3.12 to 3.14 |
 
 `main` is the standalone line (0.2 and later). The 0.1.x line (latest 0.1.4, branch `release/0.1`) keeps getting
