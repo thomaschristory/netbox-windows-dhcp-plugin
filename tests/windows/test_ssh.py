@@ -464,6 +464,55 @@ def test_a_refusal_with_nothing_else_open_fails_at_once_with_the_reason_first(mo
     assert not live.closed and live.refuse == 98
 
 
+def test_a_refusal_just_after_our_session_closed_is_tried_again(monkeypatch) -> None:
+    # The server frees a slot a moment after our channel closes: a refusal in that gap is waited out, not reported
+    # as a server that refuses sessions (this raced in CI when the counter had just dropped to zero).
+    live = _FakeTransport(active=True, refuse=2)
+    r = _with_transports(monkeypatch, live)
+    monkeypatch.setattr(ssh_mod, "SESSION_RETRY_DELAYS", (0.01,) * 3)
+    r._sessions = 1
+    r._close_channel(_ClosableChannel())
+    assert r._sessions == 0
+    assert r._open_channel() == "channel"
+    assert not live.closed and live.opened == 1
+
+
+def test_a_refusal_long_after_the_last_close_fails_at_once(monkeypatch) -> None:
+    live = _FakeTransport(active=True, refuse=99)
+    r = _with_transports(monkeypatch, live)
+    monkeypatch.setattr(ssh_mod, "SESSION_RETRY_DELAYS", (5.0,) * 3)
+    r._last_closed = time.monotonic() - ssh_mod.SESSION_CLOSE_GRACE - 1
+    started = time.monotonic()
+    with pytest.raises(RunnerError):
+        r._open_channel()
+    assert time.monotonic() - started < 1
+
+
+def test_a_refusal_while_another_open_is_pending_is_tried_again(monkeypatch) -> None:
+    # Another thread's session is accepted by the server but its answer has not reached us yet: nothing is counted
+    # as open, yet the server is full of ours, so the refused open must wait (this raced in CI).
+    live = _FakeTransport(active=True, refuse=2)
+    r = _with_transports(monkeypatch, live)
+    r._opening = 1  # the other thread's open, still in flight
+    assert r._open_channel() == "channel"
+    assert not live.closed and live.opened == 1
+    assert r._opening == 1 and r._sessions == 1
+
+
+def test_an_interrupted_open_leaves_no_count_behind(monkeypatch) -> None:
+    # A leftover count would make every later refusal on this runner look like a full server and wait.
+    live = _FakeTransport(active=True, refuse=0, error=KeyboardInterrupt())
+    r = _with_transports(monkeypatch, live)
+    with pytest.raises(KeyboardInterrupt):
+        r._open_channel()
+    assert r._opening == 0 and r._sessions == 0
+
+
+class _ClosableChannel:
+    def close(self) -> None:
+        pass
+
+
 def test_a_refusal_taken_by_another_thread_still_keeps_the_connection(monkeypatch) -> None:
     # paramiko keeps one refusal per connection: a thread whose refusal another took gets this plain error.
     live = _FakeTransport(active=True, refuse=0, error=paramiko.SSHException("Unable to open channel."))
