@@ -97,6 +97,35 @@ Restart the worker as well as the web service: the worker runs every job, and it
 Install the new version, run `migrate`, and restart NetBox and the worker. Read the [changelog](changelog.md) first:
 while the plugin is below 1.0, a minor version can change behaviour.
 
+### Upgrading from 0.3.0 to 0.4.0
+
+0.4.0 brings two migrations, applied by `migrate`:
+
+- `0004` adds the push trail ("Triggered by" on sync runs). It changes no data.
+- `0005` adds two indexes on sync runs.
+
+Check these before upgrading (the [changelog](changelog.md) has the full list):
+
+- **Old sync runs are deleted.** The import scheduler now deletes sync runs older than `sync_run_retention_days`
+  (90 by default), keeping the ones the plugin still reads and those with a journal entry. Set it to `0` before
+  upgrading to keep every run. See [Sync run retention](workers.md#sync-run-retention).
+- **REST API, large reviews.** Applying or dismissing more than `review_job_threshold` (100) open proposal items
+  through the API now answers `202` with a background job instead of `200` with the counts, and `409` while one runs
+  for the same proposal. Update clients that apply large proposals, or raise the setting. See [API](api.md).
+- **`max_concurrency` takes effect.** A value left in `PLUGINS_CONFIG`, which did nothing until now, now sets how
+  many scopes a read sends at once (4 by default). Keep it within your WinRM (`MaxShellsPerUser`, 30) and OpenSSH
+  (`MaxSessions`, 10) limits, or set it to `1` for the old behaviour. See
+  [Workers](workers.md#timeouts-and-concurrency).
+- **IPAM edits need the plugin's permission.** Changing the prefix, the range start or end, the address or the MAC
+  of an IPAM object a scope or reservation uses now needs `change_scope` or `change_reservation` on it. Grant it to
+  users who renumber in IPAM. See [Editing IPAM objects used by DHCP](ipam-edits.md).
+- **Deletes wait while something cannot be pushed.** A push leaves out, with a reason, what Windows would refuse, and
+  while anything of a family (the IPv4 scopes and what hangs off them, the DHCPv6 scopes, the server-level policies)
+  is left out, it deletes nothing in that family. Check the first dry run after upgrading: it lists what waits and
+  why. See [Push](push.md).
+- **Two Windows server rows for one DHCP server** (same host, port and remote server) can no longer be edited until
+  one of them is deleted or pointed elsewhere.
+
 ### Upgrading from 0.2.0 to 0.3.0
 
 0.3.0 brings two migrations, applied by `migrate`:

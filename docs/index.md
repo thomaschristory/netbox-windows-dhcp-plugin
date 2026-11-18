@@ -85,7 +85,7 @@ pages for the rules that keep both sides safe.
 
 | Plugin | NetBox | netbox-plugin-dhcp | netbox-branching | netbox-change-control | Python |
 |---|---|---|---|---|---|
-| 0.2.x, 0.3.x | 4.7 | not used | 1.2.2 or later (optional) | 0.6 or later (optional) | 3.12 to 3.14 |
+| 0.2.x to 0.4.x | 4.7 | not used | 1.2.2 or later (optional) | 0.6 or later (optional) | 3.12 to 3.14 |
 | 0.1.x | 4.7 | 0.2.x (required) | 1.2.2 or later (optional) | 0.6 or later (optional) | 3.12 to 3.14 |
 
 The 0.1.x line (latest 0.1.4) keeps getting bug fixes, but no new features, for installs that stay on

@@ -106,8 +106,12 @@ netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
    (#92 to #96) and security fixes; stricter validation and `allowed_hosts` matching; migrations `0002` (text sync
    keys, sync run index) and `0003` (removes the 0.1.x content types left on upgraded databases). Security fixes
    backported to the 0.1.x line as 0.1.4.
-9. **In progress: 0.4.0.** On main: batched reservation option and policy reads (#100), large proposal reviews in a
-   background job (#101), the IPAM edit guard and push trail (#102, #113 to #116), the failover secret kept out of
-   the script (#104), sync run retention (#106), import and job leftovers (#109). In review: `max_concurrency` (#99),
-   a read of a whole server reads up to that many scopes at the same time (option 1 of the issue, chosen over
-   removing the setting); pushes still send their changes one after another.
+9. **Done: 0.4.0 (2026-11-18).** Batched reservation option and policy reads (#100), large proposal reviews in a
+   background job (#101), the IPAM edit guard and push trail (#102, #113 to #116, migration `0004`), the failover
+   secret kept out of the script (#104), sync run retention (#106, migration `0005`), import and job leftovers
+   (#109), `max_concurrency` reading up to that many scopes at once (#99; pushes still write one change after
+   another), the DHCP reservations panel on device, VM, interface, IP and MAC pages (#107), and push validation with
+   the per-family delete pause (#108).
+   - **Lab (2026-11-16 to 18):** Windows Server 2025, WinRM HTTP with CredSSP: `make test-lab` 41 passed (the #108
+     probes included), `make lab-e2e` passed on the #104 and #100 changes, read timing for #99 (about 30% faster at
+     the default of 4, CredSSP and NTLM).

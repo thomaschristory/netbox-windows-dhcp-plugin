@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-18
+
+0.4.0 makes reads faster (batched reads, and `max_concurrency` now reads several scopes at once), keeps the failover
+secret out of the scripts, guards IPAM edits that change what is pushed, and makes a push leave out, with a reason,
+what Windows would refuse, without deleting anything on Windows because of it. It adds migrations `0004` and `0005`.
+Before upgrading, read the **Upgrading** notes below and
+[Installation](docs/installation.md#upgrading-from-030-to-040): sync runs older than 90 days are deleted, large
+proposal reviews answer `202` in the REST API, a `max_concurrency` left in the settings takes effect, IPAM edits that
+change Windows need the plugin's `change` permission, and a push holds deletes back while something it cannot write
+is waiting.
+
 ### Added
 
 - Each push's sync run lists what queued it ("Triggered by"): the edits it carries, with the user and a link to the
@@ -14,11 +25,9 @@ All notable changes to this project are documented here. The format follows
   scheduler deletes older runs, oldest first, at most 500 a minute, and keeps the runs the plugin still reads
   whatever their age (the newest of each kind per server, the newest push that reached Windows, the runs of open
   import proposals, the newest runs of the two newest import branches, runs still queued or running, runs with a
-  journal entry). Until now the
-  history grew without limit. **Upgrading deletes sync runs older than 90 days** unless the setting says otherwise.
-  Runs with a journal entry are kept; a deleted run's tags and bookmarks go with it, and users subscribed to it may
-  get a deletion notification. Adds migration `0005` (two indexes). (#106)
-
+  journal entry). Until now the history grew without limit. **Upgrading deletes sync runs older than 90 days**
+  unless the setting says otherwise. Runs with a journal entry are kept; a deleted run's tags and bookmarks go with
+  it, and users subscribed to it may get a deletion notification. Adds migration `0005` (two indexes). (#106)
 - Applying or dismissing many import proposal items at once runs in the background: above the new
   `review_job_threshold` setting (100 open items by default), Apply all, Dismiss all and the bulk buttons queue a
   **Windows DHCP import review** job of the proposal, run as the requesting user with the same permission checks
@@ -32,7 +41,6 @@ All notable changes to this project are documented here. The format follows
   of its interfaces, with their server, scope, IP address and MAC address. NetBox still refuses to delete these
   objects while a reservation uses them; the panel shows why before the delete is tried. Only reservations the user
   may view are listed, and the panel is hidden when there is none. (#107)
-
 - A push (and its dry run) now leaves out, with a reason under **Not pushed**, what Windows would refuse instead of
   failing on it: an IPv4 scope range outside its prefix, reversed, or holding the network or broadcast address; a
   reservation outside its scope's prefix; an exclusion range outside its scope's prefix or reversed; IPv4 scopes of
@@ -88,8 +96,8 @@ All notable changes to this project are documented here. The format follows
   now, takes effect. A value that is not a whole number of at least 1 is now logged and the default used; above 10
   a warning is logged, and above 30 (the default WinRM `MaxShellsPerUser`) 30 is used. A job that times out waits
   at most 30 seconds for the commands in flight.
-  In the lab (two servers, WinRM with CredSSP; 7 scopes, 6 IPv4 and 1 DHCPv6, and 5 IPv4 scopes) a full read took
-  28% less time with the default of 4, with no connection errors at up to 8. (#99)
+  In the lab (two servers, WinRM with CredSSP or NTLM; 7 scopes, 6 IPv4 and 1 DHCPv6, and 5 IPv4 scopes) a full read
+  took about 30% less time with the default of 4, with no connection errors at up to 8. (#99)
 - SSH: a session that fails to open on a live connection no longer drops that connection, which killed every
   command running on it and hid the real error behind theirs; only that command fails. When the server refuses a
   session while other commands run on the connection (sshd `MaxSessions`), it is tried again for a few seconds
@@ -98,8 +106,8 @@ All notable changes to this project are documented here. The format follows
 - The failover shared secret no longer appears in the PowerShell script sent to the DHCP server: it follows the
   script on the same input line and is handed to it in a variable. PowerShell script block logging (event 4104) on
   the DHCP server no longer records it, nor does module logging of `ConvertFrom-Json` (checked with PowerShell 7
-  and with Windows PowerShell 5.1 on Windows Server 2025 in the lab). Module logging and transcription can still record the
-  failover cmdlet's own `-SharedSecret` parameter when they are on. A script input line cut short in transit is
+  and with Windows PowerShell 5.1 on Windows Server 2025 in the lab). Module logging and transcription can still
+  record the failover cmdlet's own `-SharedSecret` parameter when they are on. A script input line cut short in transit is
   now refused instead of running. (#104)
 - Editing a prefix, IP range, IP address or MAC address that a scope or reservation uses now needs the plugin's
   `change` permission on that scope or reservation when the edit changes what is pushed to Windows (the prefix,
@@ -128,7 +136,6 @@ All notable changes to this project are documented here. The format follows
   every push, dry run and import of its server: the push leaves that policy out with a reason naming it, and an
   import proposes Windows' ranges for it. Changing the prefix of its scope says which policy to fix instead of
   failing with a server error. (#108)
-
 - A scheduled import that finds its server busy (another import or a push running) is queued again a minute later,
   for up to half an hour, instead of waiting a whole import interval. The waiting attempts leave no failed sync run
   and send no notification. An import started by hand still fails at once and says why. (#109)
