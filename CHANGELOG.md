@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A parallel read over WinRM (`max_concurrency` above 1) could fail with `Connection refused` when the network path
+  to the server (a NAT router, Docker Desktop's port forwarding) refused one of the many new connections, although
+  WinRM was up. A WinRM call whose connection is refused before its command is sent is now tried again after 0.5, 1
+  and 2 s; once the command has been sent nothing is tried again, so a write never runs twice (#132).
+
 ## [0.4.0] - 2026-11-18
 
 0.4.0 makes reads faster (batched reads, and `max_concurrency` now reads several scopes at once), keeps the failover
@@ -97,7 +104,8 @@ is waiting.
   a warning is logged, and above 30 (the default WinRM `MaxShellsPerUser`) 30 is used. A job that times out waits
   at most 30 seconds for the commands in flight.
   In the lab (two servers, WinRM with CredSSP or NTLM; 7 scopes, 6 IPv4 and 1 DHCPv6, and 5 IPv4 scopes) a full read
-  took about 30% less time with the default of 4, with no connection errors at up to 8. (#99)
+  took about 30% less time with the default of 4, with no connection errors at up to 8 in those reads. Longer runs
+  later hit an occasional refused connection, fixed after 0.4.0 (#132). (#99)
 - SSH: a session that fails to open on a live connection no longer drops that connection, which killed every
   command running on it and hid the real error behind theirs; only that command fails. When the server refuses a
   session while other commands run on the connection (sshd `MaxSessions`), it is tried again for a few seconds

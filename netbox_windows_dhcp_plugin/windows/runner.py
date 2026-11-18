@@ -133,7 +133,9 @@ def execute(transport: str, exec_fn: ExecFunc, script: str, params: Mapping[str,
         raise RunnerError(f"encoding script parameters: {e}") from e
     try:
         res = exec_fn([psscript.POWERSHELL_EXE, *args], stdin)
-    except RunnerError:
+    except (RunnerError, Stopped):
+        # Stopped is not a failure: the transport stopped before sending anything because the caller asked it to,
+        # and the parallel read (sync/windows_state.py) tells it apart from an error by its type.
         raise
     except Exception as e:  # noqa: BLE001 - transport libraries raise many unrelated types
         raise RunnerError(f"{transport}: running PowerShell: {e}") from e

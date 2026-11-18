@@ -25,7 +25,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .runner import MAX_OUTPUT, ExecResult, RunnerError, execute
+from .runner import MAX_OUTPUT, ExecResult, RunnerError, execute, raise_if_stopped
 
 __all__ = ["AUTH_BASIC", "AUTH_CREDSSP", "AUTH_KERBEROS", "AUTH_NTLM", "WinRMConfig", "WinRMRunner", "kerberos_user"]
 
@@ -39,6 +39,11 @@ _STDIN_CHUNK = 64 * 1024
 # minimum, so that slow but healthy commands (a large lease list, failover replication) still pass.
 _TOTAL_TIMEOUT_FACTOR = 10
 _MIN_TOTAL_TIMEOUT = 600
+# Waits before trying a call again when a TCP connection was refused before its command was sent (issue #132). Under
+# parallel calls the network path to the server (a NAT router, Docker Desktop's port forwarding) sometimes answers a
+# new connection with a refusal although WinRM is up. A refused connection carries nothing, so trying again is safe
+# even for a write; a server that really is down still fails within a few seconds.
+CONNECT_RETRY_DELAYS = (0.5, 1.0, 2.0)
 
 
 @dataclass
@@ -74,6 +79,26 @@ def kerberos_user(username: str, realm: str = "") -> str:
     u = username.split("\\", 1)[1] if "\\" in username else username
     u = u.split("@", 1)[0]
     return f"{u}@{realm.upper()}" if realm else u
+
+
+def refused_connect(exc: BaseException) -> bool:
+    """True when ``exc`` comes from a TCP connection the server side refused, so nothing was sent on it.
+
+    requests and urllib3 wrap the socket error several times (ConnectionError, MaxRetryError, NewConnectionError) in
+    ``__cause__``, ``__context__``, ``reason`` or the arguments, so look through all of them.
+    """
+    seen: set[int] = set()
+    todo: list[BaseException] = [exc]
+    while todo:
+        e = todo.pop()
+        if id(e) in seen:
+            continue
+        seen.add(id(e))
+        if isinstance(e, ConnectionRefusedError):
+            return True
+        nested = [e.__cause__, e.__context__, getattr(e, "reason", None), *e.args]
+        todo.extend(x for x in nested if isinstance(x, BaseException))
+    return False
 
 
 def _forbid_redirects(wsman: Any) -> None:
@@ -145,6 +170,23 @@ class WinRMRunner:
         return execute(self.transport, self._exec, script, params)
 
     def _exec(self, argv: list[str], stdin: str) -> ExecResult:
+        """Run one command, trying again only when a connection was refused before the command was sent."""
+        for delay in (*CONNECT_RETRY_DELAYS, None):
+            # A parallel read that is stopping sends nothing more, even after waiting here.
+            raise_if_stopped()
+            sent: list[bool] = []
+            try:
+                return self._exec_once(argv, stdin, sent)
+            except Exception as e:
+                # Once the command went out, Windows may have run it: a failure after that is never tried again,
+                # refused connection or not, so that a write cannot run twice.
+                if sent or delay is None or not refused_connect(e):
+                    raise
+            time.sleep(delay)
+        raise AssertionError("not reached")
+
+    def _exec_once(self, argv: list[str], stdin: str, sent: list[bool]) -> ExecResult:
+        """One attempt. Appends to ``sent`` just before the command is sent to Windows."""
         try:
             from pypsrp.shell import CommandState, Process, SignalCode, WinRS
             from pypsrp.wsman import WSMan
@@ -162,6 +204,9 @@ class WinRMRunner:
             _forbid_redirects(wsman)
             with WinRS(wsman) as shell:
                 proc = Process(shell, argv[0], argv[1:])
+                # Until here only the logon and the shell creation went out, and a failed shell creation leaves
+                # nothing behind on Windows.
+                sent.append(True)
                 proc.begin_invoke()
                 data = stdin.encode("ascii")
                 # Stay well below the default 150 KiB WS-Man envelope size per Send.
