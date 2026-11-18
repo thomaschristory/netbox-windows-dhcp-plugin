@@ -138,7 +138,7 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   without a name gets its IP, as Windows does, so neither shows as a change on every push.
 - **Write.** `sync/windows_writer.py` turns one change into client calls, back in Windows spelling (`InActive`,
   `d.hh:mm:ss`, 2^32-1 for no BOOTP limit). An exclusion update is a remove and an add. Changing a scope subnet mask
-  or an option definition type or array flag is refused: Windows only allows it by removing the object with
+  (refused by the plan first, see the delete pause) or an option definition type or array flag is refused: Windows only allows it by removing the object with
   everything under it. A scope with leases is never force-removed (DHCP 20007 fails that change).
 - **Run.** Changes run one at a time. A failure skips the children of an object that was not created and keeps the
   parents of an object that was not deleted; other changes go ahead and the run ends failed with one line per
@@ -246,20 +246,34 @@ relationships, MAC filters, list switches.
   it. Scope policy IP ranges must parse (`_unpushable`), run upwards and sit in the scope's prefix (`_conflicts`);
   `windows_writer` checks them again before any write, since a policy update removes old ranges before adding new
   ones.
-- **Delete pause (#108, round 2).** While anything in a family cannot be pushed, nothing in that family is deleted; the dry run lists what is waiting and why. Families (`push.family`): v4 = scope, superscope, reservation, exclusion,
-  failover, scope policy, option values under a scope or reservation; v6 = scope6, reservation6, option6 under a
-  prefix; server-level objects are in none. `_pause_deletes` runs last in `plan`: the blocking set is the objects
-  refused for what they are (plan reasons, their children, `_scopes_in_other_relationships`), not policies refused by
-  `_order_policies` (those follow from the planned deletes, and pausing would keep them refused for good), nor
-  changes that still go ahead in another form (`_protect_memberships`). Every delete of a blocked family, and every
-  failover update that drops scopes, becomes a `not_pushed` entry (`waiting: ...`, first three blockers named, then
-  "and N more"); a delete outside the families that still holds a paused child waits with it. Paused objects stay in
-  `SyncState`, so the first push with nothing refused deletes them; nothing churns (a second plan is empty). This
-  replaced an address-matching heuristic (`_replaced`) that a review broke with a DHCPv6 prefix move, a move onto a
-  destination refused for another reason, and a /23 split. Lab results (Windows Server 2025): range with the
-  network or broadcast address refused; overlapping and nested exclusions refused; duplicate IPv4 client refused
-  (ResourceExists); same DHCPv6 DUID and IAID refused, another IAID accepted. Two scopes sharing addresses refused (ResourceExists, a /25 inside a /24). No `pre_save` veto on core IPAM models: the guard in
-  `ipam_guard.py` is about permissions only.
+- **Delete pause (#108).** While anything in a family cannot be pushed, nothing in that family is deleted; the dry run
+  lists what is waiting and why. Families (`push.family`): v4 = scope, superscope, reservation, exclusion, failover,
+  scope policy, option values under a scope or reservation; v6 = scope6, reservation6, option6 under a prefix; policy =
+  server-level policies and the server-level option values set through them. Classes, option definitions, plain server
+  option values and MAC filters are in none. `_pause_deletes` runs last in `plan`. The blocking set is the objects
+  refused for what they are: plan reasons (a scope mask change included, since Set-DhcpServerv4Scope cannot change it),
+  their children (`_waiting_children`, transitively over `parents()`), a scope held by a relationship this push does not
+  release (`_scopes_in_other_relationships`), and a policy whose processing order would not fit even if the push deleted
+  nothing (`Plan.order_refusals`). A policy that only falls past the end because the planned deletes close the gaps
+  before it is left out of the blocking set: pausing those deletes would keep it refused for good. Changes that still go
+  ahead in another form (`_protect_memberships`) do not block either. Every delete of a blocked family, and every
+  failover update that drops scopes, becomes a `not_pushed` entry (`waiting: ...`, first three blockers named, then "and
+  N more"); a delete outside the families that still holds a paused child waits with it; a create that would clash on
+  Windows with a waiting delete (the same client's reservation in the scope, an exclusion or a scope over its addresses,
+  a relationship taking a scope a waiting relationship holds) waits too, instead of failing at Windows on every push.
+  Waiting entries come first in `not_pushed` and the job log, and `waiting_count` counts them whatever the 1000-entry
+  cap. Paused objects stay in `SyncState`, so the first push with nothing refused deletes them; nothing churns (a second
+  plan is empty). This replaced an address-matching heuristic (`_replaced`), which missed a DHCPv6 prefix move, a move
+  onto a destination refused for another reason, and a /23 split.
+- **Failover moves (#108).** A scope moved from one relationship to another in NetBox: the relationship letting it go
+  releases it in the same push (its update runs before the other relationship creates and updates), so the taker is not
+  refused and the move converges in one push. A scope held by a relationship NetBox does not manage, or one this push
+  keeps, still refuses the taker and blocks the IPv4 deletes.
+- **Lab results (Windows Server 2025).** Range with the network or broadcast address refused; overlapping and nested
+  exclusions refused (InvalidData); duplicate IPv4 client refused (ResourceExists); same DHCPv6 DUID and IAID refused,
+  another IAID accepted; two scopes sharing addresses refused (ResourceExists, a /25 inside a /24). The fake server
+  refuses the same, with Windows' messages. No `pre_save` veto on core IPAM models: the guard in `ipam_guard.py` is
+  about permissions only.
 - **Model checks (#108).** `WindowsServer.clean()` refuses a second row for one DHCP server (normalised host, port
   with its default, normalised remote DHCP server; hosts compared in Python, so IPv6 spellings match), one query,
   without naming the other server. `FailoverRelationship.clean()` refuses a partner whose DHCP host the primary's

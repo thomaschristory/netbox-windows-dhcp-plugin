@@ -36,11 +36,16 @@ All notable changes to this project are documented here. The format follows
   from IPAM edits, which the plugin's forms do not see. When one of the clashing objects is already on Windows, it
   keeps being pushed. What hangs off a left-out object is left out with it, and a scope policy IP range must run
   upwards inside the scope's prefix. Imports are not affected. (#108)
-- **Delete pause:** While anything in a family cannot be pushed, nothing in that family is deleted; the dry run lists what is waiting and why. The families are the IPv4 scopes (with their reservations, exclusions, policies, option
-  values, superscopes and failover relationships) and the DHCPv6 scopes; server-level objects are not held up. A
-  scope whose prefix moved in IPAM, or a reservation that changed address, looks to the push like a new object plus a
-  deleted one, so when the new one cannot be pushed the old one now stays on Windows instead of being deleted. The
-  waiting deletes happen on the first push with nothing left out in their family. (#108)
+- **Delete pause:** While anything in a family cannot be pushed, nothing in that family is deleted; the dry run lists
+  what is waiting and why. The families are the IPv4 scopes (with their reservations, exclusions, policies, option
+  values, superscopes and failover relationships), the DHCPv6 scopes, and the server-level policies with the option
+  values set through them; classes, option definitions, plain server option values and MAC filters are not held up. A
+  scope whose prefix moved in IPAM, a reservation that changed address or a renamed policy looks to the push like a new
+  object plus a deleted one, so when the new one cannot be pushed the old one now stays on Windows instead of being
+  deleted. A create that needs a waiting delete first waits too, instead of failing at Windows on every push. A scope
+  subnet mask change (a split or a merge) is now refused when the push is planned, so it holds deletes back too. Waiting
+  changes come first in the dry run's list. The waiting deletes happen on the first push with nothing left out in their
+  family. A scope moved from one failover relationship to another now moves in one push. (#108)
 - The Windows server form refuses a second server for one DHCP server (same host ignoring case and a trailing dot,
   same port, same remote DHCP server), and the failover relationship form refuses a new partner the primary server's
   credential profile does not allow (`allowed_hosts`), which the push already refused. Imports are not affected.

@@ -229,17 +229,22 @@ the Windows object is kept as it is. What hangs off a left-out object is left ou
 reservations and option values of a left-out scope, the option values of a left-out reservation, a failover
 relationship holding a left-out scope, and so on.
 
-**The delete pause.** While anything in a family cannot be pushed, nothing in that family is deleted; the dry run lists what is waiting and why. The two families are the IPv4 scopes (scopes, superscopes, reservations, exclusion
-ranges, scope and reservation option values, scope policies with their values and IP ranges, failover relationships)
-and the DHCPv6 scopes (DHCPv6 scopes, reservations and their option values). Server-level objects (classes, option
-definitions, server option values and policies, MAC filters) are in neither and are deleted as usual. NetBox objects
-have no identity a push can follow: a scope is known by its network, a reservation by its address, so a scope whose
-prefix moved in IPAM, or a reservation that changed address, looks like a new object plus a deleted one. When the new
-one cannot be pushed, deleting the old one would leave nothing on Windows; rather than guess which delete belongs to
-which refusal, every delete of the family waits. A failover relationship that would lose scopes waits too, since
-leaving the relationship removes a scope from the partner. Creates and updates that need nothing left out still go
-ahead. Each waiting delete is listed under `not_pushed` with a reason starting `waiting:` that names up to three of the
-objects holding it up. The objects stay managed, so the first push with nothing left out in their family deletes them.
+**The delete pause.** While anything in a family cannot be pushed, nothing in that family is deleted; the dry run lists
+what is waiting and why. There are three families: the IPv4 scopes (scopes, superscopes, reservations, exclusion ranges,
+scope and reservation option values, scope policies with their values and IP ranges, failover relationships), the DHCPv6
+scopes (DHCPv6 scopes, reservations and their option values), and the server-level policies with the option values set
+through them. Classes, option definitions, plain server option values and MAC filters are in none and are deleted as
+usual. NetBox objects have no identity a push can follow: a scope is known by its network, a reservation by its address,
+a policy by its name, so a scope whose prefix moved in IPAM, a reservation that changed address or a renamed policy
+looks like a new object plus a deleted one. When the new one cannot be pushed, deleting the old one would leave nothing
+on Windows; rather than guess which delete belongs to which refusal, every delete of the family waits. A failover
+relationship that would lose scopes waits too, since leaving the relationship removes a scope from the partner, and so
+does a create that could only work once a waiting delete is done (the same client's new reservation in the scope, an
+exclusion range over the old one's addresses, a renamed failover relationship). Creates and updates that need nothing
+left out still go ahead. Each waiting change is listed first under `not_pushed` (and counted in `waiting_count`) with a
+reason starting `waiting:` that names up to three of the objects holding it up. The objects stay managed, so the first
+push with nothing left out in their family deletes them. A policy refused only because the planned deletes close the
+gaps before its processing order does not hold anything up.
 
 **Deletes that could lose data:**
 
@@ -251,6 +256,9 @@ objects holding it up. The objects stay managed, so the first push with nothing 
 
 **NetBox data Windows cannot hold:**
 
+- an IPv4 scope whose subnet mask changes (a split or a merge: Windows only allows it by deleting the scope with
+  its reservations, options and leases; do it on Windows by hand, then import), and a new scope that would share
+  addresses with the old scope Windows still has;
 - an IPv4 scope without an IP range, or a DHCPv6 scope whose prefix is not a /64 (NetBox refuses to save one, so
   this only happens when the prefix length was changed in IPAM afterwards);
 - a reservation without a MAC address or client ID, or a DHCPv6 reservation without an address, a DUID or an IAID;
@@ -290,9 +298,9 @@ These are only found when the push reaches the change, so **a dry run does not s
 ordinary planned updates or deletes. The push refuses the change, goes on with the others, and the run ends
 **failed** with the reason in its `errors`.
 
-- Changes Windows only allows by removing the object with everything in it: a scope's subnet mask (the prefix length
-  in NetBox), an option definition's type or array flag, removing a policy condition, a failover relationship's
-  partner. Make them on Windows by hand, then import.
+- Changes Windows only allows by removing the object with everything in it: an option definition's type or array
+  flag, removing a policy condition, a failover relationship's partner. Make them on Windows by hand, then import. (A
+  scope's subnet mask is refused earlier, when the push is planned, see above.)
 - A hot standby relationship's role (active or standby), which Windows only sets when the relationship is created:
   delete it in NetBox and push, then create it again (see [Failover](failover.md#how-it-syncs)).
 - Policy conditions and contents Windows refuses: a wildcard anywhere but at the start or the end of a condition

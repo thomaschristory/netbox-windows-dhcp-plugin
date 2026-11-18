@@ -48,8 +48,9 @@ Try the plugin on a lab server before a production one, and use **Dry run** befo
 
 Some changes are only possible on Windows by removing an object with everything in it. The plugin refuses them
 rather than delete data: a scope's subnet mask, an option definition's type or array flag, removing a policy
-condition, a failover relationship's partner or authentication. A dry run does not catch these: the push fails on
-them. Make them on Windows by hand, then import. See [Push](push.md#refused-while-pushing).
+condition, a failover relationship's partner or authentication. The dry run shows a subnet mask change as not pushed
+(and it holds back the IPv4 deletes); for the others the push fails on them. Make them on Windows by hand, then
+import. See [Push](push.md#refused-while-pushing).
 
 Windows also refuses some policies outright: a condition value with a wildcard in the middle (`host*.example.com`;
 put it at the start or the end), and IP ranges or ordinary option values on a policy with an FQDN condition (errors
@@ -60,10 +61,14 @@ Edits of a prefix, IP range or IP address in IPAM are not checked against the sc
 a reservation outside its scope's prefix, is left out of the next push with a reason in the dry run, and the Windows
 object stays as it was until NetBox is fixed. The same goes for scopes of one server sharing addresses, overlapping
 exclusion ranges and two reservations for one client in a scope: NetBox accepts them, the push leaves them out (see
-[Push](push.md#refused-when-the-push-is-planned)). While anything in a family cannot be pushed, nothing in that family is deleted; the dry run lists what is waiting and why. So a single object left out (in any scope of the
-server) holds back every IPv4 delete, or every DHCPv6 delete, until it is fixed. A scope sharing addresses with a scope NetBox manages but no longer
-holds is not left out: the push deletes the old one first, and if that delete is held back (changed on Windows,
-hand-made objects in it) the new scope fails at Windows.
+[Push](push.md#refused-when-the-push-is-planned)). While anything in a family cannot be pushed, nothing in that family
+is deleted; the dry run lists what is waiting and why. So a single object left out (in any scope of the server) holds
+back every IPv4 delete, every DHCPv6 delete, or every server-level policy delete, until it is fixed; a create that needs
+one of those deletes first (the same client's reservation at a new address in the scope, an exclusion range moved over
+its old addresses, a renamed failover relationship) waits with it. A scope sharing addresses with a scope NetBox manages
+but no longer holds is not left out: the push deletes the old one first, and if that delete is held back (changed on
+Windows, hand-made objects in it) the new scope fails at Windows. A scope's subnet mask still cannot change through a
+push: split or merge the scope on Windows, then import.
 
 ## NetBox and branching
 

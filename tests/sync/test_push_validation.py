@@ -186,7 +186,8 @@ def test_new_scope_overlapping_one_on_windows_is_not_pushed(client, fake):
     p = push.plan([wide, narrow], windows_records(client), managed)
     found = reasons(p)
     assert "shares addresses with scope 10.1.0.0/23" in found["scope", "10.1.1.0"]
-    assert "shares addresses with scope 10.1.1.0/24" in found["scope", "10.1.0.0"]
+    # The /23 is the /24 already on Windows with another mask: refused for that first.
+    assert "the subnet mask changes from 255.255.255.0 to 255.255.254.0" in found["scope", "10.1.0.0"]
 
 
 def test_overlapping_scopes_neither_on_windows_are_both_left_out():
@@ -573,3 +574,195 @@ def test_a_large_plan_with_refusals_stays_fast():
     elapsed = time.monotonic() - started
     assert deletes(p) == [] and len(waiting(p)) == 4001
     assert elapsed < 1.5, elapsed
+
+
+# -- third review round -----------------------------------------------------------------------------------------------
+
+
+UNRELATED = scope_at("10.3.0.0", "255.255.255.0", "", "")  # refused: no IP range
+
+
+def push_until_done(client, source, managed, limit=2):
+    """Push at most ``limit`` times until a plan is empty; then one more plan must be empty too."""
+    for _ in range(limit):
+        p = push.plan(source, windows_records(client), managed)
+        if not p.changes and not p.skipped:
+            break
+        managed = pushed(client, source, managed)
+    p = push.plan(source, windows_records(client), managed)
+    assert p.changes == [] and p.skipped == [], (p.changes, p.skipped)
+    return managed
+
+
+@pytest.mark.parametrize("keep_one", [False, True])
+def test_scope_moved_between_two_managed_relationships_converges(client, fake, keep_one):
+    s2 = scope_at("10.2.0.0", "255.255.255.0", "10.2.0.10", "10.2.0.200")
+    s3 = scope_at("10.3.0.0", "255.255.255.0", "10.3.0.10", "10.3.0.200")
+    first = ["10.1.0.0", "10.3.0.0"] if keep_one else ["10.1.0.0"]
+    managed = pushed(client, [scope(), s2, s3, failover(scope_ids=first), failover(name="HA2", scope_ids=["10.2.0.0"])])
+    rest = ["10.3.0.0"] if keep_one else []
+    moved = [scope(), s2, s3, failover(scope_ids=rest), failover(name="HA2", scope_ids=["10.1.0.0", "10.2.0.0"])]
+    push_until_done(client, moved, managed)
+    assert sorted(fake.failovers["ha2"]["scope_ids"]) == ["10.1.0.0", "10.2.0.0"]
+    assert fake.failovers["ha"]["scope_ids"] == rest
+
+
+def test_scope_moved_into_a_new_relationship_converges(client, fake):
+    managed = pushed(client, [scope(), failover(scope_ids=["10.1.0.0"])])
+    moved = [scope(), failover(scope_ids=[]), failover(name="HA2", scope_ids=["10.1.0.0"])]
+    push_until_done(client, moved, managed)
+    assert fake.failovers["ha2"]["scope_ids"] == ["10.1.0.0"]
+
+
+def test_scope_held_by_a_relationship_not_released_still_refuses_and_pauses(client, fake):
+    # HA (managed) keeps the scope in NetBox too: HA2 cannot take it, and that refusal holds back the deletes.
+    managed = pushed(client, [scope(), reservation(), failover(scope_ids=["10.1.0.0"])])
+    p = push.plan(
+        [scope(), failover(scope_ids=["10.1.0.0"]), failover(name="HA2", scope_ids=["10.1.0.0"])],
+        windows_records(client),
+        managed,
+    )
+    assert "already in failover relationship HA" in reasons(p)["failover", "ha2"]
+    assert ("reservation", "10.1.0.0/10.1.0.50") in waiting(p)
+
+
+def test_hand_made_relationship_refusal_pauses_deletes(client, fake):
+    s2 = scope_at("10.2.0.0", "255.255.255.0", "10.2.0.10", "10.2.0.200")
+    pushed(client, [s2, failover(name="ByHand", scope_ids=["10.2.0.0"])])
+    managed = {k: v for k, v in pushed(client, [scope(), s2, reservation()]).items() if k[0] != "failover"}
+    p = push.plan([scope(), s2, failover(scope_ids=["10.2.0.0"])], windows_records(client), managed)
+    assert "already in failover relationship ByHand" in reasons(p)["failover", "ha"]
+    assert ("reservation", "10.1.0.0/10.1.0.50") in waiting(p)
+
+
+@pytest.mark.parametrize("split", [True, False])
+def test_mask_change_is_refused_in_the_plan_and_deletes_nothing(client, fake, split):
+    wide = scope_at("10.1.0.0", "255.255.254.0", "10.1.0.10", "10.1.1.200")
+    lower = scope_at("10.1.0.0", "255.255.255.0", "10.1.0.10", "10.1.0.200")
+    upper = scope_at("10.1.1.0", "255.255.255.0", "10.1.1.10", "10.1.1.200")
+    if split:
+        before, after = [wide, reservation("10.1.1.50")], [lower, upper, reservation("10.1.1.50", scope_id="10.1.1.0")]
+    else:
+        before, after = [lower, upper, reservation("10.1.1.50", scope_id="10.1.1.0")], [wide, reservation("10.1.1.50")]
+    managed = pushed(client, before)
+    on_windows = windows_records(client)
+    p = push.plan(after, on_windows, managed)
+    assert "the subnet mask changes from" in reasons(p)["scope", "10.1.0.0"]
+    assert deletes(p) == []
+    result = push.execute(p, WindowsWriter(client))
+    # The split's new upper scope would collide with the /23 Windows still has: refused, not failed at Windows.
+    assert not result.failed and not result.applied
+    assert windows_records(client) == on_windows
+
+
+def test_policy_renamed_past_the_end_without_any_delete_keeps_the_old_one(client, fake):
+    managed = pushed(client, [scope(), policy(), option("10.1.0.0", 3, ["10.1.0.1"], policy="Printers")])
+    renamed = [
+        scope(),
+        policy(name="Printers2", processing_order=5),
+        option("10.1.0.0", 3, ["10.1.0.1"], policy="Printers2"),
+    ]
+    p = push.plan(renamed, windows_records(client), managed)
+    assert deletes(p) == []
+    assert {("policy", "10.1.0.0/printers"), ("option", "10.1.0.0/3;policy=printers")} <= waiting(p)
+
+
+def test_server_policy_renamed_and_refused_keeps_the_old_one_and_its_value(client, fake):
+    old = policy(scope_id="", ip_ranges=[])
+    plain = option("server", 15, ["corp.example"])
+    managed = pushed(client, [old, option("server", 3, ["10.1.0.1"], policy="Printers"), plain])
+    renamed = policy(name="P2", scope_id="", ip_ranges=[], criteria={})
+    p = push.plan([renamed, option("server", 3, ["10.1.0.1"], policy="P2")], windows_records(client), managed)
+    assert {("policy", old.key), ("option", "server/3;policy=printers")} <= waiting(p)
+    assert "nothing in the server-level policies is deleted" in reasons(p)["policy", old.key]
+    # A plain server option value is in no family: deleted as before.
+    assert ("option", "server/15") in deletes(p)
+
+
+def test_superscope_delete_waits_too(client, fake):
+    managed = pushed(client, [scope(), Record("superscope", "campus", {"name": "Campus", "scope_ids": ["10.1.0.0"]})])
+    p = push.plan([scope(), UNRELATED], windows_records(client), managed)
+    assert ("superscope", "campus") in waiting(p)
+
+
+def test_parent_outside_the_family_waits_for_its_paused_child(client, fake):
+    phones = Record(
+        "class", "user/phones", {"name": "Phones", "class_type": "user", "data": "phone", "description": ""}
+    )
+    pol = policy(criteria={"user_class": ["EQ", "Phones"]})
+    managed = pushed(client, [phones, scope(), pol])
+    broken = policy(name="P2", criteria={"user_class": ["EQ", "Phones"]}, ip_ranges=[["10.1.0.120", "10.1.0.100"]])
+    p = push.plan([scope(), broken], windows_records(client), managed)
+    assert "still holds policy 10.1.0.0/printers" in reasons(p)["class", "user/phones"]
+    push.execute(p, WindowsWriter(client))
+    assert "phones" in {k[1].lower() for k in fake.classes}
+
+
+def test_waiting_children_do_not_depend_on_record_order():
+    # Children listed before their parents: an option value of a reservation of a refused scope, and a failover
+    # relationship before its scope.
+    source = [
+        option("10.1.0.0/10.1.0.50", 15, ["x"]),
+        reservation(),
+        failover(scope_ids=["10.1.0.0"]),
+        scope(start_range="", end_range=""),
+    ]
+    found = reasons(push.plan(source, [], {}))
+    assert found["option", "10.1.0.0/10.1.0.50/15"].startswith("waits for")
+    assert "waits for scope 10.1.0.0" in found["reservation", "10.1.0.0/10.1.0.50"]
+    assert "waits for scope 10.1.0.0" in found["failover", "ha"]
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "kind"),
+    [
+        ([exclusion("10.1.0.20", "10.1.0.30")], [exclusion("10.1.0.25", "10.1.0.35")], "exclusion"),
+        ([reservation()], [reservation("10.1.0.60")], "reservation"),
+        ([failover(scope_ids=["10.1.0.0"])], [failover(name="HA2", scope_ids=["10.1.0.0"])], "failover"),
+    ],
+)
+def test_create_clashing_with_a_waiting_delete_waits_instead_of_failing(client, fake, before, after, kind):
+    managed = pushed(client, [scope(), *before])
+    p = push.plan([scope(), *after, UNRELATED], windows_records(client), managed)
+    new = after[0]
+    assert reasons(p)[new.kind, new.key].startswith("waiting: needs")
+    result = push.execute(p, WindowsWriter(client))
+    assert not result.failed
+    # Fixed: the old one goes and the new one comes, in one push.
+    push_until_done(client, [scope(), *after], managed)
+
+
+def test_waiting_deletes_are_listed_first_whatever_the_cap(client):
+    managed = pushed(client, [scope(), reservation()])
+    # Refused for having no value, and sorted before the waiting delete by key.
+    many = [option("server", 200 + i % 50, [], user_class=f"c{i}") for i in range(push.PLANNED_LIMIT + 5)]
+    p = push.plan([scope(), UNRELATED, *many], windows_records(client), managed)
+    summary = p.summary()
+    assert summary["waiting_count"] == 1
+    assert summary["not_pushed"][0]["key"] == "10.1.0.0/10.1.0.50"
+    assert summary["not_pushed_truncated"] is True
+
+
+def test_fake_refuses_what_windows_refuses(client):
+    from netbox_windows_dhcp_plugin.windows import client as wc
+    from netbox_windows_dhcp_plugin.windows.psscript import PSError
+
+    client.add_scope(wc.Scope(name="a", start_range="10.1.0.10", end_range="10.1.0.200", subnet_mask="255.255.255.0"))
+    inner = wc.Scope(name="b", start_range="10.1.0.130", end_range="10.1.0.140", subnet_mask="255.255.255.128")
+    with pytest.raises(PSError, match="ResourceExists"):
+        client.add_scope(inner)
+    client.add_exclusion_range(wc.ExclusionRange("10.1.0.0", "10.1.0.20", "10.1.0.40"))
+    for start, end in (("10.1.0.30", "10.1.0.50"), ("10.1.0.25", "10.1.0.35"), ("10.1.0.40", "10.1.0.45")):
+        with pytest.raises(PSError, match="InvalidData"):
+            client.add_exclusion_range(wc.ExclusionRange("10.1.0.0", start, end))
+    client.add_reservation(wc.Reservation(scope_id="10.1.0.0", ip_address="10.1.0.50", client_id="aa-bb-cc-00-11-22"))
+    with pytest.raises(PSError, match="ResourceExists"):
+        client.add_reservation(
+            wc.Reservation(scope_id="10.1.0.0", ip_address="10.1.0.51", client_id="aa-bb-cc-00-11-22")
+        )
+    client.add_v6_scope(wc.ScopeV6(prefix="2001:db8:1::", name="v6"))
+    duid = "00-01-00-01-aa-bb-cc-dd"
+    client.add_v6_reservation(wc.ReservationV6("2001:db8:1::", "2001:db8:1::10", duid, 7, "a", ""))
+    with pytest.raises(PSError, match="ResourceExists"):
+        client.add_v6_reservation(wc.ReservationV6("2001:db8:1::", "2001:db8:1::11", duid, 7, "b", ""))
+    client.add_v6_reservation(wc.ReservationV6("2001:db8:1::", "2001:db8:1::12", duid, 8, "c", ""))
