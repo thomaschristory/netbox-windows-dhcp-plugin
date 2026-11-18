@@ -40,6 +40,7 @@ from django.contrib.auth import get_user_model  # noqa: E402
 from django.test import Client  # noqa: E402
 from django.urls import reverse  # noqa: E402
 
+from netbox_windows_dhcp_plugin.conf import max_concurrency  # noqa: E402
 from netbox_windows_dhcp_plugin.connection import build_client  # noqa: E402
 from netbox_windows_dhcp_plugin.jobs import enqueue_leases, record_names  # noqa: E402
 from netbox_windows_dhcp_plugin.models import FailoverRelationship, SyncRun, WindowsServer  # noqa: E402
@@ -183,7 +184,8 @@ def netbox_server(env, name=SERVER_NAME, host=""):
 def read_state(server):
     client = build_client(server)
     try:
-        return windows_state.read(client)
+        # In parallel, as the import job reads (issue #99).
+        return windows_state.read(client, workers=max_concurrency())
     finally:
         client.close()
 

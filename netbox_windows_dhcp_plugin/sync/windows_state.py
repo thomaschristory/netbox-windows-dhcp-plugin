@@ -8,9 +8,13 @@ client IDs as aa-bb-cc-...), so the NetBox side can produce the very same record
 from __future__ import annotations
 
 import contextlib
+import copy
 import ipaddress
-from collections.abc import Iterable
-from dataclasses import dataclass, field
+import threading
+from collections.abc import Callable, Iterable
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
+from concurrent.futures import wait as futures_wait
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 from ..standard_options import STANDARD_V4, STANDARD_V6
@@ -35,6 +39,7 @@ from ..windows.client import (
     Superscope,
 )
 from ..windows.psscript import NotFound
+from ..windows.runner import Stopped, raise_if_stopped, set_stop_check
 from .diff import Record
 
 __all__ = (
@@ -139,11 +144,15 @@ def _read_policies(client: DhcpClient, part: WindowsState, sid: str) -> None:
         part.options.extend(c.options)
 
 
-def read(client: DhcpClient) -> WindowsState:
+def read(client: DhcpClient, workers: int = 1) -> WindowsState:
     """
     Read everything the sync handles. One PowerShell call per list, plus a few per scope: a scope's reservation
     option values and its policies' ranges and values are read in batches (issue #100), so the number of calls does
     not grow with the number of reservations or policies (up to ``client.READ_BATCH`` of each per scope).
+
+    The server-wide lists (IPv4 and DHCPv6) are read first, one after another. Then ``workers`` scopes, IPv4 and
+    DHCPv6 alike, are read at the same time (issue #99, the ``max_concurrency`` setting); the result is the same as
+    reading them one after another, in the same order. With 1 nothing runs in another thread.
     """
     state = WindowsState(
         classes=client.list_classes(),
@@ -157,17 +166,216 @@ def read(client: DhcpClient) -> WindowsState:
     # -All returns the values of every user and vendor class at each level (lab, Windows Server 2022).
     state.options.extend(client.list_option_values(all=True))
     _read_policies(client, state, "")
+    state.v6_classes = client.list_v6_classes()
+    state.v6_scopes = client.list_v6_scopes()
+    # -All returns the values of every user class at each level, as for IPv4 (lab, Windows Server 2022).
+    state.v6_options.extend(client.list_v6_option_values(all=True))
+    workers = max(1, int(workers))
+    if workers > 1 and len(state.scopes) + len(state.v6_scopes) > 1:
+        stop: _Stop | None = _Stop()
+        # A copy of the client whose commands are refused once its scope must stop (see _Stop).
+        scoped = copy.copy(client)
+        scoped.runner = _Stopping(client.runner)
+    else:
+        stop, scoped = None, client
     # A scope can disappear while it is read, for example when a failover relationship is removed on its partner:
     # its reads then fail with not found. It is gone, as if it had not been listed; the rest of the read stands.
-    state.scopes = [
-        scope
-        for scope in state.scopes
-        if _gone_or_read(
-            lambda sid=scope.scope_id: _read_scope(client, state, sid), client.get_scope, scope.scope_id, state, "scope"
-        )
+    units = [
+        _Unit(s.scope_id, "scope", lambda part, sid: _read_scope(scoped, part, sid), scoped.get_scope)
+        for s in state.scopes
+    ] + [
+        _Unit(s.prefix, "DHCPv6 scope", lambda part, px: _read_v6_scope(scoped, part, px), scoped.get_v6_scope)
+        for s in state.v6_scopes
     ]
-    _read_v6(client, state)
+    there = _read_units(state, units, workers, stop)
+    v4 = len(state.scopes)
+    state.scopes = [s for s, ok in zip(state.scopes, there[:v4], strict=True) if ok]
+    state.v6_scopes = [s for s, ok in zip(state.v6_scopes, there[v4:], strict=True) if ok]
     return state
+
+
+# A command not sent because its scope's read is stopping (raised by the Windows layer's stop check).
+_Skipped = Stopped
+
+# After a job timeout, the longest the read waits for the commands already sent before it lets the timeout through.
+# RQ kills a job's process about a minute after its timeout, and the job still has to record the failed run.
+INTERRUPT_WAIT = 30
+
+
+class _Stop:
+    """
+    Which scopes of a parallel read may still send commands. When the scope at index ``i`` fails, the scopes after it
+    stop: a one-at-a-time read would never have reached them. The scopes before it go on, since the lowest failing
+    index gives the read's error, as it would one at a time, whichever failed first. When the job itself is
+    interrupted (a timeout), every scope stops.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._first_failed: int | None = None
+
+    def enter(self, index: int) -> None:
+        """The calling worker thread now reads the scope at ``index``: its commands are sent only while allowed."""
+        set_stop_check(lambda: self.stopped(index))
+
+    def leave(self) -> None:
+        set_stop_check(None)
+
+    def fail(self, index: int) -> None:
+        with self._lock:
+            if self._first_failed is None or index < self._first_failed:
+                self._first_failed = index
+
+    def stop_all(self) -> None:
+        self.fail(-1)
+
+    def stopped(self, index: int) -> bool:
+        with self._lock:
+            return self._first_failed is not None and index > self._first_failed
+
+
+class _Stopping:
+    """
+    A runner that refuses a scope's commands once that scope must stop (see _Stop). After a failure or a job timeout,
+    the scopes still being read stop at their next command, so the read only waits for the commands already sent to
+    Windows, not for whole scopes: a WinRM command can take minutes, and a job past its timeout has about a minute
+    before the worker is killed. The Windows layer checks too while a command waits for a free slot or for an SSH
+    session.
+    """
+
+    def __init__(self, runner: Any) -> None:
+        self.runner = runner
+
+    def run(self, script: str, params: Any = None) -> bytes:
+        raise_if_stopped()
+        return self.runner.run(script, params)
+
+
+@dataclass
+class _Unit:
+    """One scope to read: ``read_one(part, key)`` fills ``part``, ``get_one(key)`` checks the scope still exists."""
+
+    key: str
+    kind: str
+    read_one: Callable[[WindowsState, str], None]
+    get_one: Callable[[str], Any]
+
+
+def _read_units(state: WindowsState, units: list[_Unit], workers: int, stop: _Stop | None) -> list[bool]:
+    """
+    Read each unit, up to ``workers`` at a time, and add what was read to ``state`` in the order of ``units``.
+    Returns, for each unit, whether its scope is still there (see _gone_or_read).
+
+    Each unit fills its own WindowsState, so threads share nothing but the client, whose runner is thread safe and
+    capped by the same ``max_concurrency`` (runner.Limited). Merging in list order keeps records and notes in the
+    order a one-at-a-time read gives.
+    """
+
+    def run(unit: _Unit) -> tuple[bool, WindowsState]:
+        part = WindowsState()
+        read_it = lambda: unit.read_one(part, unit.key)  # noqa: E731
+        return _gone_or_read(read_it, unit.get_one, unit.key, part, unit.kind), part
+
+    if stop is None:
+        # Lazy: a failing scope stops the read before the next one is sent, exactly as before issue #99.
+        results: Iterable[tuple[bool, WindowsState]] = (run(unit) for unit in units)
+    else:
+        results = _in_parallel(run, units, workers, stop)
+    there = []
+    for still_there, part in results:
+        _merge(state, part)
+        there.append(still_there)
+    return there
+
+
+def _wait(future: Future) -> Any:
+    """The result of one unit (a seam for tests: a job timeout arrives as an exception while the main thread waits)."""
+    return future.result()
+
+
+def _in_parallel(fn: Callable[[Any], Any], items: list, workers: int, stop: _Stop) -> list:
+    """
+    ``[fn(item) for item in items]`` on up to ``workers`` threads, ``stop`` deciding which items' commands are still
+    sent (see _Stop and _Stopping).
+
+    When an item fails, the items after it are cancelled if not started and stopped at their next command if
+    running; the items before it finish, and the error of the first failing item in list order is raised: the one a
+    one-at-a-time read stops on. When the calling thread is interrupted (a job timeout), every item stops. Either
+    way only the commands already sent to Windows are waited for (one cannot be taken back halfway), and nothing runs
+    once this returns.
+    """
+    futures: list[Future] = []
+    # Set once every item is queued, so a failing item can always cancel the ones after it.
+    queued = threading.Event()
+
+    def guarded(index: int, item: Any) -> Any:
+        queued.wait()
+        # A stopped item that starts anyway sends nothing: its first command is refused.
+        stop.enter(index)
+        try:
+            return fn(item)
+        except BaseException:
+            stop.fail(index)
+            # From the worker, so the items after it stop now, not when the calling thread reaches this one.
+            for f in futures[index + 1 :]:
+                f.cancel()
+            raise
+        finally:
+            stop.leave()
+
+    # Not a with block: after a job timeout the read must not wait for the threads without a bound.
+    pool = ThreadPoolExecutor(max_workers=min(workers, len(items)), thread_name_prefix="windows-dhcp-read")
+    try:
+        try:
+            futures.extend(pool.submit(guarded, i, item) for i, item in enumerate(items))
+        finally:
+            queued.set()
+        # In list order: every item before the one that raises here returned, so its error is the first one.
+        results = [_wait(f) for f in futures]
+    except BaseException as exc:
+        stop.stop_all()
+        pool.shutdown(wait=False, cancel_futures=True)
+        if _raised_by_an_item(futures, exc) or isinstance(exc, _Skipped | CancelledError):
+            # An item failed: wait for the commands in flight, so nothing runs once the read has failed.
+            futures_wait(_not_cancelled(futures))
+            if isinstance(exc, _Skipped | CancelledError):  # not expected: see above
+                raise _first_error(futures) from None
+            raise
+        # Interrupted (a job timeout): wait a bounded time for the commands in flight, then let the interrupt through
+        # so the job can still record its failure. A command still running is left to its thread; the job closes the
+        # client, which ends an SSH command.
+        futures_wait(_not_cancelled(futures), timeout=INTERRUPT_WAIT)
+        raise
+    pool.shutdown(wait=True)
+    return results
+
+
+def _not_cancelled(futures: list[Future]) -> list[Future]:
+    # A future cancelled while queued never counts as done for concurrent.futures.wait: its thread never takes it.
+    return [f for f in futures if not f.cancelled()]
+
+
+def _raised_by_an_item(futures: list[Future], exc: BaseException) -> bool:
+    return any(f.done() and not f.cancelled() and f.exception() is exc for f in futures)
+
+
+def _first_error(futures: list[Future]) -> BaseException:
+    """The first real error of finished futures, in list order (not a stop, not a cancellation)."""
+    for f in futures:
+        if f.cancelled():
+            continue
+        error = f.exception()
+        if error is not None and not isinstance(error, _Skipped):
+            return error
+    return RuntimeError("a parallel read of the server stopped without an error")  # not reached
+
+
+def _merge(state: WindowsState, part: WindowsState) -> None:
+    """Add the lists of ``part`` (what one scope holds, and its notes) to ``state``."""
+    for f in fields(WindowsState):
+        value = getattr(part, f.name)
+        if isinstance(value, list) and value:
+            getattr(state, f.name).extend(value)
 
 
 def _gone_or_read(read_scope: Any, get_scope: Any, key: str, state: WindowsState, kind: str) -> bool:
@@ -211,24 +419,6 @@ def _read_scope(client: DhcpClient, state: WindowsState, sid: str) -> None:
     state.options.extend(part.options)
     state.policies.extend(part.policies)
     state.policy_ranges.extend(part.policy_ranges)
-
-
-def _read_v6(client: DhcpClient, state: WindowsState) -> None:
-    state.v6_classes = client.list_v6_classes()
-    state.v6_scopes = client.list_v6_scopes()
-    # -All returns the values of every user class at each level, as for IPv4 (lab, Windows Server 2022).
-    state.v6_options.extend(client.list_v6_option_values(all=True))
-    state.v6_scopes = [
-        scope
-        for scope in state.v6_scopes
-        if _gone_or_read(
-            lambda px=scope.prefix: _read_v6_scope(client, state, px),
-            client.get_v6_scope,
-            scope.prefix,
-            state,
-            "DHCPv6 scope",
-        )
-    ]
 
 
 def _read_v6_scope(client: DhcpClient, state: WindowsState, prefix: str) -> None:

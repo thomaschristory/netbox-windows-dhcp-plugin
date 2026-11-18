@@ -49,6 +49,24 @@ All notable changes to this project are documented here. The format follows
   instead (Windows answers DHCP 20016, which is now taken as "deleted" for these reads only). A server-level policy or
   a DHCPv6 reservation (Windows answers with a database error code) deleted during the read still fails it, as
   before; the next run works. Checked on Windows Server 2025. (#100)
+- `max_concurrency` now does something: reading a server (import, push, dry run) reads up to that many scopes (4 by
+  default), IPv4 and DHCPv6, at the same time, each PowerShell command over its own WinRM connection or SSH session,
+  instead of one after another. The result is the same as before, in the same order, and a failing scope fails the
+  read with the same error; the scopes after it stop at their next command. The server-wide lists are still read
+  one after another (all of them first now, DHCPv6 included), and a push still sends its changes one after
+  another. The cap is per job, not per Windows host: see [Workers](docs/workers.md#timeouts-and-concurrency) for
+  WinRM and OpenSSH session limits. Set it to `1` to keep the old behaviour, for example when a firewall or the DHCP
+  server limits connections. **Upgrading:** a `max_concurrency` left in `PLUGINS_CONFIG`, which did nothing until
+  now, takes effect. A value that is not a whole number of at least 1 is now logged and the default used; above 10
+  a warning is logged, and above 30 (the default WinRM `MaxShellsPerUser`) 30 is used. A job that times out waits
+  at most 30 seconds for the commands in flight.
+  In the lab (two servers, WinRM with CredSSP; 7 scopes, 6 IPv4 and 1 DHCPv6, and 5 IPv4 scopes) a full read took
+  28% less time with the default of 4, with no connection errors at up to 8. (#99)
+- SSH: a session that fails to open on a live connection no longer drops that connection, which killed every
+  command running on it and hid the real error behind theirs; only that command fails. When the server refuses a
+  session while other commands run on the connection (sshd `MaxSessions`), it is tried again for a few seconds
+  first. The message gives the server's reason, then names `MaxSessions` and `max_concurrency` as a possible
+  cause. A dead connection is still opened again once. (#99)
 - The failover shared secret no longer appears in the PowerShell script sent to the DHCP server: it follows the
   script on the same input line and is handed to it in a variable. PowerShell script block logging (event 4104) on
   the DHCP server no longer records it, nor does module logging of `ConvertFrom-Json` (checked with PowerShell 7
