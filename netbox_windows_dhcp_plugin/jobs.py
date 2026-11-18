@@ -382,8 +382,11 @@ class ImportJob(JobRunner):
 def push_log_line(host, outcome, dry_run):
     """The job log's last line: what a dry run plans, or what a push really changed (not what it planned)."""
     planned = len(outcome.plan.changes)
+    # Changes held back by the delete pause (see push._pause_deletes): there is something to do, later.
+    waiting = sum(1 for s in getattr(outcome.plan, "skipped", ()) if getattr(s, "waiting", False))
     if dry_run:
-        return f"Push to {host}: would change {planned} object(s)"
+        line = f"Push to {host}: would change {planned} object(s)"
+        return line + (f", {waiting} waiting" if waiting else "")
     result = outcome.result
     line = f"Push to {host}: changed {len(result.applied)} of {planned} object(s)" if planned else f"Push to {host}"
     if result.failed:
@@ -392,7 +395,9 @@ def push_log_line(host, outcome, dry_run):
         line += f", {len(result.skipped)} not attempted"
     if outcome.replication_errors:
         line += f", failover replication failed ({len(outcome.replication_errors)})"
-    if not planned and not outcome.replication_errors:
+    if waiting:
+        line += f"{':' if line == f'Push to {host}' else ','} {waiting} waiting"
+    elif not planned and not outcome.replication_errors:
         line += ": nothing to change"
     return line
 

@@ -253,3 +253,19 @@ def test_v6_batched_reservation_option_values(lab: Lab, probe_out) -> None:
     print(f"v6 reserved_batch: id={err.get('id')!r} category={err.get('category')!r}")
     # DHCP 20013 is a database error code: it stays a real error, so the read fails and the next one runs.
     assert err.get("id", "").startswith("DHCP 20013,") and not err.get("not_found"), err
+
+
+def test_two_reservations_for_one_duid_and_iaid(lab: Lab, probe_out) -> None:
+    """push.py (#108): Windows refuses a second DHCPv6 reservation for one DUID and IAID in a prefix, and takes
+    another IAID of the same DUID (Server 2025 lab run)."""
+    lab.v6_scope("nbwd-test-v6twice")
+    lab.client.add_v6_reservation(wc.ReservationV6(V6_PREFIX, "2001:db8:4e42::30", DUID, 7, "nbwd-test-v6a", ""))
+    seen = {}
+    for label, ip, iaid in (("same_iaid", "2001:db8:4e42::31", 7), ("other_iaid", "2001:db8:4e42::32", 8)):
+        try:
+            lab.client.add_v6_reservation(wc.ReservationV6(V6_PREFIX, ip, DUID, iaid, f"nbwd-test-v6-{label}", ""))
+            seen[label] = "accepted"
+        except PSError as exc:
+            seen[label] = f"refused: {exc}"
+    save_probe(probe_out, "v6-reservation-same-client", seen)
+    assert seen["same_iaid"].startswith("refused") and seen["other_iaid"] == "accepted", seen

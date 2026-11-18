@@ -336,6 +336,12 @@ class FakeDhcpServer:
                 cmd, f"Failed to add scope {sid}. The specified subnet already exists on the DHCP server.", 20052
             )
         self._check_range(cmd, sid, _s(p, "subnet_mask"), _s(p, "start_range"), _s(p, "end_range"))
+        new = ipaddress.IPv4Network(f"{sid}/{_s(p, 'subnet_mask')}")
+        if any(
+            new.overlaps(ipaddress.IPv4Network(f"{o['scope_id']}/{o['subnet_mask']}")) for o in self.scopes.values()
+        ):
+            # A scope sharing addresses with another (lab, Windows Server 2025: a /25 inside a /24).
+            raise _err(cmd, 20052, "ResourceExists", f"Failed to add scope {sid} on DHCP server FAKE.")
         sc = self._scope_from(sid, p, None)
         self.scopes[sid] = sc
         if sid != _s(p, "scope_id"):  # the read-back uses the client's scope ID
@@ -423,6 +429,15 @@ class FakeDhcpServer:
             cid = normalize.canonical_mac(_s(p, "client_id"))
         except ValueError as e:
             raise _invalid(cmd, str(e)) from None
+        if any(r["scope_id"] == sc["scope_id"] and r["client_id"] == cid for r in self.reservations.values()):
+            # One reservation per client in a scope (lab, Windows Server 2025).
+            raise _err(
+                cmd,
+                20022,
+                "ResourceExists",
+                f"Failed to reserve IP address {ip} for ClientID/ClientDUID {cid} in scope {sc['scope_id']} on DHCP "
+                "server FAKE.",
+            )
         r = {
             "scope_id": sc["scope_id"],
             "ip_address": ip,
@@ -482,6 +497,19 @@ class FakeDhcpServer:
                 )
             if idx >= 0:
                 raise _invalid(cmd, "The specified IP address range is already defined on the DHCP server.")
+            if any(
+                x["scope_id"] == sid and _ip4(x["start_range"]) <= _ip4(e) and _ip4(s) <= _ip4(x["end_range"])
+                for x in self.exclusions
+            ):
+                # Sharing even one address with another exclusion range of the scope, or nested in it (lab, Windows
+                # Server 2025).
+                raise _err(
+                    cmd,
+                    20000,
+                    "InvalidData",
+                    f"Failed to add exclusion range with start range {s} and end range {e} to scope {sid} on DHCP "
+                    "server FAKE.",
+                )
             self.exclusions.append(want)
             return want
         if idx < 0:
@@ -1234,11 +1262,25 @@ class FakeDhcpServer:
             raise _invalid(cmd, "The specified IP address is not in the scope.")
         if ip in self.v6_reservations:
             raise _invalid(cmd, "The specified IP address is currently taken by another client.")
+        duid, iaid = normalize.canonical_duid(_s(p, "client_duid")), _n(p, "iaid")
+        if any(
+            r["prefix"] == prefix and r["client_duid"] == duid and r["iaid"] == iaid
+            for r in self.v6_reservations.values()
+        ):
+            # One reservation per DUID and IAID in a scope; another IAID of the same DUID is fine (lab, Windows
+            # Server 2025).
+            raise _err(
+                cmd,
+                20022,
+                "ResourceExists",
+                f"Failed to reserve IP address {ip} for ClientID/ClientDUID {duid} in scope {prefix} on DHCP server "
+                "FAKE.",
+            )
         r = {
             "prefix": prefix,
             "ip_address": ip,
-            "client_duid": normalize.canonical_duid(_s(p, "client_duid")),
-            "iaid": _n(p, "iaid"),
+            "client_duid": duid,
+            "iaid": iaid,
             "name": _s(p, "name") or ip,
             "description": _s(p, "description"),
         }

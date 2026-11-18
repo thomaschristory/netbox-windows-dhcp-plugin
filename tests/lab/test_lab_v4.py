@@ -704,3 +704,106 @@ def test_batched_read_time(lab: Lab, probe_out) -> None:
     print(result)
     assert all([o.value for o in got[ip] if o.option_id == 15] == [[f"t{i}.example"]] for i, ip in enumerate(ips))
     assert wc.READ_BATCH * brief <= budget, result
+
+
+# -- issue #108: what the push leaves out because Windows would refuse it ---------------------------------------------
+
+
+def _attempt(fn) -> str:
+    """'accepted', or 'refused: <Windows message>'."""
+    try:
+        fn()
+    except wc.PSError as exc:
+        return f"refused: {exc}"
+    return "accepted"
+
+
+def test_range_with_network_or_broadcast_address(lab: Lab, probe_out) -> None:
+    """push.py (#108): Windows refuses a scope range holding the network or the broadcast address (Server 2025 lab
+    run), so the push leaves such a scope out."""
+    seen = {}
+    for label, first, last in (("network", 0, 200), ("broadcast", 10, 255)):
+        net = lab.new_v4_subnet()
+        base = net.rsplit(".", 1)[0]
+        lab.on_cleanup(f"scope {net}", lambda net=net: lab.remove_scope(net))
+        scope = wc.Scope(
+            name=f"nbwd-test-edge-{label}",
+            start_range=f"{base}.{first}",
+            end_range=f"{base}.{last}",
+            subnet_mask="255.255.255.0",
+            scope_id=net,
+            lease_duration="1.00:00:00",
+        )
+        seen[label] = _attempt(lambda scope=scope: lab.client.add_scope(scope))
+    save_probe(probe_out, "v4-scope-network-broadcast", seen)
+    assert all(v.startswith("refused") for v in seen.values()), seen
+
+
+def test_reservation_outside_the_scope_range(lab: Lab, probe_out) -> None:
+    """push.py (#108): Windows takes a reservation inside the subnet but outside the scope's range (Server 2025 lab
+    run), whatever Microsoft KB 2005980 says, so the push only asks for the prefix."""
+    s = lab.scope("nbwd-test-res-out")
+    base = s.scope_id.rsplit(".", 1)[0]
+    outside = wc.Reservation(scope_id=s.scope_id, ip_address=f"{base}.5", client_id=MAC_PREFIX + "00-01-08")
+    seen = {"outside": _attempt(lambda: lab.client.add_reservation(outside))}
+    save_probe(probe_out, "v4-reservation-outside-range", seen)
+    assert seen["outside"] == "accepted", seen
+
+
+def test_overlapping_scopes(lab: Lab, probe_out) -> None:
+    """push.py (#108): Windows refuses a scope sharing addresses with another scope of the server, a /25 inside a
+    /24 (Server 2025 lab run: ResourceExists)."""
+    s = lab.scope("nbwd-test-scope-overlap")
+    base = s.scope_id.rsplit(".", 1)[0]
+    inner = f"{base}.128"
+    lab.on_cleanup(f"scope {inner}", lambda: lab.remove_scope(inner))
+    scope = wc.Scope(
+        name="nbwd-test-scope-overlap-inner",
+        start_range=f"{base}.130",
+        end_range=f"{base}.140",
+        subnet_mask="255.255.255.128",
+        scope_id=inner,
+        lease_duration="1.00:00:00",
+    )
+    seen = {"inner": _attempt(lambda: lab.client.add_scope(scope))}
+    seen["listed"] = sorted(x.scope_id for x in lab.client.list_scopes() if x.scope_id.startswith(f"{base}."))
+    save_probe(probe_out, "v4-scope-overlap", seen)
+    assert seen["inner"].startswith("refused"), seen
+
+
+def test_overlapping_exclusion_ranges(lab: Lab, probe_out) -> None:
+    """push.py (#108): Windows refuses exclusion ranges of one scope sharing addresses (overlapping or nested), and
+    takes one reaching past the scope's range inside the subnet (Server 2025 lab run)."""
+    s = lab.scope("nbwd-test-excl-overlap")
+    base = s.scope_id.rsplit(".", 1)[0]
+    lab.client.add_exclusion_range(wc.ExclusionRange(s.scope_id, f"{base}.20", f"{base}.40"))
+    attempts = {
+        "overlap": (30, 50),
+        "inside": (25, 35),
+        # Inside the subnet but reaching past the scope's range (.10-.200).
+        "outside_range": (2, 12),
+    }
+    seen = {
+        label: _attempt(
+            lambda a=a, b=b: lab.client.add_exclusion_range(wc.ExclusionRange(s.scope_id, f"{base}.{a}", f"{base}.{b}"))
+        )
+        for label, (a, b) in attempts.items()
+    }
+    seen["listed"] = [(e.start_range, e.end_range) for e in lab.client.list_exclusion_ranges(s.scope_id)]
+    save_probe(probe_out, "v4-exclusion-overlap", seen)
+    assert seen["overlap"].startswith("refused") and seen["inside"].startswith("refused"), seen
+    assert seen["outside_range"] == "accepted", seen
+
+
+def test_two_reservations_for_one_client(lab: Lab, probe_out) -> None:
+    """push.py (#108): Windows refuses a second reservation for one client in a scope (Server 2025 lab run:
+    ResourceExists)."""
+    s = lab.scope("nbwd-test-res-twice")
+    base = s.scope_id.rsplit(".", 1)[0]
+    mac = MAC_PREFIX + "00-01-09"
+    lab.client.add_reservation(wc.Reservation(scope_id=s.scope_id, ip_address=f"{base}.20", client_id=mac))
+    second = wc.Reservation(scope_id=s.scope_id, ip_address=f"{base}.21", client_id=mac)
+    seen = {"second": _attempt(lambda: lab.client.add_reservation(second))}
+    seen["listed"] = [r.ip_address for r in lab.client.list_reservations(s.scope_id)]
+    save_probe(probe_out, "v4-reservation-same-client", seen)
+    assert seen["second"].startswith("refused"), seen

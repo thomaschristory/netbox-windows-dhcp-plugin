@@ -133,7 +133,13 @@ def test_policy_fingerprint_leaves_the_processing_order_out():
 def test_policy_ordering_does_not_rescan_every_record_for_each_level(monkeypatch):
     def policy_at(n, name, order):
         sid = f"10.{n}.0.0"
-        fields = {**policy(scope_id=sid).fields, "name": name, "scope_id": sid, "processing_order": order}
+        fields = {
+            **policy(scope_id=sid).fields,
+            "name": name,
+            "scope_id": sid,
+            "processing_order": order,
+            "ip_ranges": [],
+        }
         return Record("policy", ws.policy_key(sid, name), fields)
 
     scopes = [scope_at(f"10.{n}.0.0") for n in range(1, 31)]
@@ -215,7 +221,9 @@ def test_windows_error_and_lost_reply_count_as_maybe_written_but_a_refusal_does_
     _, first = run(client, [scope()])
     managed = state_after({}, first)
     # A refusal raised before anything is sent: the subnet mask cannot change.
-    _, result = run(client, [scope(subnet_mask="255.255.0.0")], managed)
+    # The plan refuses a mask change first; the writer still refuses it as a last resort.
+    mask = Change("update", "scope", "10.1.0.0", before=scope().fields, after=scope(subnet_mask="255.255.0.0").fields)
+    result = push.execute(push.Plan(changes=[mask]), WindowsWriter(client))
     assert len(result.failed) == 1 and result.maybe_written == []
     # An error reported by Windows: part of the change may have been made.
     fake.fail = lambda op, p: (

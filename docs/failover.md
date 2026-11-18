@@ -69,7 +69,8 @@ reservation page follows the same lab: [Reservations](reservations.md).
   The partner does not need them; Windows copies them there when the relationship is created.
 - The primary server's credential profile covers the partner in its `allowed_hosts`, when it has the list: creating
   the relationship makes the primary contact the partner as that account, and the push refuses to create it
-  otherwise.
+  otherwise. The form already refuses a new partner the profile does not cover (an imported relationship, or one whose
+  primary and partner did not change, is not checked again: Windows already has it).
 - For message authentication, a credential profile holds the shared secret and its `allowed_hosts` cover both
   partners (here `lab-failover`, see [Shared secret](#shared-secret)).
 
@@ -196,7 +197,8 @@ If a replication fails, the push is marked failed and the next push to the prima
   scopes are left pending. A failed change to the relationship itself triggers no replication.
 - A push to the partner server leaves the relationship's scopes alone: they belong to the primary.
 - **Primary server role** is set when the relationship is created. Windows cannot change it afterwards
-  (`Set-DhcpServerv4Failover` has no role parameter), so a push that changes it in NetBox is refused. To change it,
+  (`Set-DhcpServerv4Failover` has no role parameter), so a push that changes it in NetBox is refused (in the dry
+  run too). To change it,
   delete the relationship in NetBox and let that push finish, then create it again with the new role: a delete and
   a create of the same name in one push (or one branch merge) count as a change, and are refused. Switching a
   relationship from load balance to hot standby lets Windows pick the roles; if it picks another role than NetBox
@@ -260,8 +262,15 @@ profile to turn authentication on or to send a new secret.
   is refused before anything changes, and a later push deletes it once the leases are gone.
 - Removing a relationship removes its scopes from the partner, as Windows documents.
 
-Changing the partner is refused: Windows only allows it by removing the
-relationship.
+Changing the partner is refused when the push is planned (the dry run shows it): Windows only allows it by removing the
+relationship. A scope moved from one relationship to another in NetBox moves in one push: the relationship letting it go
+is updated first (in a chain of moves, each relationship after the one it takes from, whatever the names). Two
+relationships swapping scopes are refused: move one scope at a time (remove it from one relationship, push, then add it
+to the other). Until then the refusal holds back every IPv4 delete of the server, and the other moves wait with it. If
+the relationship taking the scope fails at Windows (its partner cannot be reached, say), the push puts the scope back
+into the relationship it left and says so in the error; the next push tries again. If the connection to the server is
+lost at that moment (or the push stops on an unexpected error), nothing more is sent: the error says the scope is in no
+failover relationship now, and the next push adds it to the relationship that should take it.
 
 A relationship can be left with no scopes: Windows keeps it, empty, on both partners.
 

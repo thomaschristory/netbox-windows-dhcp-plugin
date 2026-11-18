@@ -138,7 +138,7 @@ The push is a **reconcile per server**, not a replay of the change log. For each
   without a name gets its IP, as Windows does, so neither shows as a change on every push.
 - **Write.** `sync/windows_writer.py` turns one change into client calls, back in Windows spelling (`InActive`,
   `d.hh:mm:ss`, 2^32-1 for no BOOTP limit). An exclusion update is a remove and an add. Changing a scope subnet mask
-  or an option definition type or array flag is refused: Windows only allows it by removing the object with
+  (refused by the plan first, see the delete pause) or an option definition type or array flag is refused: Windows only allows it by removing the object with
   everything under it. A scope with leases is never force-removed (DHCP 20007 fails that change).
 - **Run.** Changes run one at a time. A failure skips the children of an object that was not created and keeps the
   parents of an object that was not deleted; other changes go ahead and the run ends failed with one line per
@@ -229,6 +229,74 @@ relationships, MAC filters, list switches.
   NetBox keeps the Windows one. A policy without conditions is not pushed (Windows requires one), nor are policies
   sharing a processing order. A policy value is only pushed when NetBox holds its policy at the same level, since
   Windows names the policy by name only; the models check the policy's server and level too.
+- **Containment and clashes (#108).** IPAM edits bypass the plugin's `clean()` checks, and cross-object rules in
+  model validation would make proposal items apply in an order-dependent way, so these are push-side reasons instead
+  (`_unpushable` per record, `_conflicts` across records; pure, in the dry run, never blocking an import): an IPv4
+  scope range outside its prefix, reversed, or holding the network or broadcast address (prefixes up to /30); a
+  reservation outside its scope's prefix (inside the prefix but outside the range is accepted by Windows Server
+  2025, lab, despite Microsoft KB 2005980); an exclusion outside the prefix or reversed (past the range inside the
+  prefix is accepted, lab); IPv4 scopes of one server sharing addresses, Windows scopes NetBox neither holds nor
+  manages included; exclusions of one scope sharing even one address; two reservations of one scope for one client
+  (client ID compared without separators or case; DHCPv6 DUID and IAID); children of a second scope on one network
+  (`#<pk>` key); a scope policy whose stored
+  `ip_ranges` do not parse (`netbox_state._policy_ranges` passes the stored value through instead of failing the
+  whole read; `windows_state.ip_ranges` stays strict). For a clash, an object already on Windows as NetBox has it
+  (same key, same mask or client) keeps being pushed and only the others are left out; with none, all are. Children of
+  a refused object are refused too, transitively over `parents()` (`_waiting_children`), so nothing is created under
+  it. Scope policy IP ranges must parse (`_unpushable`), run upwards and sit in the scope's prefix (`_conflicts`);
+  `windows_writer` checks them again before any write, since a policy update removes old ranges before adding new
+  ones.
+- **Delete pause (#108).** While anything in a family cannot be pushed, nothing in that family is deleted; the dry run
+  lists what is waiting and why. Families (`push.family`): v4 = scope, superscope, reservation, exclusion, failover,
+  scope policy, option values under a scope or reservation; v6 = scope6, reservation6, option6 under a prefix; policy =
+  server-level policies and the server-level option values set through them. Classes, option definitions, plain server
+  option values and MAC filters are in none. `_pause_deletes` runs last in `plan`. The blocking set is the objects
+  refused for what they are: plan reasons (a scope mask change included, since Set-DhcpServerv4Scope cannot change it),
+  their children (`_waiting_children`, transitively over `parents()`), a scope held by a relationship this push does not
+  release (`_scopes_in_other_relationships`), and a new policy (a new name, a rename's new policy included) refused
+  for its processing order (`Plan.order_refusals`): one of the deletes may be what it replaces. Such a new policy is
+  left out only when its number fails to fit just because the planned deletes close the gaps before it, and fits
+  among the policies NetBox holds at the level. A policy already on Windows refused for its number never blocks: it
+  stays on Windows whatever happens, so no delete replaces it, and holding the deletes back would keep a NetBox that
+  did not renumber after deleting order 1 of 3 stuck for good (that delete goes ahead, and the others wait for the
+  renumbering with a reason, as before the pause existed). Changes that still go
+  ahead in another form (`_protect_memberships`) do not block either. Every delete of a blocked family, and every
+  failover update that drops scopes, becomes a `not_pushed` entry (`waiting: ...`, first three blockers named, then "and
+  N more"); a delete outside the families that still holds a paused child waits with it; a create that would clash on
+  Windows with a waiting delete (the same client's reservation in the scope, an exclusion or a scope over its addresses,
+  a relationship taking a scope a waiting relationship holds) waits too, instead of failing at Windows on every push,
+  and so does whatever would be created under a waiting create. The job log's last line counts what waits.
+  Waiting entries come first in `not_pushed` and the job log, and `waiting_count` counts them whatever the 1000-entry
+  cap. Paused objects stay in `SyncState`, so the first push with nothing refused deletes them; nothing churns (a second
+  plan is empty). This replaced an address-matching heuristic (`_replaced`), which missed a DHCPv6 prefix move, a move
+  onto a destination refused for another reason, and a /23 split.
+- **Failover moves (#108).** A simple move of a scope from one relationship to another in NetBox: the relationship
+  letting it go releases it in the same push (its update runs before the other relationship creates and updates), so the
+  taker is not refused and the move converges in one push. Only an update that is not refused releases anything
+  (`_scopes_in_other_relationships` repeats until nothing more is refused). Moves that go round in a circle (two
+  relationships swapping scopes) are refused, asking for one scope at a time; a scope held by a relationship NetBox does
+  not manage, or one this push keeps, still refuses the taker. Both block the IPv4 deletes. What the writer refuses on a
+  relationship update (a new partner, a new hot standby role, turning authentication off) is refused in the plan
+  (`_failover_update_problem`), so such a taker never lets the other relationship release a scope for nothing. When the
+  taker fails at Windows anyway (partner unreachable, secret missing, profile refusing the partner), `execute` puts the
+  scopes back into the relationship that let them go (`WindowsWriter.restore_failover_scopes`, best effort, said in the
+  error) and records the relationship as Windows now holds it (as this push wrote it, plus the scopes put back), so
+  its other changes stay recorded and the next push finds it in step and tries the move again. Without a usable
+  connection (lost, or the push stopped on an unexpected error) nothing more is sent; the error says the scopes are in
+  no relationship and the next push adds them to the taker. Relationship creates and updates are ordered by the moves
+  (a topological sort of who takes from whom), not by name. A child of a policy refused as a create waits with it; a
+  policy already on Windows refused for its order does not stop what hangs off it.
+- **Lab results (Windows Server 2025).** Range with the network or broadcast address refused; overlapping and nested
+  exclusions refused (InvalidData); duplicate IPv4 client refused (ResourceExists); same DHCPv6 DUID and IAID refused,
+  another IAID accepted; two scopes sharing addresses refused (ResourceExists, a /25 inside a /24). The fake server
+  refuses the same, with Windows' messages. No `pre_save` veto on core IPAM models: the guard in `ipam_guard.py` is
+  about permissions only.
+- **Model checks (#108).** `WindowsServer.clean()` refuses a second row for one DHCP server (normalised host, port
+  with its default, normalised remote DHCP server; hosts compared in Python, so IPv6 spellings match), one query,
+  without naming the other server. `FailoverRelationship.clean()` refuses a partner whose DHCP host the primary's
+  credential profile does not allow (`conf.host_allowed`), only for a new relationship or a new primary or partner,
+  as the push only names the partner on create; skipped for an unknown profile and for imports
+  (`check_partner_host = False` in `mapping`), which record what Windows already has.
 - **Policy criteria (#21).** Windows Server 2025 stores a MAC prefix as whole bytes with a separator before the
   wildcard (`02-4e-42-ab*` reads back `02-4e-42-ab-*`) and host names in lowercase. `normalize
   .canonical_policy_criterion` gives that form; `windows_state.equal` and `push.fingerprint` compare and hash criteria
@@ -263,7 +331,8 @@ relationships, MAC filters, list switches.
   refuses a relationship already held with the other server as primary. The shared secret comes from the
   credential profile in `shared_secret_profile` (key `secret`), is checked against both partners' hosts when saved
   and before each push, and only travels from the profile to the cmdlet; records only say whether authentication is
-  on, so a rotated secret is not noticed. Changing the partner or turning authentication off is refused. A scope a
+  on, so a rotated secret is not noticed. Changing the partner or turning authentication off is refused (when the
+  push is planned). A scope a
   managed relationship no longer lists may be deleted: it leaves the relationship first in the same push (after a
   lease check, so a refused delete changes nothing; a scope whose delete fails stays in the relationship). A scope
   only leaves a relationship that NetBox manages and that is unchanged on Windows since the last push, and never

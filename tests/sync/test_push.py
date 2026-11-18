@@ -441,8 +441,8 @@ def test_policy_order_past_the_end_is_reported(client, fake):
     assert "processing order 3" in reasons["policy", "10.1.0.0/b"]
     assert not result.failed, result.failed
     assert orders(fake) == [("A", 1)]
-    # Its option value is not attempted either.
-    assert any(c.kind == "option" for c, _ in result.skipped)
+    # Its option value is not pushed either.
+    assert "waits for policy 10.1.0.0/b" in reasons["option", "10.1.0.0/6;policy=b"]
 
 
 def test_deleting_a_policy_closes_the_gap(client, fake):

@@ -186,6 +186,7 @@ class WindowsServer(JobsMixin, PrimaryModel):
         if self.device_id and self.virtual_machine_id:
             raise ValidationError(_("A server runs on a device or a virtual machine, not both."))
         self._clean_allowed_hosts()
+        self._clean_same_server()
         if self.transport == TransportChoices.SSH and not self.verify_tls:
             raise ValidationError(
                 {
@@ -205,6 +206,39 @@ class WindowsServer(JobsMixin, PrimaryModel):
             raise ValidationError({"verify_tls": _("Basic authentication requires certificate verification.")})
         if self.winrm_auth == WinRMAuthChoices.CREDSSP and not (self.winrm_https and self.verify_tls):
             self._clean_credssp_transport()
+
+    def _clean_same_server(self):
+        """
+        Two rows for one DHCP server would push conflicting state to it. Same host, port and remote DHCP server means
+        the same server; hosts compare as the connection check reads them (no case, no trailing dot, one spelling per
+        IP address). Aliases (another DNS name, an address for a name) are not caught, nor the same server reached
+        through another port, transport or management host; servers behind one NAT address need different ports.
+        """
+        host = normalise_host(self.host) if self.host else None
+        port = self.port or DEFAULT_PORTS.get((self.transport, self.winrm_https))
+        if host is None or port is None:
+            return  # an invalid host or transport has its own error
+        computer = normalise_host(self.computer_name) if self.computer_name else ""
+        # Every other server in one query: there are few, and an IPv6 address has many spellings the database cannot
+        # compare.
+        others = WindowsServer.objects.exclude(pk=self.pk) if self.pk is not None else WindowsServer.objects.all()
+        for other_host, other_port, transport, https, other_computer in others.values_list(
+            "host", "port", "transport", "winrm_https", "computer_name"
+        ):
+            if (
+                normalise_host(other_host) == host
+                and (other_port or DEFAULT_PORTS.get((transport, https))) == port
+                and (normalise_host(other_computer) if other_computer else "") == computer
+            ):
+                # Not named: the user may not be allowed to see it.
+                raise ValidationError(
+                    {
+                        "host": _(
+                            "Another Windows server already connects to this host, port and remote DHCP server; keep "
+                            "one server per DHCP server."
+                        )
+                    }
+                )
 
     def _clean_credssp_transport(self):
         # CredSSP hands the password to the server; without HTTPS and verification nothing proves who that is.

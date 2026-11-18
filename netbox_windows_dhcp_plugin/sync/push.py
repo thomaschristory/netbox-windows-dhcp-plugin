@@ -19,10 +19,13 @@ Safety rules, because a push can delete on a production DHCP server:
 
 from __future__ import annotations
 
+import bisect
 import hashlib
+import ipaddress
 import itertools
 import json
 import logging
+import re
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -44,6 +47,7 @@ from .windows_state import (
     policy_key,
     records_equal,
     reservation6_key,
+    same_host,
     scope6_key,
     with_option_types,
 )
@@ -104,6 +108,8 @@ LEASE_OR_MASK = (
 class Skip:
     change: Change
     reason: str
+    # Held back by the delete pause (see _pause_deletes), not refused for what it is.
+    waiting: bool = False
 
 
 @dataclass
@@ -123,6 +129,11 @@ class Plan:
     # Relationships updated around scopes added on Windows by hand: those scopes, left out of the fingerprint the
     # update records (see _protect_memberships).
     protected: dict[Key, set[str]] = field(default_factory=dict)
+    # Policies refused for a processing order that would not fit even without this push's deletes: they count for
+    # the delete pause (see _order_level), unlike those the deletes alone push past the end.
+    order_refusals: set[Key] = field(default_factory=set)
+    # Scopes moved from one relationship to another in this push: taker key -> [(releaser key, releaser name, scope)].
+    moves: dict[str, list[tuple[str, str, str]]] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -137,6 +148,10 @@ class Plan:
             _capped(out, "not_pushed", [(s.change, s.reason) for s in self.skipped])
             # Not "skipped": the result of the push uses that name for the changes it did not attempt.
             out["not_pushed_count"] = len(self.skipped)
+            waiting = sum(1 for s in self.skipped if s.waiting)
+            if waiting:
+                # Listed first in not_pushed (plan sorts them there), and counted whatever the cap.
+                out["waiting_count"] = waiting
         return out
 
 
@@ -275,10 +290,11 @@ def parents(kind: str, fields: Mapping[str, Any]) -> list[Key]:
 
 
 def _unpushable(
-    record: Record, skipped_option_ids: set[int], defined: set[str] | None, exists: bool = False
+    record: Record, skipped_option_ids: set[int], defined: set[str] | None, current: Record | None = None
 ) -> str | None:
-    """Why NetBox data cannot become a Windows object, or None."""
+    """Why NetBox data cannot become a Windows object, or None. ``current`` is the Windows twin, if any."""
     f = record.fields
+    exists = current is not None
     # netbox_state marks extra copies with "#<pk>", and a reservation without an address ends in "/": neither names
     # a Windows object.
     if DUPLICATE in f:
@@ -291,6 +307,24 @@ def _unpushable(
         return f"Windows defines option {f['option_id']} itself; remove the definition from NetBox"
     if record.kind == "policy" and not f.get("criteria"):
         return "a policy needs at least one condition on Windows; add one in NetBox"
+    if record.kind == "policy" and not _valid_policy_ranges(f.get("ip_ranges")):
+        # Only a raw save (a branch merge, a script, nbshell) can store this: the form and the API refuse it.
+        return (
+            f"policy {f.get('name')}: its stored IP ranges are not a list of [start, end] IPv4 address pairs; fix "
+            "them in NetBox"
+        )
+    if record.kind == "scope":
+        reason = _scope_range_problem(record)
+        if reason:
+            return reason
+        old_mask = current.fields.get("subnet_mask") if current is not None else None
+        if old_mask and f.get("subnet_mask") and old_mask != f["subnet_mask"]:
+            # Set-DhcpServerv4Scope has no subnet mask: a split or a merge only works by removing the scope with its
+            # reservations, options and leases. Refused here, so the delete pause keeps everything else in place.
+            return (
+                f"the subnet mask changes from {old_mask} to {f['subnet_mask']}, which Windows only allows by deleting "
+                "the scope with its reservations, options and leases; do that on Windows by hand, then import"
+            )
     if not f.get("scope_ids") and (record.kind == "superscope" or (record.kind == "failover" and not exists)):
         return f"a {record.kind} needs at least one scope on Windows; add one in NetBox, or delete it"
     if record.kind == "failover":
@@ -298,6 +332,12 @@ def _unpushable(
             return "the partner server has no Windows server (host) in NetBox; add one"
         if f["mode"] == "hotstandby" and not f.get("server_role"):
             return "a hot standby relationship needs the primary server's role (active or standby); set it in NetBox"
+        if current is not None:
+            # What the writer would refuse on an update (windows_writer._apply_failover), refused here so that it
+            # counts for the delete pause and never lets another relationship release a scope for nothing.
+            reason = _failover_update_problem(f, current.fields)
+            if reason:
+                return reason
     if record.kind == "scope6" and f.get("prefix_length") != V6_PREFIX_LENGTH:
         return f"Windows DHCPv6 scopes are /{V6_PREFIX_LENGTH} prefixes; this scope is /{f.get('prefix_length')}"
     if record.kind == "reservation6":
@@ -328,6 +368,509 @@ def _unpushable(
                 "Windows"
             )
     return None
+
+
+def _failover_update_problem(f: Mapping[str, Any], current: Mapping[str, Any]) -> str | None:
+    """Why Windows cannot turn the relationship it has (``current``) into this one in place, or None."""
+    if current.get("partner_server") and not same_host(str(current["partner_server"]), str(f["partner_server"])):
+        return (
+            "the partner server cannot change on Windows; delete the relationship in NetBox and push, then create it "
+            "again with the new partner"
+        )
+    hot, was_hot = f.get("mode") == "hotstandby", current.get("mode") == "hotstandby"
+    if hot and was_hot and (current.get("server_role") or "") != (f.get("server_role") or ""):
+        return (
+            "Windows cannot change a hot standby server's role (active or standby) in place; delete the relationship "
+            "in NetBox and push, then create it again with the new role"
+        )
+    if current.get("auth") and f.get("auth") is False:
+        return "Windows cannot turn message authentication off through this cmdlet; turn it off by hand on Windows"
+    return None
+
+
+def _valid_policy_ranges(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    for pair in value:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            return False
+        if any(_ipv4(a) is None for a in pair):
+            return False
+    return True
+
+
+def _ipv4(value: Any) -> ipaddress.IPv4Address | None:
+    try:
+        return ipaddress.IPv4Address(value) if isinstance(value, str) else None
+    except ValueError:
+        return None
+
+
+def _scope_network(record: Record) -> ipaddress.IPv4Network | None:
+    """The subnet of an IPv4 scope record (its key is the network address), or None when it does not parse."""
+    try:
+        return ipaddress.IPv4Network(f"{record.key}/{record.fields.get('subnet_mask')}")
+    except ValueError:
+        return None
+
+
+def _scope_range(record: Record | None) -> tuple[ipaddress.IPv4Address, ipaddress.IPv4Address] | None:
+    if record is None:
+        return None
+    start, end = _ipv4(record.fields.get("start_range")), _ipv4(record.fields.get("end_range"))
+    return (start, end) if start is not None and end is not None else None
+
+
+def _scope_range_problem(record: Record) -> str | None:
+    """
+    An IPv4 scope's range must sit inside its prefix: Windows works the scope out from the range and the mask, so a
+    range from another subnet would create a different scope. NetBox can hold such a range after an IPAM edit of the
+    prefix or the IP range, which the plugin's own checks never see.
+    """
+    network, bounds = _scope_network(record), _scope_range(record)
+    if network is None or bounds is None:
+        return None  # the client refuses what does not parse, with its own message
+    start, end = bounds
+    if start not in network or end not in network:
+        return (
+            f"the IP range {start}-{end} is outside the scope's prefix {network}; fix the range or the prefix in NetBox"
+        )
+    if start > end:
+        return f"the IP range {start}-{end} ends before it starts; fix it in NetBox"
+    # /31 and /32 have no network or broadcast address to leave out.
+    # Windows refuses a range holding the network or broadcast address (lab, Windows Server 2025); no client could
+    # use either address anyway.
+    if network.prefixlen <= 30 and (start == network.network_address or end == network.broadcast_address):
+        which = "network" if start == network.network_address else "broadcast"
+        return (
+            f"the IP range {start}-{end} includes the {which} address of {network}, which no client can use; "
+            "start the range after the network address and end it before the broadcast address in NetBox"
+        )
+    return None
+
+
+def _overlaps(items: Iterable[tuple[Key, int, int]]) -> dict[Key, Key]:
+    """
+    For each (key, first, last) interval that overlaps another, one interval it overlaps. One pass in address order:
+    an interval overlaps an earlier one exactly when it starts before the furthest end seen so far.
+    """
+    out: dict[Key, Key] = {}
+    owner: Key | None = None
+    furthest = -1
+    for key, first, last in sorted(items, key=lambda i: (i[1], i[2], i[0])):
+        if owner is not None and first <= furthest:
+            out.setdefault(key, owner)
+            out.setdefault(owner, key)
+        if last > furthest:
+            owner, furthest = key, last
+    return out
+
+
+def _identity(value: Any) -> str:
+    """A client ID or DUID compared the way Windows reads it: hex digits, without separators or case."""
+    return re.sub(r"[\s:.-]", "", str(value)).lower()
+
+
+def _client_of(record: Record) -> tuple[str, ...] | None:
+    """
+    Who a reservation is for, wherever it sits: the client ID (IPv4), or the DUID and IAID (DHCPv6). Windows holds one
+    reservation per client in a scope.
+    """
+    f = record.fields
+    if record.kind == "reservation":
+        return ("v4", _identity(f["client_id"])) if f.get("client_id") else None
+    if f.get("client_duid") and f.get("iaid") is not None:
+        return ("v6", _identity(f["client_duid"]), str(f["iaid"]))
+    return None
+
+
+def _scope_of(record: Record) -> str:
+    """The scope key a reservation or exclusion record hangs off (the prefix for DHCPv6)."""
+    return str(record.fields.get("scope_id") or record.fields.get("prefix") or "")
+
+
+def _conflicts(
+    source: list[Record], target: Mapping[Key, Record], managed: Mapping[Key, str] | None = None
+) -> dict[Key, str]:
+    """
+    Reasons that need more than one record: an object outside its scope, two scopes or two exclusion ranges sharing
+    addresses, two reservations for one client in a scope. Windows refuses all of these, so the push leaves them out
+    and says why. When one of the clashing objects is already on Windows as NetBox has it, that one keeps being
+    pushed and only the newcomers are left out; otherwise all of them are. A scope on Windows that NetBox neither holds
+    nor manages counts as already there: the push leaves it alone, so a NetBox scope sharing its addresses could never
+    be created.
+    """
+    managed = managed or {}
+    out: dict[Key, str] = {}
+    live = [r for r in source if DUPLICATE not in r.fields]
+    scopes = {r.key: r for r in live if r.kind == "scope"}
+    scopes6 = {r.fields.get("prefix"): r for r in live if r.kind == "scope6"}
+    # Second NetBox scopes for one Windows scope ("#<pk>" keys): their own reason is CONFLICT, and what hangs off them
+    # gets a reason saying so, rather than a check against a scope that cannot exist on Windows.
+    doubled = {r.key for r in source if r.kind in ("scope", "scope6") and DUPLICATE in r.fields}
+
+    def on_windows(record: Record, *names: str) -> bool:
+        current = target.get((record.kind, record.key))
+        return current is not None and all(
+            str(current.fields.get(n)).lower() == str(record.fields.get(n)).lower() for n in names
+        )
+
+    # Scopes of one server sharing addresses (a /23 over a /24, say), with the Windows scopes the push leaves alone.
+    # Windows refuses a scope sharing addresses with another (lab, Windows Server 2025: a /25 inside a /24 gives
+    # ResourceExists).
+    networks = {("scope", key): n for key, r in scopes.items() if (n := _scope_network(r)) is not None}
+    for key, r in target.items():
+        if key[0] != "scope" or (n := _scope_network(r)) is None:
+            continue
+        if key[1] not in scopes and key not in managed:
+            networks[("windows", key[1])] = n
+        elif key[1] in scopes and not on_windows(scopes[key[1]], "subnet_mask"):
+            # A scope whose mask changes in NetBox (refused) stays on Windows with its old mask, which a new scope
+            # of the split or merge would collide with.
+            networks[("windows", key[1])] = n
+    pairs = _overlaps((key, int(n.network_address), int(n.broadcast_address)) for key, n in networks.items())
+    for (kind, key), other in pairs.items():
+        if kind != "scope" or on_windows(scopes[key], "subnet_mask"):
+            continue
+        if other[0] != "windows":
+            where = "another scope of this server in NetBox"
+        elif other[1] in scopes:
+            where = "as Windows still has it (its subnet mask cannot change in place)"
+        else:
+            where = "a scope made on Windows outside NetBox (import it, or remove it there)"
+        out[kind, key] = (
+            f"the scope {networks[kind, key]} shares addresses with scope {networks[other]}, {where}; Windows refuses "
+            "two scopes sharing addresses: fix the prefixes in NetBox"
+        )
+
+    by_scope: defaultdict[str, list[tuple[Key, int, int]]] = defaultdict(list)
+    for r in live:
+        key = (r.kind, r.key)
+        if r.kind == "policy" and (reason := _policy_ranges_place(r, scopes.get(r.fields.get("scope_id") or ""))):
+            out.setdefault(key, reason)
+            continue
+        if r.kind not in ("reservation", "reservation6", "exclusion"):
+            continue
+        if _scope_of(r) in doubled or f"v6/{_scope_of(r)}" in doubled:
+            out.setdefault(
+                key,
+                f"its scope {_scope_of(r)} is a second NetBox scope for one Windows scope (same network address); "
+                "fix the scopes in NetBox",
+            )
+            continue
+        if r.kind == "reservation":
+            reason = _reservation_place(r, scopes.get(r.fields["scope_id"]))
+        elif r.kind == "reservation6":
+            reason = _reservation6_place(r, scopes6.get(r.fields.get("prefix")))
+        else:
+            reason = _exclusion_place(r, scopes.get(r.fields["scope_id"]))
+            start, end = _ipv4(r.fields.get("start_range")), _ipv4(r.fields.get("end_range"))
+            if reason is None and start is not None and end is not None:
+                by_scope[r.fields["scope_id"]].append((key, int(start), int(end)))
+        if reason:
+            out.setdefault(key, reason)
+
+    # Windows refuses an exclusion range sharing even one address with another of the scope, and one inside another
+    # (lab, Windows Server 2025: "overlaps with an existing range or is invalid").
+    by_key = {(r.kind, r.key): r for r in live}
+    for scope_id, ranges in by_scope.items():
+        for key, other in _overlaps(ranges).items():
+            if not on_windows(by_key[key]):
+                start, end = by_key[other].fields["start_range"], by_key[other].fields["end_range"]
+                out.setdefault(
+                    key,
+                    f"the exclusion range shares addresses with exclusion range {start}-{end} of scope {scope_id}; "
+                    "merge or fix them in NetBox",
+                )
+
+    # Windows refuses a second reservation for one client in a scope (lab, Windows Server 2025: ResourceExists for
+    # IPv4; the same DUID and IAID for DHCPv6, while another IAID of the same DUID is accepted).
+    clients: defaultdict[tuple[str, ...], list[Record]] = defaultdict(list)
+    for r in live:
+        if r.kind in ("reservation", "reservation6") and (client := _client_of(r)) is not None:
+            clients[(_scope_of(r), *client)].append(r)
+    for records in clients.values():
+        if len(records) < 2:
+            continue
+        names = ("client_id",) if records[0].kind == "reservation" else ("client_duid", "iaid")
+        kept = [r for r in records if on_windows(r, *names)]
+        for r in records:
+            if r in kept:
+                continue
+            others = ", ".join(o.fields.get("ip_address") or o.key for o in records if o is not r)
+            what = "client" if r.kind == "reservation" else "DUID and IAID"
+            out.setdefault(
+                (r.kind, r.key),
+                f"reservation {others} in this scope is for the same {what}, and Windows holds one reservation per "
+                "client in a scope; keep one of them in NetBox",
+            )
+    return out
+
+
+def _reservation_place(record: Record, scope: Record | None) -> str | None:
+    """
+    An IPv4 reservation must be inside its scope's prefix. Inside the prefix but outside the scope's IP range is
+    accepted (lab, Windows Server 2025), whatever older documentation says.
+    """
+    ip = _ipv4(record.fields.get("ip_address"))
+    network = _scope_network(scope) if scope is not None else None
+    if ip is None or network is None:
+        return None
+    if ip not in network:
+        return f"the address {ip} is outside the scope's prefix {network}; fix the address or the scope in NetBox"
+    return None
+
+
+def _policy_ranges_place(record: Record, scope: Record | None) -> str | None:
+    """A scope policy's IP ranges must run upwards and sit inside the scope's prefix (shape: see _unpushable)."""
+    network = _scope_network(scope) if scope is not None else None
+    ranges = record.fields.get("ip_ranges")
+    if network is None or not _valid_policy_ranges(ranges):
+        return None
+    for start, end in ranges:
+        first, last = ipaddress.IPv4Address(start), ipaddress.IPv4Address(end)
+        if first > last or first not in network or last not in network:
+            return (
+                f"policy {record.fields.get('name')}: its IP range {start}-{end} is reversed or outside the scope's "
+                f"prefix {network}; fix it in NetBox"
+            )
+    return None
+
+
+def _reservation6_place(record: Record, scope: Record | None) -> str | None:
+    if scope is None or not record.fields.get("ip_address"):
+        return None
+    try:
+        network = ipaddress.IPv6Network(f"{scope.fields['prefix']}/{scope.fields.get('prefix_length')}")
+        ip = ipaddress.IPv6Address(record.fields["ip_address"])
+    except ValueError:
+        return None
+    if ip not in network:
+        return f"the address {ip} is outside the scope's prefix {network}; fix the address or the scope in NetBox"
+    return None
+
+
+def _exclusion_place(record: Record, scope: Record | None) -> str | None:
+    """
+    An exclusion range must be inside its scope's prefix and run upwards. One reaching past the scope's IP range but
+    inside the prefix is accepted (lab, Windows Server 2025).
+    """
+    start, end = _ipv4(record.fields.get("start_range")), _ipv4(record.fields.get("end_range"))
+    network = _scope_network(scope) if scope is not None else None
+    if start is None or end is None or network is None:
+        return None
+    if start not in network or end not in network:
+        return f"the exclusion range {start}-{end} is outside the scope's prefix {network}; fix it in NetBox"
+    if start > end:
+        return f"the exclusion range {start}-{end} ends before it starts; fix it in NetBox"
+    return None
+
+
+# -- the delete pause -------------------------------------------------------------------------------------------------
+
+# What the delete pause covers: the IPv4 scope tree, the DHCPv6 scope tree, and the server-level policies with the
+# option values set through them. Classes, option definitions, plain server option values and MAC filters are in
+# none: nothing NetBox holds can be moved onto them under another key.
+FAMILIES = {"v4": "IPv4 scopes", "v6": "DHCPv6 scopes", "policy": "server-level policies"}
+# How many blocking objects a pause reason names before "and N more".
+PAUSE_NAMES = 3
+
+
+def family(kind: str, fields: Mapping[str, Any]) -> str | None:
+    """The family an object belongs to for the delete pause ("v4", "v6", "policy"), or None."""
+    if kind in ("scope", "superscope", "reservation", "exclusion", "failover"):
+        return "v4"
+    if kind == "policy":
+        return "v4" if fields.get("scope_id") else "policy"
+    if kind == "option":
+        scope_id, _ = option_target(fields.get("parent") or "server")
+        if scope_id:
+            return "v4"
+        return "policy" if fields.get("policy") else None
+    if kind in ("scope6", "reservation6"):
+        return "v6"
+    if kind == "option6":
+        prefix, _ = option6_target(fields.get("parent") or "server")
+        return "v6" if prefix else None
+    return None
+
+
+def _waiting_children(source: list[Record], refused: dict[Key, str]) -> dict[Key, str]:
+    """
+    Objects whose parent cannot be pushed cannot be pushed either (a reservation of a refused scope, a value of a
+    refused reservation, a failover relationship holding a refused scope...), however far down, whatever order the
+    records come in.
+    """
+    out: dict[Key, str] = {}
+    pending = [r for r in source if (r.kind, r.key) not in refused]
+    grown = True
+    while grown:
+        grown = False
+        rest = []
+        for r in pending:
+            parent = next((p for p in parents(r.kind, r.fields) if p in refused or p in out), None)
+            if parent is None:
+                rest.append(r)
+                continue
+            out[r.kind, r.key] = f"waits for {parent[0]} {parent[1]}, which cannot be pushed"
+            grown = True
+        pending = rest
+    return out
+
+
+def _pause_deletes(plan: Plan, changes: list[Change], refusals: set[Key]) -> list[Change]:
+    """
+    While anything in a family cannot be pushed, nothing in that family is deleted. A NetBox object has no lasting
+    identity in the records (a scope is keyed by its network, a reservation by its address, a policy by its name), so
+    an object moved or renamed looks like a new object plus a deleted one; when the new one cannot be pushed, deleting
+    the old one would leave nothing on Windows. Rather than guess which deletes belong to which refusal, every delete
+    of the family waits (shown with the reason) until nothing there is refused; creates and updates that do not need a
+    refused object still go ahead. A failover relationship losing scopes waits too: leaving it removes the scopes from
+    the partner.
+
+    ``refusals`` are the NetBox objects refused for what they are (``plan``'s reasons, their children, a scope held by
+    a relationship this push does not release, a processing order that would not fit even without the deletes). A
+    policy refused only because the planned deletes close the gaps before it is not one: pausing the deletes would
+    keep it refused for good.
+
+    A create that could only succeed once a waiting delete is done (the same client's reservation in the scope, an
+    exclusion range or a scope over the old one's addresses, a relationship taking a scope the waiting one still
+    holds) waits as well, instead of failing at Windows on every push.
+    """
+    blocking: dict[str, list[Key]] = {}
+    for s in plan.skipped:
+        key = (s.change.kind, s.change.key)
+        if s.change.action == DELETE or key not in refusals:
+            continue
+        fam = family(s.change.kind, s.change.after or s.change.before or {})
+        if fam is not None and key not in blocking.setdefault(fam, []):
+            blocking[fam].append(key)
+    blocking = {fam: keys for fam, keys in blocking.items() if keys}
+
+    def reason(fam: str) -> str:
+        keys = blocking[fam]
+        names = ", ".join(f"{k} {n}" for k, n in keys[:PAUSE_NAMES])
+        if len(keys) > PAUSE_NAMES:
+            names += f" and {len(keys) - PAUSE_NAMES} more"
+        return (
+            f"waiting: nothing in the {FAMILIES[fam]} is deleted while {names} cannot be pushed; fix them in NetBox "
+            "and the next push deletes it"
+        )
+
+    out = []
+    paused: dict[Key, Change] = {}
+    for c in changes:
+        fam = family(c.kind, c.before or c.after or {})
+        key = (c.kind, c.key)
+        dropped = c.action == UPDATE and c.kind == "failover" and _drops_scopes(c)
+        if fam in blocking and (c.action == DELETE or dropped):
+            plan.skipped.append(Skip(c, reason(fam), waiting=True))
+            paused[key] = c
+            continue
+        # Deletes come children first: a parent outside the family (a class) holding a paused child stays too.
+        held = [k for k in plan.children.get(key, []) if k in paused] if c.action == DELETE else []
+        if held:
+            reason_held = f"waiting: still holds {held[0][0]} {held[0][1]}, whose delete waits"
+            plan.skipped.append(Skip(c, reason_held, waiting=True))
+            paused[key] = c
+            continue
+        out.append(c)
+    index = _PausedIndex(paused)
+    final = []
+    # Objects refused as creates (a new policy whose number does not fit): nothing can be written under them. A refused
+    # update's object is on Windows already, so what hangs off it can still be written.
+    late = {(s.change.kind, s.change.key) for s in plan.skipped if s.change.action == CREATE and not s.waiting}
+    waiting: set[Key] = set()  # creates and updates held back here; what hangs off them waits with them
+    for c in out:
+        if c.action == DELETE:
+            final.append(c)
+            continue
+        if (blocker := index.blocker(c)) is not None:
+            why = f"waiting: needs {blocker[0]} {blocker[1]} gone from Windows first, and that delete waits"
+        elif (parent := next((p for p in parents(c.kind, c.after or {}) if p in waiting), None)) is not None:
+            why = f"waiting: needs {parent[0]} {parent[1]} first, which waits"
+        elif (parent := next((p for p in parents(c.kind, c.after or {}) if p in late), None)) is not None:
+            # A parent refused after the first pass (a policy whose processing order does not fit): not a wait.
+            late.add((c.kind, c.key))
+            plan.skipped.append(Skip(c, f"waits for {parent[0]} {parent[1]}, which cannot be pushed"))
+            continue
+        else:
+            final.append(c)
+            continue
+        waiting.add((c.kind, c.key))
+        plan.skipped.append(Skip(c, why, waiting=True))
+    return final
+
+
+class _PausedIndex:
+    """The paused deletes and relationship updates, looked up by what a create or update could clash with."""
+
+    def __init__(self, paused: Mapping[Key, Change]) -> None:
+        # (first address, last address, key), in address order: the scopes on Windows never share addresses, so the
+        # one starting last at or before a new scope's end is the only one that can overlap it.
+        self.scopes: list[tuple[int, int, Key]] = []
+        self.exclusions: defaultdict[str, list[tuple[Key, int, int]]] = defaultdict(list)
+        self.clients: dict[tuple[str, ...], Key] = {}
+        self.held_scopes: dict[str, Key] = {}
+        for key, c in paused.items():
+            before = c.before or {}
+            if c.kind == "failover":
+                # Paused, the relationship keeps every scope it has on Windows.
+                for scope_id in before.get("scope_ids") or []:
+                    self.held_scopes.setdefault(scope_id, key)
+            elif c.action != DELETE:
+                continue
+            elif c.kind == "scope" and (n := _scope_network(Record("scope", c.key, before))) is not None:
+                self.scopes.append((int(n.network_address), int(n.broadcast_address), key))
+            elif c.kind == "exclusion":
+                s, e = _ipv4(before.get("start_range")), _ipv4(before.get("end_range"))
+                if s is not None and e is not None:
+                    self.exclusions[str(before.get("scope_id"))].append((key, int(s), int(e)))
+            elif c.kind in ("reservation", "reservation6"):
+                record = Record(c.kind, c.key, before)
+                if (client := _client_of(record)) is not None:
+                    self.clients.setdefault((c.kind, _scope_of(record), *client), key)
+
+        self.scopes.sort()
+        self.starts = [first for first, _, _ in self.scopes]
+
+    def blocker(self, change: Change) -> Key | None:
+        """The paused change ``change`` would clash with on Windows, or None."""
+        f = change.after or {}
+        record = Record(change.kind, change.key, f)
+        if change.kind == "scope" and change.action == CREATE:
+            mine = _scope_network(record)
+            if mine is None:
+                return None
+            i = bisect.bisect_right(self.starts, int(mine.broadcast_address)) - 1
+            if i >= 0 and self.scopes[i][1] >= int(mine.network_address):
+                return self.scopes[i][2]
+            return None
+        if change.kind == "exclusion":
+            s, e = _ipv4(f.get("start_range")), _ipv4(f.get("end_range"))
+            if s is None or e is None:
+                return None
+            ranges = self.exclusions.get(str(f.get("scope_id")), [])
+            return next((k for k, s2, e2 in ranges if int(s) <= e2 and s2 <= int(e)), None)
+        if change.kind in ("reservation", "reservation6") and change.action == CREATE:
+            client = _client_of(record)
+            return self.clients.get((change.kind, _scope_of(record), *client)) if client is not None else None
+        if change.kind == "failover":
+            new = set(f.get("scope_ids") or []) - set((change.before or {}).get("scope_ids") or [])
+            return next(
+                (
+                    self.held_scopes[s]
+                    for s in sorted(new)
+                    if self.held_scopes.get(s, (None, change.key))[1] != change.key
+                ),
+                None,
+            )
+        return None
+
+
+def _drops_scopes(change: Change) -> bool:
+    before, after = (change.before or {}).get("scope_ids") or [], (change.after or {}).get("scope_ids") or []
+    return bool(set(before) - set(after))
 
 
 def _shared_orders(source: list[Record]) -> dict[Key, str]:
@@ -467,14 +1010,22 @@ def plan(
         defined = {str(c) for c in defined_options} | {r.key for r in source if r.kind == "optiondef"}
     skipped_ids = set(skipped_option_ids)
     orders = _shared_orders(source)
+    conflicts = _conflicts(source, target_index, managed)
     policies = {r.key for r in source if r.kind == "policy"}
-    pushable = []
+    refused: dict[Key, str] = {}
     for record in source:
         reason = (
-            _unpushable(record, skipped_ids, defined, (record.kind, record.key) in target_index)
+            _unpushable(record, skipped_ids, defined, target_index.get((record.kind, record.key)))
             or orders.get((record.kind, record.key))
             or _missing_policy(record, policies)
+            or conflicts.get((record.kind, record.key))
         )
+        if reason is not None:
+            refused[record.kind, record.key] = reason
+    refused.update(_waiting_children(source, refused))
+    pushable = []
+    for record in source:
+        reason = refused.get((record.kind, record.key))
         if reason is None:
             pushable.append(_prepare(record, target_index))
         else:
@@ -527,9 +1078,14 @@ def plan(
             deleting.discard(key)
             continue
         result.changes.append(change)
+    already = len(result.skipped)
     result.changes = _scopes_in_other_relationships(result.changes, target_index, result)
+    refusals = set(refused) | {(s.change.kind, s.change.key) for s in result.skipped[already:]}
     result.changes = _membership_updates_first(result.changes, target_index)
     result.changes = _order_policies(result.changes, source_index, target_index, result)
+    result.changes = _pause_deletes(result, result.changes, refusals | result.order_refusals)
+    # What waits comes first, so the capped summary and job log always show it.
+    result.skipped.sort(key=lambda s: not s.waiting)
     return result
 
 
@@ -626,38 +1182,101 @@ def _scopes_in_other_relationships(changes: list[Change], target: Mapping[Key, R
     """
     Windows puts a scope in one failover relationship at most, and refuses to add it to a second one. A relationship
     NetBox does not know about (made by hand, or renamed on Windows) would make every push fail on it: leave such a
-    create or update out with a reason instead, unless this push deletes the other relationship first.
+    create or update out with a reason instead, unless this push deletes the other relationship first, or updates it
+    without that scope (a simple move from one relationship to another in NetBox): then the change that lets the scope
+    go is put before the ones taking it, and ``plan.moves`` records the move so a taker failing at Windows can put the
+    scope back (see execute).
+
+    Only a release this push really makes counts: a refused update releases nothing, so its takers are refused too.
+    Moves that go round in a circle (two relationships swapping scopes) cannot be done one change at a time, since each
+    taker needs the other's release first; they are refused, asking for one scope at a time.
     """
     deleted = {c.key for c in changes if c.kind == "failover" and c.action == DELETE}
-    holder = {}
+    holder: dict[str, tuple[str, str]] = {}  # scope ID -> (name, key) of the relationship holding it on Windows
     for (kind, key), record in target.items():
         if kind == "failover" and key not in deleted:
             for scope_id in record.fields.get("scope_ids") or []:
-                holder[scope_id] = record.fields.get("name") or key
+                holder[scope_id] = (record.fields.get("name") or key, key)
+    upserts = [c for c in changes if c.kind == "failover" and c.action != DELETE]
+    refused: dict[str, str] = {}
+    while True:
+        released = {
+            c.key: set((c.before or {}).get("scope_ids") or []) - set((c.after or {}).get("scope_ids") or [])
+            for c in upserts
+            if c.action == UPDATE and c.key not in refused
+        }
+        deps: defaultdict[str, set[str]] = defaultdict(set)  # taker -> relationships whose release it needs
+        moves: defaultdict[str, list[tuple[str, str, str]]] = defaultdict(list)
+        grown = False
+        for c in upserts:
+            if c.key in refused:
+                continue
+            new = [
+                s
+                for s in (c.after or {}).get("scope_ids") or []
+                if s not in set((c.before or {}).get("scope_ids") or []) and s in holder and holder[s][1] != c.key
+            ]
+            taken = [s for s in new if s not in released.get(holder[s][1], ())]
+            if taken:
+                others = ", ".join(sorted({holder[s][0] for s in taken}))
+                refused[c.key] = (
+                    f"scope(s) {', '.join(taken)} are already in failover relationship {others} on Windows, which a "
+                    "scope can only be in once; import that relationship into NetBox, or remove the scopes from it "
+                    "on Windows"
+                )
+                grown = True
+                continue
+            for s in new:
+                deps[c.key].add(holder[s][1])
+                moves[c.key].append((holder[s][1], holder[s][0], s))
+        for key in list(deps):
+            if _in_cycle(key, deps):
+                names = sorted({key, *deps[key]})
+                refused[key] = (
+                    f"scopes move both ways between failover relationships {', '.join(names)}; Windows holds a scope "
+                    "in one relationship at a time, so move one scope at a time: remove it from one relationship in "
+                    "NetBox, push, then add it to the other"
+                )
+                grown = True
+        if not grown:
+            break
+    plan.moves = {k: v for k, v in moves.items() if v}
     out = []
     for c in changes:
-        if c.kind != "failover" or c.action == DELETE:
-            out.append(c)
+        if c.kind == "failover" and c.action != DELETE and c.key in refused:
+            plan.skipped.append(Skip(c, refused[c.key]))
             continue
-        before = set((c.before or {}).get("scope_ids") or [])
-        taken = [
-            s
-            for s in (c.after or {}).get("scope_ids") or []
-            if s not in before and s in holder and holder[s].lower() != c.key
-        ]
-        if not taken:
-            out.append(c)
-            continue
-        others = ", ".join(sorted({holder[s] for s in taken}))
-        plan.skipped.append(
-            Skip(
-                c,
-                f"scope(s) {', '.join(taken)} are already in failover relationship {others} on Windows, which a "
-                "scope can only be in once; import that relationship into NetBox, or remove the scopes from it on "
-                "Windows",
-            )
-        )
+        out.append(c)
+    # Each relationship comes after the ones whose release it needs (a chain of moves, whatever the names), in the
+    # places the relationship creates and updates already hold. Cycles were refused above.
+    slots = [i for i, c in enumerate(out) if c.kind == "failover" and c.action != DELETE]
+    pending = [out[i] for i in slots]
+    ordered: list[Change] = []
+    done: set[str] = set()
+    while pending:
+        ready = [c for c in pending if not (deps.get(c.key, set()) & {p.key for p in pending}) - done]
+        if not ready:  # cannot happen once cycles are refused; keep the rest as they are
+            ready = pending
+        ordered.extend(ready)
+        done.update(c.key for c in ready)
+        pending = [c for c in pending if c.key not in done]
+    for i, c in zip(slots, ordered, strict=True):
+        out[i] = c
     return out
+
+
+def _in_cycle(start: str, deps: Mapping[str, set[str]]) -> bool:
+    """Whether ``start`` can reach itself through ``deps``."""
+    seen: set[str] = set()
+    stack = list(deps.get(start, ()))
+    while stack:
+        node = stack.pop()
+        if node == start:
+            return True
+        if node not in seen:
+            seen.add(node)
+            stack.extend(deps.get(node, ()))
+    return False
 
 
 def _membership_updates_first(changes: list[Change], target: Mapping[Key, Record]) -> list[Change]:
@@ -754,6 +1373,16 @@ def _order_level(
     # Remove-DhcpServerv4Policy closes the gap, and Set-DhcpServerv4Policy -ProcessingOrder moves the others down (and
     # refuses a number past the end) the way Add does (lab, Windows Server 2022).
     current = [r.key for r in windows if r.key not in deleted]
+    # A new policy (a new name: a rename's new policy too) refused for its number holds the deletes back (see
+    # _pause_deletes), since one of them may be what it replaces; unless the number only fails to fit because of
+    # those deletes, and fits among the policies NetBox holds at the level. A policy already on Windows refused for
+    # its number never does: it stays on Windows whatever happens, so no delete can be its replacement, and holding
+    # the deletes back would keep a NetBox that did not renumber after a delete stuck for good.
+    removed = len(windows) - len(current)
+
+    def never_fits(order: int, room: int) -> bool:
+        return order > room + removed or order > len(wanted)
+
     where = f"scope {level}" if level else "the server level"
     out: list[Change] = []
     restored: list[str] = []  # policies NetBox did not change, set back after an insert moved them down
@@ -785,6 +1414,8 @@ def _order_level(
         elif order > len(current) + 1:
             # A new policy that does not fit is simply not created: the plan carries on as if it did not exist.
             plan.skipped.append(Skip(change, _past_the_end(order, where, len(current) + 1)))
+            if never_fits(order, len(current) + 1):
+                plan.order_refusals.add(("policy", key))
             continue
         else:
             current.insert(order - 1, key)
@@ -801,6 +1432,8 @@ def _order_level(
             "applying the rest alone would reorder the policies Windows holds; renumber the policies in NetBox"
         )
         plan.skipped.extend(Skip(c, reason) for c in out if c.key in upserts)
+        # New policies held back with them are refused creates: they hold the deletes back.
+        plan.order_refusals.update(("policy", c.key) for c in out if c.key in upserts and c.action == CREATE)
         return []
     for key in restored:
         plan.in_sync.pop(("policy", key), None)
@@ -847,12 +1480,57 @@ def execute(plan: Plan, writer: Any) -> Result:
     # Scopes whose delete comes later in the plan, and those refused ahead of time because they still have leases.
     pending = {c.key for c in plan.changes if c.action == DELETE and c.kind == "scope"}
     refused: dict[str, str] = {}
+    released: dict[str, Change] = {}  # relationships whose update ran in this push, as written
+
+    def put_back(change: Change, entries: list[tuple[Change, str]], usable: bool = True) -> None:
+        """
+        A relationship taking scopes another one let go in this push failed: put the scopes back where they were, so
+        they do not end up in no relationship at all (best effort; the message says how it went). Without a usable
+        connection (lost, or the push stopped on an unexpected error) nothing more is sent: the message says where
+        the scopes are.
+        """
+        if change.kind != "failover" or not entries or entries[-1][0] is not change:
+            return
+        back: defaultdict[tuple[str, str], list[str]] = defaultdict(list)
+        for releaser, name, scope_id in plan.moves.get(change.key, []):
+            if releaser in released:
+                back[releaser, name].append(scope_id)
+        taker = (change.after or {}).get("name") or change.key
+        notes = []
+        for (releaser, name), scope_ids in back.items():
+            scopes = ", ".join(scope_ids)
+            try:
+                if not usable:
+                    raise RuntimeError("the push stopped before it could")
+                writer.restore_failover_scopes(name, scope_ids)
+            except Exception as exc:  # noqa: BLE001 - reported with the failure it follows
+                notes.append(
+                    f"putting scope(s) {scopes} back into failover {name} failed too ({exc}): they are in no failover "
+                    f"relationship now, and the next push adds them to {taker}"
+                )
+                continue
+            # Record the relationship as Windows now holds it: as this push wrote it, plus the scopes put back. Its
+            # other changes stay written, and the next push finds it in step and tries the move again.
+            written = released[releaser]
+            after = {**(written.after or {})}
+            after["scope_ids"] = windows_scope_ids([*(after.get("scope_ids") or []), *scope_ids])
+            again = Change(written.action, written.kind, written.key, written.before, after)
+            released[releaser] = again
+            rkey = ("failover", releaser)
+            if rkey in plan.protected:
+                result.upserts[rkey] = _fingerprint_without(again, plan.protected[rkey])
+            else:
+                result.upserts[rkey] = fingerprint(Record(again.kind, again.key, _as_on_windows(again)))
+            notes.append(f"scope(s) {scopes} put back into failover {name}")
+        if notes:
+            entries[-1] = (change, f"{entries[-1][1]}; {'; '.join(notes)}")
 
     stopped = ""
     for change in plan.changes:
         key = (change.kind, change.key)
         if result.aborted:
             result.skipped.append((change, f"not attempted: {stopped}"))
+            put_back(change, result.skipped, usable=False)
             continue
         if change.action == DELETE and change.kind == "scope":
             pending.discard(change.key)
@@ -869,6 +1547,7 @@ def execute(plan: Plan, writer: Any) -> Result:
             verb = "kept" if change.action == DELETE else "not created"
             result.skipped.append((change, f"not attempted: {kind} {name} was {verb}"))
             block(change)
+            put_back(change, result.skipped)
             continue
         try:
             if change.action == UPDATE and change.kind == "failover":
@@ -878,6 +1557,7 @@ def execute(plan: Plan, writer: Any) -> Result:
             if change.action != DELETE:
                 result.failed.append((change, "not found on Windows"))
                 block(change)
+                put_back(change, result.failed)
                 continue
             # Already gone: the delete is done.
         except RunnerError as exc:
@@ -885,6 +1565,7 @@ def execute(plan: Plan, writer: Any) -> Result:
             result.maybe_written.append(change)
             result.aborted, stopped = True, "the connection to the server failed"
             block(change)
+            put_back(change, result.failed, usable=False)
             continue
         except (PushRefused, WindowsLayerError, ValueError) as exc:
             result.failed.append((change, str(exc)))
@@ -893,6 +1574,7 @@ def execute(plan: Plan, writer: Any) -> Result:
             if getattr(exc, "wrote", False) or isinstance(exc, WindowsLayerError):
                 result.maybe_written.append(change)
             block(change)
+            put_back(change, result.failed)
             continue
         except Exception as exc:
             # A bug, or an answer from Windows nothing here expected. Stop, but keep the record of what was already
@@ -906,8 +1588,11 @@ def execute(plan: Plan, writer: Any) -> Result:
             result.maybe_written.append(change)
             result.aborted, stopped = True, "the push stopped on an unexpected error"
             block(change)
+            put_back(change, result.failed, usable=False)
             continue
         result.applied.append(change)
+        if change.kind == "failover" and change.action == UPDATE:
+            released[change.key] = change
         if change.action == DELETE:
             result.removals.add(key)
             result.upserts.pop(key, None)

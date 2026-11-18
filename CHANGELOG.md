@@ -33,6 +33,34 @@ All notable changes to this project are documented here. The format follows
   objects while a reservation uses them; the panel shows why before the delete is tried. Only reservations the user
   may view are listed, and the panel is hidden when there is none. (#107)
 
+- A push (and its dry run) now leaves out, with a reason under **Not pushed**, what Windows would refuse instead of
+  failing on it: an IPv4 scope range outside its prefix, reversed, or holding the network or broadcast address; a
+  reservation outside its scope's prefix; an exclusion range outside its scope's prefix or reversed; IPv4 scopes of
+  one server sharing addresses (a scope made on Windows by hand included); exclusion ranges of one scope sharing
+  addresses; two reservations of one scope for the same client (DHCPv6: the same DUID and IAID). These mostly come
+  from IPAM edits, which the plugin's forms do not see. When one of the clashing objects is already on Windows, it
+  keeps being pushed. What hangs off a left-out object is left out with it, and a scope policy IP range must run
+  upwards inside the scope's prefix. Imports are not affected. (#108)
+- **Delete pause:** While anything in a family cannot be pushed, nothing in that family is deleted; the dry run lists
+  what is waiting and why. The families are the IPv4 scopes (with their reservations, exclusions, policies, option
+  values, superscopes and failover relationships), the DHCPv6 scopes, and the server-level policies with the option
+  values set through them; classes, option definitions, plain server option values and MAC filters are not held up. A
+  scope whose prefix moved in IPAM, a reservation that changed address or a renamed policy looks to the push like a new
+  object plus a deleted one, so when the new one cannot be pushed the old one now stays on Windows instead of being
+  deleted. A create that needs a waiting delete first waits too, instead of failing at Windows on every push. A scope
+  subnet mask change (a split or a merge) is now refused when the push is planned, so it holds deletes back too. Waiting
+  changes come first in the dry run's list. The waiting deletes happen on the first push with nothing left out in their
+  family; a policy refused for its processing order holds deletes back only when it is new on Windows (a renamed
+  policy, say). A simple move of a scope from one failover relationship to another now goes through in one push; if the
+  relationship taking it fails at Windows, the push puts the scope back where it was. Scopes swapped between
+  relationships are refused (move one at a time). A new partner, a new hot standby role or turning authentication
+  off on a failover relationship is now refused in the dry run too. (#108)
+- The Windows server form refuses a second server for one DHCP server (same host ignoring case and a trailing dot,
+  same port, same remote DHCP server), and the failover relationship form refuses a new partner the primary server's
+  credential profile does not allow (`allowed_hosts`), which the push already refused. Imports are not affected.
+  **Upgrading:** two existing Windows servers for one DHCP server can no longer be edited until one of them is
+  deleted or pointed elsewhere. (#108)
+
 ### Changed
 
 - **REST API:** above `review_job_threshold`, `POST import-proposals/<id>/apply/` and `/dismiss/` answer `202` with
@@ -95,6 +123,11 @@ All notable changes to this project are documented here. The format follows
   (description, status, tags...) no longer queue a push (a branch merge still queues one per server it touches).
 
 ### Fixed
+
+- A scope policy whose stored IP ranges do not parse (written by a branch merge, a script or nbshell) no longer fails
+  every push, dry run and import of its server: the push leaves that policy out with a reason naming it, and an
+  import proposes Windows' ranges for it. Changing the prefix of its scope says which policy to fix instead of
+  failing with a server error. (#108)
 
 - A scheduled import that finds its server busy (another import or a push running) is queued again a minute later,
   for up to half an hour, instead of waiting a whole import interval. The waiting attempts leave no failed sync run

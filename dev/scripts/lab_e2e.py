@@ -37,10 +37,11 @@ import traceback
 sys.path.insert(0, "/plugin")
 
 from django.contrib.auth import get_user_model  # noqa: E402
+from django.core.exceptions import ValidationError  # noqa: E402
 from django.test import Client  # noqa: E402
 from django.urls import reverse  # noqa: E402
 
-from netbox_windows_dhcp_plugin.conf import max_concurrency  # noqa: E402
+from netbox_windows_dhcp_plugin.conf import max_concurrency, normalise_host  # noqa: E402
 from netbox_windows_dhcp_plugin.connection import build_client  # noqa: E402
 from netbox_windows_dhcp_plugin.jobs import enqueue_leases, record_names  # noqa: E402
 from netbox_windows_dhcp_plugin.models import FailoverRelationship, SyncRun, WindowsServer  # noqa: E402
@@ -176,7 +177,23 @@ def netbox_server(env, name=SERVER_NAME, host=""):
     server.winrm_auth = env.get("WINDOWS_DHCP_LAB_AUTH", "ntlm").lower()
     server.kerberos_realm = env.get("WINDOWS_DHCP_LAB_REALM", "")
     server.sync_enabled = False
-    server.full_clean()
+    try:
+        server.full_clean()
+    except ValidationError as exc:
+        if "host" not in getattr(exc, "error_dict", {}):
+            raise
+        # Another Windows server of this database already points at the lab host (the dev stack's dhcp01, say): the
+        # model refuses a second one for one DHCP server. Reusing it would mix this run's objects into its data, so
+        # stop and say which one to remove.
+        others = [
+            ws.name
+            for ws in WindowsServer.objects.exclude(pk=server.pk)
+            if normalise_host(ws.host) == normalise_host(server.host)
+        ]
+        raise RuntimeError(
+            f"Windows server(s) {', '.join(others) or '?'} already connect to {server.host}; delete them (or point "
+            f"them elsewhere) before running the end-to-end test, which creates its own server {name}"
+        ) from None
     server.save()
     return server
 
