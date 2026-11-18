@@ -10,7 +10,7 @@ from netbox.jobs import JobRunner, system_job
 
 from . import retention
 from .choices import ImportDestinationChoices, SyncKindChoices, SyncStatusChoices
-from .conf import CredentialError, get_setting
+from .conf import CredentialError, get_setting, max_concurrency
 from .connection import build_client
 from .integrations.branching import job_kwargs as branching_job_kwargs
 from .models import PushTrigger, SyncRun, WindowsServer
@@ -281,7 +281,7 @@ class ImportJob(JobRunner):
                 target, _ = branching.chosen_branch(branch, user)
             with server_lock(server, ImportBusy):
                 client = build_client(server, runner=runner)
-                state = windows_state.read(client)
+                state = windows_state.read(client, workers=max_concurrency())
                 record_names(server, client, self.logger)
                 # Everything is read: a connection that will not close (an SSH transport already torn down) is no
                 # reason to fail the import.

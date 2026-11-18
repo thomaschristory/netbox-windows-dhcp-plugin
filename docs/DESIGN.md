@@ -108,7 +108,7 @@ sync engine  ->  client (one function per cmdlet operation)  ->  psscript (envel
   not ask in the Normal state, and when the partner is unreachable `-Force` removes on this server only (split
   relationship), while without it Windows refuses ("not in NORMAL state"). Windows keeps a relationship whose last scope left, empty, on both partners.
 - **Normalisation:** scope ID from start and mask, MAC canonical form, lease durations, `InActive`/`Inactive` casing. Numeric option types compare hex-or-decimal; string and binary values compare exactly.
-- **runner.** WinRM through pypsrp with a new connection per call, as the Go code learned the hard way with NTLM. SSH through paramiko with pinned host key or known_hosts. A job sends its commands one after another (`max_concurrency` is an upper bound that nothing reaches today), a WinRM command that never finishes is abandoned after ten times `command_timeout` (at least 10 minutes), and a PostgreSQL advisory lock per server lets only one import or push talk to a server at a time, across all workers. The lock is held by the database session, so the workers' database connection must not go through a transaction-pooling proxy (pgbouncer in transaction mode).
+- **runner.** WinRM through pypsrp with a new connection per call, as the Go code learned the hard way with NTLM. SSH through paramiko with pinned host key or known_hosts. A read of a whole server reads the server-wide lists (IPv4 and DHCPv6) one after another, then up to `max_concurrency` scopes, IPv4 and DHCPv6 in one pool, at the same time on a thread pool (issue #99). Each scope is still one unit, so a scope deleted mid-read is still detected; results are merged in list order so the records match a one-at-a-time read. When a scope fails, the scopes after it are cancelled or stop at their next command, the ones before it finish, and the first failure in list order is raised, as one at a time; a job interrupted in its main thread (a timeout) stops every scope at its next command and waits at most `INTERRUPT_WAIT` (30 s) for the commands in flight, so the job can record its failure within RQ's grace period. The stop is a thread-local check in `windows/runner.py` (`set_stop_check`, `Stopped`) that `Limited` and the SSH session retry also honour, so `windows/` stays free of sync logic. `runner.Limited` caps the commands in flight per job (per WindowsServer record, not per Windows host). SSH never drops a live shared connection for a failed session open (only a dead one is reopened); a refused session while others of the runner are open is retried for a few seconds, a refusal with none open fails at once. Writes are sent one after another, in order, a WinRM command that never finishes is abandoned after ten times `command_timeout` (at least 10 minutes), and a PostgreSQL advisory lock per server lets only one import or push talk to a server at a time, across all workers. The lock is held by the database session, so the workers' database connection must not go through a transaction-pooling proxy (pgbouncer in transaction mode).
 - **New cmdlets** beyond the provider: DHCPv6 scopes, reservations and options, superscopes, option definitions, classes, policies, failover, MAC filters, server settings. These follow the same patterns and get the same fixture tests.
 
 ## 6. Push: NetBox to Windows
@@ -463,6 +463,18 @@ while queued) and `SyncRun.destination`. Without branching the only destination 
   definitions, server option values, MAC filters, failover relationships and sync runs. Buttons: Sync now, Dry run,
   Import now (a menu of destinations with branching) and Test connection.
 - A device or virtual machine page lists the Windows servers linked to it, for users who may view them.
+- **Reservations on core pages (issue #107).** The reservation FKs to `ipam.IPAddress` and `dcim.MACAddress` stay
+  `PROTECT`: cascading would delete the reservation from Windows on the next push as a side effect of a device
+  delete, and `SET_NULL` on the MAC would strip a client identity silently. Instead, a **DHCP reservations** panel
+  (`template_content.py`) on device, virtual machine, interface (dcim and virtualization), IP address and MAC
+  address pages lists the reservations (v4 and v6) using the object: by IP address or MAC address for those two
+  pages; for an interface, its assigned IP and MAC addresses; for a device or virtual machine, those of all its
+  interfaces. Read as the viewing user (`restrict(user, "view")` on the reservations and on the interfaces
+  searched), hidden when empty, one query per page whatever the number of reservations (the generic assignment is
+  matched by object type and an interface ID subquery, so a reservation with both addresses on the device is one
+  row). NetBox's own protected error already names and links the reservation; the plugin does not change it.
+  Modules and FHRP groups (which cascade to interfaces and a virtual IP) get no panel; the docs point to the
+  interface or IP address page.
 - The scope form can create its prefix and IP range, and the reservation form its IP address and MAC address, in a
   pop-up ("+" next to the field, NetBox's `quick_add`).
 - **Live leases (milestone 5).** A Leases tab on the scope page, shown to users who can view both the scope and its

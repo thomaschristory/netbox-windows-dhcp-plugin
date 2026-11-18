@@ -82,10 +82,13 @@ push: split or merge the scope on Windows, then import.
 - A DHCPv6 reservation deleted on Windows while a server is being read fails that read (import, push or dry run):
   Windows reports it with a database error code (DHCP 20013), which the plugin does not take for "deleted". The
   next run works. An IPv4 reservation or a policy deleted during a read only makes its scope be read again.
-- Reading a server takes a few PowerShell calls per scope, sent one after another: the option values of a scope's
-  reservations and the IP ranges and values of its policies are read in batches of up to 64 per call, so the number
-  of calls grows 64 times slower with the number of reservations or policies. A push or an import of a server with
+- Reading a server takes a few PowerShell calls per scope, `max_concurrency` scopes at a time: the option values
+  of a scope's reservations and the IP ranges and values of its policies are read in batches of up to 64 per call,
+  so the number of calls grows 64 times slower with the number of reservations or policies. The server-wide lists
+  (IPv4 and DHCPv6, about 15 calls) are read one after another first. A push or an import of a server with
   thousands of scopes still takes minutes.
+- `max_concurrency` caps the sessions of one job, not of one Windows host: several server records reaching the same
+  host, or several jobs at once, add up (see [Workers](workers.md#timeouts-and-concurrency)).
 - Two Windows servers that hold the same subnet without being failover partners share one IP range in NetBox when
   they are imported into the same VRF, and an import will not move that range for one of them: the scope change
   fails and names the other scope. To avoid the sharing, give each server its own import VRF before its first
@@ -98,4 +101,11 @@ push: split or merge the scope on Windows, then import.
   range change stays: NetBox has the new range for both servers but no relationship. Import or apply the relationship
   again, or put the range back by hand.
 - Deleting a device, virtual machine or interface whose IP address or MAC address a reservation uses is refused by
-  NetBox. Delete the reservation, or unassign the address, first.
+  NetBox, on purpose: removing the reservation with it would also remove it from Windows on the next push. The
+  refusal links the reservation, and the pages of the device, virtual machine, interface, IP address and MAC address
+  list the reservations that use them in a **DHCP reservations** panel (see
+  [Reservations](reservations.md#deleting-a-device-or-address-a-reservation-uses)). Delete the reservation, or
+  unassign the address from the interface, first (a primary or out-of-band IP, or an interface's primary MAC
+  address, must stop being primary before NetBox lets it be unassigned). Deleting a module or an FHRP group is
+  refused the same way when a reservation uses one of its interfaces' addresses or its virtual IP address; those
+  pages have no panel, so look at the interface or IP address page.
