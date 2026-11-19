@@ -811,7 +811,42 @@ def test_long_scripts_hold_one_session_each(ssh_server) -> None:
     finally:
         r.close()
     assert not errors, errors
-    assert srv.refused == 0 and len(srv.uploads) == 2 and srv.files == {}
+    # A refused open is retried (the server frees a slot a moment after a close), so refusals are not counted here.
+    assert len(srv.uploads) == 2 and srv.files == {}
+    assert r._sessions == 0
+
+
+def test_a_stopping_read_stops_before_the_upload(ssh_server) -> None:
+    srv = ssh_server()
+    r = runner(srv)
+    runner_mod.set_stop_check(lambda: True)
+    try:
+        with pytest.raises(runner_mod.Stopped):
+            r.run("$out = $p.v", {"v": "x" * 60_000})
+    finally:
+        runner_mod.set_stop_check(None)
+        r.close()
+    assert srv.uploads == [] and srv.commands == []
+
+
+def test_a_stop_after_the_upload_still_removes_the_file(ssh_server, monkeypatch) -> None:
+    srv = ssh_server()
+    r = runner(srv)
+    upload = r._upload
+
+    def then_stop(head: str, size: int) -> str:
+        remote = upload(head, size)
+        runner_mod.set_stop_check(lambda: True)
+        return remote
+
+    monkeypatch.setattr(r, "_upload", then_stop)
+    try:
+        with pytest.raises(runner_mod.Stopped):
+            r.run("$out = $p.v", {"v": "x" * 60_000})
+    finally:
+        runner_mod.set_stop_check(None)
+        r.close()
+    assert len(srv.uploads) == 1 and srv.files == {} and srv.commands == []
 
 
 def test_a_replaced_script_file_is_refused(ssh_server) -> None:

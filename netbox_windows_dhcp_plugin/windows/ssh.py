@@ -37,7 +37,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import psscript
-from .runner import MAX_OUTPUT, MAX_STDERR, ExecResult, RunnerError, execute, raise_if_stopped
+from . import runner as _runner
+from .runner import MAX_OUTPUT, MAX_STDERR, ExecResult, RunnerError, Stopped, execute, raise_if_stopped
 
 # Windows OpenSSH stalls on long stdin, waiting until the timeout (a 65 000 character line hung, 50 000 went through,
 # lab, Windows Server 2022, whether the script is read as one line or to the end). A longer script input goes to a file
@@ -436,30 +437,34 @@ class SSHRunner:
             raise
 
     def _upload(self, head: str, size: int) -> str:
-        remote = ""
         try:
             chan, sftp = self._sftp()
-        except RunnerError:
+        except (RunnerError, Stopped):
+            # Stopped is not a failure: a parallel read that must stop tells it apart by its type.
             raise
         except Exception as e:  # noqa: BLE001 - paramiko raises SSHException, IOError, EOFError...
             raise self._upload_error(size, e) from e
+        remote = ""
+        error: Exception | None = None
         try:
             remote = posixpath.join(sftp.normalize("."), f"nbwd-{secrets.token_hex(8)}.txt")
             # "x": never write over a file that is already there.
             # unverified: exclusive create through Windows OpenSSH's sftp-server (the lab checked plain "w").
             with sftp.open(remote, "wx") as f:
                 f.write(head.encode("ascii"))
-            return remote
         except Exception as e:  # noqa: BLE001
-            if remote:
-                # A partial upload holds no secret, but leave nothing behind.
-                with contextlib.suppress(Exception):
-                    sftp.remove(remote)
-            raise self._upload_error(size, e) from e
+            error = e
         finally:
             with contextlib.suppress(Exception):
                 sftp.close()
             self._close_channel(chan)
+        if error is not None:
+            if remote:
+                # A partial upload holds no secret, but leave nothing behind. A fresh session: the one that failed
+                # may be stalled, and would make this wait another timeout.
+                self._remove(remote)
+            raise self._upload_error(size, error) from error
+        return remote
 
     @staticmethod
     def _upload_error(size: int, e: Exception) -> RunnerError:
@@ -471,10 +476,15 @@ class SSHRunner:
 
     def _remove(self, remote: str) -> None:
         """Remove a script file the bootstrap did not; a failure here must not hide the script's own result."""
+        # Cleanup runs even when the thread's commands must stop: it sends no script, and the file would stay.
+        check = getattr(_runner._stop_check, "check", None)
+        _runner.set_stop_check(None)
         try:
             chan, sftp = self._sftp()
         except Exception:  # noqa: BLE001
             return
+        finally:
+            _runner.set_stop_check(check)
         try:
             with contextlib.suppress(Exception):
                 sftp.remove(remote)

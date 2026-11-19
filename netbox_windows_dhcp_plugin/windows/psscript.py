@@ -268,7 +268,8 @@ BOOTSTRAP = (
     "    $file = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($ref[0]))\n"
     "    try { $head = [IO.File]::ReadAllText($file).Trim() }\n"
     "    finally { try { [IO.File]::Delete($file) } catch { } }\n"
-    "    $sum = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash("
+    # SHA256CryptoServiceProvider: FIPS-validated, so it also works where FIPS mode is on (SHA256Managed throws).
+    "    $sum = [BitConverter]::ToString((New-Object Security.Cryptography.SHA256CryptoServiceProvider).ComputeHash("
     "[Text.Encoding]::ASCII.GetBytes($head))).Replace('-', '').ToLowerInvariant()\n"
     "    if ($sum -cne $ref[1]) { throw 'script file does not match its checksum' }\n"
     "}\n"
