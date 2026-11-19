@@ -278,6 +278,26 @@ def test_refused_connect_is_found_through_the_wrappers() -> None:
     assert not refused_connect(ConnectionResetError("reset by peer"))
 
 
+def test_refused_connect_matches_a_real_refusal_from_requests() -> None:
+    # The hand-built chain above follows today's requests/urllib3; a real refused connect, sent the way pypsrp sends
+    # (no HTTP retries), catches a future release that wraps the socket error differently.
+    import socket
+
+    requests = pytest.importorskip("requests")
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    # Nothing listens on the port any more, so the connect is refused.
+    session = requests.Session()
+    session.mount("http://", HTTPAdapter(max_retries=Retry(total=0, read=0)))
+    with pytest.raises(requests.exceptions.ConnectionError) as caught:
+        session.post(f"http://127.0.0.1:{port}/wsman", data=b"", timeout=5)
+    assert refused_connect(caught.value)
+
+
 def test_refused_before_the_command_is_tried_again(pypsrp, sleeps) -> None:
     f = pypsrp(lambda argv, stdin: (OK_ENVELOPE, b"", 0))
     f.open_errors = [requests_refusal(), requests_refusal()]

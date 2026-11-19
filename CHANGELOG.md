@@ -104,8 +104,7 @@ is waiting.
   a warning is logged, and above 30 (the default WinRM `MaxShellsPerUser`) 30 is used. A job that times out waits
   at most 30 seconds for the commands in flight.
   In the lab (two servers, WinRM with CredSSP or NTLM; 7 scopes, 6 IPv4 and 1 DHCPv6, and 5 IPv4 scopes) a full read
-  took about 30% less time with the default of 4, with no connection errors at up to 8 in those reads. Longer runs
-  later hit an occasional refused connection, fixed after 0.4.0 (#132). (#99)
+  took about 30% less time with the default of 4, with no connection errors at up to 8. (#99)
 - SSH: a session that fails to open on a live connection no longer drops that connection, which killed every
   command running on it and hid the real error behind theirs; only that command fails. When the server refuses a
   session while other commands run on the connection (sshd `MaxSessions`), it is tried again for a few seconds
