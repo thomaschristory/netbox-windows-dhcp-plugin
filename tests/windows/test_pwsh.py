@@ -49,6 +49,8 @@ from netbox_windows_dhcp_plugin.windows.psscript import (
     parse,
     prepare,
     render,
+    script_file_line,
+    split_script_part,
     split_secrets,
 )
 from netbox_windows_dhcp_plugin.windows.runner import RunnerError, clean_stderr
@@ -522,6 +524,33 @@ def test_input_cut_short_is_refused(pwsh_path: str, cut: int) -> None:
     p = subprocess.run([pwsh_path, *args], input=stdin.encode(), capture_output=True, timeout=120)
     assert p.returncode != 0 or not p.stdout.strip(), p.stdout
     assert b"incomplete script input" in p.stderr
+
+
+def test_script_part_read_from_a_file_then_deleted(pwsh_path: str, tmp_path: Path) -> None:
+    """Issue #63: the SSH runner uploads a long script part and sends its path; secrets still come on stdin."""
+    body = Script(
+        "file.check",
+        "$out = @{ secret = $p.shared_secret; in_src = $src.Contains($p.shared_secret); n = $p.big.Length }",
+    ).wrap()
+    args, stdin = prepare(body, {"big": "x" * 50_000, "shared_secret": "s3'cret"})
+    head, rest = split_script_part(stdin)
+    script_file = tmp_path / "nbwd-0123.txt"
+    script_file.write_text(head)
+    line = script_file_line(rest, str(script_file))
+    assert len(line) < 500 and "s3" not in script_file.read_text()
+    p = subprocess.run([pwsh_path, *args], input=line.encode(), capture_output=True, timeout=120)
+    assert p.returncode == 0, p.stderr
+    assert parse(decode_output(p.stdout)) == (True, {"secret": "s3'cret", "in_src": False, "n": 50_000})
+    assert not script_file.exists()
+
+
+def test_a_missing_script_file_fails(pwsh_path: str, tmp_path: Path) -> None:
+    body = Script("file.missing", "$out = 1").wrap()
+    args, stdin = prepare(body, {})
+    _, rest = split_script_part(stdin)
+    line = script_file_line(rest, str(tmp_path / "gone.txt"))
+    p = subprocess.run([pwsh_path, *args], input=line.encode(), capture_output=True, timeout=120)
+    assert p.returncode != 0 or not p.stdout.strip(), p.stdout
 
 
 def test_no_secret_leaves_shared_secret_unset(pwsh_path: str) -> None:

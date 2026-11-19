@@ -37,6 +37,7 @@ from typing import Any
 
 __all__ = [
     "BOOTSTRAP",
+    "FILE_MARK",
     "NOT_FOUND_IDS",
     "OP_PREFIX",
     "NotFound",
@@ -55,6 +56,8 @@ __all__ = [
     "parse",
     "prepare",
     "render",
+    "script_file_line",
+    "split_script_part",
     "split_secrets",
 ]
 
@@ -246,12 +249,22 @@ def render(script: str, params: Mapping[str, Any] | None = None) -> str:
 # script block that [scriptblock]::Create compiles and script block logging records. Only
 # .NET methods touch them here, so module logging does not record them either.
 # Checked on Windows PowerShell 5.1 (Windows Server 2025) with script block logging on (issue #104).
+#
+# The script part may instead be "!" and the base64 of a file path (SSH, issue #63: Windows OpenSSH stalls on long
+# stdin, so a large script is uploaded over SFTP). The file holds the script part as it would have been sent, the
+# secrets still come on stdin, and the file is deleted as soon as it has been read. Only .NET methods touch it.
 BOOTSTRAP = (
     "$ProgressPreference = 'SilentlyContinue'\n"
     "$in = [Console]::In.ReadLine()\n"
     "$parts = $in.Trim().Split('.')\n"
     "if ($parts.Length -lt 2 -or $parts[-1] -cne [string]($parts.Length - 2)) { throw 'incomplete script input' }\n"
-    "$src = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[0]))\n"
+    "$head = $parts[0]\n"
+    "if ($head.StartsWith('!')) {\n"
+    "    $file = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($head.Substring(1)))\n"
+    "    try { $head = [IO.File]::ReadAllText($file).Trim() }\n"
+    "    finally { try { [IO.File]::Delete($file) } catch { } }\n"
+    "}\n"
+    "$src = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($head))\n"
     "$wdSecrets = @{}\n"
     "for ($i = 1; $i -lt $parts.Length - 1; $i++) {\n"
     "    $nv = $parts[$i].Split(':')\n"
@@ -279,6 +292,23 @@ def command_argv(rendered: str, secrets: Mapping[str, str] | None = None) -> tup
     args = [*POWERSHELL_ARGS, "-EncodedCommand", _encoded_bootstrap()]
     pairs = [_b64(k) + ":" + _b64(v) for k, v in (secrets or {}).items()]
     return args, ".".join([_b64(rendered), *pairs, str(len(pairs))]) + "\r\n"
+
+
+FILE_MARK = "!"
+
+
+def split_script_part(stdin: str) -> tuple[str, str]:
+    """Split a stdin line from ``command_argv`` into its script part (base64) and the rest (``.pairs....count``)."""
+    line = stdin.rstrip("\r\n")
+    head, dot, rest = line.partition(".")
+    if not dot or head.startswith(FILE_MARK):
+        raise ValueError("not a script input line")
+    return head, dot + rest
+
+
+def script_file_line(rest: str, path: str) -> str:
+    """The stdin line that makes the bootstrap read the script part from ``path`` (then delete it) instead."""
+    return FILE_MARK + _b64(path) + rest + "\r\n"
 
 
 def command(rendered: str, secrets: Mapping[str, str] | None = None) -> tuple[str, str]:

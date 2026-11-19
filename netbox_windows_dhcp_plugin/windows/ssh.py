@@ -23,8 +23,12 @@ This module must not import Django or NetBox.
 from __future__ import annotations
 
 import base64
+import contextlib
 import io
 import os
+import posixpath
+import re
+import secrets
 import socket
 import threading
 import time
@@ -32,12 +36,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import psscript
 from .runner import MAX_OUTPUT, MAX_STDERR, ExecResult, RunnerError, execute, raise_if_stopped
 
-# Windows OpenSSH stalls on more input than this, waiting until the timeout (between 70 and 90 KB in the lab, Windows
-# Server 2022, whether the script is read as one line or to the end). The plugin's scripts send under 10 KB; refuse
-# larger ones at once rather than hang.
-MAX_STDIN = 64 * 1024
+# Windows OpenSSH stalls on long stdin, waiting until the timeout (a 65 000 character line hung, 50 000 went through,
+# lab, Windows Server 2022, whether the script is read as one line or to the end). A longer script input goes to a file
+# over SFTP instead, and only its path and the secrets go on stdin (issue #63). Most scripts send under 24 KB.
+STDIN_INLINE_MAX = 32 * 1024
+# What the stdin line may still hold once the script is in a file: the path and the secrets, a few hundred bytes.
+MAX_STDIN = 32 * 1024
 
 # Waits between tries when the server refuses one more session on the connection (sshd MaxSessions, 10 by default):
 # the commands already running on it finish within seconds, freeing a session.
@@ -47,7 +54,12 @@ SESSION_RETRY_DELAYS = (0.2, 0.5, 1.0, 2.0, 4.0)
 # slot a moment after the channel closes, so a refusal in that gap is worth waiting out.
 SESSION_CLOSE_GRACE = 2.0
 
-__all__ = ["SESSION_RETRY_DELAYS", "SSHConfig", "SSHRunner", "key_algorithms"]
+__all__ = ["SESSION_RETRY_DELAYS", "STDIN_INLINE_MAX", "SSHConfig", "SSHRunner", "key_algorithms", "windows_path"]
+
+
+def windows_path(sftp_path: str) -> str:
+    """A path as Windows OpenSSH's SFTP server writes it ("/C:/Users/x/f") in a form .NET opens ("C:/Users/x/f")."""
+    return sftp_path[1:] if re.match(r"^/[A-Za-z]:/", sftp_path) else sftp_path
 
 
 def _refused(paramiko: Any, e: Exception) -> bool:
@@ -380,11 +392,45 @@ class SSHRunner:
                 self._last_closed = time.monotonic()
 
     def _exec(self, argv: list[str], stdin: str) -> ExecResult:
-        if len(stdin) > MAX_STDIN:
-            raise RunnerError(
-                f"ssh: script too large for SSH ({len(stdin)} bytes, at most {MAX_STDIN}): Windows OpenSSH stalls on "
-                "larger input; use WinRM for this server"
-            )
+        if len(stdin) <= STDIN_INLINE_MAX:
+            return self._exec_stdin(argv, stdin)
+        return self._exec_via_file(argv, stdin)
+
+    def _exec_via_file(self, argv: list[str], stdin: str) -> ExecResult:
+        """
+        Upload the script part of a long stdin line over SFTP and send its path instead (issue #63). The file holds
+        what stdin would have carried, minus the secrets, which stay on stdin. It sits in the account's home folder
+        under a random name; the bootstrap deletes it once read, and this removes it too when the script never ran.
+        """
+        head, rest = psscript.split_script_part(stdin)
+        chan = self._open_channel()
+        try:
+            try:
+                chan.invoke_subsystem("sftp")
+                sftp = _paramiko().SFTPClient(chan)
+                remote = posixpath.join(sftp.normalize("."), f"nbwd-{secrets.token_hex(8)}.txt")
+                with sftp.open(remote, "w") as f:
+                    f.write(head.encode("ascii"))
+            except Exception as e:  # noqa: BLE001 - paramiko raises SSHException, IOError, EOFError...
+                raise RunnerError(
+                    f"ssh: the script ({len(stdin)} bytes) is too long for stdin (Windows OpenSSH stalls on more than "
+                    f"{STDIN_INLINE_MAX}), and uploading it over SFTP failed: {e}. Enable the sftp subsystem in "
+                    "sshd_config or use WinRM for this server"
+                ) from e
+            try:
+                line = psscript.script_file_line(rest, windows_path(remote))
+                if len(line) > MAX_STDIN:
+                    raise RunnerError(f"ssh: the secrets are too long for stdin ({len(line)} bytes)")
+                return self._exec_stdin(argv, line)
+            finally:
+                # Normally already gone (the bootstrap deletes it); a failure here must not hide the result.
+                with contextlib.suppress(Exception):
+                    sftp.remove(remote)
+                sftp.close()
+        finally:
+            self._close_channel(chan)
+
+    def _exec_stdin(self, argv: list[str], stdin: str) -> ExecResult:
         chan = self._open_channel()
         try:
             chan.settimeout(self.cfg.command_timeout)

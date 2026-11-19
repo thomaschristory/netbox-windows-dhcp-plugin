@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from collections.abc import Callable
 
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 
@@ -23,11 +24,21 @@ def split_rendered(rendered: str) -> tuple[dict, str]:
     return json.loads(literal), "\n".join(lines[_PREAMBLE_LINES:])
 
 
-def fake_host_response(server: FakeDhcpServer, stdin: str) -> tuple[bytes, bytes, int]:
-    """What powershell.exe running the bootstrap would print, with ``server`` as the DHCP role."""
+def fake_host_response(
+    server: FakeDhcpServer, stdin: str, read_file: Callable[[str], str] | None = None
+) -> tuple[bytes, bytes, int]:
+    """What powershell.exe running the bootstrap would print, with ``server`` as the DHCP role.
+
+    A script part of "!<base64 path>" names a file the transport uploaded (SSH over SFTP): ``read_file`` reads it and
+    deletes it, as the bootstrap does.
+    """
     parts = stdin.strip().split(".")
     assert parts[-1] == str(len(parts) - 2), "the line ends with the number of secrets"
-    rendered = base64.b64decode(parts[0]).decode("utf-8")
+    head = parts[0]
+    if head.startswith("!"):
+        assert read_file is not None, "a script file without a way to read it"
+        head = read_file(base64.b64decode(head[1:]).decode("utf-8")).strip()
+    rendered = base64.b64decode(head).decode("utf-8")
     params, wrapped = split_rendered(rendered)
     # The secrets that the bootstrap reads into $wdSecrets, which the preamble copies onto $p.
     for pair in parts[1:-1]:

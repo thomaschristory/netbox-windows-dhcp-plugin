@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Over SSH, a script over 32 KB no longer fails with "too large for SSH, use WinRM". Windows OpenSSH stalls on long
+  stdin, so the plugin uploads the script over SFTP to the account's home folder under a random name, sends only its
+  path and any secret on stdin, and the script deletes the file once read. The server needs the `sftp` subsystem,
+  which Windows OpenSSH enables by default (#63).
+
 ### Documentation
 
 - Kerberos, SSH key logons and **Remote DHCP server** (`-ComputerName`) were checked in a domain lab (Windows Server

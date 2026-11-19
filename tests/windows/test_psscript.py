@@ -292,3 +292,19 @@ def test_layer_source_has_no_django_or_netbox_imports() -> None:
 def test_public_names() -> None:
     for name in psscript.__all__:
         assert hasattr(psscript, name)
+
+
+def test_split_script_part_and_script_file_line() -> None:
+    """Issue #63: the script part can be swapped for a file path; the secrets and their count stay as they were."""
+    from netbox_windows_dhcp_plugin.windows import psscript
+
+    _, stdin = psscript.prepare(psscript.Script("x.y", "$out = 1").wrap(), {"shared_secret": "s", "name": "n"})
+    head, rest = psscript.split_script_part(stdin)
+    assert "." not in head and rest.startswith(".") and rest.endswith(".1")
+    line = psscript.script_file_line(rest, "C:/Users/svc/nbwd-1.txt")
+    assert line.endswith(rest + "\r\n") and line.startswith("!")
+    assert base64.b64decode(line.split(".")[0][1:]).decode() == "C:/Users/svc/nbwd-1.txt"
+    with pytest.raises(ValueError):
+        psscript.split_script_part(line)
+    with pytest.raises(ValueError):
+        psscript.split_script_part("no-dot")

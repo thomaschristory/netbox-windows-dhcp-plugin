@@ -36,6 +36,7 @@ error names the step, the cmdlet and the PowerShell message.
 | `ssh: host key mismatch ...` | The server's key changed, or another machine answers on that address. Check before updating the pinned key |
 | `ssh: authentication failed: ...` | Wrong user name, password or key, or the key is not authorised on the server. The passphrase of an encrypted key is not tried as the account's password |
 | `ssh: parsing private_key: ...` | The key cannot be read: it must be an Ed25519, ECDSA or RSA key in PEM or OpenSSH format, and an encrypted key needs its passphrase as the profile's `password` |
+| `ssh: the script (N bytes) is too long for stdin ..., and uploading it over SFTP failed: ...` | A script over 32 KB goes to the server as a file over SFTP. Enable the `sftp` subsystem in `C:\ProgramData\ssh\sshd_config` (Windows OpenSSH has it by default) and check that the account can write to its home folder, or use WinRM for this server |
 | `ssh: timed out waiting for the exit status` | The command stayed silent longer than `command_timeout`; raise it for very large servers |
 | `The DhcpServer PowerShell module is not available on this host. ...` | The DHCP Server role or its management tools are missing: `Install-WindowsFeature RSAT-DHCP` |
 | `Access is denied` from a DHCP cmdlet | The account is not in **DHCP Administrators** (or the service was not restarted after creating the group) |
