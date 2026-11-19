@@ -41,6 +41,7 @@ class WindowsServerConnectionPanel(panels.ObjectAttributesPanel):
 class WindowsServerSecurityPanel(panels.ObjectAttributesPanel):
     title = _("Authentication")
     winrm_auth = attrs.ChoiceAttr("winrm_auth", label=_("WinRM authentication"))
+    failover_auth = attrs.ChoiceAttr("failover_auth", label=_("Failover authentication"))
     winrm_https = attrs.BooleanAttr("winrm_https", label=_("WinRM over HTTPS"))
     verify_tls = attrs.BooleanAttr("verify_tls", label=_("Verify host"))
     kerberos_realm = attrs.TextAttr("kerberos_realm", label=_("Kerberos realm"))

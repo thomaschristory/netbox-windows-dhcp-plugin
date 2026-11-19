@@ -54,6 +54,7 @@ class WindowsServerTable(PrimaryModelTable):
     virtual_machine = tables.Column(verbose_name=_("Virtual machine"), linkify=True)
     transport = columns.ChoiceFieldColumn(verbose_name=_("Transport"))
     winrm_auth = columns.ChoiceFieldColumn(verbose_name=_("WinRM authentication"))
+    failover_auth = columns.ChoiceFieldColumn(verbose_name=_("Failover authentication"))
     winrm_https = columns.BooleanColumn(verbose_name=_("HTTPS"))
     verify_tls = columns.BooleanColumn(verbose_name=_("Verify host"))
     sync_enabled = columns.BooleanColumn(verbose_name=_("Sync"))
@@ -73,6 +74,7 @@ class WindowsServerTable(PrimaryModelTable):
             "port",
             "credential_profile",
             "winrm_auth",
+            "failover_auth",
             "winrm_https",
             "verify_tls",
             "computer_name",

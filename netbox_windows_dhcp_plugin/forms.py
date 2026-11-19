@@ -28,6 +28,7 @@ from virtualization.models import VirtualMachine
 
 from .choices import (
     ClassTypeChoices,
+    FailoverAuthChoices,
     FailoverModeChoices,
     FailoverServerRoleChoices,
     FamilyChoices,
@@ -149,7 +150,7 @@ class WindowsServerForm(PrimaryModelForm):
     fieldsets = (
         FieldSet("name", "device", "virtual_machine", "description", name=_("Server")),
         FieldSet("host", "transport", "port", "credential_profile", name=_("Connection")),
-        FieldSet("winrm_auth", "winrm_https", "kerberos_realm", "kerberos_spn", name=_("WinRM")),
+        FieldSet("winrm_auth", "failover_auth", "winrm_https", "kerberos_realm", "kerberos_spn", name=_("WinRM")),
         FieldSet("ssh_host_key", name=_("SSH")),
         FieldSet("verify_tls", "computer_name", name=_("Security and remoting")),
         FieldSet("sync_enabled", "import_interval", "import_vrf", name=_("Sync")),
@@ -167,6 +168,7 @@ class WindowsServerForm(PrimaryModelForm):
             "port",
             "credential_profile",
             "winrm_auth",
+            "failover_auth",
             "winrm_https",
             "verify_tls",
             "kerberos_realm",
@@ -189,6 +191,7 @@ class WindowsServerImportForm(PrimaryModelImportForm):
     )
     transport = CSVChoiceField(choices=TransportChoices, required=False, label=_("Transport"))
     winrm_auth = CSVChoiceField(choices=WinRMAuthChoices, required=False, label=_("WinRM authentication"))
+    failover_auth = CSVChoiceField(choices=FailoverAuthChoices, required=False, label=_("Failover authentication"))
     import_vrf = CSVModelChoiceField(
         queryset=VRF.objects.all(), to_field_name="name", required=False, label=_("Import VRF")
     )
@@ -204,6 +207,7 @@ class WindowsServerImportForm(PrimaryModelImportForm):
             "port",
             "credential_profile",
             "winrm_auth",
+            "failover_auth",
             "winrm_https",
             "verify_tls",
             "kerberos_realm",

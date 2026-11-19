@@ -9,6 +9,7 @@ from virtualization.api.serializers import VirtualMachineSerializer
 
 from ..choices import (
     ClassTypeChoices,
+    FailoverAuthChoices,
     FailoverModeChoices,
     FailoverServerRoleChoices,
     FamilyChoices,
@@ -61,6 +62,7 @@ class WindowsServerSerializer(PrimaryModelSerializer):
     virtual_machine = VirtualMachineSerializer(nested=True, required=False, allow_null=True)
     transport = ChoiceField(choices=TransportChoices, required=False)
     winrm_auth = ChoiceField(choices=WinRMAuthChoices, required=False)
+    failover_auth = ChoiceField(choices=FailoverAuthChoices, required=False, allow_blank=True)
     import_vrf = VRFSerializer(nested=True, required=False, allow_null=True)
 
     class Meta:
@@ -75,6 +77,7 @@ class WindowsServerSerializer(PrimaryModelSerializer):
             "port",
             "credential_profile",
             "winrm_auth",
+            "failover_auth",
             "winrm_https",
             "verify_tls",
             "kerberos_realm",

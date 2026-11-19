@@ -11,7 +11,7 @@ from netbox.jobs import JobRunner, system_job
 from . import retention
 from .choices import ImportDestinationChoices, SyncKindChoices, SyncStatusChoices
 from .conf import CredentialError, get_setting, max_concurrency
-from .connection import build_client
+from .connection import build_client, build_failover_client
 from .integrations.branching import job_kwargs as branching_job_kwargs
 from .models import PushTrigger, SyncRun, WindowsServer
 from .windows.psscript import WindowsLayerError
@@ -53,6 +53,12 @@ def _close(client, logger):
         logger.warning(f"Could not close the connection: {type(exc).__name__}")
 
 
+def _failover_runner(job, server):
+    """The fake runner a test substitutes for the failover client: its own factory, else the job's runner_factory."""
+    factory = getattr(job, "failover_runner_factory", None) or job.runner_factory
+    return factory(server) if factory else None
+
+
 def _finish(sync_run, client, logger):
     """
     The end of every job that keeps a SyncRun, whatever happened: close the connection and save the run with a final
@@ -75,8 +81,9 @@ class TestConnectionJob(JobRunner):
     class Meta:
         name = "Windows DHCP connection test"
 
-    # Tests substitute a fake runner here.
+    # Tests substitute a fake runner here (and one for the failover client, else runner_factory serves both).
     runner_factory = None
+    failover_runner_factory = None
 
     def run(self, *args, **kwargs):
         server = self.job.object
@@ -88,12 +95,17 @@ class TestConnectionJob(JobRunner):
             started=timezone.now(),
         )
         runner = self.runner_factory(server) if self.runner_factory else None
-        client = None
+        client = failover = None
         try:
             client = build_client(server, runner=runner)
             client.check_available()
             scopes = client.list_scopes()
             record_names(server, client, self.logger)
+            # The failover logon too, when it differs (issue #141): a CredSSP setup problem shows here, not at the
+            # first failover push.
+            failover = build_failover_client(server, runner=_failover_runner(self, server))
+            if failover is not None:
+                failover.check_available()
         # ValueError covers settings the transports reject, such as a profile without a password or a malformed
         # SSH host key.
         except (CredentialError, WindowsLayerError, ValueError) as exc:
@@ -103,8 +115,14 @@ class TestConnectionJob(JobRunner):
         else:
             sync_run.status = SyncStatusChoices.COMPLETED
             sync_run.summary = {"ipv4_scopes": len(scopes), "reported_names": server.reported_names}
+            if failover is not None:
+                sync_run.summary["failover_auth"] = server.failover_auth
             self.logger.info(f"Connected to {server.host}: {len(scopes)} IPv4 scopes")
+            if failover is not None:
+                self.logger.info(f"Connected to {server.host} for failover writes with {server.failover_auth}")
         finally:
+            if failover is not None:
+                _close(failover, self.logger)
             _finish(sync_run, client, self.logger)
         if sync_run.status == SyncStatusChoices.FAILED:
             raise JobFailed(sync_run.error)
@@ -120,8 +138,9 @@ class LeaseJob(JobRunner):
     class Meta:
         name = "Windows DHCP leases"
 
-    # Tests substitute a fake runner here.
+    # Tests substitute a fake runner here (and one for the failover client, else runner_factory serves both).
     runner_factory = None
+    failover_runner_factory = None
 
     scope_pk = None
 
@@ -237,8 +256,9 @@ class ImportJob(JobRunner):
     class Meta:
         name = "Windows DHCP import"
 
-    # Tests substitute a fake runner here.
+    # Tests substitute a fake runner here (and one for the failover client, else runner_factory serves both).
     runner_factory = None
+    failover_runner_factory = None
 
     def run(self, *args, destination=None, branch="", scheduled=False, attempt=1, **kwargs):
         from .integrations import branching
@@ -422,8 +442,9 @@ class PushJob(JobRunner):
     class Meta:
         name = "Windows DHCP push"
 
-    # Tests substitute a fake runner here.
+    # Tests substitute a fake runner here (and one for the failover client, else runner_factory serves both).
     runner_factory = None
+    failover_runner_factory = None
     dry_run = False
 
     def run(self, *args, branch="", attempt=1, **kwargs):
@@ -480,11 +501,13 @@ class PushJob(JobRunner):
                     cursor.execute("SELECT pg_advisory_xact_lock(%s, %s)", [_QUEUE_LOCK_CLASS, server.pk])
                 PushTrigger.objects.filter(windows_server=server, sync_run=None).update(sync_run=sync_run)
         runner = self.runner_factory(server) if self.runner_factory else None
-        client = None
+        client = failover = None
         try:
             client = build_client(server, runner=runner)
             record_names(server, client, self.logger)
-            outcome = pusher.run(server, client, dry_run=self.dry_run, logger=self.logger)
+            if not self.dry_run:
+                failover = build_failover_client(server, runner=_failover_runner(self, server))
+            outcome = pusher.run(server, client, dry_run=self.dry_run, logger=self.logger, failover_client=failover)
         except (CredentialError, WindowsLayerError, ValueError) as exc:
             sync_run.status = SyncStatusChoices.FAILED
             sync_run.error = str(exc)
@@ -501,6 +524,8 @@ class PushJob(JobRunner):
                 sync_run.status = SyncStatusChoices.COMPLETED
             self.logger.info(push_log_line(server.host, outcome, self.dry_run))
         finally:
+            if failover is not None:
+                _close(failover, self.logger)
             _finish(sync_run, client, self.logger)
         if sync_run.status == SyncStatusChoices.FAILED:
             raise JobFailed(sync_run.error)
