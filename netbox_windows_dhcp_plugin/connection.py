@@ -12,14 +12,16 @@ from .conf import (
 )
 from .windows import DhcpClient, limit
 from .windows.psscript import WindowsLayerError
-from .windows.runner import RunnerError, Stopped
+from .windows.runner import RunnerError
 
 
 class FailoverLogonError(WindowsLayerError):
     """
-    The failover client's own logon or connection failed (issue #141). Not a RunnerError on purpose: a push stops
-    at a RunnerError (the server is unreachable), while this only concerns the failover writes, so the push fails
-    those and goes on with the rest, which the server's own client sends.
+    The failover client's logon or connection failed, or one of its commands timed out (issue #141). Not a
+    RunnerError on purpose: a push stops at a RunnerError (the server is unreachable), while this only concerns the
+    failover writes, so the push fails those (and what depends on them) and goes on with the rest, which the
+    server's own client sends. A failover write that timed out after it was sent may still finish on Windows; the
+    next push reads Windows again and reconciles.
     """
 
 
@@ -32,9 +34,7 @@ class _FailoverRunner:
     def run(self, script, params=None):
         try:
             return self.runner.run(script, params)
-        except Stopped:
-            raise
-        except RunnerError as exc:
+        except RunnerError as exc:  # Stopped is not a RunnerError: a stop passes through as it is
             raise FailoverLogonError(f"failover authentication ({self.auth}): {exc}") from exc
 
     def close(self):
@@ -93,8 +93,14 @@ def build_runner(server, auth=""):
     from .windows.winrm import WinRMConfig, WinRMRunner
 
     username = creds.username
-    if auth == WinRMAuthChoices.CREDSSP and server.kerberos_realm and not any(c in username for c in "\\@"):
-        # A Kerberos profile may hold a bare user name (the realm comes from the server); CredSSP needs the domain.
+    if (
+        auth == WinRMAuthChoices.CREDSSP
+        and server.winrm_auth == WinRMAuthChoices.KERBEROS
+        and server.kerberos_realm
+        and not any(c in username for c in "\\@")
+    ):
+        # A Kerberos server's profile may hold a bare user name (the realm comes from the server); CredSSP needs
+        # the domain.
         username = f"{username}@{server.kerberos_realm.upper()}"
     return WinRMRunner(
         WinRMConfig(

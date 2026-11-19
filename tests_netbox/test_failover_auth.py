@@ -223,7 +223,10 @@ class FailoverRefusedPushTest(FailoverAuthPushTest):
             self._run()
         run = SyncRun.objects.filter(kind="push").latest("pk")
         self.assertIn("failover authentication (credssp): winrm: CredSSP refused", run.error)
-        self.assertNotIn("connection to the server failed", run.error)
+        # Not stopped early: replication was tried, through the failover client, and waits for the next push.
+        self.assertNotIn("stopped early", run.error)
+        self.assertIn("failover replication fo: failover authentication (credssp)", run.error)
+        self.assertEqual(run.summary["replication_pending"], {"fo": ["10.1.0.0"]})
         self.assertEqual(self.fake.scopes["10.1.0.0"]["name"], "changed")
         self.assertNotEqual(self.fake.failovers["fo"].get("load_balance_percent"), 70)
 
