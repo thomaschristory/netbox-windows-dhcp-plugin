@@ -43,6 +43,10 @@ partners' Windows servers in NetBox CredSSP, in one of two ways:
   only be used where it is needed;
 - or **WinRM authentication: CredSSP**, for every call.
 
+With a Kerberos credential profile whose user name has no domain, the CredSSP logon adds the server's **Kerberos
+realm** (`user@REALM`). **Test connection** checks both logons. If only the CredSSP one fails, a push still sends
+everything else and fails just the failover changes and the replication.
+
 Either way, enable CredSSP on each DHCP server:
 
 ```powershell

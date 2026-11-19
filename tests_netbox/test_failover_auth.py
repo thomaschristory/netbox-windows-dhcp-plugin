@@ -203,3 +203,54 @@ class FailoverAuthPushTest(PushTestMixin, TestCase):
         self.assertEqual(run.status, "completed", run.error)
         self.assertEqual(self.failover, [])
         self.assertIn("failover.replicate", self.own)
+
+
+@override_settings(PLUGINS_CONFIG=CREDENTIALS)
+class FailoverRefusedPushTest(FailoverAuthPushTest):
+    """A failover logon that fails (CredSSP not enabled on the server) fails the failover change only."""
+
+    def setUp(self):
+        super().setUp()
+        PushJob.failover_runner_factory = staticmethod(lambda server: _Refusing())
+
+    def test_the_rest_of_the_push_still_goes_through(self):
+        relationship = FailoverRelationship.objects.get(name="fo")
+        relationship.snapshot()
+        relationship.load_balance_percent = 70
+        relationship.save()
+        self._change_scope(name="changed")
+        with self.assertRaises(JobFailed):
+            self._run()
+        run = SyncRun.objects.filter(kind="push").latest("pk")
+        self.assertIn("failover authentication (credssp): winrm: CredSSP refused", run.error)
+        self.assertNotIn("connection to the server failed", run.error)
+        self.assertEqual(self.fake.scopes["10.1.0.0"]["name"], "changed")
+        self.assertNotEqual(self.fake.failovers["fo"].get("load_balance_percent"), 70)
+
+    # The parent's tests expect a working failover logon.
+    test_replication_goes_through_the_failover_client = None
+    test_relationship_writes_go_through_the_failover_client = None
+    test_a_dry_run_opens_no_failover_client = None
+    test_without_a_failover_authentication_everything_uses_one_client = None
+
+
+@override_settings(
+    PLUGINS_CONFIG={
+        **CREDENTIALS,
+        "netbox_windows_dhcp_plugin": {
+            "credentials": {
+                "bare": {"username": "admin", "password": "x"},
+                "lab": {"username": "LAB\\admin", "password": "x"},
+            }
+        },
+    }
+)
+class FailoverRunnerUserTest(TestCase):
+    def test_credssp_gets_the_realm_for_a_bare_user_name(self):
+        from netbox_windows_dhcp_plugin.connection import build_runner
+
+        server = kerberos(windows_server(), credential_profile="bare")
+        self.assertEqual(build_runner(server, auth="credssp").cfg.username, "admin@EXAMPLE.COM")
+        self.assertEqual(build_runner(server).cfg.username, "admin")
+        server.credential_profile = "lab"
+        self.assertEqual(build_runner(server, auth="credssp").cfg.username, "LAB\\admin")

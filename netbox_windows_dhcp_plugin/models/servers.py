@@ -88,8 +88,9 @@ class WindowsServer(JobsMixin, PrimaryModel):
         default=FailoverAuthChoices.SAME,
         blank=True,
         help_text=_(
-            "Creating, changing or replicating a failover relationship makes the server call its partner as you, "
-            "which Kerberos and NTLM cannot do. CredSSP here uses it for those calls only (WinRM)."
+            "Creating, changing or deleting a failover relationship, adding or removing its scopes, and replication "
+            "make the server call its partner as you, which Kerberos and NTLM cannot do. CredSSP here uses it for "
+            "those calls only (WinRM)."
         ),
     )
     winrm_https = models.BooleanField(

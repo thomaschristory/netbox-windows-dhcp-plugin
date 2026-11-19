@@ -11,6 +11,36 @@ from .conf import (
     max_concurrency,
 )
 from .windows import DhcpClient, limit
+from .windows.psscript import WindowsLayerError
+from .windows.runner import RunnerError, Stopped
+
+
+class FailoverLogonError(WindowsLayerError):
+    """
+    The failover client's own logon or connection failed (issue #141). Not a RunnerError on purpose: a push stops
+    at a RunnerError (the server is unreachable), while this only concerns the failover writes, so the push fails
+    those and goes on with the rest, which the server's own client sends.
+    """
+
+
+class _FailoverRunner:
+    """Name the failover logon in its errors, and keep them from stopping the whole push."""
+
+    def __init__(self, runner, auth):
+        self.runner, self.auth = runner, auth
+
+    def run(self, script, params=None):
+        try:
+            return self.runner.run(script, params)
+        except Stopped:
+            raise
+        except RunnerError as exc:
+            raise FailoverLogonError(f"failover authentication ({self.auth}): {exc}") from exc
+
+    def close(self):
+        close = getattr(self.runner, "close", None)
+        if callable(close):
+            close()
 
 
 def check_connection_allowed(server):
@@ -62,10 +92,14 @@ def build_runner(server, auth=""):
         )
     from .windows.winrm import WinRMConfig, WinRMRunner
 
+    username = creds.username
+    if auth == WinRMAuthChoices.CREDSSP and server.kerberos_realm and not any(c in username for c in "\\@"):
+        # A Kerberos profile may hold a bare user name (the realm comes from the server); CredSSP needs the domain.
+        username = f"{username}@{server.kerberos_realm.upper()}"
     return WinRMRunner(
         WinRMConfig(
             host=server.host,
-            username=creds.username,
+            username=username,
             password=creds.password,
             port=server.effective_port,
             https=server.winrm_https,
@@ -99,7 +133,7 @@ def build_failover_client(server, runner=None):
     check_connection_allowed(server)
     runner = runner if runner is not None else build_runner(server, auth=auth)
     # Failover writes are few and one at a time; the same cap keeps the server's total in check.
-    return DhcpClient(limit(runner, max_concurrency()), computer_name=server.computer_name)
+    return DhcpClient(limit(_FailoverRunner(runner, auth), max_concurrency()), computer_name=server.computer_name)
 
 
 def failover_partner_check(server):

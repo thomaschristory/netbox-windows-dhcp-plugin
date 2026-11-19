@@ -230,6 +230,12 @@ class WindowsServerBulkEditForm(PrimaryModelBulkEditForm):
     winrm_auth = forms.ChoiceField(
         choices=add_blank_choice(WinRMAuthChoices), required=False, label=_("WinRM authentication")
     )
+    # Blank means "no change" here; "Set null" puts it back to "same as WinRM authentication".
+    failover_auth = forms.ChoiceField(
+        choices=[("", "---------"), (FailoverAuthChoices.CREDSSP, _("CredSSP"))],
+        required=False,
+        label=_("Failover authentication"),
+    )
     winrm_https = _boolean_field()
     verify_tls = _boolean_field()
     sync_enabled = _boolean_field()
@@ -241,6 +247,7 @@ class WindowsServerBulkEditForm(PrimaryModelBulkEditForm):
             "transport",
             "credential_profile",
             "winrm_auth",
+            "failover_auth",
             "winrm_https",
             "verify_tls",
             "sync_enabled",
@@ -249,7 +256,7 @@ class WindowsServerBulkEditForm(PrimaryModelBulkEditForm):
             "description",
         ),
     )
-    nullable_fields = ("import_interval", "import_vrf", "description", "comments")
+    nullable_fields = ("failover_auth", "import_interval", "import_vrf", "description", "comments")
 
 
 class WindowsServerFilterForm(PrimaryModelFilterSetForm):
@@ -260,13 +267,14 @@ class WindowsServerFilterForm(PrimaryModelFilterSetForm):
     )
     transport = _filter_choice_field(TransportChoices, _("Transport"))
     winrm_auth = _filter_choice_field(WinRMAuthChoices, _("WinRM authentication"))
+    failover_auth = _filter_choice_field(FailoverAuthChoices, _("Failover authentication"))
     sync_enabled = _boolean_field()
     tag = TagFilterField(model)
 
     fieldsets = (
         FieldSet("q", "filter_id", "tag"),
         FieldSet("device_id", "virtual_machine_id", name=_("Runs on")),
-        FieldSet("transport", "winrm_auth", "sync_enabled", name=_("Windows server")),
+        FieldSet("transport", "winrm_auth", "failover_auth", "sync_enabled", name=_("Windows server")),
     )
 
 

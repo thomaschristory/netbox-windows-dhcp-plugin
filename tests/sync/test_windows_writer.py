@@ -595,3 +595,14 @@ def test_without_a_failover_client_everything_uses_the_one_client(client, fake):
     assert writer.failover is client
     writer.apply(Change("create", "failover", "ha", after=failover(auth=None).fields))
     assert "ha" in fake.failovers
+
+
+def test_putting_scopes_back_goes_through_the_failover_client(fake):
+    log = []
+    own = DhcpClient(_Tagged(fake, log, "own"))
+    push(own, wanted())
+    writer = WindowsWriter(own, failover_client=DhcpClient(_Tagged(fake, log, "failover")))
+    fake.scopes["10.2.0.0"] = {**fake.scopes["10.1.0.0"], "scope_id": "10.2.0.0"}
+    log.clear()
+    writer.restore_failover_scopes("ha", ["10.2.0.0"])
+    assert log == [("failover", "failover.add_scope")]

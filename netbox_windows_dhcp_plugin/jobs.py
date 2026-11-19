@@ -138,9 +138,8 @@ class LeaseJob(JobRunner):
     class Meta:
         name = "Windows DHCP leases"
 
-    # Tests substitute a fake runner here (and one for the failover client, else runner_factory serves both).
+    # Tests substitute a fake runner here.
     runner_factory = None
-    failover_runner_factory = None
 
     scope_pk = None
 
@@ -256,9 +255,8 @@ class ImportJob(JobRunner):
     class Meta:
         name = "Windows DHCP import"
 
-    # Tests substitute a fake runner here (and one for the failover client, else runner_factory serves both).
+    # Tests substitute a fake runner here.
     runner_factory = None
-    failover_runner_factory = None
 
     def run(self, *args, destination=None, branch="", scheduled=False, attempt=1, **kwargs):
         from .integrations import branching

@@ -46,7 +46,7 @@ from django.test import Client  # noqa: E402
 from django.urls import reverse  # noqa: E402
 
 from netbox_windows_dhcp_plugin.conf import max_concurrency, normalise_host  # noqa: E402
-from netbox_windows_dhcp_plugin.connection import build_client  # noqa: E402
+from netbox_windows_dhcp_plugin.connection import build_client, build_failover_client  # noqa: E402
 from netbox_windows_dhcp_plugin.jobs import enqueue_leases, record_names  # noqa: E402
 from netbox_windows_dhcp_plugin.models import (  # noqa: E402
     FailoverRelationship,
@@ -296,10 +296,14 @@ def guarded_push(server, step, expect_actions):
     for s in plan.skipped:
         log(f"{step}: not pushed: {s.change.action} {s.change.kind} {s.change.key}: {s.reason}")
     client = build_client(server)
+    # As the push job does: a second client for failover writes when the server sets one (#141).
+    failover = build_failover_client(server)
     try:
-        outcome = pusher.run(server, client)
+        outcome = pusher.run(server, client, failover_client=failover)
     finally:
         client.close()
+        if failover is not None:
+            failover.close()
     # The push plans again: check what it really did as well (nothing else edits the dev stack meanwhile).
     done = outcome.result.applied if outcome.result else []
     foreign = [c for c in done if not is_test(c.kind, c.key)]
@@ -523,7 +527,11 @@ def main():
             raise Abort(f"5. scopes still on Windows after the delete push: {left}")
         if env.get("WINDOWS_DHCP_LAB_PARTNER"):
             # The push sends failover writes with CredSSP when WINDOWS_DHCP_LAB_FAILOVER_AUTH says so (#141).
-            if not failover_auth_ok(env) and env.get("WINDOWS_DHCP_LAB_FAILOVER_AUTH", "").lower() != "credssp":
+            failover_credssp = (
+                env.get("WINDOWS_DHCP_LAB_FAILOVER_AUTH", "").lower() == "credssp"
+                and env.get("WINDOWS_DHCP_LAB_TRANSPORT", "winrm").lower() == "winrm"
+            )
+            if not failover_auth_ok(env) and not failover_credssp:
                 raise Abort(
                     "6. failover needs WINDOWS_DHCP_LAB_AUTH=credssp (see docs/failover.md), or "
                     "WINDOWS_DHCP_LAB_FAILOVER_ANY_AUTH=1 to try another authentication"
