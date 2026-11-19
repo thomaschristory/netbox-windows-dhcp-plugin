@@ -115,3 +115,8 @@ netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
    - **Lab (2026-11-16 to 18):** Windows Server 2025, WinRM HTTP with CredSSP: `make test-lab` 41 passed (the #108
      probes included), `make lab-e2e` passed on the #104 and #100 changes, read timing for #99 (about 30% faster at
      the default of 4, CredSSP and NTLM).
+10. **Done: 0.4.1 (2026-11-19).** A WinRM call whose connection is refused before its command is sent is tried again
+    (#132), so parallel reads no longer fail on an occasional refused connection; `make lab-e2e` runs next to the
+    lab seed (#133); tests for the `max_concurrency` cap (#135).
+    - **Lab (2026-11-18/19):** Windows Server 2025, WinRM HTTP with CredSSP: `make test-lab` 41 passed, `make lab-e2e`
+      passed at the default `max_concurrency` of 4, failover included.

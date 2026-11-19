@@ -5,6 +5,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-19
+
+0.4.1 fixes parallel reads failing on an occasional refused connection. No migration, no setting or API change.
+
 ### Fixed
 
 - A parallel read over WinRM (`max_concurrency` above 1) could fail with `Connection refused` when the network path
