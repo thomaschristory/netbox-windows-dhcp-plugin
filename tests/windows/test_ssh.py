@@ -7,6 +7,7 @@ script from stdin and answers with the fake DHCP server's envelope.
 from __future__ import annotations
 
 import base64
+import contextlib
 import io
 import socket
 import threading
@@ -72,10 +73,21 @@ class SSHServer:
     open_sessions: int = 0
     refused: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
+    # Every thread the server starts (accept loop, paramiko transports, one per command), joined at teardown so none
+    # outlives its test: a thread failing later would be blamed on whichever test runs then.
+    threads: list = field(default_factory=list)
+    # Set at teardown: commands still being answered give up quietly instead of writing to a closed connection.
+    closing: threading.Event = field(default_factory=threading.Event)
 
     def drop_all(self) -> None:
         for t in self.transports:
             t.close()
+
+    def start_thread(self, target: Callable[..., None], *args: Any) -> None:
+        t = threading.Thread(target=target, args=args, daemon=True)
+        with self.lock:
+            self.threads.append(t)
+        t.start()
 
 
 class _Iface(paramiko.ServerInterface):
@@ -119,26 +131,35 @@ class _Iface(paramiko.ServerInterface):
     def check_channel_exec_request(self, channel, command: bytes) -> bool:
         cmd = command.decode()
         self.srv.commands.append(cmd)
-        threading.Thread(target=self._serve, args=(channel, cmd), daemon=True).start()
+        self.srv.start_thread(self._serve, channel, cmd)
         return True
 
     def _serve(self, channel, cmd: str) -> None:
-        data = bytearray()
-        while True:
-            b = channel.recv(65536)
-            if not b:
-                break
-            data.extend(b)
-        respond = self.srv.behaviour.respond or (lambda c, s: fake_host_response(self.srv.fake, s))
-        stdout, stderr, code = respond(cmd, data.decode())
-        if stdout:
-            channel.sendall(stdout)
-        if stderr:
-            channel.sendall_stderr(stderr)
-        channel.send_exit_status(code)
-        channel.close()
-        with self.srv.lock:
-            self.srv.open_sessions -= 1
+        try:
+            data = bytearray()
+            while True:
+                b = channel.recv(65536)
+                if not b:
+                    break
+                data.extend(b)
+            respond = self.srv.behaviour.respond or (lambda c, s: fake_host_response(self.srv.fake, s))
+            stdout, stderr, code = respond(cmd, data.decode())
+            if self.srv.closing.is_set():
+                # The test is over and its connection closed: there is nobody left to answer.
+                return
+            if stdout:
+                channel.sendall(stdout)
+            if stderr:
+                channel.sendall_stderr(stderr)
+            channel.send_exit_status(code)
+            channel.close()
+        except (OSError, EOFError):
+            # Only a connection closed by the teardown is expected here; anything else is a real failure.
+            if not self.srv.closing.is_set():
+                raise
+        finally:
+            with self.srv.lock:
+                self.srv.open_sessions -= 1
 
 
 @pytest.fixture
@@ -163,24 +184,43 @@ def ssh_server() -> Iterator[Callable[..., SSHServer]]:
                     conn, _ = lsock.accept()
                 except OSError:
                     return
+                if srv.closing.is_set():
+                    # The teardown's wake-up connection.
+                    conn.close()
+                    return
                 srv.connections += 1
                 t = paramiko.Transport(conn)
                 for hk in srv.host_keys:
                     t.add_server_key(hk)
                 srv.transports.append(t)
+                with srv.lock:
+                    # A paramiko Transport is itself a thread: join it at teardown too.
+                    srv.threads.append(t)
                 try:
                     t.start_server(server=_Iface(srv))
                 except Exception:  # noqa: BLE001 - client gave up (e.g. host key mismatch)
                     t.close()
 
-        threading.Thread(target=accept, daemon=True).start()
+        srv.start_thread(accept)
         return srv
 
     yield start
     for srv in servers:
+        srv.closing.set()
         srv.drop_all()
     for s in socks:
+        # Closing a listening socket does not wake a thread blocked in accept() on every platform: connect once so
+        # the accept loop sees the closing flag and ends.
+        with contextlib.suppress(OSError), socket.create_connection(s.getsockname(), timeout=1):
+            pass
         s.close()
+    for srv in servers:
+        with srv.lock:
+            threads = list(srv.threads)
+        for t in threads:
+            t.join(timeout=5)
+        alive = [t.name for t in threads if t.is_alive()]
+        assert not alive, f"SSH test server threads still running after the test: {alive}"
 
 
 def runner(srv: SSHServer, **kw: Any) -> SSHRunner:
@@ -589,7 +629,8 @@ def test_stdin_is_base64_script(ssh_server) -> None:
 
 def test_silence_past_the_command_timeout_says_so(ssh_server) -> None:
     def respond(cmd: str, stdin: str) -> tuple[bytes, bytes, int]:
-        time.sleep(2)
+        # Silent for longer than the command timeout; the teardown ends the wait instead of letting it run on.
+        srv.closing.wait(2)
         return base64.b64encode(b'{"ok":true,"data":null}'), b"", 0
 
     srv = ssh_server(behaviour=Behaviour(respond=respond))

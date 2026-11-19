@@ -5,7 +5,9 @@ from __future__ import annotations
 import base64
 import json
 import sys
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import pytest
@@ -13,10 +15,10 @@ import pytest
 from netbox_windows_dhcp_plugin.windows import psscript, winrm
 from netbox_windows_dhcp_plugin.windows.client import DhcpClient, Scope
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
-from netbox_windows_dhcp_plugin.windows.runner import RunnerError, Stopped, set_stop_check
+from netbox_windows_dhcp_plugin.windows.runner import RunnerError, Stopped, limit, set_stop_check
 from netbox_windows_dhcp_plugin.windows.winrm import WinRMConfig, WinRMRunner, kerberos_user, refused_connect
 
-from .remote import fake_host_response
+from .remote import fake_host_response, split_rendered
 
 
 class FakePypsrp:
@@ -342,3 +344,40 @@ def test_a_stopping_read_does_not_retry(pypsrp, sleeps) -> None:
     finally:
         set_stop_check(None)
     assert len(f.wsman_kwargs) == 1
+
+
+# Issue #99: a parallel read sends up to max_concurrency WinRM commands at once through one runner.
+
+
+def test_concurrent_calls_hold_the_cap_and_each_get_their_own_connection(pypsrp) -> None:
+    cap, calls = 3, 12
+    lock = threading.Lock()
+    in_flight = peak = 0
+    # Each command waits until `cap` of them are running together, so the peak reaches the cap if the cap allows it,
+    # and goes over it if the cap is broken. The timeout only keeps a broken test from hanging.
+    together = threading.Barrier(cap, timeout=10)
+
+    def respond(argv: list[str], stdin: bytes) -> tuple[bytes, bytes, int]:
+        nonlocal in_flight, peak
+        params, _ = split_rendered(base64.b64decode(stdin.decode().split(".")[0]).decode())
+        with lock:
+            in_flight += 1
+            peak = max(peak, in_flight)
+        try:
+            together.wait()
+            # Answer with the call's own number, so a reply sent to the wrong caller shows.
+            return base64.b64encode(json.dumps({"ok": True, "data": {"i": params["i"]}}).encode()), b"", 0
+        finally:
+            with lock:
+                in_flight -= 1
+
+    f = pypsrp(respond)
+    limited = limit(WinRMRunner(cfg()), cap)
+    with ThreadPoolExecutor(max_workers=calls) as pool:
+        replies = list(pool.map(lambda i: psscript.parse(limited.run("# x", {"i": i})), range(calls)))
+    assert peak == cap
+    assert replies == [(True, {"i": i}) for i in range(calls)]
+    # A new connection and shell per call, each closed again, with its own HTTP session that refuses redirects.
+    assert len(f.wsman_kwargs) == f.closed == f.shells_closed == f.commands == calls
+    assert len({id(s) for s in f.sessions}) == calls
+    assert all(s.max_redirects == 0 for s in f.sessions)
