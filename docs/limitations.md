@@ -34,9 +34,12 @@ In a domain lab (Windows Server 2025, two DHCP servers joined to a domain, 2026-
 Not tried: Kerberos, SSH with a password or SSH with a key through a management host; classic (not resource-based)
 or unconstrained Kerberos delegation; a custom **Kerberos SPN**; `make lab-e2e` over Kerberos HTTP.
 
-Over SSH, Windows OpenSSH stalls on more than about 70 KB of script input, so the plugin refuses a script above
-64 KB with an error that says to use WinRM. Its scripts send under 24 KB (the batched reads cap what they send); only very large
-parameter lists come close.
+Over SSH, Windows OpenSSH stalls on long script input (a 65 000 character line hung on Windows Server 2022). The
+plugin sends a script over 32 KB as a file instead: it uploads it over SFTP to the account's home folder under a
+random name, sends only its path, a checksum (and any secret) on stdin, and deletes it once read; a file changed in
+the meantime is refused before anything runs. The server needs the `sftp`
+subsystem, which Windows OpenSSH enables by default; without it a long script fails with an error that says so. Its
+scripts send under 24 KB (the batched reads cap what they send), so only very large parameter lists use the file.
 
 Try the plugin on a lab server before a production one, and use **Dry run** before turning **Sync enabled** on.
 

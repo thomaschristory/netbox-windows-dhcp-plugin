@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from typing import Any
 
 __all__ = [
     "BOOTSTRAP",
+    "FILE_MARK",
     "NOT_FOUND_IDS",
     "OP_PREFIX",
     "NotFound",
@@ -55,6 +57,8 @@ __all__ = [
     "parse",
     "prepare",
     "render",
+    "script_file_line",
+    "split_script_part",
     "split_secrets",
 ]
 
@@ -246,12 +250,30 @@ def render(script: str, params: Mapping[str, Any] | None = None) -> str:
 # script block that [scriptblock]::Create compiles and script block logging records. Only
 # .NET methods touch them here, so module logging does not record them either.
 # Checked on Windows PowerShell 5.1 (Windows Server 2025) with script block logging on (issue #104).
+#
+# The script part may instead be "!", the base64 of a file path, ":" and the SHA-256 (hex) of the file's content
+# (SSH, issue #63: Windows OpenSSH stalls on long stdin, so a large script is uploaded over SFTP). The file holds the
+# script part as it would have been sent, the secrets still come on stdin, and the file is deleted as soon as it has
+# been read. A file that does not match the checksum (replaced in the folder meanwhile) is refused before anything is
+# compiled. Only .NET methods touch it.
 BOOTSTRAP = (
     "$ProgressPreference = 'SilentlyContinue'\n"
     "$in = [Console]::In.ReadLine()\n"
     "$parts = $in.Trim().Split('.')\n"
     "if ($parts.Length -lt 2 -or $parts[-1] -cne [string]($parts.Length - 2)) { throw 'incomplete script input' }\n"
-    "$src = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[0]))\n"
+    "$head = $parts[0]\n"
+    "if ($head.StartsWith('!')) {\n"
+    "    $ref = $head.Substring(1).Split(':')\n"
+    "    if ($ref.Length -ne 2) { throw 'incomplete script input' }\n"
+    "    $file = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($ref[0]))\n"
+    "    try { $head = [IO.File]::ReadAllText($file).Trim() }\n"
+    "    finally { try { [IO.File]::Delete($file) } catch { } }\n"
+    # SHA256CryptoServiceProvider: FIPS-validated, so it also works where FIPS mode is on (SHA256Managed throws).
+    "    $sum = [BitConverter]::ToString((New-Object Security.Cryptography.SHA256CryptoServiceProvider).ComputeHash("
+    "[Text.Encoding]::ASCII.GetBytes($head))).Replace('-', '').ToLowerInvariant()\n"
+    "    if ($sum -cne $ref[1]) { throw 'script file does not match its checksum' }\n"
+    "}\n"
+    "$src = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($head))\n"
     "$wdSecrets = @{}\n"
     "for ($i = 1; $i -lt $parts.Length - 1; $i++) {\n"
     "    $nv = $parts[$i].Split(':')\n"
@@ -279,6 +301,27 @@ def command_argv(rendered: str, secrets: Mapping[str, str] | None = None) -> tup
     args = [*POWERSHELL_ARGS, "-EncodedCommand", _encoded_bootstrap()]
     pairs = [_b64(k) + ":" + _b64(v) for k, v in (secrets or {}).items()]
     return args, ".".join([_b64(rendered), *pairs, str(len(pairs))]) + "\r\n"
+
+
+FILE_MARK = "!"
+
+
+def split_script_part(stdin: str) -> tuple[str, str]:
+    """Split a stdin line from ``command_argv`` into its script part (base64) and the rest (``.pairs....count``)."""
+    line = stdin.rstrip("\r\n")
+    head, dot, rest = line.partition(".")
+    if not dot or head.startswith(FILE_MARK):
+        raise ValueError("not a script input line")
+    return head, dot + rest
+
+
+def script_file_line(rest: str, path: str, head: str) -> str:
+    """
+    The stdin line that makes the bootstrap read the script part from ``path`` (then delete it) instead. ``head`` is
+    that script part: its SHA-256 goes along, so a file replaced before it is read is refused.
+    """
+    digest = hashlib.sha256(head.encode("ascii")).hexdigest()
+    return FILE_MARK + _b64(path) + ":" + digest + rest + "\r\n"
 
 
 def command(rendered: str, secrets: Mapping[str, str] | None = None) -> tuple[str, str]:

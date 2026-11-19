@@ -23,8 +23,12 @@ This module must not import Django or NetBox.
 from __future__ import annotations
 
 import base64
+import contextlib
 import io
 import os
+import posixpath
+import re
+import secrets
 import socket
 import threading
 import time
@@ -32,12 +36,16 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .runner import MAX_OUTPUT, MAX_STDERR, ExecResult, RunnerError, execute, raise_if_stopped
+from . import psscript
+from . import runner as _runner
+from .runner import MAX_OUTPUT, MAX_STDERR, ExecResult, RunnerError, Stopped, execute, raise_if_stopped
 
-# Windows OpenSSH stalls on more input than this, waiting until the timeout (between 70 and 90 KB in the lab, Windows
-# Server 2022, whether the script is read as one line or to the end). The plugin's scripts send under 10 KB; refuse
-# larger ones at once rather than hang.
-MAX_STDIN = 64 * 1024
+# Windows OpenSSH stalls on long stdin, waiting until the timeout (a 65 000 character line hung, 50 000 went through,
+# lab, Windows Server 2022, whether the script is read as one line or to the end). A longer script input goes to a file
+# over SFTP instead, and only its path and the secrets go on stdin (issue #63). Most scripts send under 24 KB.
+STDIN_INLINE_MAX = 32 * 1024
+# What the stdin line may still hold once the script is in a file: the path and the secrets, a few hundred bytes.
+MAX_STDIN = 32 * 1024
 
 # Waits between tries when the server refuses one more session on the connection (sshd MaxSessions, 10 by default):
 # the commands already running on it finish within seconds, freeing a session.
@@ -47,7 +55,12 @@ SESSION_RETRY_DELAYS = (0.2, 0.5, 1.0, 2.0, 4.0)
 # slot a moment after the channel closes, so a refusal in that gap is worth waiting out.
 SESSION_CLOSE_GRACE = 2.0
 
-__all__ = ["SESSION_RETRY_DELAYS", "SSHConfig", "SSHRunner", "key_algorithms"]
+__all__ = ["SESSION_RETRY_DELAYS", "STDIN_INLINE_MAX", "SSHConfig", "SSHRunner", "key_algorithms", "windows_path"]
+
+
+def windows_path(sftp_path: str) -> str:
+    """A path as Windows OpenSSH's SFTP server writes it ("/C:/Users/x/f") in a form .NET opens ("C:/Users/x/f")."""
+    return sftp_path[1:] if re.match(r"^/[A-Za-z]:/", sftp_path) else sftp_path
 
 
 def _refused(paramiko: Any, e: Exception) -> bool:
@@ -380,11 +393,107 @@ class SSHRunner:
                 self._last_closed = time.monotonic()
 
     def _exec(self, argv: list[str], stdin: str) -> ExecResult:
-        if len(stdin) > MAX_STDIN:
-            raise RunnerError(
-                f"ssh: script too large for SSH ({len(stdin)} bytes, at most {MAX_STDIN}): Windows OpenSSH stalls on "
-                "larger input; use WinRM for this server"
-            )
+        if len(stdin) <= STDIN_INLINE_MAX:
+            return self._exec_stdin(argv, stdin)
+        return self._exec_via_file(argv, stdin)
+
+    def _exec_via_file(self, argv: list[str], stdin: str) -> ExecResult:
+        """
+        Upload the script part of a long stdin line over SFTP and send its path instead (issue #63). The file holds
+        what stdin would have carried, minus the secrets, which stay on stdin. It sits in the account's home folder
+        under a random name; the bootstrap checks it against the checksum sent on stdin, deletes it once read, and
+        this removes it too when the script failed.
+
+        The upload's session is closed before the script's opens, so a long script holds one session at a time like
+        any other (sshd MaxSessions).
+        """
+        # Checked on Windows Server 2025 (domain lab, #63): the SFTP home is "/C:/Users/<user>", sftp-server.exe
+        # creates and removes the file, and .NET reads it as "C:/Users/<user>/...". unverified: Windows Server 2022.
+        head, rest = psscript.split_script_part(stdin)
+        remote = self._upload(head, len(stdin))
+        line = psscript.script_file_line(rest, windows_path(remote), head)
+        if len(line) > MAX_STDIN:
+            self._remove(remote)
+            raise RunnerError(f"ssh: the secrets are too long for stdin ({len(line)} bytes)")
+        try:
+            res = self._exec_stdin(argv, line)
+        except Exception:
+            # PowerShell may never have read (and so deleted) it.
+            self._remove(remote)
+            raise
+        if res.exit_code != 0:
+            self._remove(remote)
+        return res
+
+    def _sftp(self):
+        """An SFTP client on a new session, which times out like a command (a stalled server must not hang a job)."""
+        chan = self._open_channel()
+        try:
+            chan.settimeout(self.cfg.command_timeout)
+            chan.invoke_subsystem("sftp")
+            return chan, _paramiko().SFTPClient(chan)
+        except BaseException:
+            self._close_channel(chan)
+            raise
+
+    def _upload(self, head: str, size: int) -> str:
+        try:
+            chan, sftp = self._sftp()
+        except (RunnerError, Stopped):
+            # Stopped is not a failure: a parallel read that must stop tells it apart by its type.
+            raise
+        except Exception as e:  # noqa: BLE001 - paramiko raises SSHException, IOError, EOFError...
+            raise self._upload_error(size, e) from e
+        remote = ""
+        error: Exception | None = None
+        try:
+            remote = posixpath.join(sftp.normalize("."), f"nbwd-{secrets.token_hex(8)}.txt")
+            # "x": never write over a file that is already there.
+            # unverified: exclusive create through Windows OpenSSH's sftp-server (the lab checked plain "w").
+            with sftp.open(remote, "wx") as f:
+                f.write(head.encode("ascii"))
+        except Exception as e:  # noqa: BLE001
+            error = e
+        finally:
+            with contextlib.suppress(Exception):
+                sftp.close()
+            self._close_channel(chan)
+        if error is not None:
+            if remote:
+                # A partial upload holds no secret, but leave nothing behind. A fresh session: the one that failed
+                # may be stalled, and would make this wait another timeout.
+                self._remove(remote)
+            raise self._upload_error(size, error) from error
+        return remote
+
+    @staticmethod
+    def _upload_error(size: int, e: Exception) -> RunnerError:
+        return RunnerError(
+            f"ssh: the script ({size} bytes) is too long for stdin (Windows OpenSSH stalls on more than "
+            f"{STDIN_INLINE_MAX}), and uploading it over SFTP failed: {e}. Enable the sftp subsystem in sshd_config "
+            "or use WinRM for this server"
+        )
+
+    def _remove(self, remote: str) -> None:
+        """Remove a script file the bootstrap did not; a failure here must not hide the script's own result."""
+        # Cleanup runs even when the thread's commands must stop: it sends no script, and the file would stay.
+        check = getattr(_runner._stop_check, "check", None)
+        _runner.set_stop_check(None)
+        try:
+            chan, sftp = self._sftp()
+        except Exception:  # noqa: BLE001
+            return
+        finally:
+            _runner.set_stop_check(check)
+        try:
+            with contextlib.suppress(Exception):
+                sftp.remove(remote)
+        finally:
+            with contextlib.suppress(Exception):
+                sftp.close()
+            self._close_channel(chan)
+
+    def _exec_stdin(self, argv: list[str], stdin: str) -> ExecResult:
         chan = self._open_channel()
         try:
             chan.settimeout(self.cfg.command_timeout)

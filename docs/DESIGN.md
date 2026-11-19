@@ -83,7 +83,7 @@ sync engine  ->  client (one function per cmdlet operation)  ->  psscript (envel
   `list_reservation_option_values`, `list_v6_reservation_option_values`) and `policy.list_contents`
   (`list_policy_contents`, scope or server-level policies). The client sends the IPs or names it has just listed,
   at most 64 and 12 KB of escaped `$p` literal per script (`READ_BATCH`, `READ_BATCH_BYTES`; a longer single name is
-  refused), so the input stays under 24 KB, far below the 64 KB SSH limit. The script answers `[{ip, values: [...]}]`
+  refused), so the input stays under 24 KB, below the 32 KB that SSH sends on stdin (a longer script goes as a file, #63). The script answers `[{ip, values: [...]}]`
   (policies: `{name, ranges, values}`; values without their option name, scope or IP, to keep large scopes' output
   small; the client leaves the name empty) and stops at its first error, which reaches the envelope as with the
   one-at-a-time reads: a reservation or policy deleted mid-read is not found, so `_gone_or_read` reads the scope

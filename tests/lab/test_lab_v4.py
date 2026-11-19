@@ -841,3 +841,15 @@ def test_two_reservations_for_one_client(lab: Lab, probe_out) -> None:
     seen["listed"] = [r.ip_address for r in lab.client.list_reservations(s.scope_id)]
     save_probe(probe_out, "v4-reservation-same-client", seen)
     assert seen["second"].startswith("refused"), seen
+
+
+def test_long_script(lab: Lab, probe_out) -> None:
+    """ssh.py (#63): a script far over what Windows OpenSSH takes on stdin runs (over SSH it goes as a file through
+    SFTP), and no script file is left in the account's home folder. Over WinRM it goes as usual."""
+    started = time.monotonic()
+    got = lab.raw("probe.long", "$out = $p.v.Length", {"v": "x" * 100_000})
+    took = time.monotonic() - started
+    left = lab.raw("probe.leftovers", "$out = @(Get-ChildItem -LiteralPath $HOME -Filter 'nbwd-*.txt' | % Name)")
+    save_probe(probe_out, "long-script", {"length": got, "seconds": round(took, 1), "left": left})
+    assert got == 100_000
+    assert not left

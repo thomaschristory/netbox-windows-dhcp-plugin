@@ -1665,8 +1665,9 @@ def _objects(op: str, data: Any) -> list[dict]:
 
 
 # How many reservations or policies one batched read sends (issue #100), and how many bytes their IPs or names may take
-# in the script, as the escaped $p literal (UTF-8 JSON with every quote doubled). The input must stay well under the
-# 64 KB SSH limit (#63): with the script and base64 (a third larger) a batch sends at most about 22 KB. A batch must
+# in the script, as the escaped $p literal (UTF-8 JSON with every quote doubled). The input stays under the 32 KB that
+# SSH sends on stdin (#63; longer goes as a file over SFTP): with the script and base64 (a third larger) a batch sends
+# at most about 22 KB. A batch must
 # also finish within command_timeout (120 s), since over SSH that is how long a script may stay silent and it prints
 # only at the end: at the 0.3 to 1 s per item seen with -ComputerName that allows about a hundred items, so 64 keeps
 # half the budget spare. tests/lab measures the time per item against this.
