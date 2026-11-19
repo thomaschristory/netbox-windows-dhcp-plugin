@@ -36,7 +36,14 @@ relationship ... exists on server ...").
 
 Creating or changing a relationship, adding or removing its scopes, and replication make the server you connect to
 call its partner as your account. Windows only lets it do that when it holds your credentials, so give both
-partners' Windows servers in NetBox **WinRM authentication: CredSSP**, and enable CredSSP on each DHCP server:
+partners' Windows servers in NetBox CredSSP, in one of two ways:
+
+- **Failover authentication: CredSSP**, with any **WinRM authentication** (Kerberos, say): the plugin logs on with
+  CredSSP for the failover writes and replication only, and as usual for everything else. Use it when CredSSP should
+  only be used where it is needed;
+- or **WinRM authentication: CredSSP**, for every call.
+
+Either way, enable CredSSP on each DHCP server:
 
 ```powershell
 Enable-WSManCredSSP -Role Server -Force

@@ -114,6 +114,7 @@ still load that file, so a secret typed there would work until someone commits i
 | `WINDOWS_DHCP_LAB_HTTPS` | `0` uses the HTTP listener |
 | `WINDOWS_DHCP_LAB_AUTH` | Optional: `ntlm` (default), `basic`, `kerberos` or `credssp` (needed by the failover tests) |
 | `WINDOWS_DHCP_LAB_PARTNER` | Optional: a second server, as the first reaches it; runs the failover tests (with `credssp`) |
+| `WINDOWS_DHCP_LAB_FAILOVER_AUTH` | Optional, `make lab-e2e` only: `credssp` gives the lab servers **Failover authentication: CredSSP**, so the failover phase runs with any `WINDOWS_DHCP_LAB_AUTH` (Kerberos, say) |
 | `WINDOWS_DHCP_LAB_FAILOVER_ANY_AUTH` | `1` runs the failover tests with any authentication, to see whether it reaches the partner |
 | `WINDOWS_DHCP_LAB_FAILOVER_SECRET` | Optional shared secret for the test relationship |
 | `WINDOWS_DHCP_LAB_REALM` | Optional, Kerberos realm |

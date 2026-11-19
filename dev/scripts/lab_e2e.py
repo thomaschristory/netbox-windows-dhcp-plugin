@@ -14,7 +14,8 @@ Steps:
 5. Change the description of every test object that has one in NetBox, then push (update path).
 6. Read live leases for a test scope through the Leases tab (LeaseJob in the worker).
 7. Delete every test object in NetBox, then push (delete path).
-8. Optional, with WINDOWS_DHCP_LAB_PARTNER and WINDOWS_DHCP_LAB_AUTH=credssp: a test scope in a failover relationship
+8. Optional, with WINDOWS_DHCP_LAB_PARTNER and WINDOWS_DHCP_LAB_AUTH=credssp (or WINDOWS_DHCP_LAB_FAILOVER_AUTH=credssp,
+   which keeps WINDOWS_DHCP_LAB_AUTH for the rest): a test scope in a failover relationship
    made in NetBox and pushed (Windows copies the scope to the partner), an edit replicated to the partner after the
    push, then the relationship and the scope deleted. The partner is written only through the relationship.
 After every push: a second dry-run push and an import change nothing. (The log numbers these 1 to 6: leases are
@@ -193,6 +194,8 @@ def netbox_server(env, name=SERVER_NAME, partner=False):
     # SSH always checks the host key (the model refuses verify_tls off for SSH); INSECURE only concerns WinRM TLS.
     server.verify_tls = server.transport == "ssh" or env.get("WINDOWS_DHCP_LAB_INSECURE") != "1"
     server.winrm_auth = env.get("WINDOWS_DHCP_LAB_AUTH", "ntlm").lower()
+    # CredSSP for the failover writes only, the rest as WINDOWS_DHCP_LAB_AUTH says (issue #141).
+    server.failover_auth = env.get("WINDOWS_DHCP_LAB_FAILOVER_AUTH", "").lower() if server.transport == "winrm" else ""
     server.kerberos_realm = env.get("WINDOWS_DHCP_LAB_REALM", "")
     server.kerberos_spn = env.get("WINDOWS_DHCP_LAB_SPN", "")
     server.sync_enabled = False
@@ -519,7 +522,8 @@ def main():
         if left:
             raise Abort(f"5. scopes still on Windows after the delete push: {left}")
         if env.get("WINDOWS_DHCP_LAB_PARTNER"):
-            if not failover_auth_ok(env):
+            # The push sends failover writes with CredSSP when WINDOWS_DHCP_LAB_FAILOVER_AUTH says so (#141).
+            if not failover_auth_ok(env) and env.get("WINDOWS_DHCP_LAB_FAILOVER_AUTH", "").lower() != "credssp":
                 raise Abort(
                     "6. failover needs WINDOWS_DHCP_LAB_AUTH=credssp (see docs/failover.md), or "
                     "WINDOWS_DHCP_LAB_FAILOVER_ANY_AUTH=1 to try another authentication"
