@@ -400,34 +400,87 @@ class SSHRunner:
         """
         Upload the script part of a long stdin line over SFTP and send its path instead (issue #63). The file holds
         what stdin would have carried, minus the secrets, which stay on stdin. It sits in the account's home folder
-        under a random name; the bootstrap deletes it once read, and this removes it too when the script never ran.
+        under a random name; the bootstrap checks it against the checksum sent on stdin, deletes it once read, and
+        this removes it too when the script failed.
+
+        The upload's session is closed before the script's opens, so a long script holds one session at a time like
+        any other (sshd MaxSessions).
         """
+        # Checked on Windows Server 2025 (domain lab, #63): the SFTP home is "/C:/Users/<user>", sftp-server.exe
+        # creates and removes the file, and .NET reads it as "C:/Users/<user>/...". unverified: Windows Server 2022.
         head, rest = psscript.split_script_part(stdin)
+        remote = self._upload(head, len(stdin))
+        line = psscript.script_file_line(rest, windows_path(remote), head)
+        if len(line) > MAX_STDIN:
+            self._remove(remote)
+            raise RunnerError(f"ssh: the secrets are too long for stdin ({len(line)} bytes)")
+        try:
+            res = self._exec_stdin(argv, line)
+        except Exception:
+            # PowerShell may never have read (and so deleted) it.
+            self._remove(remote)
+            raise
+        if res.exit_code != 0:
+            self._remove(remote)
+        return res
+
+    def _sftp(self):
+        """An SFTP client on a new session, which times out like a command (a stalled server must not hang a job)."""
         chan = self._open_channel()
         try:
-            try:
-                chan.invoke_subsystem("sftp")
-                sftp = _paramiko().SFTPClient(chan)
-                remote = posixpath.join(sftp.normalize("."), f"nbwd-{secrets.token_hex(8)}.txt")
-                with sftp.open(remote, "w") as f:
-                    f.write(head.encode("ascii"))
-            except Exception as e:  # noqa: BLE001 - paramiko raises SSHException, IOError, EOFError...
-                raise RunnerError(
-                    f"ssh: the script ({len(stdin)} bytes) is too long for stdin (Windows OpenSSH stalls on more than "
-                    f"{STDIN_INLINE_MAX}), and uploading it over SFTP failed: {e}. Enable the sftp subsystem in "
-                    "sshd_config or use WinRM for this server"
-                ) from e
-            try:
-                line = psscript.script_file_line(rest, windows_path(remote))
-                if len(line) > MAX_STDIN:
-                    raise RunnerError(f"ssh: the secrets are too long for stdin ({len(line)} bytes)")
-                return self._exec_stdin(argv, line)
-            finally:
-                # Normally already gone (the bootstrap deletes it); a failure here must not hide the result.
+            chan.settimeout(self.cfg.command_timeout)
+            chan.invoke_subsystem("sftp")
+            return chan, _paramiko().SFTPClient(chan)
+        except BaseException:
+            self._close_channel(chan)
+            raise
+
+    def _upload(self, head: str, size: int) -> str:
+        remote = ""
+        try:
+            chan, sftp = self._sftp()
+        except RunnerError:
+            raise
+        except Exception as e:  # noqa: BLE001 - paramiko raises SSHException, IOError, EOFError...
+            raise self._upload_error(size, e) from e
+        try:
+            remote = posixpath.join(sftp.normalize("."), f"nbwd-{secrets.token_hex(8)}.txt")
+            # "x": never write over a file that is already there.
+            # unverified: exclusive create through Windows OpenSSH's sftp-server (the lab checked plain "w").
+            with sftp.open(remote, "wx") as f:
+                f.write(head.encode("ascii"))
+            return remote
+        except Exception as e:  # noqa: BLE001
+            if remote:
+                # A partial upload holds no secret, but leave nothing behind.
                 with contextlib.suppress(Exception):
                     sftp.remove(remote)
-                sftp.close()
+            raise self._upload_error(size, e) from e
         finally:
+            with contextlib.suppress(Exception):
+                sftp.close()
+            self._close_channel(chan)
+
+    @staticmethod
+    def _upload_error(size: int, e: Exception) -> RunnerError:
+        return RunnerError(
+            f"ssh: the script ({size} bytes) is too long for stdin (Windows OpenSSH stalls on more than "
+            f"{STDIN_INLINE_MAX}), and uploading it over SFTP failed: {e}. Enable the sftp subsystem in sshd_config "
+            "or use WinRM for this server"
+        )
+
+    def _remove(self, remote: str) -> None:
+        """Remove a script file the bootstrap did not; a failure here must not hide the script's own result."""
+        try:
+            chan, sftp = self._sftp()
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            with contextlib.suppress(Exception):
+                sftp.remove(remote)
+        finally:
+            with contextlib.suppress(Exception):
+                sftp.close()
             self._close_channel(chan)
 
     def _exec_stdin(self, argv: list[str], stdin: str) -> ExecResult:

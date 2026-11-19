@@ -36,7 +36,8 @@ or unconstrained Kerberos delegation; a custom **Kerberos SPN**; `make lab-e2e` 
 
 Over SSH, Windows OpenSSH stalls on long script input (a 65 000 character line hung on Windows Server 2022). The
 plugin sends a script over 32 KB as a file instead: it uploads it over SFTP to the account's home folder under a
-random name, sends only its path (and any secret) on stdin, and deletes it once read. The server needs the `sftp`
+random name, sends only its path, a checksum (and any secret) on stdin, and deletes it once read; a file changed in
+the meantime is refused before anything runs. The server needs the `sftp`
 subsystem, which Windows OpenSSH enables by default; without it a long script fails with an error that says so. Its
 scripts send under 24 KB (the batched reads cap what they send), so only very large parameter lists use the file.
 

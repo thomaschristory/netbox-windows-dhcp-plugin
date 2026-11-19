@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import io
+import os
 import socket
 import threading
 import time
@@ -61,6 +63,8 @@ class Behaviour:
     max_sessions: int | None = None
     # Whether the sftp subsystem is there (Windows OpenSSH has it unless sshd_config drops it).
     sftp: bool = True
+    # Seconds each SFTP write waits before answering (a stalled server).
+    sftp_stall: float = 0.0
 
 
 @dataclass
@@ -110,6 +114,9 @@ class _Handle(paramiko.SFTPHandle):
         self.srv, self.path, self.buf = srv, path, bytearray()
 
     def write(self, offset: int, data: bytes) -> int:
+        if self.srv.behaviour.sftp_stall:
+            # A server that stops answering mid-upload; the teardown ends the wait.
+            self.srv.closing.wait(self.srv.behaviour.sftp_stall)
         self.buf[offset : offset + len(data)] = data
         return paramiko.SFTP_OK
 
@@ -130,11 +137,18 @@ class _Sftp(paramiko.SFTPServerInterface):
         return SFTP_HOME if path in (".", "") else path
 
     def open(self, path: str, flags: int, attr: Any) -> Any:
+        if flags & os.O_EXCL and path in self.srv.files:
+            return paramiko.SFTP_FAILURE
         return _Handle(self.srv, path)
 
     def remove(self, path: str) -> int:
         with self.srv.lock:
             return paramiko.SFTP_OK if self.srv.files.pop(path, None) is not None else paramiko.SFTP_NO_SUCH_FILE
+
+    def session_ended(self) -> None:
+        # The SFTP session counted against max_sessions like an exec one; it is free again.
+        with self.srv.lock:
+            self.srv.open_sessions -= 1
 
 
 class _Iface(paramiko.ServerInterface):
@@ -718,7 +732,10 @@ def test_a_long_script_goes_through_a_file_over_sftp(ssh_server) -> None:
     (path, content), *_ = srv.uploads
     assert path.startswith(SFTP_HOME + "/nbwd-") and len(content) > ssh_mod.STDIN_INLINE_MAX
     # The fake host read it as Windows would ("C:/Users/..."), and nothing is left behind.
-    assert base64.b64decode(first.split(".")[0][1:]).decode() == path[1:]
+    path_b64, digest = first.split(".")[0][1:].split(":")
+    assert base64.b64decode(path_b64).decode() == path[1:]
+    assert digest == hashlib.sha256(content).hexdigest()
+    assert r._sessions == 0
     assert srv.files == {}
 
 
@@ -728,7 +745,7 @@ def test_a_long_script_keeps_its_secrets_on_stdin(ssh_server) -> None:
 
     def respond(cmd: str, stdin: str) -> tuple[bytes, bytes, int]:
         seen["stdin"] = stdin
-        srv.read_file(base64.b64decode(stdin.split(".")[0][1:]).decode())
+        srv.read_file(base64.b64decode(stdin.split(".")[0][1:].split(":")[0]).decode())
         return base64.b64encode(b'{"ok":true,"data":null}'), b"", 0
 
     srv.behaviour.respond = respond
@@ -753,6 +770,65 @@ def test_a_script_file_left_behind_is_removed(ssh_server) -> None:
     finally:
         r.close()
     assert len(srv.uploads) == 1 and srv.files == {}
+
+
+def test_a_stalled_upload_times_out(ssh_server) -> None:
+    srv = ssh_server(behaviour=Behaviour(sftp_stall=3))
+    r = runner(srv, command_timeout=0.5)
+    try:
+        with pytest.raises(RunnerError, match="uploading it over SFTP failed"):
+            r.run("$out = $p.v", {"v": "x" * 60_000})
+    finally:
+        r.close()
+    assert srv.commands == []
+
+
+def test_long_scripts_hold_one_session_each(ssh_server) -> None:
+    # The upload's session closes before the script's opens: two long scripts at once fit in two sessions.
+    srv = ssh_server(behaviour=Behaviour(max_sessions=2))
+
+    def respond(cmd: str, stdin: str) -> tuple[bytes, bytes, int]:
+        srv.read_file(base64.b64decode(stdin.split(".")[0][1:].split(":")[0]).decode())
+        time.sleep(0.3)  # both scripts run at the same time
+        return base64.b64encode(b'{"ok":true,"data":null}'), b"", 0
+
+    srv.behaviour.respond = respond
+    r = runner(srv)
+    errors: list[BaseException] = []
+
+    def one() -> None:
+        try:
+            r.run("$out = $p.v", {"v": "x" * 60_000})
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=one) for _ in range(2)]
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+    finally:
+        r.close()
+    assert not errors, errors
+    assert srv.refused == 0 and len(srv.uploads) == 2 and srv.files == {}
+
+
+def test_a_replaced_script_file_is_refused(ssh_server) -> None:
+    srv = ssh_server()
+    original = srv.read_file
+
+    def swapped(path: str) -> str:
+        original(path)
+        return base64.b64encode(b"# another script").decode()
+
+    srv.read_file = swapped
+    r = runner(srv)
+    try:
+        with pytest.raises(RunnerError, match="does not match its checksum"):
+            r.run("$out = $p.v", {"v": "x" * 60_000})
+    finally:
+        r.close()
 
 
 def test_a_long_script_without_sftp_says_what_to_do(ssh_server) -> None:

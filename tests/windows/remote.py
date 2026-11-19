@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 from collections.abc import Callable
 
@@ -37,7 +38,10 @@ def fake_host_response(
     head = parts[0]
     if head.startswith("!"):
         assert read_file is not None, "a script file without a way to read it"
-        head = read_file(base64.b64decode(head[1:]).decode("utf-8")).strip()
+        path_b64, digest = head[1:].split(":")
+        head = read_file(base64.b64decode(path_b64).decode("utf-8")).strip()
+        if hashlib.sha256(head.encode("ascii")).hexdigest() != digest:
+            return b"", b"script file does not match its checksum", 1
     rendered = base64.b64decode(head).decode("utf-8")
     params, wrapped = split_rendered(rendered)
     # The secrets that the bootstrap reads into $wdSecrets, which the preamble copies onto $p.

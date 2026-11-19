@@ -536,7 +536,7 @@ def test_script_part_read_from_a_file_then_deleted(pwsh_path: str, tmp_path: Pat
     head, rest = split_script_part(stdin)
     script_file = tmp_path / "nbwd-0123.txt"
     script_file.write_text(head)
-    line = script_file_line(rest, str(script_file))
+    line = script_file_line(rest, str(script_file), head)
     assert len(line) < 500 and "s3" not in script_file.read_text()
     p = subprocess.run([pwsh_path, *args], input=line.encode(), capture_output=True, timeout=120)
     assert p.returncode == 0, p.stderr
@@ -547,10 +547,27 @@ def test_script_part_read_from_a_file_then_deleted(pwsh_path: str, tmp_path: Pat
 def test_a_missing_script_file_fails(pwsh_path: str, tmp_path: Path) -> None:
     body = Script("file.missing", "$out = 1").wrap()
     args, stdin = prepare(body, {})
-    _, rest = split_script_part(stdin)
-    line = script_file_line(rest, str(tmp_path / "gone.txt"))
+    head, rest = split_script_part(stdin)
+    line = script_file_line(rest, str(tmp_path / "gone.txt"), head)
     p = subprocess.run([pwsh_path, *args], input=line.encode(), capture_output=True, timeout=120)
-    assert p.returncode != 0 or not p.stdout.strip(), p.stdout
+    assert p.returncode != 0 and not p.stdout.strip(), p.stdout
+    assert b"gone.txt" in p.stderr
+
+
+def test_a_replaced_script_file_is_refused_before_running(pwsh_path: str, tmp_path: Path) -> None:
+    """Review of #63: a file swapped in the folder between upload and read must not run."""
+    marker = tmp_path / "ran.txt"
+    body = Script("file.ok", "$out = 1").wrap()
+    args, stdin = prepare(body, {})
+    head, rest = split_script_part(stdin)
+    evil = Script("file.evil", f"Set-Content -LiteralPath '{marker}' -Value x; $out = 2").wrap()
+    _, evil_stdin = prepare(evil, {})
+    script_file = tmp_path / "nbwd-swap.txt"
+    script_file.write_text(split_script_part(evil_stdin)[0])
+    line = script_file_line(rest, str(script_file), head)
+    p = subprocess.run([pwsh_path, *args], input=line.encode(), capture_output=True, timeout=120)
+    assert p.returncode != 0 and b"does not match its checksum" in p.stderr
+    assert not marker.exists() and not script_file.exists()
 
 
 def test_no_secret_leaves_shared_secret_unset(pwsh_path: str) -> None:
