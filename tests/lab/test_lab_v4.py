@@ -19,7 +19,7 @@ from netbox_windows_dhcp_plugin.windows import normalize
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
 from .conftest import save_probe
-from .labkit import MAC_PREFIX, Lab
+from .labkit import MAC_PREFIX, Lab, lab_env
 
 
 def test_scope_round_trip_with_extras(lab: Lab, probe_out) -> None:
@@ -470,6 +470,27 @@ def test_leases(lab: Lab, probe_out) -> None:
     assert lease.host_name == "nbwd-test-lease"
     assert lease.address_state.startswith("Active")
     assert lease.lease_expiry_time.endswith("Z")
+
+
+def test_server_names(lab: Lab, probe_out) -> None:
+    """client.py server.names (#57, #62): what the DHCP server reports as its own names, and that a failover partner
+    naming it by its fully qualified or its short name finds it. On a domain member the DNS name is the FQDN; through
+    -ComputerName the names are the DHCP server's, never the management host's."""
+    env = lab_env()
+    computer = env.get("WINDOWS_DHCP_LAB_COMPUTER_NAME", "")
+    target = (computer or env["WINDOWS_DHCP_LAB_HOST"]).lower().rstrip(".")
+    names = lab.client.get_server_names()
+    save_probe(probe_out, "v4-server-names", {"target": target, "names": names})
+    assert names
+    if "." in target and not target.replace(".", "").isdigit():
+        # Connected by DNS name: Windows must report that name back, or a partner given it would not match.
+        assert target in names
+        placeholder = "netbox-host.invalid"
+        for spelling in (target, target.split(".", 1)[0]):
+            assert windows_state.partner_matches(spelling, [(placeholder, names)]) == [placeholder], spelling
+    if computer:
+        management = env["WINDOWS_DHCP_LAB_HOST"].lower().split(".", 1)[0]
+        assert management not in {n.split(".", 1)[0] for n in names}
 
 
 def test_failover_read_only(lab: Lab, probe_out) -> None:

@@ -120,3 +120,9 @@ netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
     lab seed (#133); tests for the `max_concurrency` cap (#135).
     - **Lab (2026-11-18/19):** Windows Server 2025, WinRM HTTP with CredSSP: `make test-lab` 41 passed, `make lab-e2e`
       passed at the default `max_concurrency` of 4, failover included.
+    - **Domain lab (2026-11-19, #62):** two Windows Server 2025 DHCP servers joined to a domain, the domain controller
+      as management host, lab tier run in the dev container (built with `KERBEROS=1`). Kerberos over HTTPS and HTTP:
+      `make test-lab` passed and `make lab-e2e` passed. SSH with a key: passed apart from failover writes. Through
+      `-ComputerName` with CredSSP: 42 passed and `make lab-e2e` passed, failover included. Failover writes need the
+      password on the first server: Kerberos constrained delegation does not help (the DHCP calls to the partner go
+      out as an anonymous NTLM logon). Settles the `server.names` and `-CimSession` markers.

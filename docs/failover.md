@@ -42,14 +42,18 @@ partners' Windows servers in NetBox **WinRM authentication: CredSSP**, and enabl
 Enable-WSManCredSSP -Role Server -Force
 ```
 
-Over NTLM or Kerberos (without constrained delegation) those cmdlets fail with `PermissionDenied`, for example
-`Failed to verify if a failover relationship by the name ... exists on server ...`. Reading relationships works with
-any method. Both partners must accept the account: in a workgroup, the same local account with the same password on
+Over NTLM or Kerberos those cmdlets fail with `PermissionDenied`, for example
+`Failed to verify if a failover relationship by the name ... exists on server ...`. Kerberos constrained delegation
+does not help: in a domain lab (Windows Server 2025, resource-based constrained delegation between the two servers)
+a Kerberos session on one server could open a share on its partner, but the DHCP calls to the partner went out as an
+anonymous NTLM logon and were refused. Reading relationships works with any method. Both partners must accept the account: in a workgroup, the same local account with the same password on
 both. CredSSP hands the password to the DHCP server, so it needs **WinRM over HTTPS** with **Verify host** on;
 `allow_insecure_credssp` on the credential profile lifts that for a lab (see [Security](security.md#transport)).
 
 **SSH with a password** works too: Windows OpenSSH logs a password user on with credentials it can pass on, so the
-failover tests passed over SSH as over CredSSP (lab, Windows Server 2022). SSH key authentication was not tried.
+failover tests passed over SSH as over CredSSP (lab, Windows Server 2022). **SSH with a private key** does not: a key
+logon holds no password to pass on, so failover writes fail with `PermissionDenied` (lab, Windows Server 2025, domain
+account). Give failover servers a credential profile with a password.
 
 ## A working failover, step by step
 

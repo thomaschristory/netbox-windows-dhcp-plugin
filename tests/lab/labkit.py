@@ -141,7 +141,13 @@ class Lab:
     # Raw PowerShell, for probing property names. The script text is a constant in the test; values still go
     # through $p only.
     def raw(self, op: str, body: str, params: dict[str, Any] | None = None) -> Any:
-        present, data = self.client._run(Script(op, body), params)
+        # Probe scripts call the cmdlets without @cn: through a management host (computer_name) every DhcpServer
+        # cmdlet gets -ComputerName by default, or it would run against the management host itself.
+        preamble = (
+            "if ($cn['ComputerName']) "
+            "{ $PSDefaultParameterValues['*-DhcpServer*:ComputerName'] = $cn['ComputerName'] }\n"
+        )
+        present, data = self.client._run(Script(op, preamble + body), params)
         return data if present else None
 
     def dump(self, op: str, pipeline: str, params: dict[str, Any] | None = None) -> list[dict[str, str]]:

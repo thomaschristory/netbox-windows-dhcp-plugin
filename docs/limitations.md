@@ -17,12 +17,18 @@ relationship created and replicated through pushes over WinRM with CredSSP.
 Connections checked on a real server: WinRM over HTTP with NTLM and CredSSP, WinRM over HTTPS with certificate
 verification and NTLM, CredSSP or Basic, and SSH with a password (failover included over CredSSP and SSH).
 
-Not seen on a real server yet:
+In a domain lab (Windows Server 2025, two DHCP servers joined to a domain, 2026-11-19, #62):
 
-- **Kerberos**: the lab is a workgroup, without a domain;
-- **SSH key authentication**;
-- running the cmdlets on another server through **`computer_name`** (`-ComputerName`, and the single CIM session
-  the batched reads open for it), and the fully qualified name a domain member reports for itself;
+- **Kerberos** over WinRM HTTPS and HTTP passed the lab tests and `make lab-e2e`, run from a Linux container as the
+  NetBox worker would. It cannot do failover writes, even with Kerberos constrained delegation: the DHCP calls to the
+  partner do not use the delegated logon (see [Failover](failover.md#connecting-to-the-servers));
+- **SSH with a private key** (no password) passed the lab tests apart from failover writes, which need a password;
+- **`computer_name`** (`-ComputerName`, and the single CIM session the batched reads open for it) through a management
+  host with CredSSP passed the lab tests and `make lab-e2e`, failover included. With Kerberos it fails (double hop);
+- a domain member reports its computer name, its fully qualified name and its address, and a failover partner named
+  either way is matched.
+
+Not seen on a real server yet: SSH with a password through a management host.
 
 Over SSH, Windows OpenSSH stalls on more than about 70 KB of script input, so the plugin refuses a script above
 64 KB with an error that says to use WinRM. Its scripts send under 24 KB (the batched reads cap what they send); only very large

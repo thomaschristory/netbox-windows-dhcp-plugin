@@ -403,8 +403,9 @@ S_AVAILABLE = Script("dhcp.available", "$out = $true")
 # given (a name or an address) on one side of a relationship, and by its computer name on the other. With
 # -ComputerName the cmdlets run on another server, so that name is resolved instead. Loopback and link-local
 # addresses are left out: every server has them.
-# A workgroup server reports its computer name, which its partner uses (lab, Windows Server 2022).
-# unverified: through -ComputerName, and the fully qualified name on a domain member.
+# A workgroup server reports its computer name, which its partner uses (lab, Windows Server 2022). A domain member
+# reports its computer name, its fully qualified name and its address, and through -ComputerName the names are the
+# DHCP server's, not the management host's (domain lab, Windows Server 2025, #62).
 S_SERVER_NAMES = Script(
     "server.names",
     r"""
@@ -1583,7 +1584,8 @@ function ConvertTo-WdValueItem($o) {
 # Output shape (including an empty values list on Windows PowerShell 5.1) and -Brief next to -All, with the same values
 # and class names as without it, checked (lab, Windows Server 2025, issue #100). -Brief took 6.8 ms per reservation
 # against 15 ms without.
-# unverified: -CimSession in place of -ComputerName (the lab does not use computer_name).
+# -CimSession in place of -ComputerName checked through a management host (domain lab, Windows Server 2025, #62):
+# the batched reads match the single reads there too.
 S_OPTION_LIST_RESERVED = Script(
     "option.list_reserved",
     _VALUE_ITEM_V4
@@ -1600,7 +1602,7 @@ $out = @(foreach ($ip in @($p.ips)) {
 # As option.list_reserved; checked the same way, server-level policies included (no IP ranges). A missing policy is
 # DHCP 20111, category ObjectNotFound, on the option read and on Get-DhcpServerv4PolicyIPRange (lab, Windows Server
 # 2025): not found, so the scope is read again.
-# unverified: -CimSession in place of -ComputerName.
+# -CimSession in place of -ComputerName checked as above (#62).
 S_POLICY_LIST_CONTENTS = Script(
     "policy.list_contents",
     _VALUE_ITEM_V4
@@ -1623,7 +1625,7 @@ $out = @(foreach ($name in @($p.names)) {
 )
 
 # As option.list_reserved, for DHCPv6 reservations; checked the same way (lab, Windows Server 2025).
-# unverified: -CimSession in place of -ComputerName.
+# -CimSession in place of -ComputerName checked as above (#62).
 S_V6OPTION_LIST_RESERVED = Script(
     "v6option.list_reserved",
     _VALUE_ITEM_V6

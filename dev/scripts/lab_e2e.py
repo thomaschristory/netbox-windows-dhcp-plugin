@@ -184,8 +184,9 @@ def netbox_server(env, name=SERVER_NAME, partner=False):
     server.host = env["WINDOWS_DHCP_LAB_HOST"] if computer or not partner else partner_host
     server.computer_name = (partner_host if partner else computer) if computer else ""
     server.port = int(env["WINDOWS_DHCP_LAB_PORT"]) if env.get("WINDOWS_DHCP_LAB_PORT") else None
-    server.credential_profile = "lab"
     server.transport = env.get("WINDOWS_DHCP_LAB_TRANSPORT", "winrm").lower()
+    key_only = server.transport == "ssh" and env.get("WINDOWS_DHCP_LAB_SSH_KEY_FILE")
+    server.credential_profile = "lab-ssh-key" if key_only else "lab"
     key = "WINDOWS_DHCP_LAB_PARTNER_SSH_HOST_KEY" if partner and not computer else "WINDOWS_DHCP_LAB_SSH_HOST_KEY"
     server.ssh_host_key = env.get(key, "")
     server.winrm_https = env.get("WINDOWS_DHCP_LAB_HTTPS", "1") != "0"

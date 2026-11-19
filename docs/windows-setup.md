@@ -106,10 +106,13 @@ The plugin never accepts an unknown host key, and **Verify host** cannot be turn
 ## Managing a DHCP server through another host
 
 **Remote DHCP server** (`computer_name`) on the Windows server in NetBox runs the cmdlets against another server
-(`-ComputerName`) through the host you connect to. Your credentials then have to travel one hop further, which Windows
-only allows with CredSSP (choose it as the WinRM authentication) or Kerberos constrained delegation. Connecting straight
-to each DHCP server is simpler and recommended. When you do use it, the credential profile's `allowed_hosts` must cover
-both names.
+(`-ComputerName`) through the host you connect to, which needs the DHCP Server tools (RSAT-DHCP). Your credentials
+then have to travel one hop further, which only works with CredSSP (choose it as the WinRM authentication): the DHCP
+calls from the management host to the DHCP server do not use a Kerberos logon, even with constrained delegation set up
+(they go out as an anonymous NTLM logon and get "Failed to get version of the DHCP server"). SSH with a password should
+behave like CredSSP, but was not tried. Connecting straight to each DHCP server is simpler and recommended. When you do
+use it, the credential profile's `allowed_hosts` must cover both names. Checked in a domain lab (Windows Server 2025,
+the domain controller as management host): reads, writes and failover through CredSSP.
 
 ## Checking the account by hand
 
