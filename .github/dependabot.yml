@@ -25,6 +25,10 @@ updates:
   # Python dependencies in uv.lock (dev tools and the pinned versions CI installs).
   - package-ecosystem: uv
     directory: /
+    # Keep the minimum versions in pyproject.toml where they are while the range still allows the new release, so
+    # users are not forced onto newer libraries for nothing (by default Dependabot raised paramiko>=3.5). uv.lock
+    # still moves, so CI tests the latest versions.
+    versioning-strategy: increase-if-necessary
     schedule:
       interval: weekly
       day: monday
