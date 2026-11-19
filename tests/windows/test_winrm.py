@@ -10,11 +10,11 @@ from typing import Any
 
 import pytest
 
-from netbox_windows_dhcp_plugin.windows import psscript
+from netbox_windows_dhcp_plugin.windows import psscript, winrm
 from netbox_windows_dhcp_plugin.windows.client import DhcpClient, Scope
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
-from netbox_windows_dhcp_plugin.windows.runner import RunnerError
-from netbox_windows_dhcp_plugin.windows.winrm import WinRMConfig, WinRMRunner, kerberos_user
+from netbox_windows_dhcp_plugin.windows.runner import RunnerError, Stopped, set_stop_check
+from netbox_windows_dhcp_plugin.windows.winrm import WinRMConfig, WinRMRunner, kerberos_user, refused_connect
 
 from .remote import fake_host_response
 
@@ -30,6 +30,10 @@ class FakePypsrp:
         self.signals: list[str] = []
         self.sent: list[tuple[bytes, bool]] = []
         self.sessions: list[Any] = []
+        # Raised, one per attempt, when the shell opens (the first request of a call) or the command is sent.
+        self.open_errors: list[BaseException] = []
+        self.begin_errors: list[BaseException] = []
+        self.commands = 0
         fake = self
 
         class Transport:
@@ -55,6 +59,8 @@ class FakePypsrp:
                 self.wsman = wsman
 
             def __enter__(self) -> WinRS:
+                if fake.open_errors:
+                    raise fake.open_errors.pop(0)
                 return self
 
             def __exit__(self, *exc: object) -> None:
@@ -70,6 +76,9 @@ class FakePypsrp:
                 self.state = CommandState.PENDING
 
             def begin_invoke(self) -> None:
+                fake.commands += 1
+                if fake.begin_errors:
+                    raise fake.begin_errors.pop(0)
                 self.state = CommandState.RUNNING
 
             def send(self, data: bytes, end: bool = True) -> None:
@@ -230,3 +239,106 @@ def test_envelope_error_passes_through(pypsrp) -> None:
     raw = WinRMRunner(cfg()).run("# x", {})
     with pytest.raises(psscript.NotFound):
         psscript.parse(raw)
+
+
+# Issue #132: a refused TCP connection is tried again only while no command has been sent.
+
+OK_ENVELOPE = base64.b64encode(b'{"ok":true,"data":null}')
+
+
+def requests_refusal() -> Exception:
+    """The exception chain requests raises for a refused connect: ConnectionError(MaxRetryError(NewConnectionError))."""
+    requests = pytest.importorskip("requests")
+    from urllib3.exceptions import MaxRetryError, NewConnectionError
+
+    try:
+        try:
+            raise ConnectionRefusedError(111, "Connection refused")
+        except OSError as e:
+            raise NewConnectionError(None, f"Failed to establish a new connection: {e}") from e
+    except NewConnectionError as e:
+        try:
+            raise MaxRetryError(None, "/wsman", e) from e
+        except MaxRetryError as m:
+            return requests.exceptions.ConnectionError(m)
+
+
+@pytest.fixture
+def sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    waited: list[float] = []
+    monkeypatch.setattr(winrm.time, "sleep", waited.append)
+    return waited
+
+
+def test_refused_connect_is_found_through_the_wrappers() -> None:
+    assert refused_connect(requests_refusal())
+    assert refused_connect(ConnectionRefusedError())
+    assert not refused_connect(ConnectionError("401 Unauthorized"))
+    assert not refused_connect(TimeoutError("timed out"))
+    assert not refused_connect(ConnectionResetError("reset by peer"))
+
+
+def test_refused_connect_matches_a_real_refusal_from_requests() -> None:
+    # The hand-built chain above follows today's requests/urllib3; a real refused connect, sent the way pypsrp sends
+    # (no HTTP retries), catches a future release that wraps the socket error differently.
+    import socket
+
+    requests = pytest.importorskip("requests")
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    # Nothing listens on the port any more, so the connect is refused.
+    session = requests.Session()
+    session.mount("http://", HTTPAdapter(max_retries=Retry(total=0, read=0)))
+    with pytest.raises(requests.exceptions.ConnectionError) as caught:
+        session.post(f"http://127.0.0.1:{port}/wsman", data=b"", timeout=5)
+    assert refused_connect(caught.value)
+
+
+def test_refused_before_the_command_is_tried_again(pypsrp, sleeps) -> None:
+    f = pypsrp(lambda argv, stdin: (OK_ENVELOPE, b"", 0))
+    f.open_errors = [requests_refusal(), requests_refusal()]
+    WinRMRunner(cfg()).run("# x", {})
+    assert len(f.wsman_kwargs) == 3 and f.commands == 1
+    assert sleeps == list(winrm.CONNECT_RETRY_DELAYS[:2])
+
+
+def test_refused_every_time_fails_after_the_retries(pypsrp, sleeps) -> None:
+    f = pypsrp(lambda argv, stdin: (OK_ENVELOPE, b"", 0))
+    f.open_errors = [requests_refusal() for _ in range(10)]
+    with pytest.raises(RunnerError, match="winrm: running PowerShell: .*Connection refused"):
+        WinRMRunner(cfg()).run("# x", {})
+    assert len(f.wsman_kwargs) == len(winrm.CONNECT_RETRY_DELAYS) + 1 and f.commands == 0
+    assert sleeps == list(winrm.CONNECT_RETRY_DELAYS)
+
+
+def test_refused_after_the_command_was_sent_is_not_tried_again(pypsrp, sleeps) -> None:
+    # The command may have reached Windows: running it again could repeat a write.
+    f = pypsrp(lambda argv, stdin: (OK_ENVELOPE, b"", 0))
+    f.begin_errors = [requests_refusal()]
+    with pytest.raises(RunnerError, match="Connection refused"):
+        WinRMRunner(cfg()).run("# x", {})
+    assert len(f.wsman_kwargs) == 1 and f.commands == 1 and sleeps == []
+
+
+def test_other_errors_before_the_command_are_not_tried_again(pypsrp, sleeps) -> None:
+    f = pypsrp(lambda argv, stdin: (OK_ENVELOPE, b"", 0))
+    f.open_errors = [ConnectionError("401 Unauthorized"), TimeoutError("timed out")]
+    with pytest.raises(RunnerError, match="401 Unauthorized"):
+        WinRMRunner(cfg()).run("# x", {})
+    assert len(f.wsman_kwargs) == 1 and sleeps == []
+
+
+def test_a_stopping_read_does_not_retry(pypsrp, sleeps) -> None:
+    f = pypsrp(lambda argv, stdin: (OK_ENVELOPE, b"", 0))
+    f.open_errors = [requests_refusal(), requests_refusal()]
+    set_stop_check(lambda: bool(sleeps))
+    try:
+        with pytest.raises(Stopped):
+            WinRMRunner(cfg()).run("# x", {})
+    finally:
+        set_stop_check(None)
+    assert len(f.wsman_kwargs) == 1

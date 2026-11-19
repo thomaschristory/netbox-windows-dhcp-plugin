@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A parallel read over WinRM (`max_concurrency` above 1) could fail with `Connection refused` when the network path
+  to the server (a NAT router, Docker Desktop's port forwarding) refused one of the many new connections, although
+  WinRM was up. A WinRM call whose connection is refused before its command is sent is now tried again after 0.5, 1
+  and 2 s; once the command has been sent nothing is tried again, so a write never runs twice (#132).
+
 ## [0.4.0] - 2026-11-18
 
 0.4.0 makes reads faster (batched reads, and `max_concurrency` now reads several scopes at once), keeps the failover
