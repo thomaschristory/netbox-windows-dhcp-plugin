@@ -19,16 +19,20 @@ verification and NTLM, CredSSP or Basic, and SSH with a password (failover inclu
 
 In a domain lab (Windows Server 2025, two DHCP servers joined to a domain, 2026-11-19, #62):
 
-- **Kerberos** over WinRM HTTPS and HTTP passed the lab tests and `make lab-e2e`, run from a Linux container as the
-  NetBox worker would. It cannot do failover writes, even with Kerberos constrained delegation: the DHCP calls to the
-  partner do not use the delegated logon (see [Failover](failover.md#connecting-to-the-servers));
+- **Kerberos** over WinRM HTTPS and HTTP passed the lab tests (failover tests left out), run from a Linux container
+  as the NetBox worker would; `make lab-e2e` passed over HTTPS. It cannot do failover writes, even with
+  resource-based constrained delegation between the two servers: the DHCP calls to the partner did not use Kerberos
+  at all (see [Failover](failover.md#connecting-to-the-servers));
 - **SSH with a private key** (no password) passed the lab tests apart from failover writes, which need a password;
 - **`computer_name`** (`-ComputerName`, and the single CIM session the batched reads open for it) through a management
-  host with CredSSP passed the lab tests and `make lab-e2e`, failover included. With Kerberos it fails (double hop);
-- a domain member reports its computer name, its fully qualified name and its address, and a failover partner named
-  either way is matched.
+  host with CredSSP passed the lab tests and `make lab-e2e`, failover included. Kerberos through a management host
+  was not run; it is the same double hop that failed between the two DHCP servers, so expect it to fail;
+- connected directly, a domain member reports its computer name, its fully qualified name and its address (through
+  a management host, the fully qualified name and the address); a failover partner named by either spelling is
+  matched.
 
-Not seen on a real server yet: SSH with a password through a management host.
+Not tried: Kerberos, SSH with a password or SSH with a key through a management host; classic (not resource-based)
+or unconstrained Kerberos delegation; a custom **Kerberos SPN**; `make lab-e2e` over Kerberos HTTP.
 
 Over SSH, Windows OpenSSH stalls on more than about 70 KB of script input, so the plugin refuses a script above
 64 KB with an error that says to use WinRM. Its scripts send under 24 KB (the batched reads cap what they send); only very large

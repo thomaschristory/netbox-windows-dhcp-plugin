@@ -74,8 +74,8 @@ NTLM over HTTP does not prove the identity of the server.
 | Method | When to use | Notes |
 |---|---|---|
 | NTLM (default) | Domain or local accounts | Works out of the box with WinRM. User name as `DOMAIN\user`, or `user` for a local account |
-| Kerberos | Domain accounts, NTLM disabled | Needs the `[kerberos]` extra, GSSAPI libraries and `krb5.conf` where the worker runs, a realm on the Windows server in NetBox, and the server's real DNS name as `host` |
-| CredSSP | Failover relationships | Needed to create or change a [failover relationship](failover.md#connecting-to-the-servers) or replicate it: the cmdlets make the server call its partner as you. Enable it on each DHCP server with `Enable-WSManCredSSP -Role Server -Force`. The password is handed to the DHCP server, so the plugin requires HTTPS with certificate verification (a lab can lift that on the credential profile), and the account should only manage DHCP |
+| Kerberos | Domain accounts, NTLM disabled | Needs the `[kerberos]` extra, GSSAPI libraries and `krb5.conf` where the worker runs, a realm on the Windows server in NetBox, and the server's real DNS name as `host`. Cannot create or change failover relationships, nor reach a **Remote DHCP server** (no delegation helps, see [Failover](failover.md#connecting-to-the-servers)) |
+| CredSSP | Failover relationships, a Remote DHCP server | Needed to create or change a [failover relationship](failover.md#connecting-to-the-servers) or replicate it: the cmdlets make the server call its partner as you. Enable it on each DHCP server with `Enable-WSManCredSSP -Role Server -Force`. The password is handed to the DHCP server, so the plugin requires HTTPS with certificate verification (a lab can lift that on the credential profile), and the account should only manage DHCP |
 | Basic | Local accounts only, when NTLM is not possible | Sends the password itself, so the plugin only allows it over HTTPS with certificate verification. Enable it on the server with `Set-Item WSMan:\localhost\Service\Auth\Basic $true` |
 
 For Kerberos, the plugin gets a ticket with the profile's user name and password; the user name may be given as
@@ -107,10 +107,11 @@ The plugin never accepts an unknown host key, and **Verify host** cannot be turn
 
 **Remote DHCP server** (`computer_name`) on the Windows server in NetBox runs the cmdlets against another server
 (`-ComputerName`) through the host you connect to, which needs the DHCP Server tools (RSAT-DHCP). Your credentials
-then have to travel one hop further, which only works with CredSSP (choose it as the WinRM authentication): the DHCP
-calls from the management host to the DHCP server do not use a Kerberos logon, even with constrained delegation set up
-(they go out as an anonymous NTLM logon and get "Failed to get version of the DHCP server"). SSH with a password should
-behave like CredSSP, but was not tried. Connecting straight to each DHCP server is simpler and recommended. When you do
+then have to travel one hop further. Use CredSSP (choose it as the WinRM authentication). Kerberos does not carry
+that hop: in a domain lab, a Kerberos session on one DHCP server could not reach another with the DHCP cmdlets, even
+with resource-based constrained delegation set up (the call went out as an anonymous NTLM logon and got "Failed to get
+version of the DHCP server"), and a management host makes the same hop. SSH with a password should behave like
+CredSSP, but was not tried. Connecting straight to each DHCP server is simpler and recommended. When you do
 use it, the credential profile's `allowed_hosts` must cover both names. Checked in a domain lab (Windows Server 2025,
 the domain controller as management host): reads, writes and failover through CredSSP.
 

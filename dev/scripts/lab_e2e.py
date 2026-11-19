@@ -190,7 +190,8 @@ def netbox_server(env, name=SERVER_NAME, partner=False):
     key = "WINDOWS_DHCP_LAB_PARTNER_SSH_HOST_KEY" if partner and not computer else "WINDOWS_DHCP_LAB_SSH_HOST_KEY"
     server.ssh_host_key = env.get(key, "")
     server.winrm_https = env.get("WINDOWS_DHCP_LAB_HTTPS", "1") != "0"
-    server.verify_tls = env.get("WINDOWS_DHCP_LAB_INSECURE") != "1"
+    # SSH always checks the host key (the model refuses verify_tls off for SSH); INSECURE only concerns WinRM TLS.
+    server.verify_tls = server.transport == "ssh" or env.get("WINDOWS_DHCP_LAB_INSECURE") != "1"
     server.winrm_auth = env.get("WINDOWS_DHCP_LAB_AUTH", "ntlm").lower()
     server.kerberos_realm = env.get("WINDOWS_DHCP_LAB_REALM", "")
     server.kerberos_spn = env.get("WINDOWS_DHCP_LAB_SPN", "")

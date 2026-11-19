@@ -405,16 +405,19 @@ class Lab:
 
 
 def failover_auth_ok(env: dict[str, str]) -> bool:
-    """Whether to run the failover checks: CredSSP is known to work; anything else only on request (issue #62)."""
+    """Whether to run the failover checks: as before, with WINDOWS_DHCP_LAB_AUTH=credssp (over WinRM, or as the switch
+    for SSH with a password); anything else only on request (issue #62). An SSH key logon holds no password for the
+    partner, so it is left out unless asked for."""
     if env.get("WINDOWS_DHCP_LAB_FAILOVER_ANY_AUTH") == "1":
         return True
-    return env.get("WINDOWS_DHCP_LAB_TRANSPORT", "winrm").lower() != "ssh" and (
-        env.get("WINDOWS_DHCP_LAB_AUTH", "").lower() == "credssp"
-    )
+    if env.get("WINDOWS_DHCP_LAB_TRANSPORT", "winrm").lower() == "ssh" and env.get("WINDOWS_DHCP_LAB_SSH_KEY_FILE"):
+        return False
+    return env.get("WINDOWS_DHCP_LAB_AUTH", "").lower() == "credssp"
 
 
 def ssh_key_path(env: dict[str, str]) -> Path | None:
-    """The SSH private key file, absolute or relative to the repository (a relative path works in the container)."""
+    """The SSH private key file, absolute or relative to the repository. In the dev container only the mounted
+    folders exist under /plugin, so make lab-e2e needs an absolute path that dev/env/lab.compose.yml mounts as is."""
     name = env.get("WINDOWS_DHCP_LAB_SSH_KEY_FILE", "")
     return (REPO / name) if name else None
 

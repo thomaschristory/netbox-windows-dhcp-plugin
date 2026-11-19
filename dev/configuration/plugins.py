@@ -10,9 +10,10 @@ _lab_profile = {
     "password_env": "WINDOWS_DHCP_PASSWORD",
     "allow_insecure_credssp": True,
 }
-# SSH key logon (WINDOWS_DHCP_LAB_SSH_KEY_FILE, absolute or relative to the repository; the gitignored
-# dev/env/lab.compose.yml mounts an absolute one at the same path): the key alone, without a password, as a key-only
-# deployment would run. make lab-e2e picks this profile over SSH when the key file is set.
+# SSH key logon (WINDOWS_DHCP_LAB_SSH_KEY_FILE: an absolute path, which the gitignored dev/env/lab.compose.yml
+# mounts at the same place; a relative one only works under the folders the dev stack mounts in /plugin): the key
+# alone, without a password, as a key-only deployment would run. make lab-e2e picks this profile over SSH when the
+# key file is set.
 _lab_key_profile = {
     "username_env": "WINDOWS_DHCP_USERNAME",
     "private_key_file": os.path.join("/plugin", os.environ.get("WINDOWS_DHCP_LAB_SSH_KEY_FILE", "missing-key")),

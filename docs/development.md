@@ -145,13 +145,21 @@ x-lab: &lab
   build: { args: { KERBEROS: "1" } }
   extra_hosts: ["dhcp01.lab.test:192.0.2.10", "dc01.lab.test:192.0.2.12"]
   environment: { KRB5_CONFIG: /lab/krb5.conf, REQUESTS_CA_BUNDLE: /lab/ca.pem }
-  volumes: ["../.lab/krb5.conf:/lab/krb5.conf:ro", "/path/to/ca.pem:/lab/ca.pem:ro"]
+  volumes:
+    - ../.lab/krb5.conf:/lab/krb5.conf:ro
+    - /path/to/ca.pem:/lab/ca.pem:ro
+    - /path/to/lab_key:/path/to/lab_key:ro  # WINDOWS_DHCP_LAB_SSH_KEY_FILE, at the same absolute path
 services: { netbox: *lab, netbox-worker: *lab }
 ```
 
-Then run `make dev`, install pytest in the container once
-(`docker compose ... exec -u root netbox /usr/local/bin/uv pip install --python /opt/netbox/venv/bin/python pytest`)
-and run `python -m pytest tests/lab` there as root with `WINDOWS_DHCP_LAB=1` and `-w /plugin`.
+Then run `make dev`, install pytest in the container once and run the lab tier there (as root, which can write
+`.lab/probe/`):
+
+```bash
+DC="docker compose -f dev/docker-compose.yml -f dev/env/lab.compose.yml"
+$DC exec -u root netbox /usr/local/bin/uv pip install --python /opt/netbox/venv/bin/python pytest
+$DC exec -u root -w /plugin -e WINDOWS_DHCP_LAB=1 netbox /opt/netbox/venv/bin/python -m pytest -p no:cacheprovider tests/lab
+```
 
 `make test-lab` writes property dumps to `.lab/probe/`. `make lab-e2e` prints `PASSED` at the end and exits non-zero
 on failure. Both leave the server as they found it. Everything under `.lab/` can identify the lab and is ignored by
