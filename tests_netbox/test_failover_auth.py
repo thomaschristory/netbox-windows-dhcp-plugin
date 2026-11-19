@@ -190,16 +190,14 @@ class FailoverAuthPushTest(PushTestMixin, TestCase):
     def test_a_dry_run_opens_no_failover_client(self):
         from netbox_windows_dhcp_plugin.jobs import DryRunJob
 
-        DryRunJob.runner_factory = staticmethod(lambda server: Tagged(self.target, self.own))
-        DryRunJob.failover_runner_factory = staticmethod(lambda server: Tagged(self.target, self.failover))
-        self.addCleanup(setattr, DryRunJob, "runner_factory", None)
-        self.addCleanup(setattr, DryRunJob, "failover_runner_factory", None)
+        # DryRunJob inherits both factories from PushJob (set in setUp); setting its own would outlive the test.
         self._change_scope(name="changed")
         self._run(DryRunJob)
         self.assertEqual(self.failover, [])
 
     def test_without_a_failover_authentication_everything_uses_one_client(self):
-        WindowsServer.objects.filter(pk=self.server.pk).update(failover_auth="")
+        self.server.failover_auth = ""
+        self.server.save()
         self._change_scope(name="changed")
         run = self._run()
         self.assertEqual(run.status, "completed", run.error)
