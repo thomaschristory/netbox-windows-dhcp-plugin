@@ -12,8 +12,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # Nothing else ties a tag to a green CI run (main requires a review, not status checks), so the cheap checks
-  # run again here and publishing waits for them. The Python matrix and the NetBox tiers stay in ci.yml.
+  # main requires the CI checks before a merge, but an admin merge can bypass them and a tag can point at any
+  # commit on main, so the cheap checks run again here and publishing waits for them. The Python matrix and the NetBox tiers stay in ci.yml.
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
