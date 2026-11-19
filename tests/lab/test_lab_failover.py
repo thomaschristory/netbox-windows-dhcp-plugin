@@ -7,6 +7,8 @@ Needs, on top of the usual lab variables (see conftest.py):
     WINDOWS_DHCP_LAB_PARTNER_SSH_HOST_KEY  with WINDOWS_DHCP_LAB_TRANSPORT=ssh, the partner's host key
     WINDOWS_DHCP_LAB_AUTH=credssp     failover cmdlets make the first server call its partner as us, which needs
                                       our credentials there (CredSSP); NTLM gets PermissionDenied
+    WINDOWS_DHCP_LAB_FAILOVER_ANY_AUTH=1  run them with any other authentication too, to check whether it reaches
+                                      the partner (Kerberos with constrained delegation, SSH with a password or a key)
 
 The partner is read with the same credentials. Only ``nbwd-test-`` relationships and scopes are written; removing
 a relationship also deletes its scopes on the partner.
@@ -23,7 +25,7 @@ from netbox_windows_dhcp_plugin.windows import client as wc
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
 from .conftest import save_probe
-from .labkit import MAC_PREFIX, Lab, lab_env, make_runner
+from .labkit import MAC_PREFIX, Lab, failover_auth_ok, lab_env, make_client
 
 ENV = lab_env()
 PARTNER = ENV.get("WINDOWS_DHCP_LAB_PARTNER", "")
@@ -31,17 +33,16 @@ SECRET = ENV.get("WINDOWS_DHCP_LAB_FAILOVER_SECRET", "")
 NAME = "nbwd-test-fo"
 
 pytestmark = pytest.mark.skipif(
-    not PARTNER or ENV.get("WINDOWS_DHCP_LAB_AUTH", "").lower() != "credssp",
-    reason="failover lab tests need WINDOWS_DHCP_LAB_PARTNER and WINDOWS_DHCP_LAB_AUTH=credssp",
+    not PARTNER or not failover_auth_ok(ENV),
+    reason="failover lab tests need WINDOWS_DHCP_LAB_PARTNER and WINDOWS_DHCP_LAB_AUTH=credssp "
+    "(or WINDOWS_DHCP_LAB_FAILOVER_ANY_AUTH=1)",
 )
 
 
 @pytest.fixture(scope="module")
 def partner(lab_session: Lab) -> Iterator[Lab]:
     """The second server, read only apart from the sweep of what a failed run left there."""
-    env = dict(ENV, WINDOWS_DHCP_LAB_HOST=PARTNER)
-    env["WINDOWS_DHCP_LAB_SSH_HOST_KEY"] = ENV.get("WINDOWS_DHCP_LAB_PARTNER_SSH_HOST_KEY", "")
-    client = wc.DhcpClient(make_runner(env))
+    client = make_client(ENV, partner=True)
     side = Lab(client)
     # The first server's sweep has already removed our relationships; scopes they left on the partner go now.
     assert not side.sweep()

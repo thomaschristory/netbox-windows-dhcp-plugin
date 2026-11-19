@@ -114,10 +114,14 @@ still load that file, so a secret typed there would work until someone commits i
 | `WINDOWS_DHCP_LAB_HTTPS` | `0` uses the HTTP listener |
 | `WINDOWS_DHCP_LAB_AUTH` | Optional: `ntlm` (default), `basic`, `kerberos` or `credssp` (needed by the failover tests) |
 | `WINDOWS_DHCP_LAB_PARTNER` | Optional: a second server, as the first reaches it; runs the failover tests (with `credssp`) |
+| `WINDOWS_DHCP_LAB_FAILOVER_ANY_AUTH` | `1` runs the failover tests with any authentication, to see whether it reaches the partner |
 | `WINDOWS_DHCP_LAB_FAILOVER_SECRET` | Optional shared secret for the test relationship |
 | `WINDOWS_DHCP_LAB_REALM` | Optional, Kerberos realm |
+| `WINDOWS_DHCP_LAB_SPN` | Optional, Kerberos SPN (default `WSMAN/<host>`), for example to connect by address |
+| `WINDOWS_DHCP_LAB_COMPUTER_NAME` | Optional: the DHCP server to reach through `WINDOWS_DHCP_LAB_HOST`, which is then a management host running the cmdlets with `-ComputerName` |
 | `WINDOWS_DHCP_LAB_INSECURE` | `1` skips the certificate check (self-signed lab certificate); or keep the check and point `REQUESTS_CA_BUNDLE` at the certificate |
-| `WINDOWS_DHCP_LAB_TRANSPORT` | Optional: `winrm` (default) or `ssh` (OpenSSH Server on the lab server, password authentication) |
+| `WINDOWS_DHCP_LAB_TRANSPORT` | Optional: `winrm` (default) or `ssh` (OpenSSH Server on the lab server) |
+| `WINDOWS_DHCP_LAB_SSH_KEY_FILE` | Optional with `ssh`: a private key file (absolute, or relative to the repository; never a tracked file). The logon then uses the key alone, without the password |
 | `WINDOWS_DHCP_LAB_SSH_HOST_KEY` | Optional with `ssh`: the server's host key (`ssh-ed25519 AAAA...`), else `~/.ssh/known_hosts` |
 | `WINDOWS_DHCP_LAB_PARTNER_SSH_HOST_KEY` | Optional with `ssh`: the same for the failover partner |
 | `WINDOWS_DHCP_LAB_RECORD` | `1` saves every raw PowerShell answer under `.lab/record/`, to turn into fixtures after scrubbing |
@@ -129,6 +133,32 @@ Then:
 make test-lab        # the client over WinRM, one round trip per unverified cmdlet
 make dev             # recreate the dev stack once, so it mounts the lab helpers
 make lab-e2e         # import, push creates, updates and deletes, leases, on the dev stack
+```
+
+For a domain lab (Kerberos), the dev container is the easier place to run the lab tests: it is Linux like a NetBox
+worker, and Docker can map the lab's host names. Build the image with the `kerberos` extra and add the lab's names,
+`krb5.conf`, CA bundle and SSH key in a gitignored `dev/env/lab.compose.yml`, which the Makefile adds to every compose
+command when it exists:
+
+```yaml
+x-lab: &lab
+  build: { args: { KERBEROS: "1" } }
+  extra_hosts: ["dhcp01.lab.test:192.0.2.10", "dc01.lab.test:192.0.2.12"]
+  environment: { KRB5_CONFIG: /lab/krb5.conf, REQUESTS_CA_BUNDLE: /lab/ca.pem }
+  volumes:
+    - ../.lab/krb5.conf:/lab/krb5.conf:ro
+    - /path/to/ca.pem:/lab/ca.pem:ro
+    - /path/to/lab_key:/path/to/lab_key:ro  # WINDOWS_DHCP_LAB_SSH_KEY_FILE, at the same absolute path
+services: { netbox: *lab, netbox-worker: *lab }
+```
+
+Then run `make dev`, install pytest in the container once and run the lab tier there (as root, which can write
+`.lab/probe/`):
+
+```bash
+DC="docker compose -f dev/docker-compose.yml -f dev/env/lab.compose.yml"
+$DC exec -u root netbox /usr/local/bin/uv pip install --python /opt/netbox/venv/bin/python pytest
+$DC exec -u root -w /plugin -e WINDOWS_DHCP_LAB=1 netbox /opt/netbox/venv/bin/python -m pytest -p no:cacheprovider tests/lab
 ```
 
 `make test-lab` writes property dumps to `.lab/probe/`. `make lab-e2e` prints `PASSED` at the end and exits non-zero

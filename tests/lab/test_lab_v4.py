@@ -6,6 +6,7 @@ name shows up as an empty field. Raw property dumps go to .lab/probe/ (gitignore
 
 from __future__ import annotations
 
+import ipaddress
 import time
 
 import pytest
@@ -19,7 +20,7 @@ from netbox_windows_dhcp_plugin.windows import normalize
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
 
 from .conftest import save_probe
-from .labkit import MAC_PREFIX, Lab
+from .labkit import MAC_PREFIX, Lab, lab_env
 
 
 def test_scope_round_trip_with_extras(lab: Lab, probe_out) -> None:
@@ -470,6 +471,39 @@ def test_leases(lab: Lab, probe_out) -> None:
     assert lease.host_name == "nbwd-test-lease"
     assert lease.address_state.startswith("Active")
     assert lease.lease_expiry_time.endswith("Z")
+
+
+def test_server_names(lab: Lab, probe_out) -> None:
+    """client.py server.names (#57, #62): what the DHCP server reports as its own names, and that a failover partner
+    naming it by its fully qualified or its short name finds it. On a domain member (WINDOWS_DHCP_LAB_REALM set) the
+    DNS name is the FQDN; a workgroup server may know itself by another name than the client uses, so there the names
+    are only recorded. Through -ComputerName the names are the DHCP server's, never the management host's."""
+    env = lab_env()
+    computer = env.get("WINDOWS_DHCP_LAB_COMPUTER_NAME", "")
+    target = (computer or env["WINDOWS_DHCP_LAB_HOST"]).lower().rstrip(".")
+    names = lab.client.get_server_names()
+    save_probe(probe_out, "v4-server-names", {"target": target, "names": names})
+    assert names
+    if env.get("WINDOWS_DHCP_LAB_REALM") and "." in target and not _is_address(target):
+        # Connected by DNS name: Windows must report that name back, or a partner given it would not match.
+        assert target in names
+        placeholder = "netbox-host.invalid"
+        for spelling in (target, target.split(".", 1)[0]):
+            assert windows_state.partner_matches(spelling, [(placeholder, names)]) == [placeholder], spelling
+    if computer:
+        management = env["WINDOWS_DHCP_LAB_HOST"].lower().rstrip(".")
+        if _is_address(management):
+            assert management not in names
+        else:
+            assert management.split(".", 1)[0] not in {n.split(".", 1)[0] for n in names if not _is_address(n)}
+
+
+def _is_address(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
 
 
 def test_failover_read_only(lab: Lab, probe_out) -> None:

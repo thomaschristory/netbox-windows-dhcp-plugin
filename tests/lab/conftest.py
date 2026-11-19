@@ -12,8 +12,13 @@ the dev stack loads it too):
     WINDOWS_DHCP_LAB_AUTH        optional, ntlm (default), basic, kerberos or credssp (failover tests)
     WINDOWS_DHCP_LAB_INSECURE    optional, 1 skips TLS certificate checks (self-signed lab certificate)
     WINDOWS_DHCP_LAB_REALM       optional, Kerberos realm
-    WINDOWS_DHCP_LAB_TRANSPORT   optional, winrm (default) or ssh (OpenSSH Server on the DHCP server, password auth)
+    WINDOWS_DHCP_LAB_SPN         optional, Kerberos SPN (default WSMAN/<host>)
+    WINDOWS_DHCP_LAB_TRANSPORT   optional, winrm (default) or ssh (OpenSSH Server on the DHCP server)
     WINDOWS_DHCP_LAB_SSH_HOST_KEY optional, the server's host key (authorized_keys format); else ~/.ssh/known_hosts
+    WINDOWS_DHCP_LAB_SSH_KEY_FILE optional, SSH private key file, absolute or relative to the repository (never a
+                                 tracked file); the logon then uses the key alone, never the password
+    WINDOWS_DHCP_LAB_COMPUTER_NAME optional, the DHCP server to reach through WINDOWS_DHCP_LAB_HOST, which is then a
+                                 management host running the cmdlets with -ComputerName
     WINDOWS_DHCP_LAB_RECORD      optional, 1 saves every raw JSON envelope under .lab/record/ (gitignored), to
                                  turn into fixtures after scrubbing
 
@@ -40,9 +45,7 @@ from typing import Any
 
 import pytest
 
-from netbox_windows_dhcp_plugin.windows import client as wc
-
-from .labkit import REPO, Lab, TrackedSecretError, check_tracked_env, lab_env, make_runner, skip_reason
+from .labkit import REPO, Lab, TrackedSecretError, check_tracked_env, lab_env, make_client, skip_reason
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
@@ -86,7 +89,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 @pytest.fixture(scope="session")
 def lab_session() -> Iterator[Lab]:
     env = lab_env()
-    client = wc.DhcpClient(make_runner(env))
+    client = make_client(env)
     client.check_available()
     lab = Lab(client)
     leftovers = lab.sweep()

@@ -9,8 +9,9 @@ over WinRM or SSH.
     migration. Every v1 feature is built and tested against an in-memory fake server and PowerShell stubs. The Windows
     side (scripts, transports, sync rules) is that of 0.1.x, apart from option values now being lists. 0.1.0's lab tests
     ran in full against two Windows Server 2022 DHCP servers, over WinRM (HTTP and HTTPS) and SSH; release candidate
-    testers ran Windows Server 2025. 0.2.0 passed the full lab tests on two Windows Server 2025 servers. Kerberos and
-    SSH keys have not been tried on a real server yet (see [Limitations](limitations.md)). Try it on a lab server before
+    testers ran Windows Server 2025. 0.2.0 passed the full lab tests on two Windows Server 2025 servers. Kerberos, SSH
+    keys and `-ComputerName` (with CredSSP) passed in a domain lab; failover writes need CredSSP or SSH with a
+    password (see [Limitations](limitations.md)). Try it on a lab server before
     a production one.
 
 ## What it does

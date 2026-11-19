@@ -5,6 +5,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Documentation
+
+- Kerberos, SSH key logons and **Remote DHCP server** (`-ComputerName`) were checked in a domain lab (Windows Server
+  2025, #62). Kerberos over WinRM HTTP and HTTPS and SSH with a key work for reads and writes. Failover writes need
+  the password on the first server: CredSSP or SSH with a password. Kerberos delegation does not help, contrary to
+  what the docs said (resource-based constrained delegation tried), and an SSH key logon cannot do them either.
+  `-ComputerName` passed with CredSSP; with Kerberos it makes the same hop that failed. Troubleshooting lists Python
+  3.13's `Missing Authority Key Identifier` certificate error.
+
 ## [0.4.1] - 2026-11-19
 
 0.4.1 fixes parallel reads failing on an occasional refused connection. No migration, no setting or API change.

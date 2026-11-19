@@ -64,7 +64,7 @@ netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
      CredSSP, Basic) and SSH with a password pass the lab tests, failover included over SSH. SSH runs hung now and
      then (Windows OpenSSH loses the end of stdin): the script loader reads one line. Failover partners match on the
      names and addresses each server reports for itself (#57). A scope gone mid-read is named in the notes (#58).
-     Still not tried: Kerberos (no domain in the lab), SSH keys, `-ComputerName`.
+     Still not tried: Kerberos (no domain in the lab), SSH keys, `-ComputerName` (settled in #62, see item 10).
    - **Release prep:** README, DESIGN section 12 and CHANGELOG made ready for 0.1.0. A documentation site (Zensical,
      `make docs`, published to GitHub Pages from release tags) with installation, Windows preparation, configuration,
      a first-sync walkthrough, import, push, DHCPv6, failover, leases, permissions, API, security, workers,
@@ -120,3 +120,10 @@ netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
     lab seed (#133); tests for the `max_concurrency` cap (#135).
     - **Lab (2026-11-18/19):** Windows Server 2025, WinRM HTTP with CredSSP: `make test-lab` 41 passed, `make lab-e2e`
       passed at the default `max_concurrency` of 4, failover included.
+    - **Domain lab (2026-11-19, #62):** two Windows Server 2025 DHCP servers joined to a domain, the domain controller
+      as management host, lab tier run in the dev container (built with `KERBEROS=1`). Kerberos: `make test-lab`
+      39 passed over HTTPS and 40 over HTTP (failover tests left out), `make lab-e2e` passed over HTTPS. SSH with a
+      key: 39 passed, the 2 failover tests fail. Through `-ComputerName` with CredSSP: 42 passed and `make lab-e2e`
+      passed, failover included. Failover writes need the password on the first server: resource-based constrained
+      delegation does not help (the DHCP calls to the partner went out as an anonymous NTLM logon). Settles the
+      `server.names` and `-CimSession` markers.

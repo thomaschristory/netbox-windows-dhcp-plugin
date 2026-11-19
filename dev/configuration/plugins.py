@@ -10,6 +10,14 @@ _lab_profile = {
     "password_env": "WINDOWS_DHCP_PASSWORD",
     "allow_insecure_credssp": True,
 }
+# SSH key logon (WINDOWS_DHCP_LAB_SSH_KEY_FILE: an absolute path, which the gitignored dev/env/lab.compose.yml
+# mounts at the same place; a relative one only works under the folders the dev stack mounts in /plugin): the key
+# alone, without a password, as a key-only deployment would run. make lab-e2e picks this profile over SSH when the
+# key file is set.
+_lab_key_profile = {
+    "username_env": "WINDOWS_DHCP_USERNAME",
+    "private_key_file": os.path.join("/plugin", os.environ.get("WINDOWS_DHCP_LAB_SSH_KEY_FILE", "missing-key")),
+}
 # A production profile should always carry "allowed_hosts", so its credentials can only be sent to the DHCP servers
 # (see docs/configuration.md). Here it is opt-in: set WINDOWS_DHCP_DEV_ALLOWED_HOSTS in dev/env/lab.env to a comma
 # separated list of host names, addresses or patterns ("10.20.0.*,dhcp*.example.com") when the stack holds real
@@ -17,7 +25,7 @@ _lab_profile = {
 # host names under this same profile name, and they would all be refused.
 _lab_hosts = [h.strip() for h in os.environ.get("WINDOWS_DHCP_DEV_ALLOWED_HOSTS", "").split(",") if h.strip()]
 if _lab_hosts:
-    _lab_profile["allowed_hosts"] = _lab_hosts
+    _lab_profile["allowed_hosts"] = _lab_key_profile["allowed_hosts"] = _lab_hosts
 
 # netbox-branching must come last.
 PLUGINS = ["netbox_windows_dhcp_plugin", "netbox_change_control", "netbox_branching"]
@@ -26,6 +34,7 @@ PLUGINS_CONFIG = {
         # Set WINDOWS_DHCP_USERNAME and WINDOWS_DHCP_PASSWORD in dev/env/lab.env to test against a lab server.
         "credentials": {
             "lab": _lab_profile,
+            "lab-ssh-key": _lab_key_profile,
             # The failover phase of make lab-e2e (WINDOWS_DHCP_LAB_PARTNER set).
             "lab-failover": {"secret_env": "WINDOWS_DHCP_LAB_FAILOVER_SECRET"},
         },
