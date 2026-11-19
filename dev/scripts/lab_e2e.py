@@ -57,7 +57,7 @@ from netbox_windows_dhcp_plugin.sync import importer, netbox_state, pusher, wind
 from netbox_windows_dhcp_plugin.sync.diff import CREATE, DELETE, UPDATE, Change  # noqa: E402
 from netbox_windows_dhcp_plugin.sync.mapping import Writer  # noqa: E402
 from netbox_windows_dhcp_plugin.windows import client as wc  # noqa: E402
-from tests.lab.labkit import MAC_PREFIX, V6_PREFIX, Lab, lab_env, make_runner  # noqa: E402
+from tests.lab.labkit import MAC_PREFIX, V6_PREFIX, Lab, failover_auth_ok, lab_env, make_client  # noqa: E402
 
 SERVER_NAME = "nbwd-lab"
 TEST_V4 = ipaddress.ip_network("198.19.0.0/16")
@@ -173,17 +173,26 @@ def create_windows_objects(lab):
 # -- NetBox side -----------------------------------------------------------------------------------------------------
 
 
-def netbox_server(env, name=SERVER_NAME, host=""):
+def netbox_server(env, name=SERVER_NAME, partner=False):
+    """The lab server (or its failover partner) in NetBox, connected the way the lab variables say."""
     server = WindowsServer.objects.filter(name=name).first()
     if server is None:
         server = WindowsServer(name=name)
-    server.host = host or env["WINDOWS_DHCP_LAB_HOST"]
+    computer = env.get("WINDOWS_DHCP_LAB_COMPUTER_NAME", "")
+    partner_host = env.get("WINDOWS_DHCP_LAB_PARTNER", "")
+    # Through a management host both servers share the host and differ by the remote DHCP server.
+    server.host = env["WINDOWS_DHCP_LAB_HOST"] if computer or not partner else partner_host
+    server.computer_name = (partner_host if partner else computer) if computer else ""
     server.port = int(env["WINDOWS_DHCP_LAB_PORT"]) if env.get("WINDOWS_DHCP_LAB_PORT") else None
     server.credential_profile = "lab"
+    server.transport = env.get("WINDOWS_DHCP_LAB_TRANSPORT", "winrm").lower()
+    key = "WINDOWS_DHCP_LAB_PARTNER_SSH_HOST_KEY" if partner and not computer else "WINDOWS_DHCP_LAB_SSH_HOST_KEY"
+    server.ssh_host_key = env.get(key, "")
     server.winrm_https = env.get("WINDOWS_DHCP_LAB_HTTPS", "1") != "0"
     server.verify_tls = env.get("WINDOWS_DHCP_LAB_INSECURE") != "1"
     server.winrm_auth = env.get("WINDOWS_DHCP_LAB_AUTH", "ntlm").lower()
     server.kerberos_realm = env.get("WINDOWS_DHCP_LAB_REALM", "")
+    server.kerberos_spn = env.get("WINDOWS_DHCP_LAB_SPN", "")
     server.sync_enabled = False
     try:
         server.full_clean()
@@ -370,9 +379,8 @@ def failover_phase(env, server, lab):
     to the partner after the push; then the relationship deleted in NetBox and pushed. Needs CredSSP (see
     docs/failover.md). The partner is only read, apart from what the relationship itself puts there.
     """
-    partner_host = env["WINDOWS_DHCP_LAB_PARTNER"]
-    partner = netbox_server(env, name=SERVER_NAME + "-partner", host=partner_host)
-    pc = wc.DhcpClient(make_runner(dict(env, WINDOWS_DHCP_LAB_HOST=partner_host)))
+    partner = netbox_server(env, name=SERVER_NAME + "-partner", partner=True)
+    pc = make_client(env, partner=True)
     if any(f.name == FAILOVER for f in pc.list_failovers()):
         raise Abort(f"6. the partner already has {FAILOVER}: remove it by hand")
 
@@ -454,7 +462,7 @@ def main():
     for key in ("WINDOWS_DHCP_LAB_HOST", "WINDOWS_DHCP_USERNAME", "WINDOWS_DHCP_PASSWORD"):
         if not env.get(key):
             raise Abort(f"{key} is not set (dev/env/lab.env)")
-    lab = Lab(wc.DhcpClient(make_runner(env)))
+    lab = Lab(make_client(env))
     leftovers = lab.sweep()
     if leftovers:
         raise Abort(f"sweep: {leftovers}")
@@ -509,8 +517,11 @@ def main():
         if left:
             raise Abort(f"5. scopes still on Windows after the delete push: {left}")
         if env.get("WINDOWS_DHCP_LAB_PARTNER"):
-            if env.get("WINDOWS_DHCP_LAB_AUTH", "").lower() != "credssp":
-                raise Abort("6. failover needs WINDOWS_DHCP_LAB_AUTH=credssp (see docs/failover.md)")
+            if not failover_auth_ok(env):
+                raise Abort(
+                    "6. failover needs WINDOWS_DHCP_LAB_AUTH=credssp (see docs/failover.md), or "
+                    "WINDOWS_DHCP_LAB_FAILOVER_ANY_AUTH=1 to try another authentication"
+                )
             failover_phase(env, server, lab)
         ok = True
     finally:

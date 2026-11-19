@@ -1,4 +1,5 @@
-COMPOSE = docker compose -f dev/docker-compose.yml
+# dev/env/lab.compose.yml (gitignored, optional): lab-only additions such as host names, a krb5.conf or an SSH key.
+COMPOSE = docker compose -f dev/docker-compose.yml $(if $(wildcard dev/env/lab.compose.yml),-f dev/env/lab.compose.yml)
 EXEC = $(COMPOSE) exec -T
 PY = /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py
 

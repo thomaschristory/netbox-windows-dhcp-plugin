@@ -18,6 +18,8 @@ CLAUDE.md
 
 # Lab server settings and credentials for the dev stack
 dev/env/lab.env
+# Lab-only compose additions (host names, krb5.conf, SSH key and CA mounts), read by the Makefile when present
+dev/env/lab.compose.yml
 # Lab test output (raw envelopes and property dumps): may identify the lab, never commit
 .lab/
 

@@ -398,15 +398,49 @@ class Lab:
         return errors
 
 
+def failover_auth_ok(env: dict[str, str]) -> bool:
+    """Whether to run the failover checks: CredSSP is known to work; anything else only on request (issue #62)."""
+    if env.get("WINDOWS_DHCP_LAB_FAILOVER_ANY_AUTH") == "1":
+        return True
+    return env.get("WINDOWS_DHCP_LAB_TRANSPORT", "winrm").lower() != "ssh" and (
+        env.get("WINDOWS_DHCP_LAB_AUTH", "").lower() == "credssp"
+    )
+
+
+def ssh_key_path(env: dict[str, str]) -> Path | None:
+    """The SSH private key file, absolute or relative to the repository (a relative path works in the container)."""
+    name = env.get("WINDOWS_DHCP_LAB_SSH_KEY_FILE", "")
+    return (REPO / name) if name else None
+
+
+def make_client(env: dict[str, str], partner: bool = False) -> wc.DhcpClient:
+    """A client for the lab server, or for its failover partner.
+
+    With WINDOWS_DHCP_LAB_COMPUTER_NAME the connection goes to WINDOWS_DHCP_LAB_HOST, a management host, which runs
+    the cmdlets against that DHCP server (or against WINDOWS_DHCP_LAB_PARTNER) through -ComputerName.
+    """
+    computer = env.get("WINDOWS_DHCP_LAB_COMPUTER_NAME", "")
+    if computer:
+        return wc.DhcpClient(make_runner(env), computer_name=env["WINDOWS_DHCP_LAB_PARTNER"] if partner else computer)
+    if not partner:
+        return wc.DhcpClient(make_runner(env))
+    side = dict(env, WINDOWS_DHCP_LAB_HOST=env["WINDOWS_DHCP_LAB_PARTNER"])
+    side["WINDOWS_DHCP_LAB_SSH_HOST_KEY"] = env.get("WINDOWS_DHCP_LAB_PARTNER_SSH_HOST_KEY", "")
+    return wc.DhcpClient(make_runner(side))
+
+
 def make_runner(env: dict[str, str]) -> Any:
     runner: Any
     if env.get("WINDOWS_DHCP_LAB_TRANSPORT", "winrm").lower() == "ssh":
-        # Password authentication; the host key is always checked, pinned here or from ~/.ssh/known_hosts.
+        # The host key is always checked, pinned here or from ~/.ssh/known_hosts. With a key file the logon uses the
+        # key alone, so the server never gets a password (what a key-only deployment looks like).
+        key = ssh_key_path(env)
         runner = SSHRunner(
             SSHConfig(
                 host=env["WINDOWS_DHCP_LAB_HOST"],
                 username=env["WINDOWS_DHCP_USERNAME"],
-                password=env["WINDOWS_DHCP_PASSWORD"],
+                password="" if key else env["WINDOWS_DHCP_PASSWORD"],
+                private_key=key.read_text() if key else "",
                 port=int(env["WINDOWS_DHCP_LAB_PORT"]) if env.get("WINDOWS_DHCP_LAB_PORT") else 22,
                 host_key=env.get("WINDOWS_DHCP_LAB_SSH_HOST_KEY", ""),
                 command_timeout=120,
@@ -422,6 +456,7 @@ def make_runner(env: dict[str, str]) -> Any:
         # Some labs only have the HTTP listener (5985). NTLM still encrypts the WinRM messages there.
         https=env.get("WINDOWS_DHCP_LAB_HTTPS", "1") != "0",
         kerberos_realm=env.get("WINDOWS_DHCP_LAB_REALM", ""),
+        kerberos_spn=env.get("WINDOWS_DHCP_LAB_SPN", ""),
         cert_validation=env.get("WINDOWS_DHCP_LAB_INSECURE") != "1",
         timeout=120,
     )

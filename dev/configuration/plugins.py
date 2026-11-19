@@ -10,6 +10,14 @@ _lab_profile = {
     "password_env": "WINDOWS_DHCP_PASSWORD",
     "allow_insecure_credssp": True,
 }
+# SSH key logon (WINDOWS_DHCP_LAB_SSH_KEY_FILE, absolute or relative to the repository; the gitignored
+# dev/env/lab.compose.yml mounts an absolute one at the same path): the key alone, without a password, as a key-only
+# deployment would run.
+if os.environ.get("WINDOWS_DHCP_LAB_SSH_KEY_FILE"):
+    _lab_profile = {
+        "username_env": "WINDOWS_DHCP_USERNAME",
+        "private_key_file": os.path.join("/plugin", os.environ["WINDOWS_DHCP_LAB_SSH_KEY_FILE"]),
+    }
 # A production profile should always carry "allowed_hosts", so its credentials can only be sent to the DHCP servers
 # (see docs/configuration.md). Here it is opt-in: set WINDOWS_DHCP_DEV_ALLOWED_HOSTS in dev/env/lab.env to a comma
 # separated list of host names, addresses or patterns ("10.20.0.*,dhcp*.example.com") when the stack holds real
