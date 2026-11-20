@@ -42,7 +42,7 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
   [Configuration](configuration.md#pinning-transport-port-realm-and-host-key).
 - `ports` does not require TLS: whether WinRM uses HTTPS and verifies the certificate stays the server editor's
   choice, so NTLM or Kerberos over HTTP, or over HTTPS without verification, remain possible within a pinned port.
-  Basic and CredSSP always need HTTPS with verification.
+  Basic always needs HTTPS with verification, and so does CredSSP unless the profile sets `allow_insecure_credssp`.
 - A connection refuses a transport or authentication value outside the known choices, so a record written straight
   to the database cannot slip past these checks with another spelling.
 

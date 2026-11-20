@@ -210,6 +210,48 @@ def failover_partner_check(server):
     return check
 
 
+def check_secret_connection(profile_name, server):
+    """
+    Raise CredentialError unless the server's own connection may carry the shared secret of `profile_name` (issue
+    #103): the secret travels over it, so the secret profile's transports, ports, Kerberos realms and SSH host keys
+    apply to that connection, and so does its say on insecure CredSSP. Partners stay allowed_hosts only.
+    """
+    profile = get_setting("credentials")[profile_name]
+    errors = connection_pin_errors(
+        profile_name,
+        profile,
+        transport=server.transport,
+        port=server.effective_port,
+        winrm_auth=server.winrm_auth,
+        kerberos_realm=kerberos_realm(server),
+        ssh_host_key=server.ssh_host_key,
+    )
+    if errors:
+        raise CredentialError("; ".join(errors.values()))
+    if profile_name == server.credential_profile:
+        return  # the connection checks already applied this profile's rules
+    if (
+        server.transport == TransportChoices.SSH
+        and profile_ssh_host_keys(profile_name, profile) is not None
+        and not server.ssh_host_key.strip()
+    ):
+        # Without its own key the connection trusts the server profile's keys (or known_hosts), not the secret
+        # profile's, so only a pinned key (checked against the secret's list above) shows which machine answers.
+        raise CredentialError(f"pin the server's SSH host key to send credential profile {profile_name!r} over SSH")
+    credssp = server.winrm_auth == WinRMAuthChoices.CREDSSP or server.failover_auth == FailoverAuthChoices.CREDSSP
+    if (
+        server.transport == TransportChoices.WINRM
+        and credssp
+        and not (server.winrm_https and server.verify_tls)
+        and not insecure_credssp_allowed(profile_name)
+    ):
+        # The server's profile allowed CredSSP without verified HTTPS; the secret's owner has not.
+        raise CredentialError(
+            f"credential profile {profile_name!r} does not set allow_insecure_credssp, and this server uses CredSSP "
+            "without HTTPS and certificate verification"
+        )
+
+
 def failover_secret_lookup(server):
     """
     A function returning the shared secret of one of the server's failover relationships, by name, for the push
@@ -231,20 +273,7 @@ def failover_secret_lookup(server):
         partner_hosts = (partner.host, partner.computer_name)
         try:
             check_host_allowed(profile, server.host, server.computer_name, *partner_hosts)
-            # The secret travels over this server's own connection, so the secret profile's transports, ports,
-            # Kerberos realms and SSH host keys apply to that connection too (issue #103). Partners stay
-            # allowed_hosts only.
-            errors = connection_pin_errors(
-                profile,
-                get_setting("credentials")[profile],
-                transport=server.transport,
-                port=server.effective_port,
-                winrm_auth=server.winrm_auth,
-                kerberos_realm=kerberos_realm(server),
-                ssh_host_key=server.ssh_host_key,
-            )
-            if errors:
-                raise CredentialError("; ".join(errors.values()))
+            check_secret_connection(profile, server)
             # Only the secret is used here, so only an inline None for the secret is an error.
             return get_credentials(profile, needed=("secret",)).secret
         except CredentialError as exc:

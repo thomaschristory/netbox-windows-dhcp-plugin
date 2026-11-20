@@ -167,7 +167,8 @@ Each value must be a list (a tuple works too). A bare string, `None`, a port giv
 transport name or a key that does not parse (or is of another type) is refused, naming the profile and the key: no
 server can use the profile until it is fixed. An empty list allows nothing it applies to: an empty `transports` or
 `ports` refuses every server using the profile, an empty `ssh_host_keys` every SSH server, and an empty
-`kerberos_realms` every WinRM server with Kerberos (as does a Kerberos server without a realm, whatever the list).
+`kerberos_realms` every WinRM server with Kerberos. When `kerberos_realms` is set, a Kerberos server without a realm is
+refused too, whatever the list holds.
 Keys compare by their key material, so the comment and spacing do not matter. A host pattern written before a key
 (as in a `known_hosts` line) is ignored: every key listed is trusted for every SSH server of the profile, so give
 servers that must not share keys profiles of their own.
@@ -187,5 +188,8 @@ The limits are checked like `allowed_hosts`: when a Windows server is saved (the
 that breaks the rule) and again before every connection, including the connection test, live leases and the
 failover logon, so a server changed in the database or a profile tightened later is refused before anything is
 sent. A failover shared secret travels over the primary server's own connection, so the limits of the secret's
-profile (`shared_secret_profile`) apply to that connection too, as well as those of the server's own profile. A
-failover partner is only checked against `allowed_hosts`.
+profile (`shared_secret_profile`) apply to that connection too, as well as those of the server's own profile. When the
+secret's profile sets `ssh_host_keys`, a server reached over SSH must pin its own host key (one of those), since
+without it the connection trusts the server profile's keys or `known_hosts`. When the server uses CredSSP without
+verified HTTPS, the secret's profile must set `allow_insecure_credssp` too. A failover partner is only checked
+against `allowed_hosts`.

@@ -211,38 +211,80 @@ class FailoverSecretPinsTest(TestCase):
     """The shared secret travels over the primary server's own connection: the secret profile's pins apply to it."""
 
     def setUp(self):
+        from netbox_windows_dhcp_plugin.connection import failover_secret_lookup
         from netbox_windows_dhcp_plugin.models import FailoverRelationship
 
         self.server = windows_server()
         partner = windows_server("dhcp2")
-        FailoverRelationship.objects.create(
+        self.relationship = FailoverRelationship.objects.create(
             name="ha", primary_server=self.server, partner_server=partner, shared_secret_profile="ha"
         )
+        self.lookup = failover_secret_lookup(self.server)
 
-    def settings(self, **pins):
+    def settings(self, lab=None, **pins):
         profiles = {
-            "lab": {"username": "lab\\admin", "password": "x"},
+            "lab": {"username": "lab\\admin", "password": "x", "secret": "lab-s3", **(lab or {})},
             "ha": {"secret": "s3", "allowed_hosts": ["*.example.com"], **pins},
         }
         return override_settings(
             PLUGINS_CONFIG={**settings.PLUGINS_CONFIG, "netbox_windows_dhcp_plugin": {"credentials": profiles}}
         )
 
-    def test_pins_apply_to_the_primary_connection(self):
-        from netbox_windows_dhcp_plugin.connection import failover_secret_lookup
+    def assert_refused(self, message, **pins):
+        with self.settings(**pins), self.assertRaisesMessage(ValueError, f"failover ha: {message}"):
+            self.lookup("ha")
 
-        lookup = failover_secret_lookup(self.server)
+    def test_pins_apply_to_the_primary_connection(self):
         with self.settings(transports=["winrm"], ports=[5986]):
-            self.assertEqual(lookup("ha"), "s3")
-        refusals = [
-            ({"transports": ["ssh"]}, "failover ha: credential profile 'ha' may not be used over winrm"),
-            ({"ports": [5985]}, "failover ha: credential profile 'ha' may not be used with port 5986"),
-            ({"ports": "5986"}, "failover ha: credential profile 'ha': ports must be a list"),
-        ]
-        for pins, message in refusals:
-            with self.subTest(pins=pins), self.settings(**pins), self.assertRaisesMessage(ValueError, message):
-                lookup("ha")
+            self.assertEqual(self.lookup("ha"), "s3")
+        self.assert_refused("credential profile 'ha' may not be used over winrm", transports=["ssh"])
+        self.assert_refused("credential profile 'ha' may not be used with port 5986", ports=[5985])
+
+    def test_malformed_secret_profile(self):
+        self.assert_refused("credential profile 'ha': ports must be a list", ports="5986")
+        self.assert_refused("credential profile 'ha': ssh_host_keys must be a list", ssh_host_keys=KEY)
+        self.assert_refused("credential profile 'ha': kerberos_realms holds an invalid entry ''", kerberos_realms=[""])
+
+    def test_kerberos_realm(self):
         self.server.winrm_auth = "kerberos"
         self.server.kerberos_realm = "EVIL.EXAMPLE"
-        with self.settings(kerberos_realms=["CORP.EXAMPLE"]), self.assertRaisesMessage(ValueError, "EVIL.EXAMPLE"):
-            lookup("ha")
+        refused = "credential profile 'ha' may not be used with Kerberos realm"
+        self.assert_refused(f"{refused} EVIL.EXAMPLE", kerberos_realms=["CORP.EXAMPLE"])
+        # A record written straight to the database with no realm.
+        self.server.kerberos_realm = ""
+        self.assert_refused(f"{refused} (none)", kerberos_realms=["CORP.EXAMPLE"])
+        self.server.kerberos_realm = "corp.example"
+        with self.settings(kerberos_realms=["CORP.EXAMPLE"]):
+            self.assertEqual(self.lookup("ha"), "s3")
+
+    def test_ssh_needs_a_pinned_key_from_the_secret_profile(self):
+        self.server.transport = "ssh"
+        # Without a key of its own the connection trusts the server profile's keys or known_hosts, not ha's.
+        self.assert_refused(
+            "pin the server's SSH host key to send credential profile 'ha' over SSH", ssh_host_keys=[KEY]
+        )
+        self.server.ssh_host_key = OTHER_KEY
+        self.assert_refused("credential profile 'ha' does not trust this SSH host key", ssh_host_keys=[KEY])
+        self.server.ssh_host_key = f"{KEY} dhcp1"
+        with self.settings(ssh_host_keys=[KEY]):
+            self.assertEqual(self.lookup("ha"), "s3")
+
+    def test_same_profile_as_the_server_is_not_refused_twice(self):
+        from netbox_windows_dhcp_plugin.models import FailoverRelationship
+
+        FailoverRelationship.objects.filter(pk=self.relationship.pk).update(shared_secret_profile="lab")
+        self.server.transport = "ssh"
+        pins = {"ssh_host_keys": [KEY], "transports": ["ssh"], "ports": [22], "allowed_hosts": ["*.example.com"]}
+        # The connection trusts this profile's keys already, so no pinned key is needed on the server.
+        with self.settings(lab=pins):
+            self.assertEqual(self.lookup("ha"), "lab-s3")
+
+    def test_insecure_credssp_needs_the_secret_profile_consent_too(self):
+        self.server.failover_auth = "credssp"
+        self.server.winrm_https = False
+        self.assert_refused("credential profile 'ha' does not set allow_insecure_credssp", lab={})
+        with self.settings(allow_insecure_credssp=True):
+            self.assertEqual(self.lookup("ha"), "s3")
+        self.server.winrm_https = True
+        with self.settings():
+            self.assertEqual(self.lookup("ha"), "s3")

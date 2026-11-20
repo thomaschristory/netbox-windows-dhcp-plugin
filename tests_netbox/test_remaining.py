@@ -57,6 +57,7 @@ SECRET_PROFILES = {
             "ha": {"secret": "s3cret", "allowed_hosts": ["*.example.com"]},
             "elsewhere": {"secret": "s3cret", "allowed_hosts": ["*.other.example"]},
             "primary-only": {"secret": "s3cret", "allowed_hosts": ["dhcp1.example.com"]},
+            "ssh-only": {"secret": "s3cret", "allowed_hosts": ["*.example.com"], "transports": ["ssh"]},
         }
     },
 }
@@ -416,6 +417,19 @@ class PushRemainingTest(RemainingObjectsMixin, TestCase):
         self.assertEqual(self.fake.failover_secrets, {})
         with self.assertRaises(ValidationError):
             FailoverRelationship.objects.get().full_clean()
+
+    def test_secret_is_not_sent_over_a_connection_its_profile_does_not_allow(self):
+        # Issue #103: the secret profile's limits apply to the primary server's connection that carries it. The
+        # refusal is reported for the failover change, not as a crash of the push.
+        self._run()
+        FailoverRelationship.objects.update(shared_secret_profile="ssh-only")
+        with self.assertRaises(JobFailed):
+            self._run()
+        run = SyncRun.objects.latest("pk")
+        refused = "update failover ha: failover HA: credential profile 'ssh-only' may not be used over winrm"
+        self.assertIn(refused, run.error)
+        self.assertNotIn("unexpected error", run.error)
+        self.assertEqual(self.fake.failover_secrets, {})
 
     def test_deleting_the_partner_server_is_refused(self):
         # Deleting the relationship with it would make the next push remove failover from the primary on Windows.
