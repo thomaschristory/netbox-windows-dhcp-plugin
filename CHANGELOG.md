@@ -21,7 +21,8 @@ All notable changes to this project are documented here. The format follows
   value the transport uses. Failover authentication only opens a second logon for `credssp` (#103).
 - A failover shared secret profile used with a server on CredSSP without HTTPS and certificate verification (a lab)
   now needs `allow_insecure_credssp` too, as the server's own profile does: the secret travels over that connection.
-  Until it is set, a push fails the failover changes that send the secret. See
+  Until it is set, creating a relationship or changing its secret profile or primary server is refused on save, and
+  for existing relationships the push fails the failover changes that send the secret. See
   [Upgrading](docs/installation.md#upgrading-from-05x-to-060) (#103).
 
 ## [0.5.0] - 2026-11-20

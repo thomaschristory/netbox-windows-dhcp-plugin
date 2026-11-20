@@ -416,6 +416,11 @@ def connection_pin_errors(profile_name, profile, *, transport, port, winrm_auth,
     return errors
 
 
+def server_kerberos_realm(server):
+    """A server's realm as the connection uses it and the profile's kerberos_realms check reads it."""
+    return (server.kerberos_realm or "").strip().upper()
+
+
 def check_secret_connection(profile_name, server, profiles=None):
     """
     Raise CredentialError unless `server`'s own connection may carry the failover shared secret of `profile_name`
@@ -433,8 +438,7 @@ def check_secret_connection(profile_name, server, profiles=None):
         transport=server.transport,
         port=server.effective_port,
         winrm_auth=server.winrm_auth,
-        # Read as the connection reads it (connection.kerberos_realm).
-        kerberos_realm=(server.kerberos_realm or "").strip().upper(),
+        kerberos_realm=server_kerberos_realm(server),
         ssh_host_key=server.ssh_host_key,
     )
     if errors:

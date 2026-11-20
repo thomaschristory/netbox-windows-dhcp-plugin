@@ -105,7 +105,8 @@ nothing changes, except:
 
 - **Failover secrets over insecure CredSSP.** A failover shared secret profile used with a server on CredSSP without
   HTTPS and certificate verification (a lab) now needs `"allow_insecure_credssp": True` too, like the server's own
-  profile; until then the push fails the failover changes that send the secret.
+  profile. Creating a relationship, or changing its secret profile or primary server, is refused on save until then;
+  existing relationships keep saving, but the push fails the failover changes that send the secret.
 - **Stored values outside the choices.** A Windows server whose transport, WinRM authentication or failover
   authentication was written straight to the database with other casing (`KERBEROS`, `Basic`) is refused when
   connecting: edit it in NetBox and pick the value again.

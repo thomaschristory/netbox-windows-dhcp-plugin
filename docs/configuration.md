@@ -190,12 +190,13 @@ failover logon, so a server changed in the database or a profile tightened later
 sent.
 
 A failover shared secret travels over the primary server's own connection, so the limits of the secret's profile
-(`shared_secret_profile`) apply to that connection too, as well as those of the server's own profile. They are
-checked when the failover relationship is saved and again before each push sends the secret, so a later change to the
-server is caught then. When the secret's profile sets `ssh_host_keys`, a server reached over SSH must pin its own host
-key (one of those), since without it the connection trusts the server profile's keys or `known_hosts`. When the
+(`shared_secret_profile`) apply to that connection too, as well as those of the server's own profile. They are checked
+when a failover relationship is created or its secret profile or primary server changes (not for other edits, nor for
+imports, which record what Windows has), and again before each push sends the secret, which catches a later change to
+the server or the profile. When the secret's profile sets `ssh_host_keys`, a server reached over SSH must pin its own
+host key (one of those), since without it the connection trusts the server profile's keys or `known_hosts`. When the
 server uses CredSSP without verified HTTPS, the secret's profile must set `allow_insecure_credssp` too. Both rules are
-skipped when the secret's profile is the server's own profile: its keys and its consent already govern the
-connection. Like the server's profile, the secret's profile cannot require verified HTTPS for NTLM or Kerberos (see
+skipped when the secret's profile is the server's own profile: its keys and its consent already govern the connection.
+Like the server's profile, the secret's profile cannot require verified HTTPS for NTLM or Kerberos (see
 [#147](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/issues/147)). A failover partner is only checked
 against `allowed_hosts`.

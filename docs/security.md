@@ -43,6 +43,9 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
 - `ports` does not require TLS: whether WinRM uses HTTPS and verifies the certificate stays the server editor's
   choice, so NTLM or Kerberos over HTTP, or over HTTPS without verification, remain possible within a pinned port.
   Basic always needs HTTPS with verification, and so does CredSSP unless the profile sets `allow_insecure_credssp`.
+- A failover shared secret travels over the primary server's own connection, so the secret profile's limits
+  (`transports`, `ports`, `kerberos_realms`, `ssh_host_keys`) and its `allow_insecure_credssp` govern that connection
+  too, not only the server's own profile.
 - A connection refuses a transport or authentication value outside the known choices, so a record written straight
   to the database cannot slip past these checks with another spelling.
 

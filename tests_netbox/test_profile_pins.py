@@ -301,15 +301,88 @@ class FailoverSecretPinsTest(TestCase):
         with self.settings():
             self.assertEqual(self.lookup("ha"), "s3")
 
-    def test_checked_when_the_relationship_is_saved(self):
-        self.relationship.refresh_from_db()
-        with self.settings(transports=["winrm"]):
-            self.relationship.full_clean()
-        with self.settings(transports=["ssh"]), self.assertRaises(ValidationError) as ctx:
-            self.relationship.full_clean()
-        self.assertIn("may not be used over winrm", " ".join(ctx.exception.message_dict["shared_secret_profile"]))
+    def insecure_primary(self):
         WindowsServer.objects.filter(pk=self.server.pk).update(winrm_https=False, failover_auth="credssp")
-        self.relationship.refresh_from_db()
+        self.server.refresh_from_db()
+
+    def assert_secret_refused(self, relationship, message):
         with self.settings(), self.assertRaises(ValidationError) as ctx:
-            self.relationship.full_clean()
-        self.assertIn("allow_insecure_credssp", " ".join(ctx.exception.message_dict["shared_secret_profile"]))
+            relationship.full_clean()
+        self.assertIn(message, " ".join(ctx.exception.message_dict["shared_secret_profile"]))
+
+    def test_checked_when_the_relationship_is_created(self):
+        self.insecure_primary()
+        partner = windows_server("dhcp3")
+        new = FailoverRelationship(name="ha2", primary_server=self.server, partner_server=partner)
+        new.shared_secret_profile = "ha"
+        self.assert_secret_refused(new, "allow_insecure_credssp")
+        with self.settings(allow_insecure_credssp=True):
+            new.full_clean()
+        with self.settings(transports=["ssh"]), self.assertRaises(ValidationError):
+            new.full_clean()
+
+    def test_checked_when_the_secret_profile_or_primary_changes(self):
+        FailoverRelationship.objects.filter(pk=self.relationship.pk).update(shared_secret_profile="")
+        self.insecure_primary()
+        relationship = FailoverRelationship.objects.get(pk=self.relationship.pk)
+        relationship.shared_secret_profile = "ha"
+        self.assert_secret_refused(relationship, "allow_insecure_credssp")
+        # Moving an existing relationship onto a server that the secret's profile does not allow.
+        FailoverRelationship.objects.filter(pk=self.relationship.pk).update(
+            shared_secret_profile="ha", primary_server=windows_server("dhcp3")
+        )
+        relationship = FailoverRelationship.objects.get(pk=self.relationship.pk)
+        relationship.primary_server = WindowsServer.objects.get(pk=self.server.pk)
+        self.assert_secret_refused(relationship, "allow_insecure_credssp")
+
+    def test_a_tightened_profile_does_not_block_editing(self):
+        # The relationship already exists (on Windows too): a description edit or bulk edit still saves, and the
+        # push reports the refusal when it would send the secret.
+        self.insecure_primary()
+        relationship = FailoverRelationship.objects.get(pk=self.relationship.pk)
+        relationship.description = "edited"
+        with self.settings():
+            relationship.full_clean()
+            relationship.save()
+
+    def test_an_import_records_what_windows_has(self):
+        # sync/mapping.py turns check_partner_host off for imports, new relationships and updates alike.
+        self.insecure_primary()
+        partner = windows_server("dhcp3")
+        new = FailoverRelationship(name="ha2", primary_server=self.server, partner_server=partner)
+        new.shared_secret_profile = "ha"
+        new.check_partner_host = False
+        relationship = FailoverRelationship.objects.get(pk=self.relationship.pk)
+        relationship.check_partner_host = False
+        relationship.shared_secret_profile = "ha"
+        relationship.max_client_lead_time = 7200
+        with self.settings():
+            new.full_clean()
+            relationship.full_clean()
+
+    def test_same_profile_as_the_server_saves(self):
+        self.server.transport = "ssh"
+        self.server.save()
+        relationship = FailoverRelationship.objects.get(pk=self.relationship.pk)
+        relationship.shared_secret_profile = "lab"
+        pins = {"ssh_host_keys": [KEY], "allowed_hosts": ["*.example.com"]}
+        with self.settings(lab=pins):
+            relationship.full_clean()
+
+    def test_no_primary_is_a_field_error(self):
+        relationship = FailoverRelationship(name="ha2", partner_server=windows_server("dhcp3"))
+        relationship.shared_secret_profile = "ha"
+        with self.settings(transports=["ssh"]), self.assertRaises(ValidationError) as ctx:
+            relationship.full_clean()
+        self.assertIn("primary_server", ctx.exception.message_dict)
+        self.assertNotIn("shared_secret_profile", ctx.exception.message_dict)
+
+    def test_checked_when_the_relationship_is_saved(self):
+        FailoverRelationship.objects.filter(pk=self.relationship.pk).update(shared_secret_profile="")
+        relationship = FailoverRelationship.objects.get(pk=self.relationship.pk)
+        relationship.shared_secret_profile = "ha"
+        with self.settings(transports=["winrm"]):
+            relationship.full_clean()
+        with self.settings(transports=["ssh"]), self.assertRaises(ValidationError) as ctx:
+            relationship.full_clean()
+        self.assertIn("may not be used over winrm", " ".join(ctx.exception.message_dict["shared_secret_profile"]))

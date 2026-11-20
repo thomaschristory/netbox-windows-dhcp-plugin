@@ -12,6 +12,7 @@ from .conf import (
     insecure_credssp_allowed,
     max_concurrency,
     profile_ssh_host_keys,
+    server_kerberos_realm,
 )
 from .windows import DhcpClient, limit
 from .windows.psscript import WindowsLayerError
@@ -46,11 +47,6 @@ class _FailoverRunner:
             close()
 
 
-def kerberos_realm(server):
-    """The server's realm as the connection uses it (and the profile's kerberos_realms check reads it)."""
-    return (server.kerberos_realm or "").strip().upper()
-
-
 def check_connection_allowed(server):
     """
     Refuse to send credentials where they could leak, even if the record skipped form validation (for example a
@@ -76,7 +72,7 @@ def check_connection_allowed(server):
         transport=server.transport,
         port=server.effective_port,
         winrm_auth=server.winrm_auth,
-        kerberos_realm=kerberos_realm(server),
+        kerberos_realm=server_kerberos_realm(server),
         ssh_host_key=server.ssh_host_key,
     )
     if errors:
@@ -129,7 +125,7 @@ def build_runner(server, auth=""):
     from .windows.winrm import WinRMConfig, WinRMRunner
 
     username = creds.username
-    realm = kerberos_realm(server)
+    realm = server_kerberos_realm(server)
     if (
         auth == WinRMAuthChoices.CREDSSP
         and server.winrm_auth == WinRMAuthChoices.KERBEROS

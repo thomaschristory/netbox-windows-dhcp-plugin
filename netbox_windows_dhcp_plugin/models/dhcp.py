@@ -1111,6 +1111,8 @@ class FailoverRelationship(PrimaryModel):
         # The servers as stored, so clean() can tell a pair chosen now from one already on Windows.
         if "partner_server_id" in instance.__dict__ and "primary_server_id" in instance.__dict__:  # not deferred
             instance._loaded_pair = (instance.primary_server_id, instance.partner_server_id)
+        if "primary_server_id" in instance.__dict__ and "shared_secret_profile" in instance.__dict__:
+            instance._loaded_secret = (instance.primary_server_id, instance.shared_secret_profile)
         return instance
 
     @staticmethod
@@ -1194,8 +1196,13 @@ class FailoverRelationship(PrimaryModel):
         try:
             check_host_allowed(self.shared_secret_profile, *hosts)
             # The secret travels over the primary server's connection: the secret profile's limits apply to it (issue
-            # #103). A later change to the server is caught before each push.
-            if self.primary_server_id is not None:
+            # #103). Judged only for a secret profile or primary chosen now, like the partner check: tightening a
+            # profile must not block editing a relationship, and an import records what Windows has. The push
+            # checks again before sending the secret, which catches a later change to the server.
+            chosen = self._state.adding or (self.primary_server_id, self.shared_secret_profile) != getattr(
+                self, "_loaded_secret", None
+            )
+            if self.check_partner_host and chosen and self.primary_server_id is not None:
                 check_secret_connection(self.shared_secret_profile, self.primary_server)
         except CredentialError as exc:
             raise ValidationError({"shared_secret_profile": str(exc)}) from exc
