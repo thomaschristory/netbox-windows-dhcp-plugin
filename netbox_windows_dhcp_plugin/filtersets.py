@@ -12,6 +12,7 @@ from virtualization.models import VirtualMachine
 
 from .choices import (
     ClassTypeChoices,
+    FailoverAuthChoices,
     FailoverModeChoices,
     FamilyChoices,
     ImportDestinationChoices,
@@ -110,6 +111,7 @@ class WindowsServerFilterSet(PrimaryModelFilterSet):
     import_vrf_id = _model_filter("import_vrf", VRF.objects.all(), _("Import VRF (ID)"))
     transport = django_filters.MultipleChoiceFilter(choices=TransportChoices)
     winrm_auth = django_filters.MultipleChoiceFilter(choices=WinRMAuthChoices)
+    failover_auth = django_filters.MultipleChoiceFilter(choices=FailoverAuthChoices)
 
     class Meta:
         model = WindowsServer

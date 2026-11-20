@@ -14,7 +14,8 @@ Steps:
 5. Change the description of every test object that has one in NetBox, then push (update path).
 6. Read live leases for a test scope through the Leases tab (LeaseJob in the worker).
 7. Delete every test object in NetBox, then push (delete path).
-8. Optional, with WINDOWS_DHCP_LAB_PARTNER and WINDOWS_DHCP_LAB_AUTH=credssp: a test scope in a failover relationship
+8. Optional, with WINDOWS_DHCP_LAB_PARTNER and WINDOWS_DHCP_LAB_AUTH=credssp (or WINDOWS_DHCP_LAB_FAILOVER_AUTH=credssp,
+   which keeps WINDOWS_DHCP_LAB_AUTH for the rest): a test scope in a failover relationship
    made in NetBox and pushed (Windows copies the scope to the partner), an edit replicated to the partner after the
    push, then the relationship and the scope deleted. The partner is written only through the relationship.
 After every push: a second dry-run push and an import change nothing. (The log numbers these 1 to 6: leases are
@@ -45,7 +46,7 @@ from django.test import Client  # noqa: E402
 from django.urls import reverse  # noqa: E402
 
 from netbox_windows_dhcp_plugin.conf import max_concurrency, normalise_host  # noqa: E402
-from netbox_windows_dhcp_plugin.connection import build_client  # noqa: E402
+from netbox_windows_dhcp_plugin.connection import build_client, build_failover_client  # noqa: E402
 from netbox_windows_dhcp_plugin.jobs import enqueue_leases, record_names  # noqa: E402
 from netbox_windows_dhcp_plugin.models import (  # noqa: E402
     FailoverRelationship,
@@ -193,6 +194,8 @@ def netbox_server(env, name=SERVER_NAME, partner=False):
     # SSH always checks the host key (the model refuses verify_tls off for SSH); INSECURE only concerns WinRM TLS.
     server.verify_tls = server.transport == "ssh" or env.get("WINDOWS_DHCP_LAB_INSECURE") != "1"
     server.winrm_auth = env.get("WINDOWS_DHCP_LAB_AUTH", "ntlm").lower()
+    # CredSSP for the failover writes only, the rest as WINDOWS_DHCP_LAB_AUTH says (issue #141).
+    server.failover_auth = env.get("WINDOWS_DHCP_LAB_FAILOVER_AUTH", "").lower() if server.transport == "winrm" else ""
     server.kerberos_realm = env.get("WINDOWS_DHCP_LAB_REALM", "")
     server.kerberos_spn = env.get("WINDOWS_DHCP_LAB_SPN", "")
     server.sync_enabled = False
@@ -293,10 +296,14 @@ def guarded_push(server, step, expect_actions):
     for s in plan.skipped:
         log(f"{step}: not pushed: {s.change.action} {s.change.kind} {s.change.key}: {s.reason}")
     client = build_client(server)
+    # As the push job does: a second client for failover writes when the server sets one (#141).
+    failover = build_failover_client(server)
     try:
-        outcome = pusher.run(server, client)
+        outcome = pusher.run(server, client, failover_client=failover)
     finally:
         client.close()
+        if failover is not None:
+            failover.close()
     # The push plans again: check what it really did as well (nothing else edits the dev stack meanwhile).
     done = outcome.result.applied if outcome.result else []
     foreign = [c for c in done if not is_test(c.kind, c.key)]
@@ -424,7 +431,8 @@ def failover_phase(env, server, lab):
     record_names(server, lab.client, LOG)
     records, _ = windows_state.to_records(windows_state.read(pc), partner_servers=netbox_state.partner_servers(partner))
     seen = next(r.fields["partner_server"] for r in records if r.kind == "failover" and r.key == FAILOVER.lower())
-    if seen != windows_state.host_name(server.dhcp_host):
+    # As the sync compares it: the short computer name a domain partner reports matches the server's qualified host.
+    if not windows_state.equal("failover", "partner_server", seen, server.dhcp_host):
         raise Abort(f"6. the partner's name for the first server, {seen!r}, does not match its host")
     log(f"6. the partner's name for the first server matches it (reported names {server.reported_names})")
 
@@ -464,7 +472,12 @@ def main():
     for key in ("WINDOWS_DHCP_LAB_HOST", "WINDOWS_DHCP_USERNAME", "WINDOWS_DHCP_PASSWORD"):
         if not env.get(key):
             raise Abort(f"{key} is not set (dev/env/lab.env)")
-    lab = Lab(make_client(env))
+    # The lab's own helper client cleans up after a failed run, removing relationships too: those need the password on
+    # the server (#62), so it logs on with CredSSP when the pushes send failover writes with it (#141).
+    helper_env = env
+    if env.get("WINDOWS_DHCP_LAB_FAILOVER_AUTH", "").lower() == "credssp":
+        helper_env = dict(env, WINDOWS_DHCP_LAB_AUTH="credssp")
+    lab = Lab(make_client(helper_env))
     leftovers = lab.sweep()
     if leftovers:
         raise Abort(f"sweep: {leftovers}")
@@ -519,7 +532,12 @@ def main():
         if left:
             raise Abort(f"5. scopes still on Windows after the delete push: {left}")
         if env.get("WINDOWS_DHCP_LAB_PARTNER"):
-            if not failover_auth_ok(env):
+            # The push sends failover writes with CredSSP when WINDOWS_DHCP_LAB_FAILOVER_AUTH says so (#141).
+            failover_credssp = (
+                env.get("WINDOWS_DHCP_LAB_FAILOVER_AUTH", "").lower() == "credssp"
+                and env.get("WINDOWS_DHCP_LAB_TRANSPORT", "winrm").lower() == "winrm"
+            )
+            if not failover_auth_ok(env) and not failover_credssp:
                 raise Abort(
                     "6. failover needs WINDOWS_DHCP_LAB_AUTH=credssp (see docs/failover.md), or "
                     "WINDOWS_DHCP_LAB_FAILOVER_ANY_AUTH=1 to try another authentication"

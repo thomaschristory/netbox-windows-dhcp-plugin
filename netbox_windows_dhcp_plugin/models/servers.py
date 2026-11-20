@@ -7,7 +7,7 @@ from django.utils.translation import gettext_lazy as _
 from netbox.models import PrimaryModel
 from netbox.models.features import JobsMixin
 
-from ..choices import TransportChoices, WinRMAuthChoices
+from ..choices import FailoverAuthChoices, TransportChoices, WinRMAuthChoices
 from ..conf import CredentialError, get_setting, host_allowed, insecure_credssp_allowed, normalise_host
 
 __all__ = ("WindowsServer",)
@@ -81,6 +81,18 @@ class WindowsServer(JobsMixin, PrimaryModel):
         choices=WinRMAuthChoices,
         default=WinRMAuthChoices.NTLM,
     )
+    failover_auth = models.CharField(
+        verbose_name=_("failover authentication"),
+        max_length=10,
+        choices=FailoverAuthChoices,
+        default=FailoverAuthChoices.SAME,
+        blank=True,
+        help_text=_(
+            "Creating, changing or deleting a failover relationship, adding or removing its scopes, and replication "
+            "make the server call its partner as you, which Kerberos and NTLM cannot do. CredSSP here uses it for "
+            "those calls only (WinRM)."
+        ),
+    )
     winrm_https = models.BooleanField(
         verbose_name=_("WinRM over HTTPS"),
         default=True,
@@ -153,6 +165,7 @@ class WindowsServer(JobsMixin, PrimaryModel):
         "port",
         "credential_profile",
         "winrm_auth",
+        "failover_auth",
         "winrm_https",
         "verify_tls",
         "kerberos_realm",
@@ -176,6 +189,13 @@ class WindowsServer(JobsMixin, PrimaryModel):
         return TransportChoices.colors.get(self.transport)
 
     @property
+    def separate_failover_auth(self):
+        """The authentication failover writes use when it differs from the server's own, else an empty string."""
+        if self.transport != TransportChoices.WINRM or not self.failover_auth or self.failover_auth == self.winrm_auth:
+            return ""
+        return self.failover_auth
+
+    @property
     def effective_port(self):
         if self.port:
             return self.port
@@ -196,7 +216,12 @@ class WindowsServer(JobsMixin, PrimaryModel):
                 }
             )
         if self.transport != TransportChoices.WINRM:
+            if self.failover_auth:
+                # Over SSH a password logon already reaches the partner, and a key logon has nothing to pass on.
+                raise ValidationError({"failover_auth": _("Failover authentication only applies to WinRM.")})
             return
+        if self.failover_auth == FailoverAuthChoices.CREDSSP and not (self.winrm_https and self.verify_tls):
+            self._clean_credssp_transport()
         if self.winrm_auth == WinRMAuthChoices.KERBEROS and not self.kerberos_realm:
             raise ValidationError({"kerberos_realm": _("A realm is required for Kerberos authentication.")})
         if self.winrm_auth == WinRMAuthChoices.BASIC and not self.winrm_https:

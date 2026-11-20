@@ -28,6 +28,7 @@ from virtualization.models import VirtualMachine
 
 from .choices import (
     ClassTypeChoices,
+    FailoverAuthChoices,
     FailoverModeChoices,
     FailoverServerRoleChoices,
     FamilyChoices,
@@ -149,7 +150,7 @@ class WindowsServerForm(PrimaryModelForm):
     fieldsets = (
         FieldSet("name", "device", "virtual_machine", "description", name=_("Server")),
         FieldSet("host", "transport", "port", "credential_profile", name=_("Connection")),
-        FieldSet("winrm_auth", "winrm_https", "kerberos_realm", "kerberos_spn", name=_("WinRM")),
+        FieldSet("winrm_auth", "failover_auth", "winrm_https", "kerberos_realm", "kerberos_spn", name=_("WinRM")),
         FieldSet("ssh_host_key", name=_("SSH")),
         FieldSet("verify_tls", "computer_name", name=_("Security and remoting")),
         FieldSet("sync_enabled", "import_interval", "import_vrf", name=_("Sync")),
@@ -167,6 +168,7 @@ class WindowsServerForm(PrimaryModelForm):
             "port",
             "credential_profile",
             "winrm_auth",
+            "failover_auth",
             "winrm_https",
             "verify_tls",
             "kerberos_realm",
@@ -189,6 +191,7 @@ class WindowsServerImportForm(PrimaryModelImportForm):
     )
     transport = CSVChoiceField(choices=TransportChoices, required=False, label=_("Transport"))
     winrm_auth = CSVChoiceField(choices=WinRMAuthChoices, required=False, label=_("WinRM authentication"))
+    failover_auth = CSVChoiceField(choices=FailoverAuthChoices, required=False, label=_("Failover authentication"))
     import_vrf = CSVModelChoiceField(
         queryset=VRF.objects.all(), to_field_name="name", required=False, label=_("Import VRF")
     )
@@ -204,6 +207,7 @@ class WindowsServerImportForm(PrimaryModelImportForm):
             "port",
             "credential_profile",
             "winrm_auth",
+            "failover_auth",
             "winrm_https",
             "verify_tls",
             "kerberos_realm",
@@ -226,6 +230,12 @@ class WindowsServerBulkEditForm(PrimaryModelBulkEditForm):
     winrm_auth = forms.ChoiceField(
         choices=add_blank_choice(WinRMAuthChoices), required=False, label=_("WinRM authentication")
     )
+    # Blank means "no change" here; "Set null" puts it back to "same as WinRM authentication".
+    failover_auth = forms.ChoiceField(
+        choices=[("", "---------"), (FailoverAuthChoices.CREDSSP, _("CredSSP"))],
+        required=False,
+        label=_("Failover authentication"),
+    )
     winrm_https = _boolean_field()
     verify_tls = _boolean_field()
     sync_enabled = _boolean_field()
@@ -237,6 +247,7 @@ class WindowsServerBulkEditForm(PrimaryModelBulkEditForm):
             "transport",
             "credential_profile",
             "winrm_auth",
+            "failover_auth",
             "winrm_https",
             "verify_tls",
             "sync_enabled",
@@ -245,7 +256,7 @@ class WindowsServerBulkEditForm(PrimaryModelBulkEditForm):
             "description",
         ),
     )
-    nullable_fields = ("import_interval", "import_vrf", "description", "comments")
+    nullable_fields = ("failover_auth", "import_interval", "import_vrf", "description", "comments")
 
 
 class WindowsServerFilterForm(PrimaryModelFilterSetForm):
@@ -256,13 +267,14 @@ class WindowsServerFilterForm(PrimaryModelFilterSetForm):
     )
     transport = _filter_choice_field(TransportChoices, _("Transport"))
     winrm_auth = _filter_choice_field(WinRMAuthChoices, _("WinRM authentication"))
+    failover_auth = _filter_choice_field(FailoverAuthChoices, _("Failover authentication"))
     sync_enabled = _boolean_field()
     tag = TagFilterField(model)
 
     fieldsets = (
         FieldSet("q", "filter_id", "tag"),
         FieldSet("device_id", "virtual_machine_id", name=_("Runs on")),
-        FieldSet("transport", "winrm_auth", "sync_enabled", name=_("Windows server")),
+        FieldSet("transport", "winrm_auth", "failover_auth", "sync_enabled", name=_("Windows server")),
     )
 
 

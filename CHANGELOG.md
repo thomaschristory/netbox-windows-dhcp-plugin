@@ -5,13 +5,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Failover authentication** on a Windows server: with CredSSP there, the plugin logs on with CredSSP only for the
+  calls that make the server reach its failover partner (creating, changing and deleting a relationship, its scopes,
+  and replication after a push), and with the server's own **WinRM authentication** (Kerberos, say) for everything
+  else. Kerberos cannot carry that hop, even with constrained delegation. The connection test checks both logons.
+  The same rules as CredSSP apply: HTTPS with certificate verification, unless the credential profile sets
+  `allow_insecure_credssp`. Available in the form, CSV import, REST API, GraphQL and filters. Migration `0006` adds
+  the field, empty for existing servers (#141).
+
 ### Changed
 
 - Over SSH, a script over 32 KB no longer fails with "too large for SSH, use WinRM". Windows OpenSSH stalls on long
   stdin, so the plugin uploads the script over SFTP to the account's home folder under a random name, sends only its
   path, a checksum and any secret on stdin, and the script deletes the file once read (a file replaced in the
-  meantime is refused). The server needs the `sftp` subsystem,
-  which Windows OpenSSH enables by default (#63).
+  meantime is refused). The server needs the `sftp` subsystem, which Windows OpenSSH enables by default (#63).
 
 ### Documentation
 

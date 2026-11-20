@@ -1,6 +1,6 @@
 """Build a Windows DHCP client for a WindowsServer, resolving its credential profile."""
 
-from .choices import TransportChoices, WinRMAuthChoices
+from .choices import FailoverAuthChoices, TransportChoices, WinRMAuthChoices
 from .conf import (
     CredentialError,
     check_host_allowed,
@@ -11,6 +11,36 @@ from .conf import (
     max_concurrency,
 )
 from .windows import DhcpClient, limit
+from .windows.psscript import WindowsLayerError
+from .windows.runner import RunnerError
+
+
+class FailoverLogonError(WindowsLayerError):
+    """
+    The failover client's logon or connection failed, or one of its commands timed out (issue #141). Not a
+    RunnerError on purpose: a push stops at a RunnerError (the server is unreachable), while this only concerns the
+    failover writes, so the push fails those (and what depends on them) and goes on with the rest, which the
+    server's own client sends. A failover write that timed out after it was sent may still finish on Windows; the
+    next push reads Windows again and reconciles.
+    """
+
+
+class _FailoverRunner:
+    """Name the failover logon in its errors, and keep them from stopping the whole push."""
+
+    def __init__(self, runner, auth):
+        self.runner, self.auth = runner, auth
+
+    def run(self, script, params=None):
+        try:
+            return self.runner.run(script, params)
+        except RunnerError as exc:  # Stopped is not a RunnerError: a stop passes through as it is
+            raise FailoverLogonError(f"failover authentication ({self.auth}): {exc}") from exc
+
+    def close(self):
+        close = getattr(self.runner, "close", None)
+        if callable(close):
+            close()
 
 
 def check_connection_allowed(server):
@@ -26,9 +56,10 @@ def check_connection_allowed(server):
         and not (server.winrm_https and server.verify_tls)
     ):
         raise CredentialError("Basic authentication needs HTTPS with certificate verification")
+    credssp = server.winrm_auth == WinRMAuthChoices.CREDSSP or server.failover_auth == FailoverAuthChoices.CREDSSP
     if (
         server.transport == TransportChoices.WINRM
-        and server.winrm_auth == WinRMAuthChoices.CREDSSP
+        and credssp
         and not (server.winrm_https and server.verify_tls)
         and not insecure_credssp_allowed(server.credential_profile)
     ):
@@ -38,7 +69,8 @@ def check_connection_allowed(server):
         )
 
 
-def build_runner(server):
+def build_runner(server, auth=""):
+    """The server's runner; ``auth`` overrides its WinRM authentication (the failover client, issue #141)."""
     check_connection_allowed(server)
     creds = get_credentials(server.credential_profile)
     timeout = get_setting("command_timeout")
@@ -60,15 +92,25 @@ def build_runner(server):
         )
     from .windows.winrm import WinRMConfig, WinRMRunner
 
+    username = creds.username
+    if (
+        auth == WinRMAuthChoices.CREDSSP
+        and server.winrm_auth == WinRMAuthChoices.KERBEROS
+        and server.kerberos_realm
+        and not any(c in username for c in "\\@")
+    ):
+        # A Kerberos server's profile may hold a bare user name (the realm comes from the server); CredSSP needs
+        # the domain.
+        username = f"{username}@{server.kerberos_realm.upper()}"
     return WinRMRunner(
         WinRMConfig(
             host=server.host,
-            username=creds.username,
+            username=username,
             password=creds.password,
             port=server.effective_port,
             https=server.winrm_https,
             cert_validation=server.verify_tls,
-            auth=server.winrm_auth,
+            auth=auth or server.winrm_auth,
             kerberos_realm=server.kerberos_realm,
             kerberos_spn=server.kerberos_spn,
             timeout=timeout,
@@ -82,6 +124,22 @@ def build_client(server, runner=None):
     runner = runner if runner is not None else build_runner(server)
     # The real cap on commands in flight: an import or push reads up to max_concurrency scopes at the same time.
     return DhcpClient(limit(runner, max_concurrency()), computer_name=server.computer_name)
+
+
+def build_failover_client(server, runner=None):
+    """
+    A second client for the calls that make the server reach its failover partner as the caller (creating, changing
+    and deleting a relationship, its scopes, replication), when the server sets a failover authentication other than
+    its own (issue #141): Kerberos and NTLM cannot carry that hop, CredSSP can. None when the server's own client
+    serves. Pass `runner` to substitute a fake in tests.
+    """
+    auth = server.separate_failover_auth
+    if not auth:
+        return None
+    check_connection_allowed(server)
+    runner = runner if runner is not None else build_runner(server, auth=auth)
+    # Failover writes are few and one at a time; the same cap keeps the server's total in check.
+    return DhcpClient(limit(_FailoverRunner(runner, auth), max_concurrency()), computer_name=server.computer_name)
 
 
 def failover_partner_check(server):

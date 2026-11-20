@@ -151,7 +151,7 @@ def _to_replicate(result):
     return [*result.applied, *maybe]
 
 
-def _replicate(windows_server, client, written, logger, aborted=False):
+def _replicate(windows_server, client, written, logger, aborted=False, failover_client=None):
     """
     After writing to a failover primary, copy the changed scopes to the partner, plus those an earlier push failed
     to copy. ``written`` are the changes that reached Windows, or may have. Returns the error lines and the scopes
@@ -160,6 +160,9 @@ def _replicate(windows_server, client, written, logger, aborted=False):
     ``aborted``: the push stopped early (lost connection, unexpected error). Nothing more is sent to the server then,
     since each relationship would wait for its own timeout while the server stays locked for other jobs: the scopes
     are only noted for the next push.
+
+    ``failover_client``: the client for the replication call itself, which makes the server reach its partner as the
+    caller (issue #141); the server's own client when None.
     """
     pending = _pending_replication(windows_server)
     if not written and not pending:
@@ -201,7 +204,7 @@ def _replicate(windows_server, client, written, logger, aborted=False):
         try:
             # Replication of the listed scopes copies their exclusions, reservations and options (lab, Windows Server
             # 2022).
-            client.replicate_failover(name=relationship.name, scope_ids=ready)
+            (failover_client or client).replicate_failover(name=relationship.name, scope_ids=ready)
         except (WindowsLayerError, ValueError) as exc:
             errors.append(f"failover replication {relationship.name}: {exc}")
             still_pending[relationship.name] = changed
@@ -242,8 +245,11 @@ def _save_state(windows_server, result):
     SyncState.objects.bulk_create(new, batch_size=STATE_BATCH)
 
 
-def run(windows_server, client, dry_run=False, logger=log):
-    """Push NetBox to the server, or only plan it with ``dry_run``. Errors reading Windows raise."""
+def run(windows_server, client, dry_run=False, logger=log, failover_client=None):
+    """
+    Push NetBox to the server, or only plan it with ``dry_run``. Errors reading Windows raise. ``failover_client``
+    sends the failover writes and replication when the server logs on differently for those (issue #141).
+    """
     # Only the read runs scopes in parallel: the changes are sent one after another, in order.
     state = windows_state.read(client, workers=max_concurrency())
     partners = netbox_state.partner_failovers(windows_server)
@@ -272,11 +278,12 @@ def run(windows_server, client, dry_run=False, logger=log):
         failover_secret=failover_secret_lookup(windows_server),
         held_options=held,
         failover_partner_check=failover_partner_check(windows_server),
+        failover_client=failover_client,
     )
     outcome.result = push.execute(plan, writer)
     result = outcome.result
     _save_state(windows_server, result)
     outcome.replication_errors, outcome.replication_pending = _replicate(
-        windows_server, client, _to_replicate(result), logger, aborted=result.aborted
+        windows_server, client, _to_replicate(result), logger, aborted=result.aborted, failover_client=failover_client
     )
     return outcome

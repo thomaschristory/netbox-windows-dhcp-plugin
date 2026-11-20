@@ -36,7 +36,19 @@ relationship ... exists on server ...").
 
 Creating or changing a relationship, adding or removing its scopes, and replication make the server you connect to
 call its partner as your account. Windows only lets it do that when it holds your credentials, so give both
-partners' Windows servers in NetBox **WinRM authentication: CredSSP**, and enable CredSSP on each DHCP server:
+partners' Windows servers in NetBox CredSSP, in one of two ways:
+
+- **Failover authentication: CredSSP**, with any **WinRM authentication** (Kerberos, say): the plugin logs on with
+  CredSSP for the failover writes and replication only, and as usual for everything else. Use it when CredSSP should
+  only be used where it is needed;
+- or **WinRM authentication: CredSSP**, for every call.
+
+With a Kerberos credential profile whose user name has no domain, the CredSSP logon adds the server's **Kerberos
+realm** (`user@REALM`). **Test connection** checks both logons. If the CredSSP connection fails (or times out), a push still sends
+everything else and fails only what goes through it: the failover changes, the removal of a deleted scope from its
+relationship, and the replication, which the next push tries again.
+
+Either way, enable CredSSP on each DHCP server:
 
 ```powershell
 Enable-WSManCredSSP -Role Server -Force

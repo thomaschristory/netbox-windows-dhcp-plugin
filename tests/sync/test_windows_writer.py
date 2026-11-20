@@ -547,3 +547,62 @@ def test_v6_failed_restore_of_a_vendor_class_value_says_to_put_it_back_by_hand(c
     message = str(caught.value)
     assert "option 24 (NetBox holds this value, so the next push recreates it)" in message
     assert "option 17 (vendor class Lab) (it is a DHCPv6 vendor class value" in message
+
+
+class _Tagged:
+    """A runner that records which client sent each operation, over one shared fake server."""
+
+    def __init__(self, fake, log, tag):
+        self.fake, self.log, self.tag = fake, log, tag
+
+    def run(self, script, params=None):
+        from netbox_windows_dhcp_plugin.windows.psscript import op_of
+
+        self.log.append((self.tag, op_of(script)))
+        return self.fake.run(script, params)
+
+
+def test_failover_writes_go_through_the_failover_client_and_reads_do_not(fake):
+    """Issue #141: a server whose own logon cannot reach the partner (Kerberos) sends the failover writes through a
+    second client (CredSSP); every read and every other write stays on its own client."""
+    log = []
+    own = DhcpClient(_Tagged(fake, log, "own"))
+    failover_client = DhcpClient(_Tagged(fake, log, "failover"))
+    push(own, [r for r in wanted() if r.kind != "failover"])
+    writer = WindowsWriter(own, failover_client=failover_client)
+    log.clear()
+    writer.apply(Change("create", "failover", "ha", after=failover(auth=None).fields))
+    fake.scopes["10.2.0.0"] = {**fake.scopes["10.1.0.0"], "scope_id": "10.2.0.0"}
+    after = failover(auth=None, scope_ids=["10.2.0.0"], load_balance_percent=70).fields
+    writer.apply(Change("update", "failover", "ha", before=failover(auth=None).fields, after=after))
+    fake.failovers["ha"]["scope_ids"].append("10.1.0.0")
+    writer.apply(Change("delete", "scope", "10.1.0.0", before=scope().fields))
+    writer.apply(Change("delete", "failover", "ha", before=after))
+    by = {}
+    for tag, op in log:
+        by.setdefault(op, set()).add(tag)
+    for op in ("failover.add", "failover.set", "failover.add_scope", "failover.remove_scope", "failover.remove"):
+        assert by.get(op) == {"failover"}, (op, by.get(op))
+    reads_and_others = {
+        op: tags for op, tags in by.items() if not op.startswith("failover.") or op.endswith((".get", ".list"))
+    }
+    assert reads_and_others and all(tags == {"own"} for tags in reads_and_others.values()), reads_and_others
+
+
+def test_without_a_failover_client_everything_uses_the_one_client(client, fake):
+    push(client, [r for r in wanted() if r.kind != "failover"])
+    writer = WindowsWriter(client)
+    assert writer.failover is client
+    writer.apply(Change("create", "failover", "ha", after=failover(auth=None).fields))
+    assert "ha" in fake.failovers
+
+
+def test_putting_scopes_back_goes_through_the_failover_client(fake):
+    log = []
+    own = DhcpClient(_Tagged(fake, log, "own"))
+    push(own, wanted())
+    writer = WindowsWriter(own, failover_client=DhcpClient(_Tagged(fake, log, "failover")))
+    fake.scopes["10.2.0.0"] = {**fake.scopes["10.1.0.0"], "scope_id": "10.2.0.0"}
+    log.clear()
+    writer.restore_failover_scopes("ha", ["10.2.0.0"])
+    assert log == [("failover", "failover.add_scope")]

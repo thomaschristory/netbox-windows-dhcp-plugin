@@ -18,6 +18,7 @@ __all__ = (
     "SyncKindChoices",
     "SyncStatusChoices",
     "TransportChoices",
+    "FailoverAuthChoices",
     "WinRMAuthChoices",
 )
 
@@ -29,6 +30,18 @@ class TransportChoices(ChoiceSet):
     CHOICES = [
         (WINRM, _("WinRM"), "blue"),
         (SSH, _("SSH"), "purple"),
+    ]
+
+
+class FailoverAuthChoices(ChoiceSet):
+    """How failover writes and replication log on, when not as the rest of the server's calls (issue #141)."""
+
+    SAME = ""
+    CREDSSP = "credssp"
+
+    CHOICES = [
+        (SAME, _("Same as WinRM authentication")),
+        (CREDSSP, _("CredSSP")),
     ]
 
 

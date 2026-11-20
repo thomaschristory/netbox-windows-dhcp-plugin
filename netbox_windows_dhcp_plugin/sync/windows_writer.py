@@ -106,8 +106,13 @@ class WindowsWriter:
         failover_secret: Callable[[str], str] | None = None,
         held_options: set[str] | None = None,
         failover_partner_check: Callable[[str, str], None] | None = None,
+        failover_client: DhcpClient | None = None,
     ) -> None:
         self.client = client
+        # The calls that make the server reach its failover partner as the caller (relationship and membership
+        # writes) go through this one: the same client, or one logging on with CredSSP when the server's own
+        # authentication cannot carry that hop (issue #141). Reads stay on `client`.
+        self.failover = failover_client or client
         # Called with a relationship's name and the partner host about to be sent. Raises ValueError when it may not
         # be created because that partner is a host the server's credentials may not reach.
         self.failover_partner_check = failover_partner_check or (lambda name, partner: None)
@@ -224,7 +229,7 @@ class WindowsWriter:
                 # still exists is for remove_scope below to say, so a "not found" from this step must not pass for
                 # "scope already deleted".
                 with contextlib.suppress(NotFound):
-                    self.client.remove_failover_scopes(name, [change.key])
+                    self.failover.remove_failover_scopes(name, [change.key])
             # Never forced: a scope that still has leases fails with DHCP 20007, and that error is reported.
             self.client.remove_scope(change.key)
             return
@@ -439,12 +444,12 @@ class WindowsWriter:
 
     def restore_failover_scopes(self, name: str, scope_ids: list[str]) -> None:
         """Put scopes back into a relationship this push took them out of (the push's rollback of a failed move)."""
-        self.client.add_failover_scopes(name, sorted(scope_ids))
+        self.failover.add_failover_scopes(name, sorted(scope_ids))
 
     def _apply_failover(self, change: Change) -> None:
         if change.action == DELETE:
             # Windows also removes the relationship's scopes from the partner server, as the cmdlet documents.
-            self.client.remove_failover((change.before or {})["name"])
+            self.failover.remove_failover((change.before or {})["name"])
             return
         f = change.after or {}
         hot = f["mode"] == "hotstandby"
@@ -462,7 +467,7 @@ class WindowsWriter:
         )
         if change.action == CREATE:
             self.failover_partner_check(f["name"], f["partner_server"])
-            self.client.add_failover(rel, shared_secret=self._secret(change, f["name"]) if f["auth"] else "")
+            self.failover.add_failover(rel, shared_secret=self._secret(change, f["name"]) if f["auth"] else "")
             return
         before = change.before or {}
         if not same_host(before.get("partner_server", ""), f["partner_server"]):
@@ -486,14 +491,14 @@ class WindowsWriter:
         # Windows refuses -Mode when it names the mode the relationship already has ("already in LoadBalance mode",
         # lab, Windows Server 2025), so the mode goes only with a switch.
         settings = rel if hot != was_hot else replace(rel, mode="")
-        got = self.client.set_failover(settings, shared_secret=self._secret(change, f["name"]) if turned_on else "")
+        got = self.failover.set_failover(settings, shared_secret=self._secret(change, f["name"]) if turned_on else "")
         # The membership on Windows right now: deleting a scope earlier in this push already took it out.
         current = set(self.client.get_failover(f["name"]).scope_ids)
         wanted = set(f["scope_ids"])
         if added := sorted(wanted - current):
-            self.client.add_failover_scopes(f["name"], added)
+            self.failover.add_failover_scopes(f["name"], added)
         if gone := sorted(current - wanted):
-            self.client.remove_failover_scopes(f["name"], gone)
+            self.failover.remove_failover_scopes(f["name"], gone)
         if hot and not was_hot and (got.server_role or "").lower() != f["server_role"]:
             # A switch to hot standby cannot say which side is active: Windows picks, and it picked the other one.
             # Everything else is written by now. NetBox still records the old relationship, so the next push sees

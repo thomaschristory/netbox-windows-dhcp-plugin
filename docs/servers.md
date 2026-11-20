@@ -23,6 +23,7 @@ state and device](images/servers-list.webp)
 | Port | empty | 1 to 65535. Empty means 5986 (WinRM over HTTPS), 5985 (WinRM over HTTP) or 22 (SSH) |
 | Credential profile | | Name of a [credential profile](configuration.md#credential-profiles). Its `allowed_hosts` must cover the host |
 | WinRM authentication | NTLM | NTLM, Basic, Kerberos or CredSSP (failover), see [Preparing Windows](windows-setup.md#authentication-methods) |
+| Failover authentication | Same as WinRM authentication | CredSSP uses it for the failover writes and replication only, so the rest can stay on Kerberos or NTLM. WinRM only; see [Failover](failover.md#connecting-to-the-servers) |
 | WinRM over HTTPS | on | Off uses HTTP; NTLM, Kerberos and CredSSP messages are still encrypted |
 | Verify host | on | Check the TLS certificate (WinRM) or the host key (SSH). Cannot be turned off for SSH, nor for Basic |
 | Kerberos realm | empty | Required with Kerberos, for example `CORP.EXAMPLE` |
