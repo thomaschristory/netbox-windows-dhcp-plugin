@@ -97,6 +97,19 @@ Restart the worker as well as the web service: the worker runs every job, and it
 Install the new version, run `migrate`, and restart NetBox and the worker. Read the [changelog](changelog.md) first:
 while the plugin is below 1.0, a minor version can change behaviour.
 
+### Upgrading from 0.5.x to 0.6.0
+
+No migration. Credential profiles take four new optional keys, `transports`, `ports`, `kerberos_realms` and
+`ssh_host_keys` (see [Configuration](configuration.md#pinning-transport-port-realm-and-host-key)); without them
+nothing changes, except:
+
+- **Failover secrets over insecure CredSSP.** A failover shared secret profile used with a server on CredSSP without
+  HTTPS and certificate verification (a lab) now needs `"allow_insecure_credssp": True` too, like the server's own
+  profile; until then the push fails the failover changes that send the secret.
+- **Stored values outside the choices.** A Windows server whose transport, WinRM authentication or failover
+  authentication was written straight to the database with other casing (`KERBEROS`, `Basic`) is refused when
+  connecting: edit it in NetBox and pick the value again.
+
 ### Upgrading from 0.4.x to 0.5.0
 
 0.5.0 brings one migration, applied by `migrate`: `0006` adds **Failover authentication** to Windows servers, empty

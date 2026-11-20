@@ -33,7 +33,7 @@ credential profile, and the profile says where the secrets come from. A profile 
 | `private_key` | SSH key login: an Ed25519, ECDSA or RSA key in PEM or OpenSSH format |
 | `secret` | The shared secret of a [failover relationship](failover.md#shared-secret) |
 | `allowed_hosts` | The hosts the profile's credentials may be sent to, see [below](#allowed_hosts) |
-| `allow_insecure_credssp` | `True` lets CredSSP run over HTTP or without certificate verification. Labs only, see [Security](security.md#transport) |
+| `allow_insecure_credssp` | `True` lets CredSSP run over HTTP or without certificate verification. Labs only, see [Security](security.md#transport). A failover shared secret profile used with such a server needs it too |
 | `transports`, `ports`, `kerberos_realms`, `ssh_host_keys` | Optional limits on how the profile's servers connect, see [below](#pinning-transport-port-realm-and-host-key) |
 
 Every secret (`username`, `password`, `private_key`, `secret`) can be given in three ways:
@@ -187,9 +187,15 @@ the database with `KERBEROS` or `Basic`, say), so the checks and the transport a
 The limits are checked like `allowed_hosts`: when a Windows server is saved (the form and the API name the field
 that breaks the rule) and again before every connection, including the connection test, live leases and the
 failover logon, so a server changed in the database or a profile tightened later is refused before anything is
-sent. A failover shared secret travels over the primary server's own connection, so the limits of the secret's
-profile (`shared_secret_profile`) apply to that connection too, as well as those of the server's own profile. When the
-secret's profile sets `ssh_host_keys`, a server reached over SSH must pin its own host key (one of those), since
-without it the connection trusts the server profile's keys or `known_hosts`. When the server uses CredSSP without
-verified HTTPS, the secret's profile must set `allow_insecure_credssp` too. A failover partner is only checked
+sent.
+
+A failover shared secret travels over the primary server's own connection, so the limits of the secret's profile
+(`shared_secret_profile`) apply to that connection too, as well as those of the server's own profile. They are
+checked when the failover relationship is saved and again before each push sends the secret, so a later change to the
+server is caught then. When the secret's profile sets `ssh_host_keys`, a server reached over SSH must pin its own host
+key (one of those), since without it the connection trusts the server profile's keys or `known_hosts`. When the
+server uses CredSSP without verified HTTPS, the secret's profile must set `allow_insecure_credssp` too. Both rules are
+skipped when the secret's profile is the server's own profile: its keys and its consent already govern the
+connection. Like the server's profile, the secret's profile cannot require verified HTTPS for NTLM or Kerberos (see
+[#147](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/issues/147)). A failover partner is only checked
 against `allowed_hosts`.

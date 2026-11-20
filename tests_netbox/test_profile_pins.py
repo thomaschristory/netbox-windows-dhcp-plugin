@@ -18,9 +18,10 @@ from netbox_windows_dhcp_plugin.connection import (
     build_failover_client,
     build_runner,
     check_connection_allowed,
+    failover_secret_lookup,
 )
 from netbox_windows_dhcp_plugin.jobs import TestConnectionJob
-from netbox_windows_dhcp_plugin.models import WindowsServer
+from netbox_windows_dhcp_plugin.models import FailoverRelationship, WindowsServer
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 
 from .fixtures import windows_server
@@ -211,9 +212,6 @@ class FailoverSecretPinsTest(TestCase):
     """The shared secret travels over the primary server's own connection: the secret profile's pins apply to it."""
 
     def setUp(self):
-        from netbox_windows_dhcp_plugin.connection import failover_secret_lookup
-        from netbox_windows_dhcp_plugin.models import FailoverRelationship
-
         self.server = windows_server()
         partner = windows_server("dhcp2")
         self.relationship = FailoverRelationship.objects.create(
@@ -270,8 +268,6 @@ class FailoverSecretPinsTest(TestCase):
             self.assertEqual(self.lookup("ha"), "s3")
 
     def test_same_profile_as_the_server_is_not_refused_twice(self):
-        from netbox_windows_dhcp_plugin.models import FailoverRelationship
-
         FailoverRelationship.objects.filter(pk=self.relationship.pk).update(shared_secret_profile="lab")
         self.server.transport = "ssh"
         pins = {"ssh_host_keys": [KEY], "transports": ["ssh"], "ports": [22], "allowed_hosts": ["*.example.com"]}
@@ -280,11 +276,40 @@ class FailoverSecretPinsTest(TestCase):
             self.assertEqual(self.lookup("ha"), "lab-s3")
 
     def test_insecure_credssp_needs_the_secret_profile_consent_too(self):
+        insecure = [
+            {"failover_auth": "credssp", "winrm_https": False},
+            {"winrm_auth": "credssp", "winrm_https": False},
+            {"failover_auth": "credssp", "verify_tls": False},
+            {"winrm_auth": "credssp", "verify_tls": False},
+        ]
+        for fields in insecure:
+            with self.subTest(fields=fields):
+                server = windows_server("dhcp9", **fields)
+                lookup = failover_secret_lookup(server)
+                FailoverRelationship.objects.filter(pk=self.relationship.pk).update(primary_server=server)
+                with (
+                    self.settings(),
+                    self.assertRaisesMessage(ValueError, "'ha' does not set allow_insecure_credssp"),
+                ):
+                    lookup("ha")
+                with self.settings(allow_insecure_credssp=True):
+                    self.assertEqual(lookup("ha"), "s3")
+                FailoverRelationship.objects.filter(pk=self.relationship.pk).update(primary_server=self.server)
+                server.delete()
+        # Verified HTTPS needs no consent.
         self.server.failover_auth = "credssp"
-        self.server.winrm_https = False
-        self.assert_refused("credential profile 'ha' does not set allow_insecure_credssp", lab={})
-        with self.settings(allow_insecure_credssp=True):
-            self.assertEqual(self.lookup("ha"), "s3")
-        self.server.winrm_https = True
         with self.settings():
             self.assertEqual(self.lookup("ha"), "s3")
+
+    def test_checked_when_the_relationship_is_saved(self):
+        self.relationship.refresh_from_db()
+        with self.settings(transports=["winrm"]):
+            self.relationship.full_clean()
+        with self.settings(transports=["ssh"]), self.assertRaises(ValidationError) as ctx:
+            self.relationship.full_clean()
+        self.assertIn("may not be used over winrm", " ".join(ctx.exception.message_dict["shared_secret_profile"]))
+        WindowsServer.objects.filter(pk=self.server.pk).update(winrm_https=False, failover_auth="credssp")
+        self.relationship.refresh_from_db()
+        with self.settings(), self.assertRaises(ValidationError) as ctx:
+            self.relationship.full_clean()
+        self.assertIn("allow_insecure_credssp", " ".join(ctx.exception.message_dict["shared_secret_profile"]))

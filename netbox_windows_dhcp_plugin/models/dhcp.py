@@ -1183,7 +1183,7 @@ class FailoverRelationship(PrimaryModel):
         # push checks again before sending it.
         if not self.shared_secret_profile:
             return
-        from ..conf import CredentialError, check_host_allowed
+        from ..conf import CredentialError, check_host_allowed, check_secret_connection
 
         hosts = []
         # Read the ids first: a missing server is reported as a field error, not a crash.
@@ -1193,6 +1193,10 @@ class FailoverRelationship(PrimaryModel):
                 hosts += [server.host, server.computer_name]
         try:
             check_host_allowed(self.shared_secret_profile, *hosts)
+            # The secret travels over the primary server's connection: the secret profile's limits apply to it (issue
+            # #103). A later change to the server is caught before each push.
+            if self.primary_server_id is not None:
+                check_secret_connection(self.shared_secret_profile, self.primary_server)
         except CredentialError as exc:
             raise ValidationError({"shared_secret_profile": str(exc)}) from exc
 

@@ -10,15 +10,19 @@ All notable changes to this project are documented here. The format follows
 - Credential profiles can pin what a Windows server's editors otherwise choose: `transports` (WinRM, SSH), `ports`,
   `kerberos_realms` (WinRM with Kerberos) and `ssh_host_keys`. With `ssh_host_keys`, a server without its own pinned
   key trusts only the profile's keys, not the worker's `known_hosts`. Each key is optional and must be a list (or
-  tuple); an empty one allows nothing it applies to. A failover shared secret's profile limits (and its
-  `allow_insecure_credssp`) apply to the connection that carries it. Checked when a server is saved and before every
-  connection (#103).
+  tuple); an empty one allows nothing it applies to. A failover shared secret's profile limits apply to the primary
+  server's connection that carries it (over SSH, the server must then pin one of its keys). Checked when a server or
+  failover relationship is saved and before every connection or push (#103).
 
 ### Changed
 
 - Connections refuse a transport, WinRM authentication or failover authentication value outside the known choices
   (only possible for a record written straight to the database, `KERBEROS` or `Basic`, say), so every check reads the
   value the transport uses. Failover authentication only opens a second logon for `credssp` (#103).
+- A failover shared secret profile used with a server on CredSSP without HTTPS and certificate verification (a lab)
+  now needs `allow_insecure_credssp` too, as the server's own profile does: the secret travels over that connection.
+  Until it is set, a push fails the failover changes that send the secret. See
+  [Upgrading](docs/installation.md#upgrading-from-05x-to-060) (#103).
 
 ## [0.5.0] - 2026-11-20
 
