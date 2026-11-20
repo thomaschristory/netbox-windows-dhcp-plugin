@@ -101,8 +101,10 @@ def test_kerberos_realms_only_apply_to_winrm_kerberos():
     assert errors(profile, winrm_auth="kerberos", kerberos_realm="EVIL.EXAMPLE") == {
         "kerberos_realm": "credential profile 'p' may not be used with Kerberos realm EVIL.EXAMPLE"
     }
-    # No realm on the server: the form asks for one first, and otherwise the worker's krb5.conf picks it.
-    assert errors(profile, winrm_auth="kerberos", kerberos_realm="") == {}
+    # No realm on the server would leave it to the worker's krb5.conf or the user name: refused too.
+    assert errors(profile, winrm_auth="kerberos", kerberos_realm=" ") == {
+        "kerberos_realm": "credential profile 'p' may not be used with Kerberos realm (none)"
+    }
     # NTLM, CredSSP and SSH do not use the server's realm.
     assert errors(profile, winrm_auth="ntlm", kerberos_realm="EVIL.EXAMPLE") == {}
     assert errors(profile, winrm_auth="credssp", kerberos_realm="EVIL.EXAMPLE") == {}

@@ -111,6 +111,12 @@ class ConnectionCheckTest(SimpleTestCase):
                 "Kerberos realm EVIL.EXAMPLE",
             ),
             (config(ssh_host_keys=[KEY]), server(transport="ssh", ssh_host_key=OTHER_KEY), "does not trust"),
+            # A record written straight to the database: Kerberos without a realm.
+            (
+                config(kerberos_realms=["CORP.EXAMPLE"], username="svc@CORP.EXAMPLE"),
+                server(winrm_auth="kerberos"),
+                "Kerberos realm (none)",
+            ),
             (config(ports=["5986"]), server(), "invalid entry '5986'"),
         ]
         for profile, srv, message in cases:
@@ -199,3 +205,44 @@ class ConnectionJobTest(TestCase):
             TestConnectionJob(job).run()
         self.assertEqual(self.fake.calls, [])
         self.assertIn("may not be used with port 8080", self.server.sync_runs.get().error)
+
+
+class FailoverSecretPinsTest(TestCase):
+    """The shared secret travels over the primary server's own connection: the secret profile's pins apply to it."""
+
+    def setUp(self):
+        from netbox_windows_dhcp_plugin.models import FailoverRelationship
+
+        self.server = windows_server()
+        partner = windows_server("dhcp2")
+        FailoverRelationship.objects.create(
+            name="ha", primary_server=self.server, partner_server=partner, shared_secret_profile="ha"
+        )
+
+    def settings(self, **pins):
+        profiles = {
+            "lab": {"username": "lab\\admin", "password": "x"},
+            "ha": {"secret": "s3", "allowed_hosts": ["*.example.com"], **pins},
+        }
+        return override_settings(
+            PLUGINS_CONFIG={**settings.PLUGINS_CONFIG, "netbox_windows_dhcp_plugin": {"credentials": profiles}}
+        )
+
+    def test_pins_apply_to_the_primary_connection(self):
+        from netbox_windows_dhcp_plugin.connection import failover_secret_lookup
+
+        lookup = failover_secret_lookup(self.server)
+        with self.settings(transports=["winrm"], ports=[5986]):
+            self.assertEqual(lookup("ha"), "s3")
+        refusals = [
+            ({"transports": ["ssh"]}, "failover ha: credential profile 'ha' may not be used over winrm"),
+            ({"ports": [5985]}, "failover ha: credential profile 'ha' may not be used with port 5986"),
+            ({"ports": "5986"}, "failover ha: credential profile 'ha': ports must be a list"),
+        ]
+        for pins, message in refusals:
+            with self.subTest(pins=pins), self.settings(**pins), self.assertRaisesMessage(ValueError, message):
+                lookup("ha")
+        self.server.winrm_auth = "kerberos"
+        self.server.kerberos_realm = "EVIL.EXAMPLE"
+        with self.settings(kerberos_realms=["CORP.EXAMPLE"]), self.assertRaisesMessage(ValueError, "EVIL.EXAMPLE"):
+            lookup("ha")

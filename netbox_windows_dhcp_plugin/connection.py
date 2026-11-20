@@ -231,6 +231,20 @@ def failover_secret_lookup(server):
         partner_hosts = (partner.host, partner.computer_name)
         try:
             check_host_allowed(profile, server.host, server.computer_name, *partner_hosts)
+            # The secret travels over this server's own connection, so the secret profile's transports, ports,
+            # Kerberos realms and SSH host keys apply to that connection too (issue #103). Partners stay
+            # allowed_hosts only.
+            errors = connection_pin_errors(
+                profile,
+                get_setting("credentials")[profile],
+                transport=server.transport,
+                port=server.effective_port,
+                winrm_auth=server.winrm_auth,
+                kerberos_realm=kerberos_realm(server),
+                ssh_host_key=server.ssh_host_key,
+            )
+            if errors:
+                raise CredentialError("; ".join(errors.values()))
             # Only the secret is used here, so only an inline None for the secret is an error.
             return get_credentials(profile, needed=("secret",)).secret
         except CredentialError as exc:

@@ -337,6 +337,9 @@ class WindowsServer(JobsMixin, PrimaryModel):
             )
         except CredentialError as exc:
             raise ValidationError({"credential_profile": str(exc)}) from exc
+        if "kerberos_realm" in errors and not self.kerberos_realm.strip():
+            # Kerberos without a realm: the plain rule explains it better than the profile's list.
+            errors["kerberos_realm"] = _("A realm is required for Kerberos authentication.")
         if errors:
             # The port error goes on the port field even when it is empty: the default port is the one refused.
             raise ValidationError(errors)

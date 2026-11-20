@@ -9,8 +9,9 @@ All notable changes to this project are documented here. The format follows
 
 - Credential profiles can pin what a Windows server's editors otherwise choose: `transports` (WinRM, SSH), `ports`,
   `kerberos_realms` (WinRM with Kerberos) and `ssh_host_keys`. With `ssh_host_keys`, a server without its own pinned
-  key trusts only the profile's keys, not the worker's `known_hosts`. Each key is optional and must be a list; an
-  empty list allows nothing it applies to. Checked when a server is saved and before every connection (#103).
+  key trusts only the profile's keys, not the worker's `known_hosts`. Each key is optional and must be a list (or
+  tuple); an empty one allows nothing it applies to. A failover shared secret's profile limits apply to the connection
+  that carries it. Checked when a server is saved and before every connection (#103).
 
 ### Changed
 

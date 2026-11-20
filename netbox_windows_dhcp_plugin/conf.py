@@ -394,10 +394,13 @@ def connection_pin_errors(profile_name, profile, *, transport, port, winrm_auth,
     realms = profile_kerberos_realms(profile_name, profile)
     # Only WinRM with Kerberos uses the server's realm (CredSSP failover writes then borrow it for the user name).
     realm = (kerberos_realm or "").strip().upper()
-    # No realm on the server: the form refuses Kerberos without one, and otherwise the worker's krb5.conf (not the
-    # server's editors) picks it.
-    if realms is not None and transport == "winrm" and winrm_auth == "kerberos" and realm and realm not in realms:
-        errors["kerberos_realm"] = f"credential profile {profile_name!r} may not be used with Kerberos realm {realm}"
+    # No realm on the server (only possible for a record written straight to the database: the form requires one)
+    # would leave the realm to the worker's krb5.conf or a realm in the profile's user name, which the list does not
+    # cover, so it is refused too.
+    if realms is not None and transport == "winrm" and winrm_auth == "kerberos" and realm not in realms:
+        errors["kerberos_realm"] = (
+            f"credential profile {profile_name!r} may not be used with Kerberos realm {realm or '(none)'}"
+        )
     keys = profile_ssh_host_keys(profile_name, profile)
     if keys is not None and transport == "ssh":
         allowed = {ssh_host_key_blob(key) for key in keys}

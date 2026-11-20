@@ -167,11 +167,18 @@ Each value must be a list (a tuple works too). A bare string, `None`, a port giv
 transport name or a key that does not parse (or is of another type) is refused, naming the profile and the key: no
 server can use the profile until it is fixed. An empty list allows nothing it applies to: an empty `transports` or
 `ports` refuses every server using the profile, an empty `ssh_host_keys` every SSH server, and an empty
-`kerberos_realms` every WinRM server with Kerberos. Keys compare by their key material, so the comment and spacing do
-not matter.
+`kerberos_realms` every WinRM server with Kerberos (as does a Kerberos server without a realm, whatever the list).
+Keys compare by their key material, so the comment and spacing do not matter. A host pattern written before a key
+(as in a `known_hosts` line) is ignored: every key listed is trusted for every SSH server of the profile, so give
+servers that must not share keys profiles of their own.
 
-The Kerberos SPN (**Kerberos SPN** on the server) is not pinned: the plugin asks for no delegation, so a ticket for
-another service name gives that service neither the password nor a ticket it can pass on.
+The Kerberos SPN (**Kerberos SPN** on the server) is not pinned. The plugin asks for no delegation, so a ticket for
+another service name gives that service neither the password nor a ticket it can pass on. But an editor who sets the
+SPN to an account they control, on a server using WinRM over HTTP or HTTPS without verification, and who can also
+intercept the traffic, defeats Kerberos mutual authentication: they can then read what the plugin sends, including
+failover shared secrets, though not the password. WinRM over HTTPS with verification avoids it; a profile-level
+requirement for it is planned
+([#147](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/issues/147)).
 
 Connections also refuse a transport or authentication value outside the known choices (a record written straight to
 the database with `KERBEROS` or `Basic`, say), so the checks and the transport always read the same value.
@@ -179,4 +186,6 @@ the database with `KERBEROS` or `Basic`, say), so the checks and the transport a
 The limits are checked like `allowed_hosts`: when a Windows server is saved (the form and the API name the field
 that breaks the rule) and again before every connection, including the connection test, live leases and the
 failover logon, so a server changed in the database or a profile tightened later is refused before anything is
-sent. A failover partner is only checked against `allowed_hosts`.
+sent. A failover shared secret travels over the primary server's own connection, so the limits of the secret's
+profile (`shared_secret_profile`) apply to that connection too, as well as those of the server's own profile. A
+failover partner is only checked against `allowed_hosts`.
