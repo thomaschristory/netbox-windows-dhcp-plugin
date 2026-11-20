@@ -55,7 +55,9 @@ permission on the Windows server (see [Permissions](permissions.md)).
 Connects, checks that the `DhcpServer` PowerShell module is there, and counts the IPv4 scopes. Use it after every
 change to the connection settings. It also records the DHCP server's computer name, DNS name and addresses (**Reported names**),
 which imports and pushes record too: its failover partners use them to match it, see
-[Failover](failover.md#how-it-syncs). Refused while a test for the same server is already waiting to start.
+[Failover](failover.md#how-it-syncs). With **Failover authentication** set, it also logs on that way, so a CredSSP
+problem shows here rather than at the first failover push. Refused while a test for the same server is already
+waiting to start.
 
 ### Import (Import now)
 

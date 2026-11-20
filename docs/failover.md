@@ -76,8 +76,9 @@ reservation page follows the same lab: [Reservations](reservations.md).
 
 ### 1. Prepare
 
-- Both servers have a Windows server in NetBox with **WinRM authentication: CredSSP** (or SSH with a password), and
-  **Test connection** completes on both. The test also records each server's reported names, which the plugin
+- Both servers have a Windows server in NetBox with **WinRM authentication: CredSSP**, or **Failover
+  authentication: CredSSP** next to another WinRM authentication (or SSH with a password), and **Test connection**
+  completes on both. The test also records each server's reported names, which the plugin
   uses to recognise the partner later.
 - The primary DHCP server resolves the partner's host as NetBox holds it. Here both servers' hosts files map
   `dhcp01.example.com` and `dhcp02.example.com`; in a domain, DNS does it.

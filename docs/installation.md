@@ -97,6 +97,17 @@ Restart the worker as well as the web service: the worker runs every job, and it
 Install the new version, run `migrate`, and restart NetBox and the worker. Read the [changelog](changelog.md) first:
 while the plugin is below 1.0, a minor version can change behaviour.
 
+### Upgrading from 0.4.x to 0.5.0
+
+0.5.0 brings one migration, applied by `migrate`: `0006` adds **Failover authentication** to Windows servers, empty
+(same as WinRM authentication) for every existing one, so nothing changes until you set it. Then:
+
+- **Kerberos with failover.** A failover server no longer needs CredSSP for every call: keep its WinRM
+  authentication (Kerberos, say) and set **Failover authentication: CredSSP**, then run **Test connection**, which
+  checks both logons. See [Failover](failover.md#connecting-to-the-servers).
+- **SSH servers.** A script over 32 KB now goes to the server as a file over SFTP instead of failing, so the
+  OpenSSH `sftp` subsystem must stay enabled (the Windows default). Most scripts stay under that size.
+
 ### Upgrading from 0.3.0 to 0.4.0
 
 0.4.0 brings two migrations, applied by `migrate`:

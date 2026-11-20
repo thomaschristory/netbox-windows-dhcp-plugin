@@ -44,14 +44,19 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
   meant to carry it.
 - **CredSSP** hands the account's password to the DHCP server, which can then act as that account towards other
   servers: that is what failover needs. Use it only for servers that are part of a failover pair, with an account
-  that can do nothing but manage DHCP. Because the password goes to whoever answers, the plugin only allows CredSSP
+  that can do nothing but manage DHCP. **Failover authentication: CredSSP** limits it further: the password then
+  goes to the server only for the failover writes and replication, and every other call uses the server's own
+  authentication (Kerberos, say). Because the password goes to whoever answers, the plugin only allows CredSSP
   over HTTPS with certificate verification, as for Basic: over HTTP, or without verification, the NTLM exchange
   inside CredSSP does not prove who the server is, and `allowed_hosts` only checks the name configured, not who
   answers at that name. A credential profile can set `allow_insecure_credssp` to lift this in a lab.
 - **Basic** authentication sends the password itself, so the plugin only allows it over HTTPS with verification on.
 - **SSH** always checks the host key, from the pinned key on the Windows server or the worker's `known_hosts`; an
   unknown or changed key fails the connection. There is no way to turn this off. The passphrase of an encrypted
-  private key is never offered to the server as a password.
+  private key is never offered to the server as a password. A script over 32 KB is uploaded over SFTP to the
+  account's home folder under a random name (created only if it does not exist), with a checksum sent on stdin:
+  PowerShell refuses a file that changed before it was read, and deletes it. The file holds the script and its
+  parameters, never a secret (those stay on stdin).
 - A new WinRM connection is made per command, as the terraform provider the plugin is ported from does: NTLM
   sessions shared between concurrent calls proved unreliable.
 

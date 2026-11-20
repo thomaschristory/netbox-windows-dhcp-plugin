@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-20
+
+0.5.0 lets a Windows server use CredSSP only for failover writes and its own logon (Kerberos, say) for the rest,
+sends long scripts over SSH as a file instead of refusing them, and records what a domain lab showed about Kerberos,
+SSH keys and `-ComputerName`. It adds migration `0006` (one field, empty for existing servers); nothing else to
+change. See [Upgrading from 0.4.x to 0.5.0](docs/installation.md#upgrading-from-04x-to-050).
+
 ### Added
 
 - **Failover authentication** on a Windows server: with CredSSP there, the plugin logs on with CredSSP only for the
