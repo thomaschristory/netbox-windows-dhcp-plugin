@@ -127,3 +127,10 @@ netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
       passed, failover included. Failover writes need the password on the first server: resource-based constrained
       delegation does not help (the DHCP calls to the partner went out as an anonymous NTLM logon). Settles the
       `server.names` and `-CimSession` markers.
+11. **Done: 0.5.0 (2026-11-20).** Failover authentication: CredSSP only for failover writes and replication, the
+    server's own logon (Kerberos, say) for the rest (#141); long SSH scripts sent as a file over SFTP, checked by
+    checksum (#63); Kerberos, SSH keys and `-ComputerName` checked in a domain lab, and the docs corrected: Kerberos
+    delegation does not carry failover writes (#62).
+    - **Domain lab (2026-11-19/20):** two Windows Server 2025 DHCP servers joined to a domain. `make lab-e2e` passed
+      with Kerberos for normal calls and CredSSP for failover writes (create, replicate, delete); SSH key logon
+      `make test-lab` 41 passed with the long-script test; a 1 MB script over SSH runs in 7 s through the file.

@@ -5,7 +5,7 @@ over WinRM or SSH.
 
 **Documentation: https://thomaschristory.github.io/netbox-windows-dhcp-plugin/**
 
-> **Status: 0.4.1.** The plugin no longer needs netbox-plugin-dhcp: it holds the whole Windows
+> **Status: 0.5.0.** The plugin no longer needs netbox-plugin-dhcp: it holds the whole Windows
 > DHCP configuration in its own models. 0.2.0 is a fresh start from 0.1.x (see the [upgrade
 > notes](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-01x)). 0.4.0
 > reads faster, guards IPAM edits that change Windows, and holds deletes back while a push leaves something out; it
@@ -16,10 +16,11 @@ over WinRM or SSH.
 > transports, sync rules) is that of 0.1.x, apart from option values now being lists; 0.1.0's lab tests ran in full
 > against two Windows Server 2022 DHCP servers (import, push, leases and failover, over WinRM HTTP and HTTPS and over
 > SSH). 0.2.0 passed the full lab tests (`make test-lab`, `make lab-e2e`) on two Windows Server 2025 servers over WinRM
-> HTTP with CredSSP, and 0.4.x's lab tests (`make test-lab`, and `make lab-e2e` on 0.4.1) passed there too. Kerberos, SSH key logons and `-ComputerName` (with
-> CredSSP) passed in a domain lab; failover writes need CredSSP or SSH with a password (see the
-> [limitations](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/limitations/)). Try it on a lab server
-> first.
+> HTTP with CredSSP, and 0.4.x's lab tests (`make test-lab`, and `make lab-e2e` on 0.4.1) passed there too. In a
+> domain lab (0.5.0), Kerberos, SSH key logons and `-ComputerName` (with CredSSP) passed, and so did a push with
+> Kerberos for normal calls and CredSSP only for failover writes; failover writes need CredSSP or SSH with a password
+> (see the [limitations](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/limitations/)). Try it on a
+> lab server first.
 
 ## Features
 
