@@ -431,7 +431,8 @@ def failover_phase(env, server, lab):
     record_names(server, lab.client, LOG)
     records, _ = windows_state.to_records(windows_state.read(pc), partner_servers=netbox_state.partner_servers(partner))
     seen = next(r.fields["partner_server"] for r in records if r.kind == "failover" and r.key == FAILOVER.lower())
-    if seen != windows_state.host_name(server.dhcp_host):
+    # As the sync compares it: the short computer name a domain partner reports matches the server's qualified host.
+    if not windows_state.equal("failover", "partner_server", seen, server.dhcp_host):
         raise Abort(f"6. the partner's name for the first server, {seen!r}, does not match its host")
     log(f"6. the partner's name for the first server matches it (reported names {server.reported_names})")
 
@@ -471,7 +472,12 @@ def main():
     for key in ("WINDOWS_DHCP_LAB_HOST", "WINDOWS_DHCP_USERNAME", "WINDOWS_DHCP_PASSWORD"):
         if not env.get(key):
             raise Abort(f"{key} is not set (dev/env/lab.env)")
-    lab = Lab(make_client(env))
+    # The lab's own helper client cleans up after a failed run, removing relationships too: those need the password on
+    # the server (#62), so it logs on with CredSSP when the pushes send failover writes with it (#141).
+    helper_env = env
+    if env.get("WINDOWS_DHCP_LAB_FAILOVER_AUTH", "").lower() == "credssp":
+        helper_env = dict(env, WINDOWS_DHCP_LAB_AUTH="credssp")
+    lab = Lab(make_client(helper_env))
     leftovers = lab.sweep()
     if leftovers:
         raise Abort(f"sweep: {leftovers}")
