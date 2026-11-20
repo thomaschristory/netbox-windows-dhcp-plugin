@@ -359,6 +359,44 @@ def test_known_hosts(ssh_server, tmp_path: Path) -> None:
         runner(srv, host_key="", known_hosts_file=str(tmp_path / "missing"))
 
 
+def test_trusted_host_keys_replace_known_hosts(ssh_server) -> None:
+    # Issue #103: a credential profile's ssh_host_keys. Without a key of its own the server must present one of
+    # them; the worker's known_hosts is not read at all.
+    srv = ssh_server(host_keys=[key("rsa-host"), key("ecdsa-host")])
+    trusted = (authorized_line(key("ecdsa-other")), f"  {authorized_line(key('ecdsa-host'))}  ")
+    r = runner(srv, host_key="", known_hosts_file="/nonexistent", trusted_host_keys=trusted)
+    assert r.host_key_algorithms() == [key("ecdsa-host").get_name()]
+    try:
+        DhcpClient(r).list_scopes()
+    finally:
+        r.close()
+    other = runner(srv, host_key="", known_hosts_file="/nonexistent", trusted_host_keys=(trusted[0],))
+    with pytest.raises(RunnerError, match="not one of the trusted host keys"):
+        other.run("# x", {})
+    nothing = runner(srv, host_key="", known_hosts_file="/nonexistent", trusted_host_keys=())
+    with pytest.raises(RunnerError, match="not one of the trusted host keys"):
+        nothing.run("# x", {})
+
+
+def test_trusted_host_keys_bound_the_pinned_key(ssh_server) -> None:
+    srv = ssh_server()
+    pinned = authorized_line(srv.host_keys[0])
+    # The same key with another comment still counts.
+    r = runner(srv, trusted_host_keys=(f"{pinned.rsplit(' ', 1)[0]} another-comment",))
+    try:
+        DhcpClient(r).list_scopes()
+    finally:
+        r.close()
+    with pytest.raises(ValueError, match="not one of the trusted host keys"):
+        runner(srv, trusted_host_keys=(authorized_line(key("ecdsa-other")),))
+    with pytest.raises(ValueError, match="insecure cannot be combined"):
+        runner(srv, insecure=True, trusted_host_keys=(pinned,))
+    with pytest.raises(ValueError, match="must be a list"):
+        runner(srv, trusted_host_keys=pinned)
+    with pytest.raises(ValueError, match="parsing host_key"):
+        runner(srv, trusted_host_keys=("garbage",))
+
+
 def test_insecure_skips_verification(ssh_server) -> None:
     srv = ssh_server()
     r = runner(srv, host_key="", insecure=True, known_hosts_file="/nonexistent")

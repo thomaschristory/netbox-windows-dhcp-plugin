@@ -4,11 +4,13 @@ from .choices import FailoverAuthChoices, TransportChoices, WinRMAuthChoices
 from .conf import (
     CredentialError,
     check_host_allowed,
+    connection_pin_errors,
     get_credentials,
     get_setting,
     host_allowed,
     insecure_credssp_allowed,
     max_concurrency,
+    profile_ssh_host_keys,
 )
 from .windows import DhcpClient, limit
 from .windows.psscript import WindowsLayerError
@@ -50,6 +52,19 @@ def check_connection_allowed(server):
     """
     # computer_name counts too: with delegation the first host passes the credentials on to it.
     check_host_allowed(server.credential_profile, server.host, server.computer_name)
+    # The profile's transports, ports, Kerberos realms and SSH host keys (issue #103). check_host_allowed has already
+    # refused an unknown profile.
+    errors = connection_pin_errors(
+        server.credential_profile,
+        get_setting("credentials")[server.credential_profile],
+        transport=server.transport,
+        port=server.effective_port,
+        winrm_auth=server.winrm_auth,
+        kerberos_realm=server.kerberos_realm,
+        ssh_host_key=server.ssh_host_key,
+    )
+    if errors:
+        raise CredentialError("; ".join(errors.values()))
     if (
         server.transport == TransportChoices.WINRM
         and server.winrm_auth == WinRMAuthChoices.BASIC
@@ -77,6 +92,8 @@ def build_runner(server, auth=""):
     if server.transport == TransportChoices.SSH:
         from .windows.ssh import SSHConfig, SSHRunner
 
+        profile = get_setting("credentials")[server.credential_profile]
+        trusted = profile_ssh_host_keys(server.credential_profile, profile)
         return SSHRunner(
             SSHConfig(
                 host=server.host,
@@ -85,6 +102,9 @@ def build_runner(server, auth=""):
                 private_key=creds.private_key,
                 port=server.effective_port,
                 host_key=server.ssh_host_key,
+                # With the profile's ssh_host_keys, only those keys are trusted: a server without its own key no
+                # longer falls back to the worker's known_hosts (issue #103).
+                trusted_host_keys=None if trusted is None else tuple(trusted),
                 # Never skip the host key check: a machine in the middle would receive the password.
                 insecure=False,
                 command_timeout=timeout,

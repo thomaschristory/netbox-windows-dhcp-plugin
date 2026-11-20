@@ -8,7 +8,14 @@ from netbox.models import PrimaryModel
 from netbox.models.features import JobsMixin
 
 from ..choices import FailoverAuthChoices, TransportChoices, WinRMAuthChoices
-from ..conf import CredentialError, get_setting, host_allowed, insecure_credssp_allowed, normalise_host
+from ..conf import (
+    CredentialError,
+    connection_pin_errors,
+    get_setting,
+    host_allowed,
+    insecure_credssp_allowed,
+    normalise_host,
+)
 
 __all__ = ("WindowsServer",)
 
@@ -206,6 +213,7 @@ class WindowsServer(JobsMixin, PrimaryModel):
         if self.device_id and self.virtual_machine_id:
             raise ValidationError(_("A server runs on a device or a virtual machine, not both."))
         self._clean_allowed_hosts()
+        self._clean_profile_pins()
         self._clean_same_server()
         if self.transport == TransportChoices.SSH and not self.verify_tls:
             raise ValidationError(
@@ -307,6 +315,29 @@ class WindowsServer(JobsMixin, PrimaryModel):
     def dhcp_host(self):
         """The DHCP server itself: computer_name when the connection goes through a management host."""
         return self.computer_name or self.host
+
+    def _clean_profile_pins(self):
+        # The credential profile may limit the transport, port, Kerberos realm and SSH host key a server uses with it
+        # (issue #103). The connection code checks again before connecting, in case the profile changed since.
+        profile = get_setting("credentials").get(self.credential_profile)
+        if profile is None:
+            return
+        try:
+            errors = connection_pin_errors(
+                self.credential_profile,
+                profile,
+                transport=self.transport,
+                # An unknown transport has its own error.
+                port=self.port or DEFAULT_PORTS.get((self.transport, self.winrm_https)),
+                winrm_auth=self.winrm_auth,
+                kerberos_realm=self.kerberos_realm,
+                ssh_host_key=self.ssh_host_key,
+            )
+        except CredentialError as exc:
+            raise ValidationError({"credential_profile": str(exc)}) from exc
+        if errors:
+            # The port error goes on the port field even when it is empty: the default port is the one refused.
+            raise ValidationError(errors)
 
     def _clean_allowed_hosts(self):
         # Stop a profile's credentials from being pointed at a host it does not cover. The connection code checks

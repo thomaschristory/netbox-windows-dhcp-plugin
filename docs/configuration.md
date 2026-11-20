@@ -34,8 +34,9 @@ credential profile, and the profile says where the secrets come from. A profile 
 | `secret` | The shared secret of a [failover relationship](failover.md#shared-secret) |
 | `allowed_hosts` | The hosts the profile's credentials may be sent to, see [below](#allowed_hosts) |
 | `allow_insecure_credssp` | `True` lets CredSSP run over HTTP or without certificate verification. Labs only, see [Security](security.md#transport) |
+| `transports`, `ports`, `kerberos_realms`, `ssh_host_keys` | Optional limits on how the profile's servers connect, see [below](#pinning-transport-port-realm-and-host-key) |
 
-Every value except `allowed_hosts` can be given in three ways:
+Every secret (`username`, `password`, `private_key`, `secret`) can be given in three ways:
 
 - inline: `"password": "..."` (avoid it outside a lab: `configuration.py` is often readable by many people);
 - from an environment variable: `"password_env": "DHCP_ADMIN_PASSWORD"`;
@@ -117,4 +118,56 @@ or spaces are refused, so the check and the connection always see the same host.
 as an IPv4 address written another way (`2130706433`, `0x7f.1`, `127.1`, or any name whose last label is a number).
 
 An SSH host key pinned on a Windows server is only as trustworthy as the people who may edit that server: restrict
-`change` on Windows servers, or keep the keys in the worker's `known_hosts`.
+`change` on Windows servers, keep the keys in the worker's `known_hosts`, or list them in the profile's
+`ssh_host_keys` (below).
+
+### Pinning transport, port, realm and host key
+
+Within the hosts `allowed_hosts` covers, whoever may edit a Windows server still chooses how the profile's
+credentials travel: the transport, the port, the Kerberos realm whose KDC receives the password, and the SSH host key
+that is trusted. When the people who write `configuration.py` are not the people who edit servers, a profile can pin
+these too. Each key is optional: without it, nothing changes.
+
+| Key | Holds | A server using the profile must |
+|---|---|---|
+| `transports` | `"winrm"`, `"ssh"` | use one of these transports |
+| `ports` | port numbers (1 to 65535) | connect on one of these ports. A server without a port uses the default (5986 for WinRM over HTTPS, 5985 over HTTP, 22 for SSH), and that default must be listed |
+| `kerberos_realms` | realm names, compared without case | with WinRM and Kerberos, name one of these realms. Other logons do not use the server's realm |
+| `ssh_host_keys` | host keys, written as the server's SSH host key field takes them (`ssh-ed25519 AAAA...`) | with SSH, either pin one of these keys, or pin none: the connection then trusts only these keys, never the worker's `known_hosts` |
+
+```python
+PLUGINS_CONFIG = {
+    "netbox_windows_dhcp_plugin": {
+        "credentials": {
+            "dhcp-admin": {
+                "username": "svc-netbox-dhcp",
+                "password_env": "DHCP_ADMIN_PASSWORD",
+                "allowed_hosts": ["dhcp*.corp.example"],
+                "transports": ["winrm"],
+                "ports": [5986],
+                "kerberos_realms": ["CORP.EXAMPLE"],
+            },
+            "dhcp-ssh": {
+                "username": "svc-netbox-dhcp",
+                "private_key_file": "/run/secrets/dhcp_ssh_key",
+                "allowed_hosts": ["10.0.0.5", "10.0.0.6"],
+                "transports": ["ssh"],
+                "ssh_host_keys": [
+                    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGbM5L1hQdQHwPVzFXDyOcnRTMUXN0zXV0fRSC0c0b7w dhcp01",
+                    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINPId/9cRTqDqanPcCm3ESFRFp0vxBnfZ0+ZIkyc8tiF dhcp02",
+                ],
+            },
+        },
+    },
+}
+```
+
+Each value must be a list (a tuple works too). A bare string, `None`, a port given as text or `True`, an unknown
+transport name or a key that does not parse is refused, naming the profile and the key: no server can use the
+profile until it is fixed. An empty list allows nothing, so every server using the profile is refused. Keys compare
+by their key material, so the comment and spacing do not matter.
+
+The limits are checked like `allowed_hosts`: when a Windows server is saved (the form and the API name the field
+that breaks the rule) and again before every connection, including the connection test, live leases and the
+failover logon, so a server changed in the database or a profile tightened later is refused before anything is
+sent. A failover partner is only checked against `allowed_hosts`.

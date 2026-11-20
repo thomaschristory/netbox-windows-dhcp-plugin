@@ -6,7 +6,9 @@ Port of ``internal/runner/ssh.go``:
   unencrypted), then password, then keyboard-interactive answering every prompt with
   the password (Windows OpenSSH often only offers keyboard-interactive);
 * host key: ``insecure`` > pinned ``host_key`` (authorized_keys format) >
-  ``known_hosts_file`` (default ``~/.ssh/known_hosts``). The host key algorithms
+  ``trusted_host_keys`` > ``known_hosts_file`` (default ``~/.ssh/known_hosts``).
+  ``trusted_host_keys`` (None: no limit) also bounds ``host_key``, and cannot be
+  combined with ``insecure``. The host key algorithms
   offered are restricted to the types known for the host, so a server that also has an
   ed25519 key is not reported as a mismatch when only its RSA key is pinned;
 * one lazily opened connection is reused (under a lock), one channel per script; if
@@ -89,6 +91,10 @@ class SSHConfig:
     host_key: str = ""  # pinned key, authorized_keys format: "ssh-ed25519 AAAA... [comment]"
     known_hosts_file: str = ""  # default ~/.ssh/known_hosts
     insecure: bool = False  # skip host key verification (lab use only)
+    # The only host keys this connection may trust, in authorized_keys format; None for no limit. Set, it bounds
+    # host_key (which must be one of them) and replaces known_hosts when host_key is empty. An empty tuple trusts
+    # nothing. Lets whoever owns the credentials decide which servers they are sent to (issue #103).
+    trusted_host_keys: tuple[str, ...] | None = None
     timeout: float = 30.0  # connect, handshake and auth timeout, seconds
     command_timeout: float = 300.0  # max silence while reading a script's output, seconds
 
@@ -141,6 +147,11 @@ def _parse_authorized_key(line: str):
         raise ValueError(f"ssh: parsing host_key: {e}") from e
 
 
+def _key_in(key, keys) -> bool:
+    """Whether ``key`` is one of ``keys``: same type and same key material (comments and spacing do not count)."""
+    return any(key.get_name() == k.get_name() and key.asbytes() == k.asbytes() for k in keys)
+
+
 class SSHRunner:
     """Runner over SSH. Thread-safe: channels on one shared transport."""
 
@@ -158,12 +169,22 @@ class SSHRunner:
             _parse_private_key(cfg.private_key, cfg.password) if cfg.private_key else (None, False)
         )
         self._pinned = None
+        self._trusted: list[Any] | None = None
         self._known: dict[str, Any] = {}
         self._known_path = ""
+        if cfg.trusted_host_keys is not None:
+            if cfg.insecure:
+                raise ValueError("ssh: insecure cannot be combined with trusted_host_keys")
+            if isinstance(cfg.trusted_host_keys, str):
+                # A bare string would be read one character at a time.
+                raise ValueError("ssh: trusted_host_keys must be a list of keys")
+            self._trusted = [_parse_authorized_key(line) for line in cfg.trusted_host_keys]
         if not cfg.insecure:
             if cfg.host_key:
                 self._pinned = _parse_authorized_key(cfg.host_key)
-            else:
+                if self._trusted is not None and not _key_in(self._pinned, self._trusted):
+                    raise ValueError("ssh: host_key is not one of the trusted host keys")
+            elif self._trusted is None:
                 self._load_known_hosts()
         self._lock = threading.Lock()
         self._transport = None
@@ -199,6 +220,9 @@ class SSHRunner:
         """The host key algorithms to offer, or None for paramiko's defaults (insecure)."""
         if self._pinned is not None:
             return key_algorithms(self._pinned.get_name())
+        if self._trusted:
+            # Offer only the types of the trusted keys, so a server with several keys sends one that can match.
+            return list(dict.fromkeys(a for k in self._trusted for a in key_algorithms(k.get_name())))
         if self._known:
             out: list[str] = []
             for t in self._known:
@@ -214,6 +238,13 @@ class SSHRunner:
         if self._pinned is not None:
             if key.get_name() != self._pinned.get_name() or key.asbytes() != self._pinned.asbytes():
                 raise RunnerError(f"ssh: host key mismatch for {self.cfg.host}: server sent {key.get_name()}")
+            return
+        if self._trusted is not None:
+            if not _key_in(key, self._trusted):
+                raise RunnerError(
+                    f"ssh: host key mismatch for {self.cfg.host}: server sent a {key.get_name()} key that is not one "
+                    "of the trusted host keys"
+                )
             return
         if not self._known:
             raise RunnerError(
