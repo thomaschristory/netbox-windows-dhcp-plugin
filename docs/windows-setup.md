@@ -103,6 +103,10 @@ The plugin can also connect over SSH to the Windows OpenSSH server and runs `pow
 
 The plugin never accepts an unknown host key, and **Verify host** cannot be turned off for SSH.
 
+Keep the OpenSSH `sftp` subsystem enabled (`Subsystem sftp sftp-server.exe` in `C:\ProgramData\ssh\sshd_config`,
+the Windows default): a script over 32 KB, rare, goes to the account's home folder as a file over SFTP, since
+Windows OpenSSH stalls on long input (see [Limitations](limitations.md#checked-on-a-real-server)).
+
 ## Managing a DHCP server through another host
 
 **Remote DHCP server** (`computer_name`) on the Windows server in NetBox runs the cmdlets against another server

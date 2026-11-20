@@ -341,7 +341,8 @@ replication that fails is retried by the next push to the primary. A push that s
 command timeout, unexpected error) does not try to replicate in that run: the scopes wait in `replication_pending`
 for the next push. A failed server-level change (a class, an option definition, a MAC filter, a server option)
 replicates nothing until it is applied, unless the push stopped on it: then all the relationship's scopes wait. A
-failed failover change triggers no replication.
+failed failover change triggers no replication. Replication, like the failover writes, goes through the server's
+**Failover authentication** when it sets one (see [Failover](failover.md#connecting-to-the-servers)).
 An existing relationship may be left
 empty: clearing its last membership keeps the scope on the primary and removes it from the partner, subject to the
 same ownership and drift protections as other membership removals. See [Failover](failover.md).
