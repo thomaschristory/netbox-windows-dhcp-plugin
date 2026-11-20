@@ -35,8 +35,13 @@ With 0.5.0, in the same lab (2026-11-20): `make lab-e2e` passed with Kerberos fo
 authentication: CredSSP** for the failover writes (a relationship created, replicated and deleted through pushes);
 over SSH with a key, `make test-lab` passed (41), including a 100 KB script sent as a file.
 
+With 0.6.0, in the same lab (2026-11-20): `make lab-e2e` passed with Kerberos over HTTPS and CredSSP for the
+failover writes. Over WinRM HTTP (Kerberos, with CredSSP for the failover writes, consented by both credential
+profiles) every step passed up to deleting the failover relationship, when the lab's nightly shutdown cut the run.
+The new credential profile pins (#103) are unit and NetBox tested; the lab profiles did not set them.
+
 Not tried: Kerberos, SSH with a password or SSH with a key through a management host; classic (not resource-based)
-or unconstrained Kerberos delegation; a custom **Kerberos SPN**; `make lab-e2e` over Kerberos HTTP.
+or unconstrained Kerberos delegation; a custom **Kerberos SPN**.
 
 Over SSH, Windows OpenSSH stalls on long script input (a 65 000 character line hung on Windows Server 2022). The
 plugin sends a script over 32 KB as a file instead: it uploads it over SFTP to the account's home folder under a

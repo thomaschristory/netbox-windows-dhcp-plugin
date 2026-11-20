@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-21
+
+0.6.0 lets a credential profile pin the transport, port, Kerberos realm and SSH host key that a Windows server's
+editors otherwise choose, so the profile's owner decides where its password goes. No migration. A failover shared
+secret profile used over CredSSP without verified HTTPS (a lab) now needs `allow_insecure_credssp` itself: see
+[Upgrading from 0.5.x to 0.6.0](docs/installation.md#upgrading-from-05x-to-060).
+
 ### Added
 
 - Credential profiles can pin what a Windows server's editors otherwise choose: `transports` (WinRM, SSH), `ports`,
