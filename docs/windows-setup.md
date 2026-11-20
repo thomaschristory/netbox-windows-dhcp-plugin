@@ -99,7 +99,8 @@ The plugin can also connect over SSH to the Windows OpenSSH server and runs `pow
     - paste it into **SSH host key** on the Windows server in NetBox, in `authorized_keys` form (for example
       `ssh-ed25519 AAAA...`). Read it on the server from `C:\ProgramData\ssh\ssh_host_ed25519_key.pub`;
     - or add it to `~/.ssh/known_hosts` of the user running the NetBox worker (and the web service), for example with
-      `ssh-keyscan -t ed25519 dhcp01.corp.example`.
+      `ssh-keyscan -t ed25519 dhcp01.corp.example`. When the credential profile sets `ssh_host_keys`, `known_hosts` is
+      not read: list the key there instead.
 
 The plugin never accepts an unknown host key, and **Verify host** cannot be turned off for SSH.
 

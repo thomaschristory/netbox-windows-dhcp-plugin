@@ -4,11 +4,15 @@ from .choices import FailoverAuthChoices, TransportChoices, WinRMAuthChoices
 from .conf import (
     CredentialError,
     check_host_allowed,
+    check_secret_connection,
+    connection_pin_errors,
     get_credentials,
     get_setting,
     host_allowed,
     insecure_credssp_allowed,
     max_concurrency,
+    profile_ssh_host_keys,
+    server_kerberos_realm,
 )
 from .windows import DhcpClient, limit
 from .windows.psscript import WindowsLayerError
@@ -48,8 +52,31 @@ def check_connection_allowed(server):
     Refuse to send credentials where they could leak, even if the record skipped form validation (for example a
     host changed in the database, or a profile's allowed_hosts tightened after the server was saved).
     """
+    # A value outside the choices (a record written straight to the database, "KERBEROS" or "Basic") would slip past
+    # the exact comparisons below while the transport reads it its own way (WinRM lower-cases the method, and anything
+    # but "ssh" is WinRM), so it is refused before anything else.
+    for field, choices in (
+        ("transport", TransportChoices),
+        ("winrm_auth", WinRMAuthChoices),
+        ("failover_auth", FailoverAuthChoices),
+    ):
+        if getattr(server, field) not in choices.values():
+            raise CredentialError(f"unknown {field} {getattr(server, field)!r}")
     # computer_name counts too: with delegation the first host passes the credentials on to it.
     check_host_allowed(server.credential_profile, server.host, server.computer_name)
+    # The profile's transports, ports, Kerberos realms and SSH host keys (issue #103). check_host_allowed has already
+    # refused an unknown profile.
+    errors = connection_pin_errors(
+        server.credential_profile,
+        get_setting("credentials")[server.credential_profile],
+        transport=server.transport,
+        port=server.effective_port,
+        winrm_auth=server.winrm_auth,
+        kerberos_realm=server_kerberos_realm(server),
+        ssh_host_key=server.ssh_host_key,
+    )
+    if errors:
+        raise CredentialError("; ".join(errors.values()))
     if (
         server.transport == TransportChoices.WINRM
         and server.winrm_auth == WinRMAuthChoices.BASIC
@@ -77,6 +104,8 @@ def build_runner(server, auth=""):
     if server.transport == TransportChoices.SSH:
         from .windows.ssh import SSHConfig, SSHRunner
 
+        profile = get_setting("credentials")[server.credential_profile]
+        trusted = profile_ssh_host_keys(server.credential_profile, profile)
         return SSHRunner(
             SSHConfig(
                 host=server.host,
@@ -85,6 +114,9 @@ def build_runner(server, auth=""):
                 private_key=creds.private_key,
                 port=server.effective_port,
                 host_key=server.ssh_host_key,
+                # With the profile's ssh_host_keys, only those keys are trusted: a server without its own key no
+                # longer falls back to the worker's known_hosts (issue #103).
+                trusted_host_keys=None if trusted is None else tuple(trusted),
                 # Never skip the host key check: a machine in the middle would receive the password.
                 insecure=False,
                 command_timeout=timeout,
@@ -93,15 +125,16 @@ def build_runner(server, auth=""):
     from .windows.winrm import WinRMConfig, WinRMRunner
 
     username = creds.username
+    realm = server_kerberos_realm(server)
     if (
         auth == WinRMAuthChoices.CREDSSP
         and server.winrm_auth == WinRMAuthChoices.KERBEROS
-        and server.kerberos_realm
+        and realm
         and not any(c in username for c in "\\@")
     ):
         # A Kerberos server's profile may hold a bare user name (the realm comes from the server); CredSSP needs
         # the domain.
-        username = f"{username}@{server.kerberos_realm.upper()}"
+        username = f"{username}@{realm}"
     return WinRMRunner(
         WinRMConfig(
             host=server.host,
@@ -111,7 +144,7 @@ def build_runner(server, auth=""):
             https=server.winrm_https,
             cert_validation=server.verify_tls,
             auth=auth or server.winrm_auth,
-            kerberos_realm=server.kerberos_realm,
+            kerberos_realm=realm,
             kerberos_spn=server.kerberos_spn,
             timeout=timeout,
         )
@@ -133,10 +166,11 @@ def build_failover_client(server, runner=None):
     its own (issue #141): Kerberos and NTLM cannot carry that hop, CredSSP can. None when the server's own client
     serves. Pass `runner` to substitute a fake in tests.
     """
+    # Checked first, so a stored value outside the choices is refused here too rather than read as "no second client".
+    check_connection_allowed(server)
     auth = server.separate_failover_auth
     if not auth:
         return None
-    check_connection_allowed(server)
     runner = runner if runner is not None else build_runner(server, auth=auth)
     # Failover writes are few and one at a time; the same cap keeps the server's total in check.
     return DhcpClient(limit(_FailoverRunner(runner, auth), max_concurrency()), computer_name=server.computer_name)
@@ -194,6 +228,7 @@ def failover_secret_lookup(server):
         partner_hosts = (partner.host, partner.computer_name)
         try:
             check_host_allowed(profile, server.host, server.computer_name, *partner_hosts)
+            check_secret_connection(profile, server)
             # Only the secret is used here, so only an inline None for the secret is an error.
             return get_credentials(profile, needed=("secret",)).secret
         except CredentialError as exc:

@@ -78,7 +78,8 @@ def kerberos_user(username: str, realm: str = "") -> str:
     """Strip ``DOMAIN\\`` / ``@REALM`` from a user name and append ``@REALM`` when given."""
     u = username.split("\\", 1)[1] if "\\" in username else username
     u = u.split("@", 1)[0]
-    return f"{u}@{realm.upper()}" if realm else u
+    realm = realm.strip().upper()
+    return f"{u}@{realm}" if realm else u
 
 
 def refused_connect(exc: BaseException) -> bool:

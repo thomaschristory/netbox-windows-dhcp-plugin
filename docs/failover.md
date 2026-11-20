@@ -60,7 +60,8 @@ help: in a domain lab (Windows Server 2025, resource-based constrained delegatio
 kind tried) a Kerberos session on one server could open a share on its partner, but the DHCP calls to the partner
 went out as an anonymous NTLM logon and were refused. Reading relationships works with any method. Both partners
 must accept the account: in a workgroup, the same local account with the same password on both. CredSSP hands the password to the DHCP server, so it needs **WinRM over HTTPS** with **Verify host** on;
-`allow_insecure_credssp` on the credential profile lifts that for a lab (see [Security](security.md#transport)).
+`allow_insecure_credssp` on the credential profile lifts that for a lab (see [Security](security.md#transport)); a
+shared secret profile used with that server must set it too, since the secret travels over the same connection.
 
 **SSH with a password** works too: Windows OpenSSH logs a password user on with credentials it can pass on, so the
 failover tests passed over SSH as over CredSSP (lab, Windows Server 2022). **SSH with a private key** does not: a key

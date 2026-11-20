@@ -1,8 +1,11 @@
+import base64
+import binascii
 import contextlib
 import ipaddress
 import logging
 import os
 import re
+import struct
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +23,10 @@ DEFAULTS = {
     # they control and capture the credentials.
     # CredSSP (needed for failover) hands the password to the server, so it requires HTTPS with certificate
     # verification, as Basic does. "allow_insecure_credssp": True on a profile lifts that, for labs only.
+    # A profile can also pin what a server record may otherwise choose (each optional, a list or tuple, an empty one
+    # allows nothing it applies to): "transports" (["winrm"], ["ssh"]), "ports" ([5986]; a port does not imply TLS),
+    # "kerberos_realms" (["CORP.EXAMPLE"], for WinRM with Kerberos) and "ssh_host_keys" (["ssh-ed25519 AAAA..."]: the
+    # only host keys SSH trusts with it).
     "credentials": {},
     # Prefix of the branches created by imports when netbox-branching is installed.
     "import_branch_prefix": "dhcp-import",
@@ -272,3 +279,189 @@ def insecure_credssp_allowed(profile_name, profiles=None):
 def profiles_without_allowed_hosts(profiles=None):
     profiles = get_setting("credentials") if profiles is None else profiles
     return sorted(name for name, profile in profiles.items() if "allowed_hosts" not in profile)
+
+
+# Transport names a profile's "transports" may list: the values of choices.TransportChoices (not imported here, so
+# this module loads without Django).
+TRANSPORTS = ("winrm", "ssh")
+
+
+def _profile_list(profile_name, profile, key, check):
+    """
+    The values of a list-valued profile key, each passed through `check` (which returns the value to compare, or
+    None when it is not acceptable), or None when the profile does not set the key.
+    """
+    if key not in profile:
+        return None
+    values = profile[key]
+    # A bare string would otherwise be read one character at a time, and None (an environment variable that is not
+    # set) would silently lift the restriction: both are refused, so the administrator says exactly what they mean.
+    if not isinstance(values, list | tuple):
+        raise CredentialError(f"credential profile {profile_name!r}: {key} must be a list")
+    out = []
+    for value in values:
+        checked = check(value)
+        if checked is None:
+            raise CredentialError(f"credential profile {profile_name!r}: {key} holds an invalid entry {value!r}")
+        out.append(checked)
+    return out
+
+
+def _check_transport(value):
+    return value if isinstance(value, str) and value in TRANSPORTS else None
+
+
+def _check_port(value):
+    # bool is an int in Python: True would read as port 1.
+    return value if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535 else None
+
+
+def _check_realm(value):
+    # Realms are compared without case, as Windows does (AD realms are the DNS domain in capitals).
+    return value.strip().upper() if isinstance(value, str) and value.strip() else None
+
+
+# Host key types the SSH transport (paramiko) can load. Other well-formed types (ssh-dss, sk-*, certificates) would
+# only fail when connecting, for every server of the profile.
+SSH_HOST_KEY_TYPES = ("ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521")
+
+
+def ssh_host_key_blob(text):
+    """
+    The key material of an SSH host key written as the server's SSH host key field takes it (authorized_keys format,
+    "<type> <base64> [comment]", optionally after a known_hosts host pattern), or None when it does not parse. Two
+    spellings of one key (another comment, other spacing) give the same bytes.
+    """
+    if not isinstance(text, str):
+        return None
+    fields = text.strip().split()
+    # The same reading as the SSH transport: an optional leading host pattern, as in a known_hosts line.
+    if len(fields) >= 3 and not fields[0].startswith(("ssh-", "ecdsa-", "sk-")):
+        fields = fields[1:]
+    if len(fields) < 2:
+        return None
+    key_type, b64 = fields[0], fields[1]
+    if key_type not in SSH_HOST_KEY_TYPES:
+        return None
+    try:
+        blob = base64.b64decode(b64, validate=True)
+        # The key itself starts with its own type name: a key pasted under another type's label is not this key.
+        (length,) = struct.unpack(">I", blob[:4])
+    except (binascii.Error, ValueError, struct.error):
+        return None
+    if blob[4 : 4 + length] != key_type.encode("ascii", "replace"):
+        return None
+    return blob
+
+
+def _check_host_key(value):
+    return value.strip() if ssh_host_key_blob(value) is not None else None
+
+
+def profile_transports(profile_name, profile):
+    return _profile_list(profile_name, profile, "transports", _check_transport)
+
+
+def profile_ports(profile_name, profile):
+    return _profile_list(profile_name, profile, "ports", _check_port)
+
+
+def profile_kerberos_realms(profile_name, profile):
+    return _profile_list(profile_name, profile, "kerberos_realms", _check_realm)
+
+
+def profile_ssh_host_keys(profile_name, profile):
+    """The profile's SSH host keys (each checked, as given), or None when it does not limit them."""
+    return _profile_list(profile_name, profile, "ssh_host_keys", _check_host_key)
+
+
+def connection_pin_errors(profile_name, profile, *, transport, port, winrm_auth, kerberos_realm, ssh_host_key):
+    """
+    What a server's connection settings break among the profile's "transports", "ports", "kerberos_realms" and
+    "ssh_host_keys", as {server field: message}; empty when nothing. Raises CredentialError for a malformed profile.
+
+    These keys let the profile's owner decide what the people who may edit a server record otherwise decide: how the
+    credentials travel (transport, port), which realm's KDC receives the password (Kerberos), and which machine SSH
+    trusts to receive it (host key).
+    """
+    errors = {}
+    transports = profile_transports(profile_name, profile)
+    if transports is not None and transport not in transports:
+        errors["transport"] = f"credential profile {profile_name!r} may not be used over {transport}"
+    ports = profile_ports(profile_name, profile)
+    if ports is not None and port is not None and port not in ports:
+        errors["port"] = f"credential profile {profile_name!r} may not be used with port {port}"
+    realms = profile_kerberos_realms(profile_name, profile)
+    # Only WinRM with Kerberos uses the server's realm (CredSSP failover writes then borrow it for the user name).
+    realm = (kerberos_realm or "").strip().upper()
+    # No realm on the server (only possible for a record written straight to the database: the form requires one)
+    # would leave the realm to the worker's krb5.conf or a realm in the profile's user name, which the list does not
+    # cover, so it is refused too.
+    if realms is not None and transport == "winrm" and winrm_auth == "kerberos" and realm not in realms:
+        errors["kerberos_realm"] = (
+            f"credential profile {profile_name!r} may not be used with Kerberos realm {realm or '(none)'}"
+        )
+    keys = profile_ssh_host_keys(profile_name, profile)
+    if keys is not None and transport == "ssh":
+        allowed = {ssh_host_key_blob(key) for key in keys}
+        if not keys:
+            errors["ssh_host_key"] = f"credential profile {profile_name!r} trusts no SSH host key"
+        elif ssh_host_key and ssh_host_key_blob(ssh_host_key) is None:
+            errors["ssh_host_key"] = (
+                f"not a valid SSH host key for credential profile {profile_name!r} (want one of "
+                f"{', '.join(SSH_HOST_KEY_TYPES)})"
+            )
+        elif ssh_host_key and ssh_host_key_blob(ssh_host_key) not in allowed:
+            errors["ssh_host_key"] = f"credential profile {profile_name!r} does not trust this SSH host key"
+    return errors
+
+
+def server_kerberos_realm(server):
+    """A server's realm as the connection uses it and the profile's kerberos_realms check reads it."""
+    return (server.kerberos_realm or "").strip().upper()
+
+
+def check_secret_connection(profile_name, server, profiles=None):
+    """
+    Raise CredentialError unless `server`'s own connection may carry the failover shared secret of `profile_name`
+    (issue #103). The secret travels over it, so the secret profile's transports, ports, Kerberos realms and SSH host
+    keys apply to that connection, and so does its say on insecure CredSSP. Partners stay allowed_hosts only. Checked
+    when a relationship is saved and before each push sends the secret.
+    """
+    profiles = get_setting("credentials") if profiles is None else profiles
+    if profile_name not in profiles:
+        raise CredentialError(f"credential profile {profile_name!r} is not defined in PLUGINS_CONFIG")
+    profile = profiles[profile_name]
+    errors = connection_pin_errors(
+        profile_name,
+        profile,
+        transport=server.transport,
+        port=server.effective_port,
+        winrm_auth=server.winrm_auth,
+        kerberos_realm=server_kerberos_realm(server),
+        ssh_host_key=server.ssh_host_key,
+    )
+    if errors:
+        raise CredentialError("; ".join(errors.values()))
+    if profile_name == server.credential_profile:
+        return  # the connection checks already apply this profile's keys and CredSSP consent
+    if (
+        server.transport == "ssh"
+        and profile_ssh_host_keys(profile_name, profile) is not None
+        and not (server.ssh_host_key or "").strip()
+    ):
+        # Without its own key the connection trusts the server profile's keys (or known_hosts), not the secret
+        # profile's, so only a pinned key (checked against the secret's list above) shows which machine answers.
+        raise CredentialError(f"pin the server's SSH host key to send credential profile {profile_name!r} over SSH")
+    credssp = "credssp" in (server.winrm_auth, server.failover_auth)
+    if (
+        server.transport == "winrm"
+        and credssp
+        and not (server.winrm_https and server.verify_tls)
+        and not insecure_credssp_allowed(profile_name, profiles)
+    ):
+        # The server's profile allowed CredSSP without verified HTTPS; the secret's owner has not.
+        raise CredentialError(
+            f"credential profile {profile_name!r} does not set allow_insecure_credssp, and this server uses CredSSP "
+            "without HTTPS and certificate verification"
+        )

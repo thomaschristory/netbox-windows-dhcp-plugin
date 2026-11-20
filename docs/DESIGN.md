@@ -65,7 +65,7 @@ Not branchable (bookkeeping, always written in main): `integrations/branching.NO
 
 Leases have no model: a lease read is kept in its job's data (see section 8).
 
-**Credentials** never go in the database, the change log or job logs. `WindowsServer` names a credential profile defined in `PLUGINS_CONFIG` (username, password or key, read from environment variables or files), the same way the terraform provider reads them from config and environment. Each profile can list `allowed_hosts` (wildcards allowed); the server form refuses a `host` or `computer_name` outside it, and the connection code checks again before every connection, so editing a server cannot redirect credentials to another machine. An address pattern matches IP addresses only and a name pattern matches names only, and hosts a resolver reads as numeric IPv4 spellings are refused. A failover partner is one more host the primary's credentials reach, so a push refuses to create a relationship whose partner (its `computer_name` when set) the primary's profile does not cover. Profiles without the list allow any host and are logged as a warning at startup.
+**Credentials** never go in the database, the change log or job logs. `WindowsServer` names a credential profile defined in `PLUGINS_CONFIG` (username, password or key, read from environment variables or files), the same way the terraform provider reads them from config and environment. Each profile can list `allowed_hosts` (wildcards allowed); the server form refuses a `host` or `computer_name` outside it, and the connection code checks again before every connection, so editing a server cannot redirect credentials to another machine. An address pattern matches IP addresses only and a name pattern matches names only, and hosts a resolver reads as numeric IPv4 spellings are refused. A failover partner is one more host the primary's credentials reach, so a push refuses to create a relationship whose partner (its `computer_name` when set) the primary's profile does not cover. Profiles without the list allow any host and are logged as a warning at startup. A profile can also pin `transports`, `ports` (the server's effective port), `kerberos_realms` (WinRM with Kerberos, compared upper-case) and `ssh_host_keys` (#103): each optional and strictly a list or tuple (an empty one allows nothing it applies to; SSH key types limited to what paramiko loads; a Kerberos server without a realm is refused when `kerberos_realms` is set, the form reporting "A realm is required" first), checked in `WindowsServer.clean()` on the field that breaks it and again in `connection.check_connection_allowed`. With `ssh_host_keys`, a server's pinned key must be one of them, and a server without one trusts only those keys (`SSHConfig.trusted_host_keys`), not the worker's `known_hosts`. Before any of this, `check_connection_allowed` refuses `transport`, `winrm_auth` or `failover_auth` values outside the choices (a record written straight to the database), and `separate_failover_auth` is only ever `credssp`. Ports do not imply TLS; HTTPS and verification stay server settings.
 
 ## 5. Windows layer (ported from terraform-provider-windowsddi)
 
@@ -330,11 +330,15 @@ relationships, MAC filters, list switches.
   (`partner_failovers`). The partner is the DHCP server itself, so its Windows server's `computer_name` when it
   connects through a management host, else its `host`; short and fully qualified names match. A partner without a
   Windows server in NetBox is not pushed (there is no host to check the secret's profile against), and import
-  refuses a relationship already held with the other server as primary. The shared secret comes from the
-  credential profile in `shared_secret_profile` (key `secret`), is checked against both partners' hosts when saved
-  and before each push, and only travels from the profile to the cmdlet; records only say whether authentication is
-  on, so a rotated secret is not noticed. Changing the partner or turning authentication off is refused (when the
-  push is planned). A scope a
+  refuses a relationship already held with the other server as primary. The shared secret comes from the credential
+  profile in `shared_secret_profile` (key `secret`), is checked against both partners' hosts when saved and before each
+  push, and only travels from the profile to the cmdlet. It rides the primary server's connection, so
+  `conf.check_secret_connection` (on save when the relationship is new or its secret profile or primary changes, skipped
+  for imports through `check_secret_profile`, and before each push) applies the secret profile's pins
+  (#103) to that connection; unless the secret profile is the server's own, over SSH the server must pin a host key from
+  the secret profile's `ssh_host_keys`, and CredSSP without verified HTTPS also needs the secret profile's
+  `allow_insecure_credssp`; records only say whether authentication is on, so a rotated secret is not noticed. Changing
+  the partner or turning authentication off is refused (when the push is planned). A scope a
   managed relationship no longer lists may be deleted: it leaves the relationship first in the same push (after a
   lease check, so a refused delete changes nothing; a scope whose delete fails stays in the relationship). A scope
   only leaves a relationship that NetBox manages and that is unchanged on Windows since the last push, and never

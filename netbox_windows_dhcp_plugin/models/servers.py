@@ -8,7 +8,15 @@ from netbox.models import PrimaryModel
 from netbox.models.features import JobsMixin
 
 from ..choices import FailoverAuthChoices, TransportChoices, WinRMAuthChoices
-from ..conf import CredentialError, get_setting, host_allowed, insecure_credssp_allowed, normalise_host
+from ..conf import (
+    CredentialError,
+    connection_pin_errors,
+    get_setting,
+    host_allowed,
+    insecure_credssp_allowed,
+    normalise_host,
+    server_kerberos_realm,
+)
 
 __all__ = ("WindowsServer",)
 
@@ -191,9 +199,10 @@ class WindowsServer(JobsMixin, PrimaryModel):
     @property
     def separate_failover_auth(self):
         """The authentication failover writes use when it differs from the server's own, else an empty string."""
-        if self.transport != TransportChoices.WINRM or not self.failover_auth or self.failover_auth == self.winrm_auth:
+        # Only CredSSP: any other value (a record written straight to the database) is refused by the connection check.
+        if self.transport != TransportChoices.WINRM or self.failover_auth != FailoverAuthChoices.CREDSSP:
             return ""
-        return self.failover_auth
+        return "" if self.winrm_auth == WinRMAuthChoices.CREDSSP else self.failover_auth
 
     @property
     def effective_port(self):
@@ -206,12 +215,14 @@ class WindowsServer(JobsMixin, PrimaryModel):
         if self.device_id and self.virtual_machine_id:
             raise ValidationError(_("A server runs on a device or a virtual machine, not both."))
         self._clean_allowed_hosts()
+        self._clean_profile_pins()
         self._clean_same_server()
         if self.transport == TransportChoices.SSH and not self.verify_tls:
             raise ValidationError(
                 {
                     "verify_tls": _(
-                        "SSH always checks the host key; set an SSH host key or use the worker's known_hosts."
+                        "SSH always checks the host key; set an SSH host key or use the worker's known_hosts (or "
+                        "the credential profile's ssh_host_keys)."
                     )
                 }
             )
@@ -307,6 +318,32 @@ class WindowsServer(JobsMixin, PrimaryModel):
     def dhcp_host(self):
         """The DHCP server itself: computer_name when the connection goes through a management host."""
         return self.computer_name or self.host
+
+    def _clean_profile_pins(self):
+        # The credential profile may limit the transport, port, Kerberos realm and SSH host key a server uses with it
+        # (issue #103). The connection code checks again before connecting, in case the profile changed since.
+        profile = get_setting("credentials").get(self.credential_profile)
+        if profile is None:
+            return
+        try:
+            errors = connection_pin_errors(
+                self.credential_profile,
+                profile,
+                transport=self.transport,
+                # An unknown transport has its own error.
+                port=self.port or DEFAULT_PORTS.get((self.transport, self.winrm_https)),
+                winrm_auth=self.winrm_auth,
+                kerberos_realm=server_kerberos_realm(self),
+                ssh_host_key=self.ssh_host_key,
+            )
+        except CredentialError as exc:
+            raise ValidationError({"credential_profile": str(exc)}) from exc
+        if "kerberos_realm" in errors and not self.kerberos_realm.strip():
+            # Kerberos without a realm: the plain rule explains it better than the profile's list.
+            errors["kerberos_realm"] = _("A realm is required for Kerberos authentication.")
+        if errors:
+            # The port error goes on the port field even when it is empty: the default port is the one refused.
+            raise ValidationError(errors)
 
     def _clean_allowed_hosts(self):
         # Stop a profile's credentials from being pointed at a host it does not cover. The connection code checks

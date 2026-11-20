@@ -638,10 +638,11 @@ class Writer:
             obj = FailoverRelationship(primary_server=self.server, **values)
             # Windows already has this relationship with this partner: the partner check is for partners chosen in
             # NetBox, which the push would hand the primary's credentials to.
-            obj.check_partner_host = False
+            # Nor is the secret profile's say over the primary's connection: the push checks it before sending.
+            obj.check_partner_host = obj.check_secret_profile = False
             obj = self._save(obj)
         else:
-            obj.check_partner_host = False
+            obj.check_partner_host = obj.check_secret_profile = False
             obj = self._update(obj, **values)
         if {s.pk for s in obj.scopes.all()} != {s.pk for s in scopes}:
             self._check(obj, "change")

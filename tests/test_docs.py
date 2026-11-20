@@ -13,9 +13,10 @@ from netbox_windows_dhcp_plugin import conf
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
-# Keys a credential profile may hold: each secret inline, as <key>_env or <key>_file, plus allowed_hosts.
+# Keys a credential profile may hold: each secret inline, as <key>_env or <key>_file, plus the limits.
 SECRET_KEYS = ("username", "password", "private_key", "secret")
-PROFILE_KEYS = {"allowed_hosts"} | {f"{k}{suffix}" for k in SECRET_KEYS for suffix in ("", "_env", "_file")}
+LIMIT_KEYS = {"allowed_hosts", "allow_insecure_credssp", "transports", "ports", "kerberos_realms", "ssh_host_keys"}
+PROFILE_KEYS = LIMIT_KEYS | {f"{k}{suffix}" for k in SECRET_KEYS for suffix in ("", "_env", "_file")}
 
 
 def doc_pages() -> list[Path]:
@@ -100,6 +101,11 @@ def test_config_snippets_are_valid(block):
         assert isinstance(profile.get("allowed_hosts"), list), name
         for host in profile["allowed_hosts"]:
             assert conf.normalise_host(host.replace("*", "x").replace("?", "x")), host
+        # The other limits parse (a bad one raises CredentialError).
+        conf.profile_transports(name, profile)
+        conf.profile_ports(name, profile)
+        conf.profile_kerberos_realms(name, profile)
+        conf.profile_ssh_host_keys(name, profile)
 
 
 def test_docs_build_input_is_tracked():

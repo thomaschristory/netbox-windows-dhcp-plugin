@@ -35,8 +35,9 @@ PLUGINS_CONFIG = {
         "credentials": {
             "lab": _lab_profile,
             "lab-ssh-key": _lab_key_profile,
-            # The failover phase of make lab-e2e (WINDOWS_DHCP_LAB_PARTNER set).
-            "lab-failover": {"secret_env": "WINDOWS_DHCP_LAB_FAILOVER_SECRET"},
+            # The failover phase of make lab-e2e (WINDOWS_DHCP_LAB_PARTNER set). The secret travels over the lab
+            # server's connection, so it must consent to CredSSP over HTTP as well.
+            "lab-failover": {"secret_env": "WINDOWS_DHCP_LAB_FAILOVER_SECRET", "allow_insecure_credssp": True},
         },
     },
 }

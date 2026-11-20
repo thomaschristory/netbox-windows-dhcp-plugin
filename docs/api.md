@@ -40,7 +40,8 @@ curl -s -X POST https://netbox.example/api/plugins/windows-dhcp/windows-servers/
   -d '{"name": "dhcp01", "host": "dhcp01.corp.example", "credential_profile": "dhcp-admin", "sync_enabled": false}'
 ```
 
-The same validation as the form applies: the profile's `allowed_hosts` must cover the host. Add `"device": <id>` or
+The same validation as the form applies: the profile's `allowed_hosts` must cover the host, and its other limits
+(transports, ports, Kerberos realms, SSH host keys) the matching fields. Add `"device": <id>` or
 `"virtual_machine": <id>` to link the machine the DHCP service runs on.
 
 ## Actions on a Windows server

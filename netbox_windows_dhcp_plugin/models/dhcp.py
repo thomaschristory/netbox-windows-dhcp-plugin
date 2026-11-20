@@ -1104,14 +1104,41 @@ class FailoverRelationship(PrimaryModel):
 
     # Whether clean() checks the partner against the primary's credential profile (see _clean_partner_host).
     check_partner_host = True
+    # Whether clean() checks the primary's connection against the secret profile's limits (see
+    # _clean_secret_profile). An import turns both off: it records what Windows already has.
+    check_secret_profile = True
+
+    # The fields clean() compares with their stored values.
+    _REMEMBERED = ("primary_server_id", "partner_server_id", "shared_secret_profile")
 
     @classmethod
     def from_db(cls, db, field_names, values):
         instance = super().from_db(db, field_names, values)
-        # The servers as stored, so clean() can tell a pair chosen now from one already on Windows.
-        if "partner_server_id" in instance.__dict__ and "primary_server_id" in instance.__dict__:  # not deferred
-            instance._loaded_pair = (instance.primary_server_id, instance.partner_server_id)
+        instance._remember_stored()
         return instance
+
+    def refresh_from_db(self, using=None, fields=None, from_queryset=None):
+        super().refresh_from_db(using=using, fields=fields, from_queryset=from_queryset)
+        # What was just read is the stored value again; a field not reread keeps what was remembered for it.
+        names = None
+        if fields is not None:
+            # A foreign key may be named with or without its "_id".
+            names = {f"{f}_id" if f in ("primary_server", "partner_server") else f for f in fields}
+        self._remember_stored(names)
+
+    def _remember_stored(self, names=None):
+        # The servers and secret profile as stored, so clean() can tell a choice made now from one already on Windows.
+        # A deferred field is not remembered, and clean() then checks as for a new choice.
+        stored = dict(getattr(self, "_stored", {}))
+        for attr in self._REMEMBERED:
+            if attr in self.__dict__ and (names is None or attr in names):
+                stored[attr] = self.__dict__[attr]
+        self._stored = stored
+
+    def _unchanged(self, *attrs):
+        """Whether these fields hold the values last read from the database (False for a new relationship)."""
+        stored = getattr(self, "_stored", {})
+        return not self._state.adding and all(a in stored and stored[a] == getattr(self, a) for a in attrs)
 
     @staticmethod
     def scope_error(primary_server, scopes):
@@ -1154,8 +1181,7 @@ class FailoverRelationship(PrimaryModel):
         # profile is reported when a job runs, as for the server itself.
         if not self.check_partner_host or self.primary_server_id is None or self.partner_server_id is None:
             return
-        pair = (self.primary_server_id, self.partner_server_id)
-        if not self._state.adding and pair == getattr(self, "_loaded_pair", None):
+        if self._unchanged("primary_server_id", "partner_server_id"):
             return
         from ..conf import CredentialError, get_setting, host_allowed
 
@@ -1183,7 +1209,7 @@ class FailoverRelationship(PrimaryModel):
         # push checks again before sending it.
         if not self.shared_secret_profile:
             return
-        from ..conf import CredentialError, check_host_allowed
+        from ..conf import CredentialError, check_host_allowed, check_secret_connection
 
         hosts = []
         # Read the ids first: a missing server is reported as a field error, not a crash.
@@ -1193,6 +1219,14 @@ class FailoverRelationship(PrimaryModel):
                 hosts += [server.host, server.computer_name]
         try:
             check_host_allowed(self.shared_secret_profile, *hosts)
+            # The secret travels over the primary server's connection: the secret profile's limits (transports, ports,
+            # realms, SSH host keys, CredSSP consent) apply to it (issue #103). Judged only for a secret profile or
+            # primary chosen now, like the partner check: tightening those limits must not block editing a
+            # relationship, and an import records what Windows has. (The allowed_hosts check above still runs on every
+            # save.) The push checks again before sending the secret, which catches a later change to the server.
+            chosen = not self._unchanged("primary_server_id", "shared_secret_profile")
+            if self.check_secret_profile and chosen and self.primary_server_id is not None:
+                check_secret_connection(self.shared_secret_profile, self.primary_server)
         except CredentialError as exc:
             raise ValidationError({"shared_secret_profile": str(exc)}) from exc
 
