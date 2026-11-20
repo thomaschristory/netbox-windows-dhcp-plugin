@@ -449,7 +449,7 @@ class SSHRunner:
         try:
             remote = posixpath.join(sftp.normalize("."), f"nbwd-{secrets.token_hex(8)}.txt")
             # "x": never write over a file that is already there.
-            # unverified: exclusive create through Windows OpenSSH's sftp-server (the lab checked plain "w").
+            # Windows OpenSSH's sftp-server accepts it (lab, Windows Server 2025: a 200 KB script, nothing left behind).
             with sftp.open(remote, "wx") as f:
                 f.write(head.encode("ascii"))
         except Exception as e:  # noqa: BLE001
