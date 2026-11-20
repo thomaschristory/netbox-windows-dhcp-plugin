@@ -178,7 +178,13 @@ class SSHRunner:
             if isinstance(cfg.trusted_host_keys, str):
                 # A bare string would be read one character at a time.
                 raise ValueError("ssh: trusted_host_keys must be a list of keys")
-            self._trusted = [_parse_authorized_key(line) for line in cfg.trusted_host_keys]
+            self._trusted = []
+            for number, line in enumerate(cfg.trusted_host_keys, 1):
+                try:
+                    self._trusted.append(_parse_authorized_key(line))
+                except ValueError as e:
+                    # Name the trusted key, not the server's host_key, so the right setting gets fixed.
+                    raise ValueError(f"ssh: trusted host key {number}: {e}") from None
         if not cfg.insecure:
             if cfg.host_key:
                 self._pinned = _parse_authorized_key(cfg.host_key)

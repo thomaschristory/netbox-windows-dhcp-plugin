@@ -123,17 +123,18 @@ An SSH host key pinned on a Windows server is only as trustworthy as the people 
 
 ### Pinning transport, port, realm and host key
 
-Within the hosts `allowed_hosts` covers, whoever may edit a Windows server still chooses how the profile's
-credentials travel: the transport, the port, the Kerberos realm whose KDC receives the password, and the SSH host key
-that is trusted. When the people who write `configuration.py` are not the people who edit servers, a profile can pin
-these too. Each key is optional: without it, nothing changes.
+Within the hosts `allowed_hosts` covers, whoever may edit a Windows server still chooses how the profile's credentials
+travel: the transport, the port, the Kerberos realm whose KDC the logon goes to (it receives a value derived from the
+password, which can be attacked offline), and the SSH host key that is trusted. When the people who write
+`configuration.py` are not the people who edit servers, a profile can pin these too. Each key is optional: without it,
+nothing changes.
 
 | Key | Holds | A server using the profile must |
 |---|---|---|
 | `transports` | `"winrm"`, `"ssh"` | use one of these transports |
-| `ports` | port numbers (1 to 65535) | connect on one of these ports. A server without a port uses the default (5986 for WinRM over HTTPS, 5985 over HTTP, 22 for SSH), and that default must be listed |
+| `ports` | port numbers (1 to 65535) | connect on one of these ports. A server without a port uses the default (5986 for WinRM over HTTPS, 5985 over HTTP, 22 for SSH), and that default must be listed. A port does not imply TLS: **WinRM over HTTPS** and **Verify host** stay the server editor's choice (Basic and CredSSP always need both) |
 | `kerberos_realms` | realm names, compared without case | with WinRM and Kerberos, name one of these realms. Other logons do not use the server's realm |
-| `ssh_host_keys` | host keys, written as the server's SSH host key field takes them (`ssh-ed25519 AAAA...`) | with SSH, either pin one of these keys, or pin none: the connection then trusts only these keys, never the worker's `known_hosts` |
+| `ssh_host_keys` | host keys, written as the server's SSH host key field takes them (`ssh-ed25519 AAAA...`; `ssh-ed25519`, `ssh-rsa` and `ecdsa-sha2-nistp256/384/521`) | with SSH, either pin one of these keys, or pin none: the connection then trusts only these keys, never the worker's `known_hosts` |
 
 ```python
 PLUGINS_CONFIG = {
@@ -163,9 +164,17 @@ PLUGINS_CONFIG = {
 ```
 
 Each value must be a list (a tuple works too). A bare string, `None`, a port given as text or `True`, an unknown
-transport name or a key that does not parse is refused, naming the profile and the key: no server can use the
-profile until it is fixed. An empty list allows nothing, so every server using the profile is refused. Keys compare
-by their key material, so the comment and spacing do not matter.
+transport name or a key that does not parse (or is of another type) is refused, naming the profile and the key: no
+server can use the profile until it is fixed. An empty list allows nothing it applies to: an empty `transports` or
+`ports` refuses every server using the profile, an empty `ssh_host_keys` every SSH server, and an empty
+`kerberos_realms` every WinRM server with Kerberos. Keys compare by their key material, so the comment and spacing do
+not matter.
+
+The Kerberos SPN (**Kerberos SPN** on the server) is not pinned: the plugin asks for no delegation, so a ticket for
+another service name gives that service neither the password nor a ticket it can pass on.
+
+Connections also refuse a transport or authentication value outside the known choices (a record written straight to
+the database with `KERBEROS` or `Basic`, say), so the checks and the transport always read the same value.
 
 The limits are checked like `allowed_hosts`: when a Windows server is saved (the form and the API name the field
 that breaks the rule) and again before every connection, including the connection test, live leases and the

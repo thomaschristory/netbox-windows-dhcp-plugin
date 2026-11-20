@@ -12,6 +12,7 @@ import hashlib
 import io
 import os
 import socket
+import struct
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -393,8 +394,12 @@ def test_trusted_host_keys_bound_the_pinned_key(ssh_server) -> None:
         runner(srv, insecure=True, trusted_host_keys=(pinned,))
     with pytest.raises(ValueError, match="must be a list"):
         runner(srv, trusted_host_keys=pinned)
-    with pytest.raises(ValueError, match="parsing host_key"):
-        runner(srv, trusted_host_keys=("garbage",))
+    with pytest.raises(ValueError, match="trusted host key 2"):
+        runner(srv, trusted_host_keys=(pinned, "garbage"))
+    # Well formed, but not a type paramiko loads: the error names the trusted key, not the server's.
+    blob = base64.b64encode(struct.pack(">I", 7) + b"ssh-foo" + b"x").decode()
+    with pytest.raises(ValueError, match="trusted host key 1"):
+        runner(srv, host_key="", trusted_host_keys=(f"ssh-foo {blob}",))
 
 
 def test_insecure_skips_verification(ssh_server) -> None:

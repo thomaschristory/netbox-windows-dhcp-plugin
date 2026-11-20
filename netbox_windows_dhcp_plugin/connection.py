@@ -45,11 +45,26 @@ class _FailoverRunner:
             close()
 
 
+def kerberos_realm(server):
+    """The server's realm as the connection uses it (and the profile's kerberos_realms check reads it)."""
+    return (server.kerberos_realm or "").strip().upper()
+
+
 def check_connection_allowed(server):
     """
     Refuse to send credentials where they could leak, even if the record skipped form validation (for example a
     host changed in the database, or a profile's allowed_hosts tightened after the server was saved).
     """
+    # A value outside the choices (a record written straight to the database, "KERBEROS" or "Basic") would slip past
+    # the exact comparisons below while the transport reads it its own way (WinRM lower-cases the method, and anything
+    # but "ssh" is WinRM), so it is refused before anything else.
+    for field, choices in (
+        ("transport", TransportChoices),
+        ("winrm_auth", WinRMAuthChoices),
+        ("failover_auth", FailoverAuthChoices),
+    ):
+        if getattr(server, field) not in choices.values():
+            raise CredentialError(f"unknown {field} {getattr(server, field)!r}")
     # computer_name counts too: with delegation the first host passes the credentials on to it.
     check_host_allowed(server.credential_profile, server.host, server.computer_name)
     # The profile's transports, ports, Kerberos realms and SSH host keys (issue #103). check_host_allowed has already
@@ -60,7 +75,7 @@ def check_connection_allowed(server):
         transport=server.transport,
         port=server.effective_port,
         winrm_auth=server.winrm_auth,
-        kerberos_realm=server.kerberos_realm,
+        kerberos_realm=kerberos_realm(server),
         ssh_host_key=server.ssh_host_key,
     )
     if errors:
@@ -113,15 +128,16 @@ def build_runner(server, auth=""):
     from .windows.winrm import WinRMConfig, WinRMRunner
 
     username = creds.username
+    realm = kerberos_realm(server)
     if (
         auth == WinRMAuthChoices.CREDSSP
         and server.winrm_auth == WinRMAuthChoices.KERBEROS
-        and server.kerberos_realm
+        and realm
         and not any(c in username for c in "\\@")
     ):
         # A Kerberos server's profile may hold a bare user name (the realm comes from the server); CredSSP needs
         # the domain.
-        username = f"{username}@{server.kerberos_realm.upper()}"
+        username = f"{username}@{realm}"
     return WinRMRunner(
         WinRMConfig(
             host=server.host,
@@ -131,7 +147,7 @@ def build_runner(server, auth=""):
             https=server.winrm_https,
             cert_validation=server.verify_tls,
             auth=auth or server.winrm_auth,
-            kerberos_realm=server.kerberos_realm,
+            kerberos_realm=realm,
             kerberos_spn=server.kerberos_spn,
             timeout=timeout,
         )
@@ -153,10 +169,11 @@ def build_failover_client(server, runner=None):
     its own (issue #141): Kerberos and NTLM cannot carry that hop, CredSSP can. None when the server's own client
     serves. Pass `runner` to substitute a fake in tests.
     """
+    # Checked first, so a stored value outside the choices is refused here too rather than read as "no second client".
+    check_connection_allowed(server)
     auth = server.separate_failover_auth
     if not auth:
         return None
-    check_connection_allowed(server)
     runner = runner if runner is not None else build_runner(server, auth=auth)
     # Failover writes are few and one at a time; the same cap keeps the server's total in check.
     return DhcpClient(limit(_FailoverRunner(runner, auth), max_concurrency()), computer_name=server.computer_name)

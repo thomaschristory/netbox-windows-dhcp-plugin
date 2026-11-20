@@ -34,11 +34,17 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
 - `host` and `computer_name` must be plain host names or IP addresses, so the check and the transport always agree on
   the host. Names a resolver reads as numeric IPv4 spellings (`2130706433`, `127.1`) are refused.
 - An SSH host key pinned on a Windows server is only as trustworthy as the people who may edit that server.
-- Within the allowed hosts, a server's editors choose its transport, port, Kerberos realm and SSH host key. A
-  profile's `transports`, `ports`, `kerberos_realms` and `ssh_host_keys` take those choices back for the people who
-  write `configuration.py`: the realm decides which KDC receives the password, and the host key which machine SSH
-  trusts with it. With `ssh_host_keys`, a server without a pinned key trusts only the profile's keys, never the
-  worker's `known_hosts`. See [Configuration](configuration.md#pinning-transport-port-realm-and-host-key).
+- Within the allowed hosts, a server's editors choose its transport, port, Kerberos realm and SSH host key. A profile's
+  `transports`, `ports`, `kerberos_realms` and `ssh_host_keys` take those choices back for the people who write
+  `configuration.py`: the realm decides which KDC the logon goes to (it receives a value derived from the password,
+  which can be attacked offline), and the host key which machine SSH trusts with the credentials. With `ssh_host_keys`,
+  a server without a pinned key trusts only the profile's keys, never the worker's `known_hosts`. See
+  [Configuration](configuration.md#pinning-transport-port-realm-and-host-key).
+- `ports` does not require TLS: whether WinRM uses HTTPS and verifies the certificate stays the server editor's
+  choice, so NTLM or Kerberos over HTTP, or over HTTPS without verification, remain possible within a pinned port.
+  Basic and CredSSP always need HTTPS with verification.
+- A connection refuses a transport or authentication value outside the known choices, so a record written straight
+  to the database cannot slip past these checks with another spelling.
 
 ## Transport
 
@@ -57,11 +63,11 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
   answers at that name. A credential profile can set `allow_insecure_credssp` to lift this in a lab.
 - **Basic** authentication sends the password itself, so the plugin only allows it over HTTPS with verification on.
 - **SSH** always checks the host key, from the pinned key on the Windows server, the credential profile's
-  `ssh_host_keys` or the worker's `known_hosts`; an unknown or changed key fails the connection. There is no way to turn this off. The passphrase of an encrypted
-  private key is never offered to the server as a password. A script over 32 KB is uploaded over SFTP to the
-  account's home folder under a random name (created only if it does not exist), with a checksum sent on stdin:
-  PowerShell refuses a file that changed before it was read, and deletes it. The file holds the script and its
-  parameters, never a secret (those stay on stdin).
+  `ssh_host_keys` or the worker's `known_hosts`; an unknown or changed key fails the connection. There is no way to turn
+  this off. The passphrase of an encrypted private key is never offered to the server as a password. A script over 32 KB
+  is uploaded over SFTP to the account's home folder under a random name (created only if it does not exist), with a
+  checksum sent on stdin: PowerShell refuses a file that changed before it was read, and deletes it. The file holds the
+  script and its parameters, never a secret (those stay on stdin).
 - A new WinRM connection is made per command, as the terraform provider the plugin is ported from does: NTLM
   sessions shared between concurrent calls proved unreliable.
 

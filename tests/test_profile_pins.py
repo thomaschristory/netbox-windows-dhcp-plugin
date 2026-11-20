@@ -65,6 +65,10 @@ def test_transports_matches_the_choice_values():
         ({"ssh_host_keys": ["ssh-ed25519"]}, "invalid entry"),
         # A key pasted under another type's label.
         ({"ssh_host_keys": [ED.replace("ssh-ed25519", "ssh-rsa", 1)]}, "invalid entry"),
+        # Well formed, but a type the SSH transport cannot load: it would only fail when connecting.
+        ({"ssh_host_keys": [_key("ssh-dss")]}, "invalid entry"),
+        ({"ssh_host_keys": [_key("sk-ssh-ed25519@openssh.com")]}, "invalid entry"),
+        ({"ssh_host_keys": [_key("ssh-foo")]}, "invalid entry"),
     ],
 )
 def test_malformed_profiles_are_refused(profile, message):
@@ -97,8 +101,8 @@ def test_kerberos_realms_only_apply_to_winrm_kerberos():
     assert errors(profile, winrm_auth="kerberos", kerberos_realm="EVIL.EXAMPLE") == {
         "kerberos_realm": "credential profile 'p' may not be used with Kerberos realm EVIL.EXAMPLE"
     }
-    # No realm on the server would leave the choice to the worker's krb5.conf.
-    assert "kerberos_realm" in errors(profile, winrm_auth="kerberos", kerberos_realm="")
+    # No realm on the server: the form asks for one first, and otherwise the worker's krb5.conf picks it.
+    assert errors(profile, winrm_auth="kerberos", kerberos_realm="") == {}
     # NTLM, CredSSP and SSH do not use the server's realm.
     assert errors(profile, winrm_auth="ntlm", kerberos_realm="EVIL.EXAMPLE") == {}
     assert errors(profile, winrm_auth="credssp", kerberos_realm="EVIL.EXAMPLE") == {}
@@ -116,7 +120,8 @@ def test_ssh_host_keys():
     assert errors(profile, **ssh, ssh_host_key=ED2) == {
         "ssh_host_key": "credential profile 'p' does not trust this SSH host key"
     }
-    assert "ssh_host_key" in errors(profile, **ssh, ssh_host_key="garbage")
+    for bad in ("garbage", _key("ssh-dss")):
+        assert "not a valid SSH host key" in errors(profile, **ssh, ssh_host_key=bad)["ssh_host_key"]
     assert errors({"ssh_host_keys": []}, **ssh) == {"ssh_host_key": "credential profile 'p' trusts no SSH host key"}
     # WinRM does not use host keys.
     assert errors(profile, ssh_host_key=ED2) == {}
@@ -127,10 +132,15 @@ def test_several_errors_are_reported_together():
     assert set(errors(profile, transport="ssh", port=22, ssh_host_key=ED2)) == {"transport", "port", "ssh_host_key"}
 
 
+def test_ssh_host_key_types():
+    for key_type in conf.SSH_HOST_KEY_TYPES:
+        assert ssh_host_key_blob(_key(key_type)) is not None
+
+
 def test_ssh_host_key_blob():
     assert ssh_host_key_blob(ED) == ssh_host_key_blob(f"{ED} comment") == ssh_host_key_blob(f"host {ED} c")
     assert ssh_host_key_blob(ED) != ssh_host_key_blob(ED2)
-    for bad in (None, 3, "", "ssh-ed25519", "ssh-ed25519 ###", "ssh-ed25519 AAAA"):
+    for bad in (None, 3, "", "ssh-ed25519", "ssh-ed25519 ###", "ssh-ed25519 AAAA", _key("ssh-dss")):
         assert ssh_host_key_blob(bad) is None
 
 

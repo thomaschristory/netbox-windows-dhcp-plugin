@@ -23,9 +23,10 @@ DEFAULTS = {
     # they control and capture the credentials.
     # CredSSP (needed for failover) hands the password to the server, so it requires HTTPS with certificate
     # verification, as Basic does. "allow_insecure_credssp": True on a profile lifts that, for labs only.
-    # A profile can also pin what a server record may otherwise choose (each optional, always a list, an empty list
-    # allows nothing): "transports" (["winrm"], ["ssh"]), "ports" ([5986]), "kerberos_realms" (["CORP.EXAMPLE"], for
-    # WinRM with Kerberos) and "ssh_host_keys" (["ssh-ed25519 AAAA..."]: the only host keys SSH trusts with it).
+    # A profile can also pin what a server record may otherwise choose (each optional, a list or tuple, an empty one
+    # allows nothing it applies to): "transports" (["winrm"], ["ssh"]), "ports" ([5986]; a port does not imply TLS),
+    # "kerberos_realms" (["CORP.EXAMPLE"], for WinRM with Kerberos) and "ssh_host_keys" (["ssh-ed25519 AAAA..."]: the
+    # only host keys SSH trusts with it).
     "credentials": {},
     # Prefix of the branches created by imports when netbox-branching is installed.
     "import_branch_prefix": "dhcp-import",
@@ -320,6 +321,11 @@ def _check_realm(value):
     return value.strip().upper() if isinstance(value, str) and value.strip() else None
 
 
+# Host key types the SSH transport (paramiko) can load. Other well-formed types (ssh-dss, sk-*, certificates) would
+# only fail when connecting, for every server of the profile.
+SSH_HOST_KEY_TYPES = ("ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521")
+
+
 def ssh_host_key_blob(text):
     """
     The key material of an SSH host key written as the server's SSH host key field takes it (authorized_keys format,
@@ -335,6 +341,8 @@ def ssh_host_key_blob(text):
     if len(fields) < 2:
         return None
     key_type, b64 = fields[0], fields[1]
+    if key_type not in SSH_HOST_KEY_TYPES:
+        return None
     try:
         blob = base64.b64decode(b64, validate=True)
         # The key itself starts with its own type name: a key pasted under another type's label is not this key.
@@ -385,18 +393,21 @@ def connection_pin_errors(profile_name, profile, *, transport, port, winrm_auth,
         errors["port"] = f"credential profile {profile_name!r} may not be used with port {port}"
     realms = profile_kerberos_realms(profile_name, profile)
     # Only WinRM with Kerberos uses the server's realm (CredSSP failover writes then borrow it for the user name).
-    if realms is not None and transport == "winrm" and winrm_auth == "kerberos":
-        realm = (kerberos_realm or "").strip().upper()
-        if realm not in realms:
-            # No realm on the server leaves the choice to the worker's krb5.conf, which the profile does not pin.
-            errors["kerberos_realm"] = (
-                f"credential profile {profile_name!r} may not be used with Kerberos realm {realm or '(none)'}"
-            )
+    realm = (kerberos_realm or "").strip().upper()
+    # No realm on the server: the form refuses Kerberos without one, and otherwise the worker's krb5.conf (not the
+    # server's editors) picks it.
+    if realms is not None and transport == "winrm" and winrm_auth == "kerberos" and realm and realm not in realms:
+        errors["kerberos_realm"] = f"credential profile {profile_name!r} may not be used with Kerberos realm {realm}"
     keys = profile_ssh_host_keys(profile_name, profile)
     if keys is not None and transport == "ssh":
         allowed = {ssh_host_key_blob(key) for key in keys}
         if not keys:
             errors["ssh_host_key"] = f"credential profile {profile_name!r} trusts no SSH host key"
+        elif ssh_host_key and ssh_host_key_blob(ssh_host_key) is None:
+            errors["ssh_host_key"] = (
+                f"not a valid SSH host key for credential profile {profile_name!r} (want one of "
+                f"{', '.join(SSH_HOST_KEY_TYPES)})"
+            )
         elif ssh_host_key and ssh_host_key_blob(ssh_host_key) not in allowed:
             errors["ssh_host_key"] = f"credential profile {profile_name!r} does not trust this SSH host key"
     return errors

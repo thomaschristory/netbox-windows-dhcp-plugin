@@ -28,7 +28,7 @@ state and device](images/servers-list.webp)
 | Verify host | on | Check the TLS certificate (WinRM) or the host key (SSH). Cannot be turned off for SSH, nor for Basic |
 | Kerberos realm | empty | Required with Kerberos, for example `CORP.EXAMPLE` |
 | Kerberos SPN | empty | Empty means `WSMAN/<host>` |
-| SSH host key | empty | The server's host key in `authorized_keys` form; when empty, the worker's `~/.ssh/known_hosts` is used |
+| SSH host key | empty | The server's host key in `authorized_keys` form; when empty, the worker's `~/.ssh/known_hosts` is used, unless the credential profile sets `ssh_host_keys` (then only those keys) |
 | Remote DHCP server | empty | Run the cmdlets against this server through the host (`computer_name`). See [the double hop](windows-setup.md#managing-a-dhcp-server-through-another-host) |
 | Import VRF | empty (global) | VRF of the prefixes, IP ranges and IP addresses that imports create or reuse |
 | Sync enabled | on | Push NetBox changes to this server. Off stops pushes (manual and automatic), not imports or dry runs |

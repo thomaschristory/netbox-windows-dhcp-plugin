@@ -21,7 +21,8 @@ lease read and the scheduler also leaves a [sync run](servers.md#sync-runs).
 
 - The same `configuration.py` and `PLUGINS_CONFIG` as the web service, including every credential profile.
 - The environment variables and files the profiles read (`password_env`, `password_file`, ...).
-- For SSH without a pinned host key: the `known_hosts` file of the user the worker runs as.
+- For SSH without a pinned host key: the `known_hosts` file of the user the worker runs as (not read when the
+  credential profile sets `ssh_host_keys`).
 - For Kerberos: the GSSAPI libraries and `krb5.conf`.
 - For an internal CA: `REQUESTS_CA_BUNDLE` pointing at a bundle that includes it.
 - Network access to the Windows servers' WinRM or SSH port.

@@ -10,7 +10,13 @@ All notable changes to this project are documented here. The format follows
 - Credential profiles can pin what a Windows server's editors otherwise choose: `transports` (WinRM, SSH), `ports`,
   `kerberos_realms` (WinRM with Kerberos) and `ssh_host_keys`. With `ssh_host_keys`, a server without its own pinned
   key trusts only the profile's keys, not the worker's `known_hosts`. Each key is optional and must be a list; an
-  empty list allows nothing. Checked when a server is saved and before every connection (#103).
+  empty list allows nothing it applies to. Checked when a server is saved and before every connection (#103).
+
+### Changed
+
+- Connections refuse a transport, WinRM authentication or failover authentication value outside the known choices
+  (only possible for a record written straight to the database, `KERBEROS` or `Basic`, say), so every check reads the
+  value the transport uses. Failover authentication only opens a second logon for `credssp` (#103).
 
 ## [0.5.0] - 2026-11-20
 

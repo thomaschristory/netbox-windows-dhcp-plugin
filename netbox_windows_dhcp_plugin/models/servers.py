@@ -198,9 +198,10 @@ class WindowsServer(JobsMixin, PrimaryModel):
     @property
     def separate_failover_auth(self):
         """The authentication failover writes use when it differs from the server's own, else an empty string."""
-        if self.transport != TransportChoices.WINRM or not self.failover_auth or self.failover_auth == self.winrm_auth:
+        # Only CredSSP: any other value (a record written straight to the database) is refused by the connection check.
+        if self.transport != TransportChoices.WINRM or self.failover_auth != FailoverAuthChoices.CREDSSP:
             return ""
-        return self.failover_auth
+        return "" if self.winrm_auth == WinRMAuthChoices.CREDSSP else self.failover_auth
 
     @property
     def effective_port(self):
@@ -219,7 +220,8 @@ class WindowsServer(JobsMixin, PrimaryModel):
             raise ValidationError(
                 {
                     "verify_tls": _(
-                        "SSH always checks the host key; set an SSH host key or use the worker's known_hosts."
+                        "SSH always checks the host key; set an SSH host key or use the worker's known_hosts (or "
+                        "the credential profile's ssh_host_keys)."
                     )
                 }
             )

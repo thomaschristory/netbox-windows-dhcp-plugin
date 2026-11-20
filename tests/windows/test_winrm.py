@@ -181,6 +181,9 @@ def test_kerberos_user() -> None:
     assert kerberos_user("EXAMPLE\\svc") == "svc"
     assert kerberos_user("svc@example.local") == "svc"
     assert kerberos_user("svc", "example.local") == "svc@EXAMPLE.LOCAL"
+    # The same realm the credential profile's kerberos_realms check reads (issue #103).
+    assert kerberos_user("svc", " example.local ") == "svc@EXAMPLE.LOCAL"
+    assert kerberos_user("svc", "  ") == "svc"
 
 
 @pytest.mark.parametrize(

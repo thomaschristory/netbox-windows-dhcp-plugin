@@ -37,7 +37,7 @@ error names the step, the cmdlet and the PowerShell message.
 | `winrm: PowerShell did not finish within N s` | A command kept the connection alive without finishing for ten times `command_timeout` (at least 10 minutes). Check the DHCP service on the server; raise `command_timeout` only if the server is just slow |
 | `winrm: ...` with `Exceeded 0 redirects` | The WinRM endpoint answered with an HTTP redirect, which the plugin never follows. Point **Host** and **Port** at the real listener |
 | `PowerShell sent more than 256 MiB of output` | One command returned more than the plugin accepts. Please open an issue with the kind of object and how many the server holds |
-| `ssh: host ... is not in ...known_hosts; add it` | Paste the host key into **SSH host key**, or add it to the worker's `known_hosts` |
+| `ssh: host ... is not in ...known_hosts; add it` | Paste the host key into **SSH host key**, or add it to the worker's `known_hosts` (or to the profile's `ssh_host_keys`, which then replaces `known_hosts`) |
 | `ssh: host key mismatch ...` | The server's key changed, or another machine answers on that address. Check before updating the pinned key |
 | `ssh: authentication failed: ...` | Wrong user name, password or key, or the key is not authorised on the server. The passphrase of an encrypted key is not tried as the account's password |
 | `ssh: parsing private_key: ...` | The key cannot be read: it must be an Ed25519, ECDSA or RSA key in PEM or OpenSSH format, and an encrypted key needs its passphrase as the profile's `password` |

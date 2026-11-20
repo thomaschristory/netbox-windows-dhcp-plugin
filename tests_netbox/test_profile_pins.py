@@ -75,12 +75,17 @@ class ServerCleanTest(TestCase):
             self.assert_field_error("kerberos_realm", server(winrm_auth="kerberos", kerberos_realm="EVIL.EXAMPLE"))
             # NTLM does not use the realm.
             server(kerberos_realm="EVIL.EXAMPLE").full_clean()
+            # Without a realm, the form's own message comes first.
+            self.assert_field_error(
+                "kerberos_realm", server(winrm_auth="kerberos"), "A realm is required for Kerberos authentication."
+            )
 
     def test_ssh_host_key(self):
         with override_settings(PLUGINS_CONFIG=config(ssh_host_keys=[KEY])):
             server(transport="ssh", ssh_host_key=f"{KEY} dhcp1").full_clean()
             server(transport="ssh").full_clean()  # the connection trusts only the profile's keys
             self.assert_field_error("ssh_host_key", server(transport="ssh", ssh_host_key=OTHER_KEY), "does not trust")
+            self.assert_field_error("ssh_host_key", server(transport="ssh", ssh_host_key="junk"), "not a valid")
         with override_settings(PLUGINS_CONFIG=config(ssh_host_keys=[])):
             self.assert_field_error("ssh_host_key", server(transport="ssh"), "trusts no SSH host key")
 
@@ -118,16 +123,45 @@ class ConnectionCheckTest(SimpleTestCase):
                 with self.assertRaisesMessage(CredentialError, message):
                     build_runner(srv)
 
-    @override_settings(PLUGINS_CONFIG=config(kerberos_realms=["CORP.EXAMPLE"]))
+    @override_settings(PLUGINS_CONFIG=config(kerberos_realms=["CORP.EXAMPLE"], username="admin"))
     def test_failover_client_is_checked_too(self):
         srv = server(winrm_auth="kerberos", kerberos_realm="EVIL.EXAMPLE", failover_auth="credssp")
         with self.assertRaisesMessage(CredentialError, "Kerberos realm EVIL.EXAMPLE"):
             build_failover_client(srv, runner=object())
-        srv.kerberos_realm = "corp.example"
+        srv.kerberos_realm = " corp.example "
         runner = build_runner(srv, auth="credssp")
-        # The CredSSP user name borrows the (allowed) realm.
-        self.assertEqual(runner.cfg.username, "lab\\admin")
+        # The CredSSP user name borrows the (allowed) realm, in the form the check read it.
+        self.assertEqual(runner.cfg.username, "admin@CORP.EXAMPLE")
+        self.assertEqual(runner.cfg.kerberos_realm, "CORP.EXAMPLE")
         self.assertIsNotNone(build_failover_client(srv, runner=object()))
+
+    @override_settings(PLUGINS_CONFIG=config(kerberos_realms=["CORP.EXAMPLE"]))
+    def test_values_outside_the_choices_are_refused(self):
+        # Records written straight to the database: the transport would read these its own way (WinRM lower-cases
+        # the method, anything but "ssh" is WinRM) while exact comparisons in the checks would miss them.
+        cases = [
+            ({"transport": "WINRM"}, "unknown transport 'WINRM'"),
+            ({"transport": "telnet"}, "unknown transport 'telnet'"),
+            ({"winrm_auth": "KERBEROS", "kerberos_realm": "EVIL.EXAMPLE"}, "unknown winrm_auth 'KERBEROS'"),
+            ({"winrm_auth": "Basic", "winrm_https": False}, "unknown winrm_auth 'Basic'"),
+            ({"winrm_auth": "CREDSSP", "winrm_https": False}, "unknown winrm_auth 'CREDSSP'"),
+            ({"failover_auth": "kerberos", "kerberos_realm": "EVIL.EXAMPLE"}, "unknown failover_auth 'kerberos'"),
+            ({"failover_auth": "CredSSP", "winrm_https": False}, "unknown failover_auth 'CredSSP'"),
+        ]
+        for fields, message in cases:
+            srv = server(**fields)
+            with self.subTest(fields=fields):
+                with self.assertRaisesMessage(CredentialError, message):
+                    build_client(srv, runner=object())
+                with self.assertRaisesMessage(CredentialError, message):
+                    build_failover_client(srv, runner=object())
+                with self.assertRaisesMessage(CredentialError, message):
+                    build_runner(srv)
+
+    def test_only_credssp_makes_a_second_client(self):
+        self.assertEqual(server(failover_auth="kerberos").separate_failover_auth, "")
+        self.assertEqual(server(failover_auth="CREDSSP").separate_failover_auth, "")
+        self.assertEqual(server(failover_auth="credssp").separate_failover_auth, "credssp")
 
     @override_settings(PLUGINS_CONFIG=config(ssh_host_keys=[KEY, OTHER_KEY]))
     def test_ssh_runner_trusts_only_the_profile_keys(self):
