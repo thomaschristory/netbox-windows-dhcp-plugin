@@ -15,6 +15,7 @@ from ..conf import (
     host_allowed,
     insecure_credssp_allowed,
     normalise_host,
+    server_kerberos_realm,
 )
 
 __all__ = ("WindowsServer",)
@@ -332,7 +333,7 @@ class WindowsServer(JobsMixin, PrimaryModel):
                 # An unknown transport has its own error.
                 port=self.port or DEFAULT_PORTS.get((self.transport, self.winrm_https)),
                 winrm_auth=self.winrm_auth,
-                kerberos_realm=self.kerberos_realm,
+                kerberos_realm=server_kerberos_realm(self),
                 ssh_host_key=self.ssh_host_key,
             )
         except CredentialError as exc:

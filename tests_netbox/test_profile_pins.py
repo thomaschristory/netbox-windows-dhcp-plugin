@@ -9,6 +9,7 @@ from core.models import Job
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase, TestCase, override_settings
+from utilities.testing import APITestCase
 
 from netbox_windows_dhcp_plugin import conf
 from netbox_windows_dhcp_plugin.choices import TransportChoices
@@ -24,7 +25,7 @@ from netbox_windows_dhcp_plugin.jobs import TestConnectionJob
 from netbox_windows_dhcp_plugin.models import FailoverRelationship, WindowsServer
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 
-from .fixtures import windows_server
+from .fixtures import PluginAPIMixin, windows_server
 
 KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGbM5L1hQdQHwPVzFXDyOcnRTMUXN0zXV0fRSC0c0b7w"
 OTHER_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINPId/9cRTqDqanPcCm3ESFRFp0vxBnfZ0+ZIkyc8tiF"
@@ -345,19 +346,30 @@ class FailoverSecretPinsTest(TestCase):
             relationship.full_clean()
             relationship.save()
 
-    def test_an_import_records_what_windows_has(self):
-        # sync/mapping.py turns check_partner_host off for imports, new relationships and updates alike.
+    def test_a_relationship_read_without_its_secret_profile_behaves_as_a_full_read(self):
+        # Django loads a deferred field through refresh_from_db, which remembers the stored value: unchanged, it
+        # saves like a fully read relationship, and a new choice is still checked.
         self.insecure_primary()
-        partner = windows_server("dhcp3")
-        new = FailoverRelationship(name="ha2", primary_server=self.server, partner_server=partner)
-        new.shared_secret_profile = "ha"
-        new.check_partner_host = False
-        relationship = FailoverRelationship.objects.get(pk=self.relationship.pk)
-        relationship.check_partner_host = False
-        relationship.shared_secret_profile = "ha"
-        relationship.max_client_lead_time = 7200
+        only = ("pk", "name", "primary_server", "partner_server")
+        relationship = FailoverRelationship.objects.only(*only).get(pk=self.relationship.pk)
         with self.settings():
-            new.full_clean()
+            relationship.full_clean()
+        relationship = FailoverRelationship.objects.only(*only).get(pk=self.relationship.pk)
+        relationship.shared_secret_profile = "ha"  # set without reading the stored value first
+        self.assert_secret_refused(relationship, "allow_insecure_credssp")
+
+    def test_refresh_from_db_forgets_an_edit(self):
+        FailoverRelationship.objects.filter(pk=self.relationship.pk).update(shared_secret_profile="")
+        relationship = FailoverRelationship.objects.get(pk=self.relationship.pk)
+        FailoverRelationship.objects.filter(pk=self.relationship.pk).update(shared_secret_profile="ha")
+        self.insecure_primary()
+        # Read again: "ha" is now the stored value, not a choice made here.
+        relationship.refresh_from_db(fields=["shared_secret_profile"])
+        with self.settings():
+            relationship.full_clean()
+        relationship.shared_secret_profile = ""
+        relationship.refresh_from_db()
+        with self.settings():
             relationship.full_clean()
 
     def test_same_profile_as_the_server_saves(self):
@@ -386,3 +398,44 @@ class FailoverSecretPinsTest(TestCase):
         with self.settings(transports=["ssh"]), self.assertRaises(ValidationError) as ctx:
             relationship.full_clean()
         self.assertIn("may not be used over winrm", " ".join(ctx.exception.message_dict["shared_secret_profile"]))
+
+
+class FailoverSecretAPITest(PluginAPIMixin, APITestCase):
+    """Through the REST API: an edit that keeps the secret profile saves, choosing a refused one does not."""
+
+    user_permissions = (
+        "netbox_windows_dhcp_plugin.view_windowsserver",
+        "netbox_windows_dhcp_plugin.change_failoverrelationship",
+    )
+
+    def setUp(self):
+        super().setUp()
+        self.server = windows_server(winrm_https=False, failover_auth="credssp")
+        self.relationship = FailoverRelationship.objects.create(
+            name="ha", primary_server=self.server, partner_server=windows_server("dhcp2"), shared_secret_profile="ha"
+        )
+        profiles = {
+            "lab": {"username": "lab\\admin", "password": "x", "allow_insecure_credssp": True},
+            "ha": {"secret": "s3", "allowed_hosts": ["*.example.com"]},
+            "ha-lab": {"secret": "s3", "allowed_hosts": ["*.example.com"], "allow_insecure_credssp": True},
+        }
+        override = override_settings(
+            PLUGINS_CONFIG={**settings.PLUGINS_CONFIG, "netbox_windows_dhcp_plugin": {"credentials": profiles}}
+        )
+        override.enable()
+        self.addCleanup(override.disable)
+
+    def patch(self, data):
+        url = f"/api/plugins/windows-dhcp/failover-relationships/{self.relationship.pk}/"
+        return self.client.patch(url, data, format="json", **self.header)
+
+    def test_description_edit_saves(self):
+        response = self.patch({"description": "edited"})
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_choosing_a_refusing_secret_profile_is_refused(self):
+        FailoverRelationship.objects.filter(pk=self.relationship.pk).update(shared_secret_profile="ha-lab")
+        response = self.patch({"shared_secret_profile": "ha"})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("allow_insecure_credssp", str(response.data))
+        self.assertEqual(self.patch({"shared_secret_profile": "ha-lab"}).status_code, 200)

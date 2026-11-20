@@ -330,15 +330,15 @@ relationships, MAC filters, list switches.
   (`partner_failovers`). The partner is the DHCP server itself, so its Windows server's `computer_name` when it
   connects through a management host, else its `host`; short and fully qualified names match. A partner without a
   Windows server in NetBox is not pushed (there is no host to check the secret's profile against), and import
-  refuses a relationship already held with the other server as primary. The shared secret comes from the
-  credential profile in `shared_secret_profile` (key `secret`), is checked against both partners' hosts when saved
-  and before each push, and only travels from the profile to the cmdlet. It rides the primary server's connection,
-  so `conf.check_secret_connection` (on save when the relationship is new or its secret profile or primary changes, skipped for imports like the partner check, and before each push) applies the secret
-  profile's pins (#103) to that connection; unless the secret profile is the server's own, over SSH the server must
-  pin a host key from the secret profile's `ssh_host_keys`, and CredSSP without verified HTTPS also needs the secret
-  profile's `allow_insecure_credssp`; records only say whether authentication is
-  on, so a rotated secret is not noticed. Changing the partner or turning authentication off is refused (when the
-  push is planned). A scope a
+  refuses a relationship already held with the other server as primary. The shared secret comes from the credential
+  profile in `shared_secret_profile` (key `secret`), is checked against both partners' hosts when saved and before each
+  push, and only travels from the profile to the cmdlet. It rides the primary server's connection, so
+  `conf.check_secret_connection` (on save when the relationship is new or its secret profile or primary changes, skipped
+  for imports through `check_secret_profile`, and before each push) applies the secret profile's pins
+  (#103) to that connection; unless the secret profile is the server's own, over SSH the server must pin a host key from
+  the secret profile's `ssh_host_keys`, and CredSSP without verified HTTPS also needs the secret profile's
+  `allow_insecure_credssp`; records only say whether authentication is on, so a rotated secret is not noticed. Changing
+  the partner or turning authentication off is refused (when the push is planned). A scope a
   managed relationship no longer lists may be deleted: it leaves the relationship first in the same push (after a
   lease check, so a refused delete changes nothing; a scope whose delete fails stays in the relationship). A scope
   only leaves a relationship that NetBox manages and that is unchanged on Windows since the last push, and never

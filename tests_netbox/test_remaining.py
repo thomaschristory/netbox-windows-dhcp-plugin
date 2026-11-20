@@ -431,6 +431,15 @@ class PushRemainingTest(RemainingObjectsMixin, TestCase):
         self.assertNotIn("unexpected error", run.error)
         self.assertEqual(self.fake.failover_secrets, {})
 
+    def test_an_import_updates_a_relationship_whose_secret_profile_refuses_the_connection(self):
+        # Issue #103: an import records what Windows has, even when the secret profile now refuses the primary's
+        # connection (the push reports that when it would send the secret).
+        FailoverRelationship.objects.update(shared_secret_profile="ssh-only")
+        self.fake.failovers["ha"].update(max_client_lead_time=7200, enable_auth=True)
+        self.apply_all()
+        relationship = FailoverRelationship.objects.get()
+        self.assertEqual((relationship.max_client_lead_time, relationship.shared_secret_profile), (7200, "ssh-only"))
+
     def test_deleting_the_partner_server_is_refused(self):
         # Deleting the relationship with it would make the next push remove failover from the primary on Windows.
         self._run()

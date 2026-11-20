@@ -45,7 +45,8 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
   Basic always needs HTTPS with verification, and so does CredSSP unless the profile sets `allow_insecure_credssp`.
 - A failover shared secret travels over the primary server's own connection, so the secret profile's limits
   (`transports`, `ports`, `kerberos_realms`, `ssh_host_keys`) and its `allow_insecure_credssp` govern that connection
-  too, not only the server's own profile.
+  too, not only the server's own profile. Unless the secret profile is the server's own, a server reached over SSH
+  must then pin its own host key, one of the secret profile's `ssh_host_keys`.
 - A connection refuses a transport or authentication value outside the known choices, so a record written straight
   to the database cannot slip past these checks with another spelling.
 
