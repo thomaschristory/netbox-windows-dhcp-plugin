@@ -11,7 +11,7 @@ over WinRM or SSH.
     ran in full against two Windows Server 2022 DHCP servers, over WinRM (HTTP and HTTPS) and SSH; release candidate
     testers ran Windows Server 2025. 0.2.0 passed the full lab tests on two Windows Server 2025 servers. Kerberos, SSH
     keys and `-ComputerName` (with CredSSP) passed in a domain lab, and so did Kerberos with CredSSP only for
-    failover writes (0.5.0); failover writes need CredSSP or SSH with a password (see [Limitations](limitations.md)). Try it on a lab server before
+    failover writes (0.5.0, and 0.6.0 over HTTPS and HTTP); failover writes need CredSSP or SSH with a password (see [Limitations](limitations.md)). Try it on a lab server before
     a production one.
 
 ## What it does

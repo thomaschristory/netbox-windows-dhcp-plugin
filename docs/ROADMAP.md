@@ -134,6 +134,9 @@ netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
     - **Domain lab (2026-11-19/20):** two Windows Server 2025 DHCP servers joined to a domain. `make lab-e2e` passed
       with Kerberos for normal calls and CredSSP for failover writes (create, replicate, delete); SSH key logon
       `make test-lab` 41 passed with the long-script test; a 1 MB script over SSH runs in 7 s through the file.
-12. **In progress (next release).** Credential profiles pin `transports`, `ports`, `kerberos_realms` and `ssh_host_keys`
-    (#103), checked on save and before every connection. The Kerberos realm and SSH host key pins are unit and NetBox
-    tested; not yet run against the domain lab.
+12. **Done: 0.6.0 (2026-11-21).** Credential profiles pin `transports`, `ports`, `kerberos_realms` and `ssh_host_keys`
+    (#103), checked on save and before every connection; a failover secret profile's limits apply to the connection
+    that carries the secret; stored values outside the choices are refused. Follow-up: #147 (require verified HTTPS).
+    - **Domain lab (2026-11-20):** `make lab-e2e` passed with Kerberos over HTTPS and CredSSP for failover writes;
+      over HTTP it passed up to the failover delete, when the nightly shutdown cut the run. The pins themselves are
+      unit and NetBox tested.
