@@ -12,8 +12,9 @@ All notable changes to this project are documented here. The format follows
   `00-24-e4-2a-*`). Saving a policy now refuses MAC conditions Windows refuses (colons, a full address without 12
   digits) or would read as other devices (a group that is not two hex digits, half a byte before the wildcard), with
   a message saying how to write it. A policy saved earlier with such a condition is shown as not pushed until its
-  condition is fixed, and its other fields can still be edited. When Windows already holds that policy, the other
-  deletes of the push go ahead; a new one pauses them like any policy that cannot be pushed (#110).
+  condition is fixed, and its other fields can still be edited. When Windows already holds that policy and nothing
+  else is wrong with it, the push's other deletes go ahead; otherwise they wait, as for any policy that cannot be
+  pushed (#110).
 
 ## [0.6.0] - 2026-11-21
 

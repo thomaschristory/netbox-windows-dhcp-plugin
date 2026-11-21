@@ -315,10 +315,28 @@ def test_misread_mac_condition_of_a_new_policy_pauses_deletes(client, fake):
         if r.kind == "policy" and r.fields["scope_id"]
         else r
         for r in wanted()
-        if r.kind != "reservation" and not r.key.startswith("10.1.0.0/10.1.0.50")
+        # The old policy's option value goes too, or its own refusal (no such policy) would pause the deletes.
+        if r.kind != "reservation" and not r.key.startswith("10.1.0.0/10.1.0.50") and not r.fields.get("policy")
     ]
     p, _ = run(client, source, managed)
-    assert any(s.waiting for s in p.skipped)
+    assert any(s.waiting for s in p.skipped), by_key(p)
+
+
+def test_changed_option_value_of_a_misread_policy_keeps_its_old_copy(client, fake):
+    """A policy value given a user class gets a new key: while it waits on the policy, the old one is not deleted."""
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    source = []
+    for r in wanted():
+        if r.kind == "policy" and r.fields["scope_id"]:
+            r = policy(criteria={"mac_address": ["EQ", "0-15-5d*"]})
+        elif r.kind == "option" and r.fields.get("policy"):
+            r = option("10.1.0.0", 6, ["10.1.0.2", "a,b"], user_class="Phones", policy="Printers")
+        source.append(r)
+    p, _ = run(client, source, managed)
+    old = ("option", "10.1.0.0/6;policy=printers")
+    assert old not in {(c.kind, c.key) for c in p.changes}, p.changes
+    assert any((s.change.kind, s.change.key) == old and s.waiting for s in p.skipped), by_key(p)
 
 
 def test_values_of_vendor_options_need_a_vendor_definition(client):

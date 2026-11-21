@@ -255,6 +255,7 @@ class PolicyMacConditionTest(TestCase):
             "02:4e:42:ab*": "Windows refuses colons",
             "02-4-42-ab*": "two hex digits",
             "02-4e-42-0a-0b": "12 hex digits",
+            "2-4e-42-a-b-c": "12 hex digits",
             "024e4*": "whole bytes",
         }
         for value, text in cases.items():
@@ -285,6 +286,15 @@ class PolicyMacConditionTest(TestCase):
         policy.full_clean()
         # Changing the conditions is judged again.
         policy.criteria = {"mac_address": ["EQ", "02-4-42-ab*"]}
+        with self.assertRaises(ValidationError):
+            policy.full_clean()
+
+    def test_a_save_that_leaves_the_conditions_out_does_not_mark_them_stored(self):
+        policy = self.policy("02-4e-42-ab*")
+        policy.save()
+        policy.criteria = {"mac_address": ["EQ", "02-4-42-ab*"]}
+        policy.description = "second floor"
+        policy.save(update_fields=["description"])
         with self.assertRaises(ValidationError):
             policy.full_clean()
 

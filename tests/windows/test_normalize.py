@@ -189,6 +189,8 @@ def test_canonical_policy_criterion() -> None:
         ("02-4e-42-a*", "groups"),
         ("02--4e-42-ab*", "groups"),
         ("02-4e-42-0a-0b-0c-", "groups"),
+        ("2-4e-42-a-b-c", "length"),
+        ("024-e42-0a0b-0c", "groups"),
         ("-*", "groups"),
         ("------*", "groups"),
         ("02-4e-42-0a-0b", "length"),

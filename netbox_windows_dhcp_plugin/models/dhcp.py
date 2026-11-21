@@ -876,10 +876,12 @@ class WindowsPolicy(_ParentMoveValidationMixin, PrimaryModel):
         return instance
 
     def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-        # What was just written is the stored value now.
-        if "criteria" in self.__dict__:
+        result = super().save(*args, **kwargs)
+        # What was just written is the stored value now (not when the save left the conditions out).
+        update_fields = kwargs.get("update_fields")
+        if (update_fields is None or "criteria" in update_fields) and "criteria" in self.__dict__:
             self._stored_criteria = deepcopy(self.criteria)
+        return result
 
     def refresh_from_db(self, using=None, fields=None, from_queryset=None):
         super().refresh_from_db(using=using, fields=fields, from_queryset=from_queryset)
@@ -1376,17 +1378,17 @@ def _mac_condition_problem(value):
         return "characters"
     groups = body.split("-")
     digits = "".join(groups)
-    if (len(groups) > 1 and any(len(g) != 2 for g in groups)) or (wildcard and text != "*" and not digits):
-        return "groups"
     if not wildcard and len(digits) != 12:
         return "length"
+    if (len(groups) > 1 and any(len(g) != 2 for g in groups)) or (wildcard and text != "*" and not digits):
+        return "groups"
     if wildcard and len(digits) % 2:
         return "half"
     return None
 
 
 _MAC_CONDITION_MESSAGES = {
-    "spaces": _("remove the spaces around it."),
+    "spaces": _("remove the spaces or line breaks around it."),
     "characters": _("use hex digits, with dashes or no separator (02-4e-42-ab-cd-ef); Windows refuses colons."),
     "groups": _(
         "write each byte as two hex digits, separated by dashes or with no separator; Windows ignores the dashes "

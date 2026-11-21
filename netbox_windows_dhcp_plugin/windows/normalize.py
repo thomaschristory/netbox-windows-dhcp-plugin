@@ -194,10 +194,10 @@ def mac_condition_problem(value: str) -> str | None:
         return "characters"
     groups = body.split("-")
     digits = "".join(groups)
-    if (len(groups) > 1 and any(len(g) != 2 for g in groups)) or (wildcard and text != "*" and not digits):
-        return "groups"
     if not wildcard and len(digits) != 12:
         return "length"
+    if (len(groups) > 1 and any(len(g) != 2 for g in groups)) or (wildcard and text != "*" and not digits):
+        return "groups"
     if wildcard and len(digits) % 2:
         return "half"
     return None

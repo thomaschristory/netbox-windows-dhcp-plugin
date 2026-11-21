@@ -291,9 +291,9 @@ def parents(kind: str, fields: Mapping[str, Any]) -> list[Key]:
 
 
 _MAC_CONDITION_HINTS = {
-    "spaces": "remove the spaces around it",
+    "spaces": "remove the spaces or line breaks around it",
     "characters": "use hex digits with dashes or no separator; Windows refuses colons",
-    "groups": "write each byte as two hex digits; Windows ignores the dashes and pads an odd digit count on the left",
+    "groups": "write each byte as two hex digits; Windows ignores the dashes of a prefix and pads it on the left",
     "length": "a MAC address has 12 hex digits; end it with * to match a prefix",
     "half": "a prefix must be whole bytes; Windows pads an odd number of digits on the left",
 }
@@ -317,9 +317,16 @@ def _mac_condition_reason(record: Record) -> str | None:
 
 
 def _unpushable(
-    record: Record, skipped_option_ids: set[int], defined: set[str] | None, current: Record | None = None
+    record: Record,
+    skipped_option_ids: set[int],
+    defined: set[str] | None,
+    current: Record | None = None,
+    mac: bool = True,
 ) -> str | None:
-    """Why NetBox data cannot become a Windows object, or None. ``current`` is the Windows twin, if any."""
+    """
+    Why NetBox data cannot become a Windows object, or None. ``current`` is the Windows twin, if any. ``mac=False``
+    leaves out the MAC condition check, to see whether a policy has another fault.
+    """
     f = record.fields
     exists = current is not None
     # netbox_state marks extra copies with "#<pk>", and a reservation without an address ends in "/": neither names
@@ -340,7 +347,7 @@ def _unpushable(
             f"policy {f.get('name')}: its stored IP ranges are not a list of [start, end] IPv4 address pairs; fix "
             "them in NetBox"
         )
-    reason = _mac_condition_reason(record)
+    reason = _mac_condition_reason(record) if mac else None
     if reason:
         return reason
     if record.kind == "scope":
@@ -1045,21 +1052,30 @@ def plan(
     refused: dict[Key, str] = {}
     notices: set[Key] = set()
     for record in source:
-        reason = (
-            _unpushable(record, skipped_ids, defined, target_index.get((record.kind, record.key)))
-            or orders.get((record.kind, record.key))
-            or _missing_policy(record, policies)
-            or conflicts.get((record.kind, record.key))
-        )
+        key = (record.kind, record.key)
+        current = target_index.get(key)
+        others = orders.get(key) or _missing_policy(record, policies) or conflicts.get(key)
+        reason = _unpushable(record, skipped_ids, defined, current) or others
         if reason is not None:
-            refused[record.kind, record.key] = reason
-            if (record.kind, record.key) in target_index and reason == _mac_condition_reason(record):
-                notices.add((record.kind, record.key))
-    # A policy whose only fault is its MAC spelling, held by Windows under the same name, is shown as not pushed but
-    # does not pause the deletes of its family: the pause guards against a renamed or moved object (the old one
-    # deleted, the new one refused), and this one is neither. Its children likewise (#110).
-    pause_children = _waiting_children(source, {k: v for k, v in refused.items() if k not in notices})
-    pause_base = {k for k in refused if k not in notices} | set(pause_children)
+            refused[key] = reason
+            # Refused for its MAC spelling alone, and Windows holds it under the same key (#110).
+            if (
+                current is not None
+                and _mac_condition_reason(record)
+                and not others
+                and not _unpushable(record, skipped_ids, defined, current, mac=False)
+            ):
+                notices.add(key)
+    # Such a policy is shown as not pushed but does not pause the deletes of its family: the pause guards against a
+    # renamed or moved object (the old one deleted, the new one refused), and this one is the object Windows already
+    # holds. Not when a parent is refused for another reason, and not for its waiting children Windows does not hold
+    # yet: a changed option value of the policy gets a new key, and its old copy must not be deleted.
+    fields_of = {(r.kind, r.key): r.fields for r in source}
+    notices = {k for k in notices if not any(p in refused and p not in notices for p in parents(k[0], fields_of[k]))}
+    real = {k: v for k, v in refused.items() if k not in notices}
+    real_children = _waiting_children(source, real)
+    new_children = {k for k in _waiting_children(source, refused) if k not in target_index}
+    pause_base = set(real) | set(real_children) | new_children
     refused.update(_waiting_children(source, refused))
     pushable = []
     for record in source:

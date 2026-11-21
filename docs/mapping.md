@@ -176,8 +176,9 @@ ignores the dashes and pads an odd number of digits with a zero on the left, so 
 `00-24-e4-2a-*` and `02-4-42-*` would match `00-24-42-*`: other devices than the ones meant. NetBox refuses those
 spellings when a policy's conditions are saved, and a push names a policy that still holds one (saved by an earlier
 version, or by a branch merge) as not pushed until it is fixed. When Windows already holds that policy under its
-name, the push's other deletes still go ahead; a policy Windows does not hold pauses the deletes of its part of the
-configuration, as any policy that cannot be pushed does.
+name and nothing else is wrong with it, the push's other deletes still go ahead; otherwise (a new policy, or a
+changed option value of it) the deletes of its part of the configuration wait, as for any policy that cannot be
+pushed.
 
 A policy without criteria is not pushed (Windows requires at least one), nor are two policies with the same
 processing order at the same level. Windows numbers the policies of a level 1, 2, 3... without gaps, so give them
