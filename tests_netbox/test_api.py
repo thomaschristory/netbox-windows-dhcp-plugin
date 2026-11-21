@@ -589,3 +589,35 @@ class TestConnectionActionTest(PluginAPIMixin, APITestCase):
         self.add_permissions("netbox_windows_dhcp_plugin.view_windowsserver")
         response = self.client.post(self.url, {}, format="json", **self.header)
         self.assertEqual(response.status_code, 404)
+
+
+class PolicyMacConditionAPITest(PluginAPIMixin, APITestCase):
+    """#110: through the REST API, a MAC condition saved before the check does not block other edits."""
+
+    user_permissions = (
+        "netbox_windows_dhcp_plugin.view_windowspolicy",
+        "netbox_windows_dhcp_plugin.change_windowspolicy",
+    )
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = windows_servers(1)[0]
+        cls.lan = scope(cls.server, "10.1.0.0/24")
+        cls.policy = WindowsPolicy.objects.create(
+            server=cls.server, scope=cls.lan, name="printers", criteria={"mac_address": ["EQ", "02-4e-42-ab*"]}
+        )
+        # As 0.6.0 could store it: written without the check.
+        WindowsPolicy.objects.filter(pk=cls.policy.pk).update(criteria={"mac_address": ["EQ", "02-4e-42-a*"]})
+
+    def patch(self, data):
+        url = f"/api/plugins/windows-dhcp/windows-policies/{self.policy.pk}/"
+        return self.client.patch(url, data, format="json", **self.header)
+
+    def test_description_edit_saves(self):
+        response = self.patch({"description": "second floor"})
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_condition_change_is_judged(self):
+        response = self.patch({"criteria": {"mac_address": ["EQ", "02-4-42-ab*"]}})
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn("criteria", response.data)

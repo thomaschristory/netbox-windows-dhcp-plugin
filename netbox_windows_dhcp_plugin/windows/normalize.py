@@ -183,6 +183,7 @@ def mac_condition_problem(value: str) -> str | None:
     wildcard). ``models/dhcp.py`` holds a copy (models must not import this module).
     """
     text = str(value)
+    # unverified: how Windows takes spaces around the value (refused here: say what is meant).
     if text != text.strip():
         return "spaces"
     if "*" in text[:-1]:

@@ -310,7 +310,9 @@ relationships, MAC filters, list switches.
   the fake refuses and stores the same way. `normalize.mac_condition_problem` (copied in `models/dhcp.py`, which
   must not import it) names what Windows refuses or reads as other devices (a group that is not two digits, half a
   byte before the wildcard): `WindowsPolicy` refuses it when the conditions change, and `push._unpushable` reports a
-  stored one as not pushed (older data, raw saves). Imports are unaffected: Windows only reports whole bytes.
+  stored one as not pushed (older data, raw saves). Such a policy that Windows already holds under the same key does
+  not count for the delete pause (no rename is possible), nor do its children. Imports are unaffected: Windows only
+  reports whole bytes.
   `tests/lab/test_lab_v4.py::test_policy_mac_condition_storage` records each case.
 - **Policy processing order (#24).** Windows numbers the policies of a level (the server, or one scope) 1, 2, 3...
   without gaps: Add with a number past the end fails with DHCP 20110 (seen on Windows Server 2025), and a used number

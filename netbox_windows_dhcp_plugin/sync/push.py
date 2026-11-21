@@ -290,6 +290,32 @@ def parents(kind: str, fields: Mapping[str, Any]) -> list[Key]:
 # -- planning ------------------------------------------------------------------------------------------------------
 
 
+_MAC_CONDITION_HINTS = {
+    "spaces": "remove the spaces around it",
+    "characters": "use hex digits with dashes or no separator; Windows refuses colons",
+    "groups": "write each byte as two hex digits; Windows ignores the dashes and pads an odd digit count on the left",
+    "length": "a MAC address has 12 hex digits; end it with * to match a prefix",
+    "half": "a prefix must be whole bytes; Windows pads an odd number of digits on the left",
+}
+
+
+def _mac_condition_reason(record: Record) -> str | None:
+    """
+    Why a policy's MAC address condition is not pushed, or None (#110). Saving a policy refuses such a condition, but
+    one saved before that check (0.6.0 and earlier) or by a raw save (a branch merge, a script) can still be here.
+    """
+    if record.kind != "policy":
+        return None
+    for value in ((record.fields.get("criteria") or {}).get("mac_address") or [])[1:]:
+        problem = normalize.mac_condition_problem(value)
+        if problem:
+            return (
+                f"policy {record.fields.get('name')}: its MAC address condition {value!r} is not written the way "
+                f"Windows reads it ({_MAC_CONDITION_HINTS[problem]}); fix it in NetBox"
+            )
+    return None
+
+
 def _unpushable(
     record: Record, skipped_option_ids: set[int], defined: set[str] | None, current: Record | None = None
 ) -> str | None:
@@ -314,15 +340,9 @@ def _unpushable(
             f"policy {f.get('name')}: its stored IP ranges are not a list of [start, end] IPv4 address pairs; fix "
             "them in NetBox"
         )
-    if record.kind == "policy":
-        # A MAC condition Windows refuses, or reads as other devices (#110). Saving a policy refuses these, but one
-        # saved before that check (0.6.0 and earlier) or by a raw save (a branch merge, a script) can still be here.
-        for value in ((f.get("criteria") or {}).get("mac_address") or [])[1:]:
-            if normalize.mac_condition_problem(value):
-                return (
-                    f"policy {f.get('name')}: its MAC address condition {value!r} would not reach Windows as meant "
-                    "(write each byte as two hex digits, with dashes or no separator); fix it in NetBox"
-                )
+    reason = _mac_condition_reason(record)
+    if reason:
+        return reason
     if record.kind == "scope":
         reason = _scope_range_problem(record)
         if reason:
@@ -1023,6 +1043,7 @@ def plan(
     conflicts = _conflicts(source, target_index, managed)
     policies = {r.key for r in source if r.kind == "policy"}
     refused: dict[Key, str] = {}
+    notices: set[Key] = set()
     for record in source:
         reason = (
             _unpushable(record, skipped_ids, defined, target_index.get((record.kind, record.key)))
@@ -1032,6 +1053,13 @@ def plan(
         )
         if reason is not None:
             refused[record.kind, record.key] = reason
+            if (record.kind, record.key) in target_index and reason == _mac_condition_reason(record):
+                notices.add((record.kind, record.key))
+    # A policy whose only fault is its MAC spelling, held by Windows under the same name, is shown as not pushed but
+    # does not pause the deletes of its family: the pause guards against a renamed or moved object (the old one
+    # deleted, the new one refused), and this one is neither. Its children likewise (#110).
+    pause_children = _waiting_children(source, {k: v for k, v in refused.items() if k not in notices})
+    pause_base = {k for k in refused if k not in notices} | set(pause_children)
     refused.update(_waiting_children(source, refused))
     pushable = []
     for record in source:
@@ -1090,7 +1118,7 @@ def plan(
         result.changes.append(change)
     already = len(result.skipped)
     result.changes = _scopes_in_other_relationships(result.changes, target_index, result)
-    refusals = set(refused) | {(s.change.kind, s.change.key) for s in result.skipped[already:]}
+    refusals = pause_base | {(s.change.kind, s.change.key) for s in result.skipped[already:]}
     result.changes = _membership_updates_first(result.changes, target_index)
     result.changes = _order_policies(result.changes, source_index, target_index, result)
     result.changes = _pause_deletes(result, result.changes, refusals | result.order_refusals)

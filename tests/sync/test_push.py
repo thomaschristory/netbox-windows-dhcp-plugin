@@ -278,7 +278,7 @@ def test_policy_needs_a_condition_and_memberships_a_scope(client):
 def test_policy_mac_condition_windows_would_misread_is_not_pushed(value):
     """#110: a condition saved before the save check, or by a raw save, is named instead of pushed or refused."""
     reasons = by_key(push.plan([scope(), policy(criteria={"mac_address": ["EQ", value]})], [], {}))
-    assert "would not reach Windows as meant" in reasons["policy", "10.1.0.0/printers"]
+    assert "not written the way Windows reads it" in reasons["policy", "10.1.0.0/printers"]
 
 
 def test_policy_mac_condition_in_windows_spelling_is_pushed():
@@ -286,6 +286,39 @@ def test_policy_mac_condition_in_windows_spelling_is_pushed():
         assert ("policy", "10.1.0.0/printers") not in by_key(
             push.plan([scope(), policy(criteria={"mac_address": ["EQ", value]})], [], {})
         ), value
+
+
+def test_misread_mac_condition_windows_already_holds_does_not_pause_deletes(client, fake):
+    """#110: after an upgrade, a policy pushed earlier with a misread spelling is named but blocks no other delete."""
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    # "0-15-5d*" is what 0.6.0 could store; Windows holds it as 00-15-5d-*, as it holds the policy pushed above.
+    source = [
+        policy(criteria={"mac_address": ["EQ", "0-15-5d*"]}) if r.kind == "policy" and r.fields["scope_id"] else r
+        for r in wanted()
+        if r.kind != "reservation" and not r.key.startswith("10.1.0.0/10.1.0.50")
+    ]
+    p, _ = run(client, source, managed)
+    reasons = by_key(p)
+    assert "not written the way Windows reads it" in reasons["policy", "10.1.0.0/printers"]
+    deletes = [(c.kind, c.key) for c in p.changes if c.action == "delete"]
+    assert any(kind == "reservation" for kind, _ in deletes), (deletes, reasons)
+    assert not any(s.waiting for s in p.skipped), reasons
+
+
+def test_misread_mac_condition_of_a_new_policy_pauses_deletes(client, fake):
+    """A refused policy Windows does not hold may be a renamed one: the family's deletes wait, as for any refusal."""
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    source = [
+        policy(name="Printers2", criteria={"mac_address": ["EQ", "0-15-5d*"]})
+        if r.kind == "policy" and r.fields["scope_id"]
+        else r
+        for r in wanted()
+        if r.kind != "reservation" and not r.key.startswith("10.1.0.0/10.1.0.50")
+    ]
+    p, _ = run(client, source, managed)
+    assert any(s.waiting for s in p.skipped)
 
 
 def test_values_of_vendor_options_need_a_vendor_definition(client):

@@ -875,6 +875,18 @@ class WindowsPolicy(_ParentMoveValidationMixin, PrimaryModel):
             instance._stored_criteria = deepcopy(instance.criteria)
         return instance
 
+    def save(self, *args, **kwargs):
+        super().save(*args, **kwargs)
+        # What was just written is the stored value now.
+        if "criteria" in self.__dict__:
+            self._stored_criteria = deepcopy(self.criteria)
+
+    def refresh_from_db(self, using=None, fields=None, from_queryset=None):
+        super().refresh_from_db(using=using, fields=fields, from_queryset=from_queryset)
+        # Only a field that was reread is the stored value again.
+        if (fields is None or "criteria" in fields) and "criteria" in self.__dict__:
+            self._stored_criteria = deepcopy(self.criteria)
+
     def _clean_parent_move(self, changed):
         if self.option_values.exclude(server_id=self.server_id, scope_id=self.scope_id).exists():
             field = "server" if "server" in changed else "scope"
