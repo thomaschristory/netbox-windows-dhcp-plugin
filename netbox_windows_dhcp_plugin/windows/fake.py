@@ -23,6 +23,8 @@ Modelled server behaviour:
 * an option value on a reservation is named by the reserved IP alone: Set and Remove
   refuse a scope ID (DHCPv6: a prefix) next to it, as Windows does (issues #20, #17);
 * a policy condition with a wildcard anywhere but its start or end is refused (#18);
+* a policy MAC condition with colons, or a full address without its 12 digits, is refused; Windows joins the
+  digits of a MAC prefix and pads an odd count on the left (``02-4e-42-a*`` reads back ``00-24-e4-2a-*``, #110);
 * a MAC filter Set is remove then add; when the add is refused the old entry is put back
   (``filter_add_fails`` forces that refusal);
 * ``empty_result_as_object`` prints ``{}`` instead of ``null`` for "nothing found", the
@@ -1003,6 +1005,10 @@ class FakeDhcpServer:
             for value in [str(x) for x in (v or [])[1:]]:
                 if "*" in value[1:-1]:
                     raise _invalid(cmd, "Wildcard is valid either at the beginning or at the end of the condition.")
+        # Windows refuses a MAC condition with colons, or a full address without its 12 digits (#110).
+        for value in [str(x) for x in ((p.get("criteria") or {}).get("mac_address") or [])[1:]]:
+            if normalize.mac_pattern_refused(value):
+                raise _invalid(cmd, f"The value specified {value} for MacAddress is not in valid format.")
 
     def _level(self, sid: str) -> list[tuple[str, str]]:
         """The policies of one level (server or scope), in processing order."""

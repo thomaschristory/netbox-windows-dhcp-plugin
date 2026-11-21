@@ -218,3 +218,29 @@ class PrefixChangeWithUnreadablePolicyRangesTest(TestCase):
         with self.assertRaises(ValidationError) as caught:
             lan.full_clean()
         self.assertIn("policy Printers", str(caught.exception))
+
+
+@override_settings(PLUGINS_CONFIG=CREDENTIALS)
+class PolicyMacConditionTest(TestCase):
+    """Issue #110: a MAC condition Windows refuses, or would read as other devices, is refused on save."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = windows_server()
+        cls.lan = scope(cls.server)
+
+    def policy(self, value):
+        return WindowsPolicy(
+            server=self.server, scope=self.lan, name="Printers", criteria={"mac_address": ["EQ", value]}
+        )
+
+    def test_refused_spellings(self):
+        for value in ("02:4e:42:ab*", "02-4e-42-a*", "02-4-42-ab*", "2-4e-42-a-b-c", "02-4e-42-0a-0b", "zz-4e-42-*"):
+            with self.subTest(value=value), self.assertRaises(ValidationError) as caught:
+                self.policy(value).full_clean()
+            self.assertIn("criteria", caught.exception.message_dict)
+
+    def test_accepted_spellings(self):
+        for value in ("02-4e-42-ab-*", "02-4e-42-ab*", "024e42*", "02-4E-42-0A-0B-0C", "024e420a0b0c", "*"):
+            with self.subTest(value=value):
+                self.policy(value).full_clean()

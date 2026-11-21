@@ -119,17 +119,46 @@ def test_parse_option_number() -> None:
         ("02-4e-42-ab-*", "02-4e-42-ab-*"),
         ("02-4E-42-AB*", "02-4e-42-ab-*"),
         ("024e42ab*", "02-4e-42-ab-*"),
-        ("02:4e:42:ab*", "02-4e-42-ab-*"),
         ("02-4e-42-ab-cd-ef", "02-4e-42-ab-cd-ef"),
         (" 02-4E-42-AB-CD-EF ", "02-4e-42-ab-cd-ef"),
-        # Not a whole number of bytes, or not a trailing wildcard: left exactly as written.
-        ("02-4e-4*", "02-4e-4*"),
+        ("024e420a0b0c", "02-4e-42-0a-0b-0c"),
+        # Windows joins the digits of a prefix and pads an odd count on the LEFT (lab, Windows Server 2025, #110).
+        ("02-4e-42-a*", "00-24-e4-2a-*"),
+        ("02-4-42-ab*", "00-24-42-ab-*"),
+        ("2-4e-42-ab*", "02-4e-42-ab-*"),
+        ("02-4e-4*", "00-24-e4-*"),
+        # Refused by Windows (colons, a full address without 12 digits) or a wildcard elsewhere: left as written.
+        ("02:4e:42:ab*", "02:4e:42:ab*"),
+        ("02:4e:42:0a:0b:0c", "02:4e:42:0a:0b:0c"),
+        ("2-4e-42-a-b-c", "2-4e-42-a-b-c"),
         ("02-*-42", "02-*-42"),
         ("*", "*"),
     ],
 )
 def test_canonical_mac_pattern(value: str, want: str) -> None:
     assert n.canonical_mac_pattern(value) == want
+
+
+@pytest.mark.parametrize(
+    ("value", "refused"),
+    [
+        # What Windows Server 2025 answers "not in valid format" to, and what it takes (#110).
+        ("02:4e:42:ab*", True),
+        ("02:4e:42:0a:0b:0c", True),
+        ("2:4e:42:a:b:c", True),
+        ("2-4e-42-a-b-c", True),
+        ("02.4e.42.0a.0b.0c", True),
+        ("zz-4e-42-0a-0b-0c", True),
+        ("02-4e-42-0a-0b-0c", False),
+        ("024e420a0b0c", False),
+        ("02-4e-42-a*", False),
+        ("02-4e-42-ab-*", False),
+        ("024e42*", False),
+        ("02-*-42", False),
+    ],
+)
+def test_mac_pattern_refused(value: str, refused: bool) -> None:
+    assert n.mac_pattern_refused(value) is refused
 
 
 def test_canonical_policy_criterion() -> None:

@@ -182,12 +182,13 @@ def test_reservation_client_id_is_padded_on_the_way_to_windows() -> None:
     assert r.client_id == "00-1b-21-0a-0b-0c"
 
 
-def test_mac_pattern_does_not_pad_half_a_byte() -> None:
-    # In a wildcard pattern a single digit is half a byte, not a byte: these stay as written.
-    assert n.canonical_mac_pattern("02-4e-42-a*") == "02-4e-42-a*"
-    assert n.canonical_policy_criterion("mac_address", "02-4e-42-a*") == "02-4e-42-a*"
+def test_mac_pattern_follows_windows_padding() -> None:
+    # Windows joins the digits of a prefix and pads an odd count on the left (lab, Windows Server 2025, #110).
+    assert n.canonical_mac_pattern("02-4e-42-a*") == "00-24-e4-2a-*"
+    assert n.canonical_policy_criterion("mac_address", "02-4e-42-a*") == "00-24-e4-2a-*"
     assert n.canonical_mac_pattern("02-4e-42-ab*") == "02-4e-42-ab-*"
-    assert n.canonical_mac_pattern("02:4E:42:AB:00:01") == "02-4e-42-ab-00-01"
+    # Colons are refused by Windows, so they are kept as written.
+    assert n.canonical_mac_pattern("02:4E:42:AB:00:01") == "02:4E:42:AB:00:01"
 
 
 # -- F78: the number rules the deleted option_values_equivalent test covered ----------------------------

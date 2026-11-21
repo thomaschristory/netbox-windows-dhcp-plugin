@@ -854,6 +854,12 @@ class WindowsPolicy(_ParentMoveValidationMixin, PrimaryModel):
                 or values[0].upper() not in ("EQ", "NE")
             ):
                 raise ValidationError({"criteria": error})
+        for value in (criteria.get("mac_address") or [])[1:]:
+            mac_error = _mac_condition_error(value)
+            if mac_error:
+                raise ValidationError(
+                    {"criteria": _("MAC address {value!r}: {error}").format(value=value, error=mac_error)}
+                )
 
     def _clean_parent_move(self, changed):
         if self.option_values.exclude(server_id=self.server_id, scope_id=self.scope_id).exists():
@@ -1325,6 +1331,35 @@ def _is_hex(value):
 
 
 _HEX_SEPARATORS = re.compile(r"[:\-. ]+")
+_MAC_CONDITION_BODY = re.compile(r"[0-9A-Fa-f-]*")
+
+
+def _mac_condition_error(value):
+    """
+    Why a policy's MAC address condition would not reach Windows as written, or None when it does.
+
+    Seen on Windows Server 2025 (#110; windows/normalize.mac_pattern_refused and canonical_mac_pattern, which models
+    must not import): Windows refuses colons and a full address without its 12 digits, and for a prefix it ignores
+    the dashes and joins the digits, padding an odd count with a zero on the left. So ``02-4e-42-a*`` would match
+    ``00-24-e4-2a-*`` and ``02-4-42-ab*`` would match ``00-24-42-ab-*``: other devices than the ones meant. A
+    wildcard anywhere but the end is left to Windows (it accepts one at the start of some conditions).
+    """
+    text = str(value).strip()
+    if "*" in text[:-1]:
+        return None
+    wildcard = text.endswith("*")
+    body = text[:-1].rstrip("-") if wildcard else text
+    if not _MAC_CONDITION_BODY.fullmatch(body):
+        return _("use hex digits and dashes (02-4e-42-ab-cd-ef, or 02-4e-42-* for a prefix); Windows refuses colons.")
+    groups = body.split("-")
+    if len(groups) > 1 and any(len(g) != 2 for g in groups):
+        return _("write every byte as two hex digits; Windows ignores the dashes, so 02-4-42-* would match 00-24-42-*.")
+    digits = "".join(groups)
+    if not wildcard and len(digits) != 12:
+        return _("a MAC address has 12 hex digits; end it with * to match a prefix.")
+    if wildcard and len(digits) % 2:
+        return _("a prefix must be whole bytes; Windows would pad 02-4e-4* to 00-24-e4-*.")
+    return None
 
 
 def _canonical_hex(value):

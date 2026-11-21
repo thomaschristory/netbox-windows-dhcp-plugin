@@ -304,6 +304,12 @@ relationships, MAC filters, list switches.
   .canonical_policy_criterion` gives that form; `windows_state.equal` and `push.fingerprint` compare and hash criteria
   in it (`windows_state.canonical_criteria`), while pushes still send what NetBox holds. Other criteria compare
   exactly until a real server shows Windows rewriting them. The fake server stores criteria the same way.
+- **Policy MAC conditions (#110).** Seen on Windows Server 2025: colons and a full address without 12 digits are
+  refused; for a prefix Windows joins the digits (dashes ignored) and pads an odd count on the left, so
+  `02-4e-42-a*` reads back `00-24-e4-2a-*`. `normalize.canonical_mac_pattern` and `mac_pattern_refused` model that,
+  the fake refuses and stores the same way, and `WindowsPolicy` refuses on save what Windows refuses or reads as
+  other devices (a group that is not two digits, half a byte before the wildcard). Imports are unaffected: Windows
+  only reports whole bytes. `tests/lab/test_lab_v4.py::test_policy_mac_condition_storage` records each case.
 - **Policy processing order (#24).** Windows numbers the policies of a level (the server, or one scope) 1, 2, 3...
   without gaps: Add with a number past the end fails with DHCP 20110 (seen on Windows Server 2025), and a used number
   moves the others down. `diff` stays generic (same-kind changes sorted by key); `push._order_policies` reorders the

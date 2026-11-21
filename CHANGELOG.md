@@ -5,6 +5,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A policy's MAC address condition is compared the way Windows stores it (seen on Windows Server 2025): for a
+  prefix Windows ignores the dashes and pads an odd number of digits on the left (`02-4e-42-a*` reads back
+  `00-24-e4-2a-*`). Saving a policy now refuses MAC conditions Windows refuses (colons, a full address without 12
+  digits) or would read as other devices (a group that is not two hex digits, half a byte before the wildcard), with
+  a message saying how to write it (#110).
+
 ## [0.6.0] - 2026-11-21
 
 0.6.0 lets a credential profile pin the transport, port, Kerberos realm and SSH host key that a Windows server's
