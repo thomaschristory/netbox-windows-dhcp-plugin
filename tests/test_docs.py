@@ -13,10 +13,8 @@ from netbox_windows_dhcp_plugin import conf
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
-# Keys a credential profile may hold: each secret inline, as <key>_env or <key>_file, plus the limits.
-SECRET_KEYS = ("username", "password", "private_key", "secret")
-LIMIT_KEYS = {"allowed_hosts", "allow_insecure_credssp", "transports", "ports", "kerberos_realms", "ssh_host_keys"}
-PROFILE_KEYS = LIMIT_KEYS | {f"{k}{suffix}" for k in SECRET_KEYS for suffix in ("", "_env", "_file")}
+# Keys a credential profile may hold, as the plugin lists them (it warns at startup about any other key).
+PROFILE_KEYS = conf.PROFILE_KEYS
 
 
 def doc_pages() -> list[Path]:
@@ -106,6 +104,7 @@ def test_config_snippets_are_valid(block):
         conf.profile_ports(name, profile)
         conf.profile_kerberos_realms(name, profile)
         conf.profile_ssh_host_keys(name, profile)
+        conf.profile_require_verified_https(name, profile)
 
 
 def test_docs_build_input_is_tracked():

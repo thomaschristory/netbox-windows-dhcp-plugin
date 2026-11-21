@@ -719,6 +719,7 @@ source = { editable = "." }
 dependencies = [
     { name = "paramiko" },
     { name = "pypsrp", extra = ["credssp"] },
+    { name = "requests" },
 ]
 
 [package.optional-dependencies]
@@ -750,6 +751,7 @@ requires-dist = [
     { name = "paramiko", specifier = ">=3.5" },
     { name = "pypsrp", extras = ["credssp"], specifier = ">=0.9.1" },
     { name = "pypsrp", extras = ["kerberos"], marker = "extra == 'kerberos'", specifier = ">=0.9.1" },
+    { name = "requests", specifier = ">=2.32.4" },
 ]
 provides-extras = ["branching", "kerberos"]
 

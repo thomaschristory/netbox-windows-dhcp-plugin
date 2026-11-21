@@ -5,6 +5,25 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Credential profiles can set `require_verified_https: True` (strictly `True` or `False`): every WinRM connection
+  using the profile must then use HTTPS with certificate verification, whatever the logon (NTLM and Kerberos
+  included), and `allow_insecure_credssp` no longer lifts it. SSH with such a profile needs the profile's own
+  `ssh_host_keys`. Absent or `False` changes nothing. Checked when a server is saved (on the field that breaks it)
+  and before every connection, including the failover logon; on a failover shared secret's profile it applies to the
+  primary server's connection that carries the secret. It covers the plugin's own connection only, not the DHCP
+  server's RPC to its failover partner or the hop to `-ComputerName` (#147).
+- Saving a Windows server that is a failover primary also checks the limits of its relationships' secret profiles,
+  so a change they refuse is reported on the form rather than at the next push.
+- NetBox logs a warning at startup for credential profile keys the plugin does not know (a misspelt limit is
+  otherwise ignored).
+
+### Changed
+
+- The plugin now requires `requests` 2.32.4 or later (pypsrp uses it for WinRM; some older versions treated an empty
+  `CURL_CA_BUNDLE` as turning certificate verification off, and 2.32.4 fixes CVE-2024-47081).
+
 ## [0.6.1] - 2026-11-21
 
 0.6.1 compares a policy's MAC address condition the way Windows stores it and refuses spellings Windows would refuse

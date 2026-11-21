@@ -64,8 +64,9 @@ def check_connection_allowed(server):
             raise CredentialError(f"unknown {field} {getattr(server, field)!r}")
     # computer_name counts too: with delegation the first host passes the credentials on to it.
     check_host_allowed(server.credential_profile, server.host, server.computer_name)
-    # The profile's transports, ports, Kerberos realms and SSH host keys (issue #103). check_host_allowed has already
-    # refused an unknown profile.
+    # The profile's transports, ports, Kerberos realms and SSH host keys (issue #103) and require_verified_https (issue
+    # #147). check_host_allowed has already refused an unknown profile. The failover client (issue #141) connects with
+    # the same record, so this covers it too.
     errors = connection_pin_errors(
         server.credential_profile,
         get_setting("credentials")[server.credential_profile],
@@ -74,6 +75,8 @@ def check_connection_allowed(server):
         winrm_auth=server.winrm_auth,
         kerberos_realm=server_kerberos_realm(server),
         ssh_host_key=server.ssh_host_key,
+        https=server.winrm_https,
+        verify_tls=server.verify_tls,
     )
     if errors:
         raise CredentialError("; ".join(errors.values()))

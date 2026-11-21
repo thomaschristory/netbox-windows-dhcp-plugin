@@ -10,6 +10,7 @@ from netbox.models.features import JobsMixin
 from ..choices import FailoverAuthChoices, TransportChoices, WinRMAuthChoices
 from ..conf import (
     CredentialError,
+    check_secret_connection,
     connection_pin_errors,
     get_setting,
     host_allowed,
@@ -216,6 +217,7 @@ class WindowsServer(JobsMixin, PrimaryModel):
             raise ValidationError(_("A server runs on a device or a virtual machine, not both."))
         self._clean_allowed_hosts()
         self._clean_profile_pins()
+        self._clean_secret_profiles()
         self._clean_same_server()
         if self.transport == TransportChoices.SSH and not self.verify_tls:
             raise ValidationError(
@@ -300,7 +302,40 @@ class WindowsServer(JobsMixin, PrimaryModel):
         # What the reported names were read from, so save() can tell when the server is pointed elsewhere.
         if "host" in instance.__dict__ and "computer_name" in instance.__dict__:  # not deferred
             instance._reported_for = (instance.host, instance.computer_name)
+        instance._remember_connection()
         return instance
+
+    # The fields that decide where and how the server's connection goes. clean() judges the failover secret
+    # profiles only when one of them changes.
+    CONNECTION_FIELDS = (
+        "host",
+        "credential_profile",
+        "transport",
+        "port",
+        "winrm_https",
+        "verify_tls",
+        "winrm_auth",
+        "failover_auth",
+        "kerberos_realm",
+        "ssh_host_key",
+    )
+
+    def _remember_connection(self, names=None):
+        # A deferred field is not remembered, and clean() then judges as for a change.
+        stored = dict(getattr(self, "_stored_connection", {}))
+        for name in self.CONNECTION_FIELDS:
+            if name in self.__dict__ and (names is None or name in names):
+                stored[name] = self.__dict__[name]
+        self._stored_connection = stored
+
+    def _connection_changed(self):
+        stored = getattr(self, "_stored_connection", {})
+        return any(name not in stored or stored[name] != getattr(self, name) for name in self.CONNECTION_FIELDS)
+
+    def refresh_from_db(self, using=None, fields=None, from_queryset=None):
+        super().refresh_from_db(using=using, fields=fields, from_queryset=from_queryset)
+        # Only a field that was reread is the stored value again.
+        self._remember_connection(None if fields is None else set(fields))
 
     def save(self, *args, **kwargs):
         loaded = getattr(self, "_reported_for", None)
@@ -309,6 +344,9 @@ class WindowsServer(JobsMixin, PrimaryModel):
             self.reported_names = []
         super().save(*args, **kwargs)
         self._reported_for = (self.host, self.computer_name)
+        # What was just written is the stored value now (not the fields a save left out).
+        update_fields = kwargs.get("update_fields")
+        self._remember_connection(None if update_fields is None else set(update_fields))
 
     @property
     def reported_names_display(self):
@@ -321,7 +359,8 @@ class WindowsServer(JobsMixin, PrimaryModel):
 
     def _clean_profile_pins(self):
         # The credential profile may limit the transport, port, Kerberos realm and SSH host key a server uses with it
-        # (issue #103). The connection code checks again before connecting, in case the profile changed since.
+        # (issue #103), and require verified HTTPS for WinRM (issue #147). The connection code checks again before
+        # connecting, in case the profile changed since.
         profile = get_setting("credentials").get(self.credential_profile)
         if profile is None:
             return
@@ -335,6 +374,8 @@ class WindowsServer(JobsMixin, PrimaryModel):
                 winrm_auth=self.winrm_auth,
                 kerberos_realm=server_kerberos_realm(self),
                 ssh_host_key=self.ssh_host_key,
+                https=self.winrm_https,
+                verify_tls=self.verify_tls,
             )
         except CredentialError as exc:
             raise ValidationError({"credential_profile": str(exc)}) from exc
@@ -344,6 +385,51 @@ class WindowsServer(JobsMixin, PrimaryModel):
         if errors:
             # The port error goes on the port field even when it is empty: the default port is the one refused.
             raise ValidationError(errors)
+
+    def _clean_secret_profiles(self):
+        # A failover shared secret travels over this server's connection when it is the primary, so the secret
+        # profile's limits apply to it too (issues #103, #147). Checked here so that turning HTTPS off, say, is refused
+        # on the form rather than at the next push (which still checks). Only the profile's rules are read, never the
+        # secret. An undefined secret profile is reported by the push, as before. Judged only when a connection field
+        # changes, as FailoverRelationship does for its own edits: a profile tightened later must not block a
+        # description edit, and the push still refuses (it checks every time).
+        if self._state.adding or self.transport not in TransportChoices.values() or not self._connection_changed():
+            return  # nothing can name a new server yet; an unknown transport has its own error
+        profiles = get_setting("credentials")
+        names = (
+            self.failover_primary.exclude(shared_secret_profile="")
+            .order_by()
+            .values_list("shared_secret_profile", flat=True)
+            .distinct()
+        )
+        for name in sorted(set(names)):
+            if name not in profiles:
+                continue
+            try:
+                errors = connection_pin_errors(
+                    name,
+                    profiles[name],
+                    transport=self.transport,
+                    port=self.port or DEFAULT_PORTS.get((self.transport, self.winrm_https)),
+                    winrm_auth=self.winrm_auth,
+                    kerberos_realm=server_kerberos_realm(self),
+                    ssh_host_key=self.ssh_host_key,
+                    https=self.winrm_https,
+                    verify_tls=self.verify_tls,
+                )
+                if not errors:
+                    # The rules that only apply to a secret profile (a pinned SSH key, consent to insecure CredSSP).
+                    check_secret_connection(name, self, profiles)
+            except CredentialError as exc:
+                # The relationship is not named: the user may not be allowed to see it.
+                raise ValidationError(_("Failover shared secret: {error}").format(error=exc)) from None
+            if errors:
+                raise ValidationError(
+                    {
+                        field: _("Failover shared secret: {error}").format(error=message)
+                        for field, message in errors.items()
+                    }
+                )
 
     def _clean_allowed_hosts(self):
         # Stop a profile's credentials from being pointed at a host it does not cover. The connection code checks

@@ -26,7 +26,8 @@ DEFAULTS = {
     # A profile can also pin what a server record may otherwise choose (each optional, a list or tuple, an empty one
     # allows nothing it applies to): "transports" (["winrm"], ["ssh"]), "ports" ([5986]; a port does not imply TLS),
     # "kerberos_realms" (["CORP.EXAMPLE"], for WinRM with Kerberos) and "ssh_host_keys" (["ssh-ed25519 AAAA..."]: the
-    # only host keys SSH trusts with it).
+    # only host keys SSH trusts with it). "require_verified_https": True (true or false only) makes WinRM with the
+    # profile use HTTPS with certificate verification, whatever the logon, and SSH with it needs "ssh_host_keys".
     "credentials": {},
     # Prefix of the branches created by imports when netbox-branching is installed.
     "import_branch_prefix": "dhcp-import",
@@ -154,6 +155,44 @@ def _resolve(profile_name, profile, key, environ, needed):
     return ""
 
 
+# Every key a credential profile may hold: each secret inline, as <key>_env or as <key>_file, plus the limits. A new
+# profile key goes in LIMIT_KEYS (or SECRET_KEYS), or NetBox warns about it at startup.
+SECRET_KEYS = ("username", "password", "private_key", "secret")
+LIMIT_KEYS = (
+    "allowed_hosts",
+    "allow_insecure_credssp",
+    "transports",
+    "ports",
+    "kerberos_realms",
+    "ssh_host_keys",
+    "require_verified_https",
+)
+PROFILE_KEYS = frozenset(LIMIT_KEYS) | {f"{key}{suffix}" for key in SECRET_KEYS for suffix in ("", "_env", "_file")}
+
+
+def profiles_with_unknown_keys(profiles=None):
+    """
+    {profile name: [keys the plugin does not know]}. A misspelt limit ("require_verified_http") is otherwise ignored
+    without a word, so the profile is less strict than its owner thinks.
+    """
+    profiles = get_setting("credentials") if profiles is None else profiles
+    unknown = {}
+    for name, profile in profiles.items():
+        keys = sorted(str(key) for key in profile if key not in PROFILE_KEYS) if isinstance(profile, dict) else []
+        if keys:
+            unknown[name] = keys
+    return unknown
+
+
+def warn_unknown_profile_keys(profiles=None):
+    """Log, at startup, each profile's unknown keys: names only, never a value (a misspelt key may hold a secret)."""
+    # The plugin's own logger, like the other startup warnings: this module's logger exists before Django applies
+    # LOGGING, and a configuration with disable_existing_loggers would silence it.
+    logger = logging.getLogger(PLUGIN_NAME)
+    for name, keys in profiles_with_unknown_keys(profiles).items():
+        logger.warning("credential profile %r has keys the plugin does not know (ignored): %s", name, ", ".join(keys))
+
+
 def get_credentials(profile_name, profiles=None, environ=None, needed=("username", "password")):
     """
     Resolve a credential profile from the plugin configuration.
@@ -166,12 +205,7 @@ def get_credentials(profile_name, profiles=None, environ=None, needed=("username
     if profile_name not in profiles:
         raise CredentialError(f"credential profile {profile_name!r} is not defined in PLUGINS_CONFIG")
     profile = profiles[profile_name]
-    return Credentials(
-        **{
-            key: _resolve(profile_name, profile, key, environ, key in needed)
-            for key in ("username", "password", "private_key", "secret")
-        }
-    )
+    return Credentials(**{key: _resolve(profile_name, profile, key, environ, key in needed) for key in SECRET_KEYS})
 
 
 # One DNS label. Underscores appear in some Windows host names, so they are accepted.
@@ -375,16 +409,42 @@ def profile_ssh_host_keys(profile_name, profile):
     return _profile_list(profile_name, profile, "ssh_host_keys", _check_host_key)
 
 
-def connection_pin_errors(profile_name, profile, *, transport, port, winrm_auth, kerberos_realm, ssh_host_key):
+def profile_require_verified_https(profile_name, profile):
+    """Whether the profile makes WinRM use HTTPS with certificate verification (issue #147). Absent is False."""
+    value = profile.get("require_verified_https", False)
+    if not isinstance(value, bool):
+        # "yes", 1 or None (an environment variable that is not set) would otherwise read one way or the other; make
+        # the administrator say exactly what they mean.
+        raise CredentialError(f"credential profile {profile_name!r}: require_verified_https must be true or false")
+    return value
+
+
+def connection_pin_errors(
+    profile_name, profile, *, transport, port, winrm_auth, kerberos_realm, ssh_host_key, https, verify_tls
+):
     """
-    What a server's connection settings break among the profile's "transports", "ports", "kerberos_realms" and
-    "ssh_host_keys", as {server field: message}; empty when nothing. Raises CredentialError for a malformed profile.
+    What a server's connection settings break among the profile's "transports", "ports", "kerberos_realms",
+    "ssh_host_keys" and "require_verified_https", as {server field: message}; empty when nothing. Raises
+    CredentialError for a malformed profile.
 
     These keys let the profile's owner decide what the people who may edit a server record otherwise decide: how the
-    credentials travel (transport, port), which realm's KDC receives the password (Kerberos), and which machine SSH
-    trusts to receive it (host key).
+    credentials travel (transport, port, WinRM over verified HTTPS), which realm's KDC receives the password
+    (Kerberos), and which machine SSH trusts to receive it (host key).
     """
     errors = {}
+    require_verified = profile_require_verified_https(profile_name, profile)
+    # NTLM and Kerberos do not need HTTPS to log on, but without it (or without checking the certificate) only the
+    # logon vouches for the server, and an editor-chosen Kerberos SPN or a relayed NTLM exchange can defeat that.
+    if require_verified and transport == "winrm":
+        if not https:
+            errors["winrm_https"] = (
+                f"credential profile {profile_name!r} sets require_verified_https: WinRM must use HTTPS, not HTTP"
+            )
+        elif not verify_tls:
+            errors["verify_tls"] = (
+                f"credential profile {profile_name!r} sets require_verified_https: WinRM must verify the server's "
+                "certificate"
+            )
     transports = profile_transports(profile_name, profile)
     if transports is not None and transport not in transports:
         errors["transport"] = f"credential profile {profile_name!r} may not be used over {transport}"
@@ -402,6 +462,16 @@ def connection_pin_errors(profile_name, profile, *, transport, port, winrm_auth,
             f"credential profile {profile_name!r} may not be used with Kerberos realm {realm or '(none)'}"
         )
     keys = profile_ssh_host_keys(profile_name, profile)
+    if require_verified and transport == "ssh" and keys is None:
+        # Otherwise an editor could switch the server to SSH and paste the host key of a machine they control: the
+        # password would go to it, the very interception this key closes for WinRM. The profile's ssh_host_keys are
+        # SSH's equivalent of the certificate authorities the worker trusts: chosen by the profile's owner.
+        # setdefault: when "transports" already refuses SSH, that plainer message stays.
+        errors.setdefault(
+            "transport",
+            f"credential profile {profile_name!r} sets require_verified_https, which needs ssh_host_keys for SSH "
+            '(or transports: ["winrm"])',
+        )
     if keys is not None and transport == "ssh":
         allowed = {ssh_host_key_blob(key) for key in keys}
         if not keys:
@@ -424,9 +494,9 @@ def server_kerberos_realm(server):
 def check_secret_connection(profile_name, server, profiles=None):
     """
     Raise CredentialError unless `server`'s own connection may carry the failover shared secret of `profile_name`
-    (issue #103). The secret travels over it, so the secret profile's transports, ports, Kerberos realms and SSH host
-    keys apply to that connection, and so does its say on insecure CredSSP. Partners stay allowed_hosts only. Checked
-    when a relationship is saved and before each push sends the secret.
+    (issue #103). The secret travels over it, so the secret profile's transports, ports, Kerberos realms, SSH host
+    keys and require_verified_https (issue #147) apply to that connection, and so does its say on insecure CredSSP.
+    Partners stay allowed_hosts only. Checked when a relationship is saved and before each push sends the secret.
     """
     profiles = get_setting("credentials") if profiles is None else profiles
     if profile_name not in profiles:
@@ -440,6 +510,8 @@ def check_secret_connection(profile_name, server, profiles=None):
         winrm_auth=server.winrm_auth,
         kerberos_realm=server_kerberos_realm(server),
         ssh_host_key=server.ssh_host_key,
+        https=server.winrm_https,
+        verify_tls=server.verify_tls,
     )
     if errors:
         raise CredentialError("; ".join(errors.values()))

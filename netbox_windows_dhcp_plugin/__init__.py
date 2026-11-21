@@ -30,7 +30,7 @@ if PluginConfig is not None:
                 retention,
                 signals,
             )
-            from .conf import profiles_without_allowed_hosts
+            from .conf import profiles_without_allowed_hosts, warn_unknown_profile_keys
             from .integrations import branching
 
             branching.register()
@@ -41,5 +41,6 @@ if PluginConfig is not None:
                 logging.getLogger(__name__).warning(
                     "credential profiles without allowed_hosts can be sent to any host: %s", ", ".join(unrestricted)
                 )
+            warn_unknown_profile_keys()
 
     config = WindowsDHCPConfig

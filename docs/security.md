@@ -34,17 +34,27 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
 - `host` and `computer_name` must be plain host names or IP addresses, so the check and the transport always agree on
   the host. Names a resolver reads as numeric IPv4 spellings (`2130706433`, `127.1`) are refused.
 - An SSH host key pinned on a Windows server is only as trustworthy as the people who may edit that server.
-- Within the allowed hosts, a server's editors choose its transport, port, Kerberos realm and SSH host key. A profile's
-  `transports`, `ports`, `kerberos_realms` and `ssh_host_keys` take those choices back for the people who write
+- Within the allowed hosts, a server's editors choose its transport, port, Kerberos realm and SSH host key, and
+  whether WinRM uses HTTPS and checks the certificate. A profile's `transports`, `ports`, `kerberos_realms`,
+  `ssh_host_keys` and `require_verified_https` take those choices back for the people who write
   `configuration.py`: the realm decides which KDC the logon goes to (it receives a value derived from the password,
   which can be attacked offline), and the host key which machine SSH trusts with the credentials. With `ssh_host_keys`,
   a server without a pinned key trusts only the profile's keys, never the worker's `known_hosts`. See
   [Configuration](configuration.md#pinning-transport-port-realm-and-host-key).
-- `ports` does not require TLS: whether WinRM uses HTTPS and verifies the certificate stays the server editor's
-  choice, so NTLM or Kerberos over HTTP, or over HTTPS without verification, remain possible within a pinned port.
-  Basic always needs HTTPS with verification, and so does CredSSP unless the profile sets `allow_insecure_credssp`.
+- `ports` does not require TLS. `require_verified_https: True` does: WinRM with the profile must then use HTTPS with
+  certificate verification whatever the logon, so NTLM or Kerberos over HTTP, or over HTTPS without verification,
+  are refused, and `allow_insecure_credssp` no longer lifts it for CredSSP. Without it, that stays the server
+  editor's choice: Basic always needs HTTPS with verification, and so does CredSSP unless the profile sets
+  `allow_insecure_credssp`. Over SSH, it requires the profile's own `ssh_host_keys`: otherwise an editor could switch
+  the server to SSH and pin the host key of a machine they control. It covers the plugin's own connection only: the
+  DHCP server's RPC to its failover partner and the hop to a remote DHCP server (`-ComputerName`) are not WinRM.
+- A profile key the plugin does not know (a misspelt `require_verified_http`, say) is ignored, so NetBox logs a
+  warning at startup naming the profile and the key.
+- pypsrp sends WinRM over `requests`; the plugin requires `requests` 2.32.4 or later, as some older versions treated an
+  empty `CURL_CA_BUNDLE` in the environment as "do not verify".
 - A failover shared secret travels over the primary server's own connection, so the secret profile's limits
-  (`transports`, `ports`, `kerberos_realms`, `ssh_host_keys`) and its `allow_insecure_credssp` govern that connection
+  (`transports`, `ports`, `kerberos_realms`, `ssh_host_keys`, `require_verified_https`) and its
+  `allow_insecure_credssp` govern that connection
   too, not only the server's own profile. Unless the secret profile is the server's own, a server reached over SSH
   must then pin its own host key, one of the secret profile's `ssh_host_keys`.
 - A connection refuses a transport or authentication value outside the known choices, so a record written straight
