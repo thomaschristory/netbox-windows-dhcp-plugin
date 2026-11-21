@@ -175,10 +175,8 @@ Write a MAC condition as two hex digits per byte, with dashes or no separator: `
 ignores the dashes and pads an odd number of digits with a zero on the left, so `02-4e-42-a*` would match
 `00-24-e4-2a-*` and `02-4-42-*` would match `00-24-42-*`: other devices than the ones meant. NetBox refuses those
 spellings when a policy's conditions are saved, and a push names a policy that still holds one (saved by an earlier
-version, or by a branch merge) as not pushed until it is fixed. When Windows holds that policy under its name as
-NetBox pushed or adopted it and nothing else is wrong with it, the push's other deletes still go ahead; otherwise (a
-new policy, or an option value of it moved to another code or class) the deletes of its part of the configuration
-wait, as for any policy that cannot be pushed.
+version, or by a branch merge) as not pushed until it is fixed; meanwhile the deletes of its part of the
+configuration wait, as for any policy that cannot be pushed.
 
 A policy without criteria is not pushed (Windows requires at least one), nor are two policies with the same
 processing order at the same level. Windows numbers the policies of a level 1, 2, 3... without gaps, so give them

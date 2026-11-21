@@ -288,8 +288,12 @@ def test_policy_mac_condition_in_windows_spelling_is_pushed():
         ), value
 
 
-def test_misread_mac_condition_windows_already_holds_does_not_pause_deletes(client, fake):
-    """#110: after an upgrade, a policy pushed earlier with a misread spelling is named but blocks no other delete."""
+def test_misread_mac_condition_windows_already_holds_pauses_deletes_until_fixed(client, fake):
+    """#110: a policy pushed earlier with a misread spelling is named, and its family's deletes wait until it is fixed.
+
+    A plain rule, like any policy that cannot be pushed: an exception for "Windows already holds it" could not tell a
+    renamed object from the one Windows holds.
+    """
     _, first = run(client, wanted())
     managed = state_after({}, first)
     # "0-15-5d*" is what 0.6.0 could store; Windows holds it as 00-15-5d-*, as it holds the policy pushed above.
@@ -301,9 +305,12 @@ def test_misread_mac_condition_windows_already_holds_does_not_pause_deletes(clie
     p, _ = run(client, source, managed)
     reasons = by_key(p)
     assert "not written the way Windows reads it" in reasons["policy", "10.1.0.0/printers"]
-    deletes = [(c.kind, c.key) for c in p.changes if c.action == "delete"]
-    assert any(kind == "reservation" for kind, _ in deletes), (deletes, reasons)
-    assert not any(s.waiting for s in p.skipped), reasons
+    assert not [c for c in p.changes if c.action == "delete"], p.changes
+    assert any(s.waiting and "printers" in s.reason for s in p.skipped), reasons
+    # Fixed in NetBox, the deletes go ahead.
+    fixed = [policy() if r.kind == "policy" and r.fields["scope_id"] else r for r in source]
+    p2, _ = run(client, fixed, managed)
+    assert any(c.kind == "reservation" and c.action == "delete" for c in p2.changes), by_key(p2)
 
 
 def test_misread_mac_condition_of_a_new_policy_pauses_deletes(client, fake):
