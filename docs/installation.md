@@ -97,7 +97,7 @@ Restart the worker as well as the web service: the worker runs every job, and it
 Install the new version, run `migrate`, and restart NetBox and the worker. Read the [changelog](changelog.md) first:
 while the plugin is below 1.0, a minor version can change behaviour.
 
-### Upgrading from 0.6.0 to the next release
+### Upgrading from 0.6.0 to 0.6.1
 
 No migration. A policy whose MAC address condition Windows refuses (colons) or reads as other devices (a byte after
 the first written as one digit, half a byte before the wildcard: `02-4e-42-a*` matches `00-24-e4-2a-*` on Windows)

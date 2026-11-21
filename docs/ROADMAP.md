@@ -140,3 +140,6 @@ netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
     - **Domain lab (2026-11-20):** `make lab-e2e` passed with Kerberos over HTTPS and CredSSP for failover writes;
       over HTTP it passed up to the failover delete, when the nightly shutdown cut the run. The pins themselves are
       unit and NetBox tested.
+13. **Done: 0.6.1 (2026-11-21).** Policy MAC conditions compared as Windows stores them (it joins the digits of a
+    prefix and pads an odd count on the left); misread or refused spellings refused on save and named as not pushed
+    (#110). Checked in the domain lab on Windows Server 2025 (`make test-lab` 53 passed, failover 2/2).

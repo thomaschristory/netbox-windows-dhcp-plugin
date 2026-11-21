@@ -5,6 +5,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-21
+
+0.6.1 compares a policy's MAC address condition the way Windows stores it and refuses spellings Windows would refuse
+or read as other devices. No migration. A policy saved earlier with such a condition is shown as not pushed until
+it is fixed: see [Upgrading from 0.6.0 to 0.6.1](docs/installation.md#upgrading-from-060-to-061).
+
 ### Fixed
 
 - A policy's MAC address condition is compared the way Windows stores it (seen on Windows Server 2025): for a
