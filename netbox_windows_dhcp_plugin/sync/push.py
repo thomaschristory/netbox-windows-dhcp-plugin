@@ -293,7 +293,7 @@ def parents(kind: str, fields: Mapping[str, Any]) -> list[Key]:
 _MAC_CONDITION_HINTS = {
     "spaces": "remove the spaces or line breaks around it",
     "characters": "use hex digits with dashes or no separator; Windows refuses colons",
-    "groups": "write each byte as two hex digits; Windows ignores the dashes of a prefix and pads it on the left",
+    "groups": "write each byte as two hex digits; Windows ignores the dashes and pads an odd prefix on the left",
     "length": "a MAC address has 12 hex digits; end it with * to match a prefix",
     "half": "a prefix must be whole bytes; Windows pads an odd number of digits on the left",
 }
@@ -1058,9 +1058,13 @@ def plan(
         reason = _unpushable(record, skipped_ids, defined, current) or others
         if reason is not None:
             refused[key] = reason
-            # Refused for its MAC spelling alone, and Windows holds it under the same key (#110).
+            # Refused for its MAC spelling alone, and Windows holds it under the same key as NetBox pushed or adopted
+            # it (a policy made on Windows by hand under that name is not NetBox's object: a rename onto it must
+            # still pause) (#110).
             if (
                 current is not None
+                and key in managed
+                and unchanged(managed[key], current)
                 and _mac_condition_reason(record)
                 and not others
                 and not _unpushable(record, skipped_ids, defined, current, mac=False)
@@ -1069,7 +1073,7 @@ def plan(
     # Such a policy is shown as not pushed but does not pause the deletes of its family: the pause guards against a
     # renamed or moved object (the old one deleted, the new one refused), and this one is the object Windows already
     # holds. Not when a parent is refused for another reason, and not for its waiting children Windows does not hold
-    # yet: a changed option value of the policy gets a new key, and its old copy must not be deleted.
+    # yet: an option value of the policy moved to another code or class gets a new key, and its old copy must stay.
     fields_of = {(r.kind, r.key): r.fields for r in source}
     notices = {k for k in notices if not any(p in refused and p not in notices for p in parents(k[0], fields_of[k]))}
     real = {k: v for k, v in refused.items() if k not in notices}

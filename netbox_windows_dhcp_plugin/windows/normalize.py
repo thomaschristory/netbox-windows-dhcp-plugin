@@ -196,6 +196,7 @@ def mac_condition_problem(value: str) -> str | None:
     digits = "".join(groups)
     if not wildcard and len(digits) != 12:
         return "length"
+    # unverified: how Windows stores a full address of 12 digits grouped otherwise (024-e42-0a0b-0c): refused here.
     if (len(groups) > 1 and any(len(g) != 2 for g in groups)) or (wildcard and text != "*" and not digits):
         return "groups"
     if wildcard and len(digits) % 2:

@@ -1391,8 +1391,8 @@ _MAC_CONDITION_MESSAGES = {
     "spaces": _("remove the spaces or line breaks around it."),
     "characters": _("use hex digits, with dashes or no separator (02-4e-42-ab-cd-ef); Windows refuses colons."),
     "groups": _(
-        "write each byte as two hex digits, separated by dashes or with no separator; Windows ignores the dashes "
-        "and pads an odd number of digits on the left, so 02-4-42-* would match 00-24-42-*."
+        "write each byte as two hex digits, separated by dashes or with no separator; Windows ignores the dashes, "
+        "and pads a prefix with an odd number of digits on the left, so 02-4-42-* would match 00-24-42-*."
     ),
     "length": _("a MAC address has 12 hex digits; end it with * to match a prefix (02-4e-42-*)."),
     "half": _("a prefix must be whole bytes; Windows would read 024e4* as 00-24-e4-*."),

@@ -311,9 +311,9 @@ relationships, MAC filters, list switches.
   must not import it) names what Windows refuses or reads as other devices (a group that is not two digits, half a
   byte before the wildcard): `WindowsPolicy` refuses it when the conditions change, and `push._unpushable` reports a
   stored one as not pushed (older data, raw saves). Such a policy, refused for that alone and held by Windows under
-  the same key, does not count for the delete pause: it is the object Windows holds, not a renamed one. Its waiting
-  children still count when Windows does not hold them (a changed option value gets a new key, and its old copy must
-  stay), and so does any refused parent. Imports are unaffected: Windows only reports whole bytes.
+  the same key as NetBox pushed or adopted it, does not count for the delete pause: it is the object Windows holds,
+  not a renamed one. Its waiting children still count when Windows does not hold them (an option value moved to
+  another code or class gets a new key, and its old copy must stay), and so does any refused parent. Imports are unaffected: Windows only reports whole bytes.
   `tests/lab/test_lab_v4.py::test_policy_mac_condition_storage` records each case.
 - **Policy processing order (#24).** Windows numbers the policies of a level (the server, or one scope) 1, 2, 3...
   without gaps: Add with a number past the end fails with DHCP 20110 (seen on Windows Server 2025), and a used number

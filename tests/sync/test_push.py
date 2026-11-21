@@ -339,6 +339,47 @@ def test_changed_option_value_of_a_misread_policy_keeps_its_old_copy(client, fak
     assert any((s.change.kind, s.change.key) == old and s.waiting for s in p.skipped), by_key(p)
 
 
+def _misread_source(**policy_over):
+    """wanted() with the scope policy's MAC condition misread and the reservation (with its values) removed."""
+    out = []
+    for r in wanted():
+        if r.kind == "reservation" or r.key.startswith("10.1.0.0/10.1.0.50"):
+            continue
+        if r.kind == "policy" and r.fields["scope_id"]:
+            r = policy(**{"criteria": {"mac_address": ["EQ", "0-15-5d*"]}, **policy_over})
+        out.append(r)
+    return out
+
+
+def test_rename_onto_a_hand_made_windows_policy_pauses_deletes(client, fake):
+    """A Windows policy NetBox never pushed or adopted is not NetBox's object: the renamed one's deletes still wait."""
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    client.add_policy(Policy(name="Printers2", scope_id="10.1.0.0", criteria={"mac_address": ["EQ", "00-15-5d*"]}))
+    source = [r for r in _misread_source(name="Printers2") if not r.fields.get("policy")]
+    p, _ = run(client, source, managed)
+    deletes = {(c.kind, c.key) for c in p.changes if c.action == "delete"}
+    assert ("policy", "10.1.0.0/printers") not in deletes, deletes
+    assert any(s.waiting for s in p.skipped), by_key(p)
+
+
+def test_misread_policy_with_another_fault_pauses_deletes(client, fake):
+    """Bad stored IP ranges are checked before the MAC condition: such a policy is no mere notice."""
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    p, _ = run(client, _misread_source(ip_ranges=[["10.1.0.100"]]), managed)
+    assert "IP ranges" in by_key(p)["policy", "10.1.0.0/printers"]
+    assert any(s.waiting for s in p.skipped), by_key(p)
+
+
+def test_misread_policy_sharing_a_processing_order_pauses_deletes(client, fake):
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    twin = policy(name="Scanners", processing_order=1, ip_ranges=[["10.1.0.130", "10.1.0.140"]])
+    p, _ = run(client, [*_misread_source(), twin], managed)
+    assert any(s.waiting for s in p.skipped), by_key(p)
+
+
 def test_values_of_vendor_options_need_a_vendor_definition(client):
     p = push.plan([option("server", 1, ["1"], vendor_class="MSFT")], [], {}, defined_options={"1", "6"})
     assert "no definition for vendor class MSFT option 1" in p.skipped[0].reason
