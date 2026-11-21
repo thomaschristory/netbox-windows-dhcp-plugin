@@ -302,7 +302,40 @@ class WindowsServer(JobsMixin, PrimaryModel):
         # What the reported names were read from, so save() can tell when the server is pointed elsewhere.
         if "host" in instance.__dict__ and "computer_name" in instance.__dict__:  # not deferred
             instance._reported_for = (instance.host, instance.computer_name)
+        instance._remember_connection()
         return instance
+
+    # The fields that decide where and how the server's connection goes. clean() judges the failover secret
+    # profiles only when one of them changes.
+    CONNECTION_FIELDS = (
+        "host",
+        "credential_profile",
+        "transport",
+        "port",
+        "winrm_https",
+        "verify_tls",
+        "winrm_auth",
+        "failover_auth",
+        "kerberos_realm",
+        "ssh_host_key",
+    )
+
+    def _remember_connection(self, names=None):
+        # A deferred field is not remembered, and clean() then judges as for a change.
+        stored = dict(getattr(self, "_stored_connection", {}))
+        for name in self.CONNECTION_FIELDS:
+            if name in self.__dict__ and (names is None or name in names):
+                stored[name] = self.__dict__[name]
+        self._stored_connection = stored
+
+    def _connection_changed(self):
+        stored = getattr(self, "_stored_connection", {})
+        return any(name not in stored or stored[name] != getattr(self, name) for name in self.CONNECTION_FIELDS)
+
+    def refresh_from_db(self, using=None, fields=None, from_queryset=None):
+        super().refresh_from_db(using=using, fields=fields, from_queryset=from_queryset)
+        # Only a field that was reread is the stored value again.
+        self._remember_connection(None if fields is None else set(fields))
 
     def save(self, *args, **kwargs):
         loaded = getattr(self, "_reported_for", None)
@@ -311,6 +344,9 @@ class WindowsServer(JobsMixin, PrimaryModel):
             self.reported_names = []
         super().save(*args, **kwargs)
         self._reported_for = (self.host, self.computer_name)
+        # What was just written is the stored value now (not the fields a save left out).
+        update_fields = kwargs.get("update_fields")
+        self._remember_connection(None if update_fields is None else set(update_fields))
 
     @property
     def reported_names_display(self):
@@ -354,8 +390,10 @@ class WindowsServer(JobsMixin, PrimaryModel):
         # A failover shared secret travels over this server's connection when it is the primary, so the secret
         # profile's limits apply to it too (issues #103, #147). Checked here so that turning HTTPS off, say, is refused
         # on the form rather than at the next push (which still checks). Only the profile's rules are read, never the
-        # secret. An undefined secret profile is reported by the push, as before.
-        if self._state.adding or self.pk is None or self.transport not in TransportChoices.values():
+        # secret. An undefined secret profile is reported by the push, as before. Judged only when a connection field
+        # changes, as FailoverRelationship does for its own edits: a profile tightened later must not block a
+        # description edit, and the push still refuses (it checks every time).
+        if self._state.adding or self.transport not in TransportChoices.values() or not self._connection_changed():
             return  # nothing can name a new server yet; an unknown transport has its own error
         profiles = get_setting("credentials")
         names = (

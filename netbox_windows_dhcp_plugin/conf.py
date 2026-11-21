@@ -184,6 +184,12 @@ def profiles_with_unknown_keys(profiles=None):
     return unknown
 
 
+def warn_unknown_profile_keys(profiles=None):
+    """Log, at startup, each profile's unknown keys: names only, never a value (a misspelt key may hold a secret)."""
+    for name, keys in profiles_with_unknown_keys(profiles).items():
+        log.warning("credential profile %r has keys the plugin does not know (ignored): %s", name, ", ".join(keys))
+
+
 def get_credentials(profile_name, profiles=None, environ=None, needed=("username", "password")):
     """
     Resolve a credential profile from the plugin configuration.

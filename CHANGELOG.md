@@ -21,8 +21,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- The plugin now requires `requests` 2.32 or later (pypsrp uses it for WinRM; some older versions treated an empty
-  `CURL_CA_BUNDLE` as turning certificate verification off).
+- The plugin now requires `requests` 2.32.4 or later (pypsrp uses it for WinRM; some older versions treated an empty
+  `CURL_CA_BUNDLE` as turning certificate verification off, and 2.32.4 fixes CVE-2024-47081).
 
 ## [0.6.1] - 2026-11-21
 

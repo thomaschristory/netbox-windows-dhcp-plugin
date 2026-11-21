@@ -169,7 +169,7 @@ def test_dev_group_does_not_repeat_runtime_dependencies():
     dev = " ".join(project["dependency-groups"]["dev"])
     assert "pypsrp" not in dev and "paramiko" not in dev and "requests" not in dev
     # The floors the package promises are untouched.
-    assert project["project"]["dependencies"] == ["pypsrp[credssp]>=0.9.1", "paramiko>=3.5", "requests>=2.32"]
+    assert project["project"]["dependencies"] == ["pypsrp[credssp]>=0.9.1", "paramiko>=3.5", "requests>=2.32.4"]
 
 
 def test_dev_image_installs_the_branching_extra():

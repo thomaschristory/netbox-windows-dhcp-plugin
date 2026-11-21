@@ -201,8 +201,9 @@ A failover shared secret travels over the primary server's own connection, so th
 (`shared_secret_profile`) apply to that connection too, as well as those of the server's own profile. They are checked
 when a failover relationship is created or its secret profile or primary server changes (not for other edits, nor for
 imports, which record what Windows has), and again before each push sends the secret, which catches a later change to
-the server or the profile; editing a primary server is checked against them too, so turning HTTPS off on it is
-refused on the form. When the secret's profile sets `require_verified_https`, the primary server must use WinRM over
+the server or the profile; editing a primary server's connection settings (host, profile, transport, port, HTTPS,
+verification, authentication, realm, host key) is checked against them too, so turning HTTPS off on it is refused on
+the form, while other edits (a description, say) are not judged. When the secret's profile sets `require_verified_https`, the primary server must use WinRM over
 HTTPS with verification even if its own profile does not ask for it, or SSH with the secret profile's
 `ssh_host_keys`. When the secret's profile sets `ssh_host_keys`, a server reached over SSH must pin its own host key
 (one of those), since without it the connection trusts the server profile's keys or `known_hosts`. When the

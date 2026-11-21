@@ -638,6 +638,41 @@ class ServerSecretProfileCleanTest(TestCase):
             self.server.full_clean()
         self.assertIn("'ha' does not set allow_insecure_credssp", " ".join(ctx.exception.messages))
 
+    def test_only_connection_edits_are_judged(self):
+        # A secret profile tightened (or broken) after the server was saved must not block a description edit; the
+        # push still refuses to send the secret.
+        WindowsServer.objects.filter(pk=self.server.pk).update(winrm_https=False)
+        server = WindowsServer.objects.get(pk=self.server.pk)
+        server.description = "edited"
+        with self.settings(require_verified_https=True):
+            server.full_clean()
+        with self.settings(require_verified_https="yes"):
+            server.full_clean()
+        # A connection field changed now is judged, even back and forth on another field.
+        server.port = 5985
+        with self.settings(require_verified_https=True), self.assertRaises(ValidationError) as ctx:
+            server.full_clean()
+        self.assertIn("winrm_https", ctx.exception.message_dict)
+        # After a save, the saved values are the stored ones.
+        server.save()
+        server.description = "again"
+        with self.settings(require_verified_https=True):
+            server.full_clean()
+        # A deferred field is loaded through refresh_from_db, which remembers it: like a full read, an unchanged server
+        # is not judged, and a field set before reading the stored value is.
+        deferred = WindowsServer.objects.defer("verify_tls").get(pk=self.server.pk)
+        with self.settings(require_verified_https=True):
+            deferred.full_clean()
+        deferred = WindowsServer.objects.defer("verify_tls").get(pk=self.server.pk)
+        deferred.verify_tls = False
+        with self.settings(require_verified_https=True), self.assertRaises(ValidationError):
+            deferred.full_clean()
+        # refresh_from_db forgets an edit.
+        server.winrm_https = True
+        server.refresh_from_db()
+        with self.settings(require_verified_https=True):
+            server.full_clean()
+
     def test_partner_and_undefined_profiles_are_not_judged(self):
         # The secret rides the primary's connection only; an undefined profile is reported by the push.
         self.partner.winrm_https = False

@@ -1,3 +1,6 @@
+from unittest import mock
+
+from django.apps import apps
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase, TestCase, override_settings
@@ -38,6 +41,37 @@ class CredentialProfileTest(SimpleTestCase):
     def test_repr_hides_secrets(self):
         creds = get_credentials("inline", self.profiles, environ={})
         self.assertNotIn("secret", repr(creds))
+
+
+class UnknownProfileKeysTest(SimpleTestCase):
+    """A misspelt profile key is ignored, so NetBox says so at startup: key names only, never values."""
+
+    profiles = {
+        "typo": {"username": "svc", "password": "hunter2-value", "require_verified_http": True, "pasword": "s3cr3t"},
+        "ok": {"username": "svc", "allowed_hosts": ["dhcp01.corp.example"], "require_verified_https": True},
+    }
+
+    def test_ready_warns_about_unknown_keys(self):
+        config = apps.get_app_config("netbox_windows_dhcp_plugin")
+        plugin = {**settings.PLUGINS_CONFIG, "netbox_windows_dhcp_plugin": {"credentials": self.profiles}}
+        # Only the warnings: the rest of ready() (registrations, signals) already ran at startup.
+        with (
+            override_settings(PLUGINS_CONFIG=plugin),
+            mock.patch("netbox.plugins.PluginConfig.ready"),
+            mock.patch("netbox_windows_dhcp_plugin.integrations.branching.register"),
+            mock.patch("netbox_windows_dhcp_plugin.signals.connect"),
+            mock.patch("netbox_windows_dhcp_plugin.retention.check_setting"),
+            self.assertLogs("netbox_windows_dhcp_plugin", level="WARNING") as logs,
+        ):
+            config.ready()
+        output = "\n".join(logs.output)
+        self.assertIn(
+            "credential profile 'typo' has keys the plugin does not know (ignored): pasword, require_verified_http",
+            output,
+        )
+        self.assertNotIn("'ok' has keys", output)
+        self.assertNotIn("s3cr3t", output)
+        self.assertNotIn("hunter2-value", output)
 
 
 class AllowedHostsTest(SimpleTestCase):

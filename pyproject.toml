@@ -26,8 +26,9 @@ dependencies = [
     "pypsrp[credssp]>=0.9.1",
     "paramiko>=3.5",
     # pypsrp sends WinRM over requests. Older requests versions could treat an empty CURL_CA_BUNDLE in the worker's
-    # environment as "do not verify", which would quietly undo Verify host and require_verified_https.
-    "requests>=2.32",
+    # environment as "do not verify", which would quietly undo Verify host and require_verified_https; 2.32.4 also
+    # fixes CVE-2024-47081 (credentials from .netrc sent to the wrong host).
+    "requests>=2.32.4",
 ]
 
 [project.optional-dependencies]

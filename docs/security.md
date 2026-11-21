@@ -50,7 +50,7 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
   DHCP server's RPC to its failover partner and the hop to a remote DHCP server (`-ComputerName`) are not WinRM.
 - A profile key the plugin does not know (a misspelt `require_verified_http`, say) is ignored, so NetBox logs a
   warning at startup naming the profile and the key.
-- pypsrp sends WinRM over `requests`; the plugin requires `requests` 2.32 or later, as some older versions treated an
+- pypsrp sends WinRM over `requests`; the plugin requires `requests` 2.32.4 or later, as some older versions treated an
   empty `CURL_CA_BUNDLE` in the environment as "do not verify".
 - A failover shared secret travels over the primary server's own connection, so the secret profile's limits
   (`transports`, `ports`, `kerberos_realms`, `ssh_host_keys`, `require_verified_https`) and its
