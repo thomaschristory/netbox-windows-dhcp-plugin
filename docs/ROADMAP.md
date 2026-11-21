@@ -143,8 +143,10 @@ netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
 13. **Done: 0.6.1 (2026-11-21).** Policy MAC conditions compared as Windows stores them (it joins the digits of a
     prefix and pads an odd count on the left); misread or refused spellings refused on save and named as not pushed
     (#110). Checked in the domain lab on Windows Server 2025 (`make test-lab` 53 passed, failover 2/2).
-14. **In progress: 0.7.0.** Credential profiles can require WinRM over HTTPS with certificate verification
+14. **Done: 0.7.0 (2026-11-21).** Credential profiles can require WinRM over HTTPS with certificate verification
     (`require_verified_https`, #147), checked on save and before every connection, for the failover client and a
-    failover secret profile too. WinRM ignores the worker's proxy environment variables unless the credential profile
-    sets `"proxy": "env"` (#105, a behaviour change). Unit and NetBox tested; the proxy change is not yet run in the
-    lab.
+    failover secret profile too; SSH under such a profile needs `ssh_host_keys`. WinRM ignores the worker's proxy
+    environment variables unless the credential profile sets `"proxy": "env"` (#105, a behaviour change). Unknown
+    profile keys are logged at startup. Domain lab on Windows Server 2025, Kerberos over HTTPS: `make test-lab` 52
+    passed on the #105 branch with every proxy variable pointing at a dead proxy, and `make lab-e2e` passed on main
+    with CredSSP for failover writes.

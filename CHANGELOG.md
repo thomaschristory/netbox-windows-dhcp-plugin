@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-21
+
+0.7.0 changes a default: WinRM no longer follows the NetBox worker's proxy environment variables. A site that reaches
+its DHCP servers through a proxy on purpose sets `"proxy": "env"` on the credential profile before upgrading: see
+[Upgrading from 0.6.x to 0.7.0](docs/installation.md#upgrading-from-06x-to-070). Credential profiles can also
+require verified HTTPS. No migration.
+
 ### Added
 
 - Credential profiles can set `require_verified_https: True` (strictly `True` or `False`): every WinRM connection

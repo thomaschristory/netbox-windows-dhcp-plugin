@@ -5,13 +5,15 @@ over WinRM or SSH.
 
 **Documentation: https://thomaschristory.github.io/netbox-windows-dhcp-plugin/**
 
-> **Status: 0.6.1.** The plugin no longer needs netbox-plugin-dhcp: it holds the whole Windows
+> **Status: 0.7.0.** The plugin no longer needs netbox-plugin-dhcp: it holds the whole Windows
 > DHCP configuration in its own models. 0.2.0 is a fresh start from 0.1.x (see the [upgrade
 > notes](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-01x)). 0.4.0
 > reads faster, guards IPAM edits that change Windows, and holds deletes back while a push leaves something out; it
 > changes a few defaults and API answers, so read the [upgrade
 > notes](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-030-to-040) and the
-> [changelog](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/changelog/) first. Every v1
+> [changelog](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/changelog/) first. 0.7.0
+> stops WinRM from following the worker's proxy variables unless a credential profile opts in (see the [upgrade
+> notes](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/installation/#upgrading-from-06x-to-070)). Every v1
 > feature is built and tested against an in-memory fake server and PowerShell stubs. The Windows side (scripts,
 > transports, sync rules) is that of 0.1.x, apart from option values now being lists; 0.1.0's lab tests ran in full
 > against two Windows Server 2022 DHCP servers (import, push, leases and failover, over WinRM HTTP and HTTPS and over
