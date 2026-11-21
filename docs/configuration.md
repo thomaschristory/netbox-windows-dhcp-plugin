@@ -35,6 +35,7 @@ credential profile, and the profile says where the secrets come from. A profile 
 | `allowed_hosts` | The hosts the profile's credentials may be sent to, see [below](#allowed_hosts) |
 | `allow_insecure_credssp` | `True` lets CredSSP run over HTTP or without certificate verification. Labs only, see [Security](security.md#transport). A failover shared secret profile used with such a server needs it too |
 | `transports`, `ports`, `kerberos_realms`, `ssh_host_keys`, `require_verified_https` | Optional limits on how the profile's servers connect, see [below](#pinning-transport-port-realm-and-host-key) |
+| `proxy` | `"none"` (the default) or `"env"`: whether WinRM follows the worker's proxy environment variables, see [below](#proxy) |
 
 Every secret (`username`, `password`, `private_key`, `secret`) can be given in three ways:
 
@@ -120,6 +121,56 @@ as an IPv4 address written another way (`2130706433`, `0x7f.1`, `127.1`, or any 
 An SSH host key pinned on a Windows server is only as trustworthy as the people who may edit that server: restrict
 `change` on Windows servers, keep the keys in the worker's `known_hosts`, or list them in the profile's
 `ssh_host_keys` (below).
+
+### proxy
+
+WinRM connects straight to each DHCP server and ignores the proxy environment variables of the worker
+(`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, upper or lower case). NetBox containers often set those for internet
+access (plugin installs, update checks), and WinRM to an internal DHCP server should not take that proxy without
+anyone noticing: it may fail in confusing ways, and with WinRM over HTTP (or HTTPS without verification) the proxy
+could watch or change the session.
+
+A site that does reach its DHCP servers through a proxy sets `"proxy": "env"` on the profile. Its WinRM connections
+then follow those variables as the worker has them, `NO_PROXY` included:
+
+```python
+PLUGINS_CONFIG = {
+    "netbox_windows_dhcp_plugin": {
+        "credentials": {
+            "dhcp-remote": {
+                "username": "CORP\\svc-netbox-dhcp",
+                "password_env": "DHCP_ADMIN_PASSWORD",
+                "allowed_hosts": ["dhcp*.branch.example"],
+                "proxy": "env",
+            },
+        },
+    },
+}
+```
+
+| Value | WinRM connections of the profile's servers |
+|---|---|
+| no `proxy` key, or `"none"` | go straight to the server, whatever the environment says |
+| `"env"` | follow `HTTPS_PROXY` (WinRM over HTTPS) or `HTTP_PROXY` (over HTTP), else `ALL_PROXY`, except for hosts in `NO_PROXY` |
+
+Anything else (`True`, `"ENV"`, a proxy URL, `None` from a missing environment variable) is refused, naming the
+profile: no server can use the profile until it is fixed. The proxy itself is not named in the profile: it comes
+from the worker's environment, so set it where the worker runs.
+
+- The server's own profile decides, for every WinRM call of that server: imports, pushes, dry runs, the connection
+  test, live leases, and the failover logon (**Failover authentication: CredSSP**), which is the same connection
+  with another logon method.
+- A failover shared secret travels over that connection. When the server's profile sets `"proxy": "env"`, the
+  secret's profile (`shared_secret_profile`) must set it too, unless it is the server's own profile; otherwise the
+  failover changes that send the secret fail, and creating such a relationship is refused.
+- SSH never uses a proxy (paramiko does not read these variables), so `proxy` has no effect on SSH servers. A value
+  other than `"none"` or `"env"` is still refused.
+- Kerberos tickets are fetched by the system's Kerberos library, which does not use these variables either.
+- The CA bundle variables (`REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`) still apply with either value.
+- A SOCKS proxy (`ALL_PROXY=socks5://...`) needs the PySocks package in NetBox's virtual environment; the plugin does
+  not install it.
+- NTLM and Negotiate (Kerberos) over plain HTTP need the whole logon on one TCP connection, which many forwarding
+  proxies do not keep. Through a proxy, use WinRM over HTTPS: the proxy then only tunnels the connection.
 
 ### Pinning transport, port, realm and host key
 
@@ -207,6 +258,7 @@ the form, while other edits (a description, say) are not judged. When the secret
 HTTPS with verification even if its own profile does not ask for it, or SSH with the secret profile's
 `ssh_host_keys`. When the secret's profile sets `ssh_host_keys`, a server reached over SSH must pin its own host key
 (one of those), since without it the connection trusts the server profile's keys or `known_hosts`. When the
-server uses CredSSP without verified HTTPS, the secret's profile must set `allow_insecure_credssp` too. Both rules are
-skipped when the secret's profile is the server's own profile: its keys and its consent already govern the connection.
+server uses CredSSP without verified HTTPS, the secret's profile must set `allow_insecure_credssp` too. When the
+server's profile sets `"proxy": "env"` and the server uses WinRM, the secret's profile must set it too. These rules
+are skipped when the secret's profile is the server's own profile: its keys and its consent already govern the connection.
 A failover partner is only checked against `allowed_hosts`.

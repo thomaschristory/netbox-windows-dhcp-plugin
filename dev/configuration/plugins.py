@@ -26,6 +26,10 @@ _lab_key_profile = {
 _lab_hosts = [h.strip() for h in os.environ.get("WINDOWS_DHCP_DEV_ALLOWED_HOSTS", "").split(",") if h.strip()]
 if _lab_hosts:
     _lab_profile["allowed_hosts"] = _lab_key_profile["allowed_hosts"] = _lab_hosts
+# WINDOWS_DHCP_LAB_PROXY=env in dev/env/lab.env: reach the lab through the proxy in the containers' environment
+# (issue #105). The failover secret profile must agree to it, so it gets the same value.
+_lab_proxy = {"proxy": "env"} if os.environ.get("WINDOWS_DHCP_LAB_PROXY") == "env" else {}
+_lab_profile.update(_lab_proxy)
 
 # netbox-branching must come last.
 PLUGINS = ["netbox_windows_dhcp_plugin", "netbox_change_control", "netbox_branching"]
@@ -37,7 +41,11 @@ PLUGINS_CONFIG = {
             "lab-ssh-key": _lab_key_profile,
             # The failover phase of make lab-e2e (WINDOWS_DHCP_LAB_PARTNER set). The secret travels over the lab
             # server's connection, so it must consent to CredSSP over HTTP as well.
-            "lab-failover": {"secret_env": "WINDOWS_DHCP_LAB_FAILOVER_SECRET", "allow_insecure_credssp": True},
+            "lab-failover": {
+                "secret_env": "WINDOWS_DHCP_LAB_FAILOVER_SECRET",
+                "allow_insecure_credssp": True,
+                **_lab_proxy,
+            },
         },
     },
 }

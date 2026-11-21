@@ -28,6 +28,9 @@ DEFAULTS = {
     # "kerberos_realms" (["CORP.EXAMPLE"], for WinRM with Kerberos) and "ssh_host_keys" (["ssh-ed25519 AAAA..."]: the
     # only host keys SSH trusts with it). "require_verified_https": True (true or false only) makes WinRM with the
     # profile use HTTPS with certificate verification, whatever the logon, and SSH with it needs "ssh_host_keys".
+    # WinRM connects straight to the server and ignores the worker's proxy environment variables (HTTP_PROXY,
+    # HTTPS_PROXY, ALL_PROXY). "proxy": "env" on a profile makes its WinRM connections follow them again; "none" (or
+    # no key) is the default. SSH never uses a proxy.
     "credentials": {},
     # Prefix of the branches created by imports when netbox-branching is installed.
     "import_branch_prefix": "dhcp-import",
@@ -115,6 +118,10 @@ class CredentialError(Exception):
     pass
 
 
+class ServerProfileError(CredentialError):
+    """A problem with the server's own credential profile, found while checking another profile against it."""
+
+
 @dataclass(frozen=True)
 class Credentials:
     username: str = ""
@@ -166,6 +173,7 @@ LIMIT_KEYS = (
     "kerberos_realms",
     "ssh_host_keys",
     "require_verified_https",
+    "proxy",
 )
 PROFILE_KEYS = frozenset(LIMIT_KEYS) | {f"{key}{suffix}" for key in SECRET_KEYS for suffix in ("", "_env", "_file")}
 
@@ -392,6 +400,31 @@ def _check_host_key(value):
     return value.strip() if ssh_host_key_blob(value) is not None else None
 
 
+# Values a profile's "proxy" may take: the proxy values of the WinRM transport (windows.winrm.PROXIES, not imported
+# here so this module stays light).
+PROXY_NONE = "none"
+PROXY_ENV = "env"
+PROXIES = (PROXY_NONE, PROXY_ENV)
+
+
+def profile_proxy(profile_name, profile):
+    """
+    Whether the profile's WinRM connections follow the worker's proxy environment variables ("env") or connect
+    directly ("none", also when the key is absent). Raises CredentialError for anything else.
+    """
+    value = profile.get("proxy", PROXY_NONE)
+    # Exact strings only: True, "ENV" or None (an environment variable that is not set) would leave the reader
+    # guessing which way the traffic goes, so they are refused like the other profile keys. The value itself is never
+    # repeated in the message: a proxy URL often holds a user name and password, and the message reaches form errors
+    # and job logs.
+    if not isinstance(value, str) or value not in PROXIES:
+        raise CredentialError(
+            f'credential profile {profile_name!r}: proxy must be "none" or "env" (got a {type(value).__name__}); a '
+            "proxy URL is not accepted, set the worker's proxy environment variables instead"
+        )
+    return value
+
+
 def profile_transports(profile_name, profile):
     return _profile_list(profile_name, profile, "transports", _check_transport)
 
@@ -432,6 +465,9 @@ def connection_pin_errors(
     (Kerberos), and which machine SSH trusts to receive it (host key).
     """
     errors = {}
+    # Not a pin, but read with them so a malformed value is refused wherever the profile is checked (server save,
+    # every connection, the failover secret).
+    profile_proxy(profile_name, profile)
     require_verified = profile_require_verified_https(profile_name, profile)
     # NTLM and Kerberos do not need HTTPS to log on, but without it (or without checking the certificate) only the
     # logon vouches for the server, and an editor-chosen Kerberos SPN or a relayed NTLM exchange can defeat that.
@@ -495,8 +531,9 @@ def check_secret_connection(profile_name, server, profiles=None):
     """
     Raise CredentialError unless `server`'s own connection may carry the failover shared secret of `profile_name`
     (issue #103). The secret travels over it, so the secret profile's transports, ports, Kerberos realms, SSH host
-    keys and require_verified_https (issue #147) apply to that connection, and so does its say on insecure CredSSP.
-    Partners stay allowed_hosts only. Checked when a relationship is saved and before each push sends the secret.
+    keys and require_verified_https (issue #147) apply to that connection, and so does its say on insecure CredSSP
+    and on the worker's proxy (issue #105). Partners stay allowed_hosts only. Checked when a relationship is saved and
+    before each push sends the secret.
     """
     profiles = get_setting("credentials") if profiles is None else profiles
     if profile_name not in profiles:
@@ -517,6 +554,21 @@ def check_secret_connection(profile_name, server, profiles=None):
         raise CredentialError("; ".join(errors.values()))
     if profile_name == server.credential_profile:
         return  # the connection checks already apply this profile's keys and CredSSP consent
+    server_profile = profiles.get(server.credential_profile)
+    server_proxy = PROXY_NONE
+    if server.transport == "winrm" and server_profile is not None:
+        try:
+            server_proxy = profile_proxy(server.credential_profile, server_profile)
+        except CredentialError as exc:
+            # The server's profile is at fault, not the secret's: say so, so a form can show it on the right field.
+            raise ServerProfileError(str(exc)) from None
+    if server_proxy == PROXY_ENV and profile_proxy(profile_name, profile) != PROXY_ENV:
+        # The server's profile sends its WinRM traffic through the worker's proxy (issue #105); the secret's owner
+        # has not agreed to that.
+        raise CredentialError(
+            f'credential profile {profile_name!r} does not set proxy "env", and this server\'s WinRM connection '
+            "follows the worker's proxy settings"
+        )
     if (
         server.transport == "ssh"
         and profile_ssh_host_keys(profile_name, profile) is not None

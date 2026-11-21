@@ -54,8 +54,8 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
   empty `CURL_CA_BUNDLE` in the environment as "do not verify".
 - A failover shared secret travels over the primary server's own connection, so the secret profile's limits
   (`transports`, `ports`, `kerberos_realms`, `ssh_host_keys`, `require_verified_https`) and its
-  `allow_insecure_credssp` govern that connection
-  too, not only the server's own profile. Unless the secret profile is the server's own, a server reached over SSH
+  `allow_insecure_credssp` govern that connection too, not only the server's own profile, and, when the server's
+  profile sets `"proxy": "env"`, the secret profile must agree to it. Unless the secret profile is the server's own, a server reached over SSH
   must then pin its own host key, one of the secret profile's `ssh_host_keys`.
 - A connection refuses a transport or authentication value outside the known choices, so a record written straight
   to the database cannot slip past these checks with another spelling.
@@ -64,9 +64,11 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
 
 - **WinRM** uses HTTPS with certificate verification by default. Over HTTP, NTLM, Kerberos and CredSSP still encrypt
   every message. Turning verification off is possible for labs; the Windows server page shows it. HTTP redirects
-  are refused, so the logon only goes to the host that was checked. A proxy set in the worker's environment
-  (`HTTPS_PROXY`, `HTTP_PROXY`) still applies to WinRM: set `NO_PROXY` for the DHCP servers unless the proxy is
-  meant to carry it.
+  are refused, so the logon only goes to the host that was checked. WinRM ignores proxies set in the worker's
+  environment (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`) and connects straight to the server, so a proxy meant for
+  internet access never sees the session. A credential profile can set `"proxy": "env"` to follow those variables
+  on purpose (see [Configuration](configuration.md#proxy)); the proxy then carries the WinRM traffic, so use HTTPS
+  with verification there, and set `require_verified_https` on the profile to enforce it. SSH never uses a proxy.
 - **CredSSP** hands the account's password to the DHCP server, which can then act as that account towards other
   servers: that is what failover needs. Use it only for servers that are part of a failover pair, with an account
   that can do nothing but manage DHCP. **Failover authentication: CredSSP** limits it further: the password then

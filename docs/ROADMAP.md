@@ -145,4 +145,6 @@ netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
     (#110). Checked in the domain lab on Windows Server 2025 (`make test-lab` 53 passed, failover 2/2).
 14. **In progress: 0.7.0.** Credential profiles can require WinRM over HTTPS with certificate verification
     (`require_verified_https`, #147), checked on save and before every connection, for the failover client and a
-    failover secret profile too. Unit and NetBox tested; no Windows behaviour changes.
+    failover secret profile too. WinRM ignores the worker's proxy environment variables unless the credential profile
+    sets `"proxy": "env"` (#105, a behaviour change). Unit and NetBox tested; the proxy change is not yet run in the
+    lab.

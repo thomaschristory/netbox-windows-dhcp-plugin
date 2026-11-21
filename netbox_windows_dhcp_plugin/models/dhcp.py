@@ -1249,7 +1249,7 @@ class FailoverRelationship(PrimaryModel):
         # push checks again before sending it.
         if not self.shared_secret_profile:
             return
-        from ..conf import CredentialError, check_host_allowed, check_secret_connection
+        from ..conf import CredentialError, ServerProfileError, check_host_allowed, check_secret_connection
 
         hosts = []
         # Read the ids first: a missing server is reported as a field error, not a crash.
@@ -1267,6 +1267,9 @@ class FailoverRelationship(PrimaryModel):
             chosen = not self._unchanged("primary_server_id", "shared_secret_profile")
             if self.check_secret_profile and chosen and self.primary_server_id is not None:
                 check_secret_connection(self.shared_secret_profile, self.primary_server)
+        except ServerProfileError as exc:
+            # The primary server's own profile is malformed (the message names it): not the secret profile's fault.
+            raise ValidationError({"primary_server": str(exc)}) from exc
         except CredentialError as exc:
             raise ValidationError({"shared_secret_profile": str(exc)}) from exc
 
