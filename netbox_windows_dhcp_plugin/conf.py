@@ -186,8 +186,11 @@ def profiles_with_unknown_keys(profiles=None):
 
 def warn_unknown_profile_keys(profiles=None):
     """Log, at startup, each profile's unknown keys: names only, never a value (a misspelt key may hold a secret)."""
+    # The plugin's own logger, like the other startup warnings: this module's logger exists before Django applies
+    # LOGGING, and a configuration with disable_existing_loggers would silence it.
+    logger = logging.getLogger(PLUGIN_NAME)
     for name, keys in profiles_with_unknown_keys(profiles).items():
-        log.warning("credential profile %r has keys the plugin does not know (ignored): %s", name, ", ".join(keys))
+        logger.warning("credential profile %r has keys the plugin does not know (ignored): %s", name, ", ".join(keys))
 
 
 def get_credentials(profile_name, profiles=None, environ=None, needed=("username", "password")):
