@@ -136,7 +136,7 @@ nothing changes.
 | `ports` | port numbers (1 to 65535) | connect on one of these ports. A server without a port uses the default (5986 for WinRM over HTTPS, 5985 over HTTP, 22 for SSH), and that default must be listed. A port does not imply TLS: pin that with `require_verified_https` |
 | `kerberos_realms` | realm names, compared without case | with WinRM and Kerberos, name one of these realms. Other logons do not use the server's realm |
 | `ssh_host_keys` | host keys, written as the server's SSH host key field takes them (`ssh-ed25519 AAAA...`; `ssh-ed25519`, `ssh-rsa` and `ecdsa-sha2-nistp256/384/521`) | with SSH, either pin one of these keys, or pin none: the connection then trusts only these keys, never the worker's `known_hosts` |
-| `require_verified_https` | `True` or `False` (not a list) | with WinRM, turn on both **WinRM over HTTPS** and **Verify host**, whatever the logon (NTLM, Kerberos, Basic or CredSSP). `False`, or no key, leaves them to the server editor (Basic and CredSSP still need both). SSH is not affected: it checks host keys instead (`ssh_host_keys`) |
+| `require_verified_https` | `True` or `False` (not a list) | with WinRM, turn on both **WinRM over HTTPS** and **Verify host**, whatever the logon (NTLM, Kerberos, Basic or CredSSP). With SSH, the profile must also set `ssh_host_keys` (the host keys its owner trusts, as WinRM trusts the worker's certificate authorities), or SSH is refused: a key pinned only on the server is the editor's choice. `False`, or no key, leaves all this to the server editor (Basic and CredSSP still need both HTTPS settings) |
 
 ```python
 PLUGINS_CONFIG = {
@@ -184,11 +184,16 @@ intercept the traffic, defeats Kerberos mutual authentication: they can then rea
 failover shared secrets, though not the password. WinRM over HTTPS with verification avoids it: set
 `require_verified_https` on the profile so that editors cannot turn either off.
 
+`require_verified_https` covers the plugin's own connection to the server only. The DHCP server's RPC to its
+failover partner and the onward hop to a remote DHCP server (**Computer name**, `-ComputerName`) are not WinRM and
+are outside it.
+
 Connections also refuse a transport or authentication value outside the known choices (a record written straight to
 the database with `KERBEROS` or `Basic`, say), so the checks and the transport always read the same value.
 
 The limits are checked like `allowed_hosts`: when a Windows server is saved (the form and the API name the field
-that breaks the rule) and again before every connection, including the connection test, live leases and the
+that breaks the rule; for a failover primary, the limits of its relationships' secret profiles too) and again before
+every connection, including the connection test, live leases and the
 failover logon, so a server changed in the database or a profile tightened later is refused before anything is
 sent.
 
@@ -196,10 +201,11 @@ A failover shared secret travels over the primary server's own connection, so th
 (`shared_secret_profile`) apply to that connection too, as well as those of the server's own profile. They are checked
 when a failover relationship is created or its secret profile or primary server changes (not for other edits, nor for
 imports, which record what Windows has), and again before each push sends the secret, which catches a later change to
-the server or the profile. When the secret's profile sets `require_verified_https`, the primary server must use WinRM
-over HTTPS with verification even if its own profile does not ask for it (or use SSH). When the secret's profile sets
-`ssh_host_keys`, a server reached over SSH must pin its own
-host key (one of those), since without it the connection trusts the server profile's keys or `known_hosts`. When the
+the server or the profile; editing a primary server is checked against them too, so turning HTTPS off on it is
+refused on the form. When the secret's profile sets `require_verified_https`, the primary server must use WinRM over
+HTTPS with verification even if its own profile does not ask for it, or SSH with the secret profile's
+`ssh_host_keys`. When the secret's profile sets `ssh_host_keys`, a server reached over SSH must pin its own host key
+(one of those), since without it the connection trusts the server profile's keys or `known_hosts`. When the
 server uses CredSSP without verified HTTPS, the secret's profile must set `allow_insecure_credssp` too. Both rules are
 skipped when the secret's profile is the server's own profile: its keys and its consent already govern the connection.
 A failover partner is only checked against `allowed_hosts`.

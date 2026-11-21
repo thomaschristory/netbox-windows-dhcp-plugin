@@ -141,7 +141,7 @@ def test_ssh_host_keys():
     assert errors(profile, ssh_host_key=ED2) == {}
 
 
-def test_require_verified_https_applies_to_winrm_only():
+def test_require_verified_https():
     on = {"require_verified_https": True}
     # Absent or false: today's behaviour.
     for profile in ({}, {"require_verified_https": False}):
@@ -158,8 +158,22 @@ def test_require_verified_https_applies_to_winrm_only():
         }
     # Plain HTTP is reported first; verification means nothing without HTTPS.
     assert set(errors(on, https=False, verify_tls=False)) == {"winrm_https"}
-    # SSH pins host keys instead.
-    assert errors(on, transport="ssh", port=22, https=False, verify_tls=False) == {}
+    # SSH needs the profile's own host keys: otherwise an editor could switch to SSH and pin a key they chose.
+    ssh = {"transport": "ssh", "port": 22, "https": False, "verify_tls": False}
+    assert errors(on, **ssh) == {
+        "transport": "credential profile 'p' sets require_verified_https, which needs ssh_host_keys for SSH "
+        '(or transports: ["winrm"])'
+    }
+    assert errors({**on, "ssh_host_keys": [ED]}, **ssh) == {}
+    assert errors({**on, "ssh_host_keys": [ED]}, **ssh, ssh_host_key=ED2) == {
+        "ssh_host_key": "credential profile 'p' does not trust this SSH host key"
+    }
+    # When transports already refuses SSH, that message stays.
+    assert errors({**on, "transports": ["winrm"]}, **ssh) == {
+        "transport": "credential profile 'p' may not be used over ssh"
+    }
+    # Without the key, SSH is as before.
+    assert errors({}, **ssh) == {}
 
 
 def test_profile_require_verified_https():
@@ -192,3 +206,17 @@ def test_ssh_host_key_blob():
 def test_profile_ssh_host_keys_returns_the_keys_as_given():
     assert conf.profile_ssh_host_keys("p", {"ssh_host_keys": [f" {ED} c "]}) == [f"{ED} c"]
     assert conf.profile_ssh_host_keys("p", {}) is None
+
+
+def test_profile_keys_are_listed_once():
+    assert "require_verified_https" in conf.PROFILE_KEYS
+    assert {"password", "password_env", "password_file", "secret_file"} <= conf.PROFILE_KEYS
+
+
+def test_unknown_profile_keys_are_reported():
+    profiles = {
+        "ok": {"username": "u", "password_env": "X", "require_verified_https": True, "ssh_host_keys": [ED]},
+        "typo": {"username": "u", "require_verified_http": True, "allowed_host": ["a"]},
+    }
+    assert conf.profiles_with_unknown_keys(profiles) == {"typo": ["allowed_host", "require_verified_http"]}
+    assert conf.profiles_with_unknown_keys({}) == {}

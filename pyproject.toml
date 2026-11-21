@@ -25,6 +25,9 @@ classifiers = [
 dependencies = [
     "pypsrp[credssp]>=0.9.1",
     "paramiko>=3.5",
+    # pypsrp sends WinRM over requests. Older requests versions could treat an empty CURL_CA_BUNDLE in the worker's
+    # environment as "do not verify", which would quietly undo Verify host and require_verified_https.
+    "requests>=2.32",
 ]
 
 [project.optional-dependencies]

@@ -45,7 +45,13 @@ Prefer `*_env` or `*_file` over inline secrets, and keep `configuration.py` read
   certificate verification whatever the logon, so NTLM or Kerberos over HTTP, or over HTTPS without verification,
   are refused, and `allow_insecure_credssp` no longer lifts it for CredSSP. Without it, that stays the server
   editor's choice: Basic always needs HTTPS with verification, and so does CredSSP unless the profile sets
-  `allow_insecure_credssp`. It does not apply to SSH, which checks host keys instead (`ssh_host_keys`).
+  `allow_insecure_credssp`. Over SSH, it requires the profile's own `ssh_host_keys`: otherwise an editor could switch
+  the server to SSH and pin the host key of a machine they control. It covers the plugin's own connection only: the
+  DHCP server's RPC to its failover partner and the hop to a remote DHCP server (`-ComputerName`) are not WinRM.
+- A profile key the plugin does not know (a misspelt `require_verified_http`, say) is ignored, so NetBox logs a
+  warning at startup naming the profile and the key.
+- pypsrp sends WinRM over `requests`; the plugin requires `requests` 2.32 or later, as some older versions treated an
+  empty `CURL_CA_BUNDLE` in the environment as "do not verify".
 - A failover shared secret travels over the primary server's own connection, so the secret profile's limits
   (`transports`, `ports`, `kerberos_realms`, `ssh_host_keys`, `require_verified_https`) and its
   `allow_insecure_credssp` govern that connection

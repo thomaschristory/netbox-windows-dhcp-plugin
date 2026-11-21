@@ -10,6 +10,7 @@ from netbox.models.features import JobsMixin
 from ..choices import FailoverAuthChoices, TransportChoices, WinRMAuthChoices
 from ..conf import (
     CredentialError,
+    check_secret_connection,
     connection_pin_errors,
     get_setting,
     host_allowed,
@@ -216,6 +217,7 @@ class WindowsServer(JobsMixin, PrimaryModel):
             raise ValidationError(_("A server runs on a device or a virtual machine, not both."))
         self._clean_allowed_hosts()
         self._clean_profile_pins()
+        self._clean_secret_profiles()
         self._clean_same_server()
         if self.transport == TransportChoices.SSH and not self.verify_tls:
             raise ValidationError(
@@ -347,6 +349,49 @@ class WindowsServer(JobsMixin, PrimaryModel):
         if errors:
             # The port error goes on the port field even when it is empty: the default port is the one refused.
             raise ValidationError(errors)
+
+    def _clean_secret_profiles(self):
+        # A failover shared secret travels over this server's connection when it is the primary, so the secret
+        # profile's limits apply to it too (issues #103, #147). Checked here so that turning HTTPS off, say, is refused
+        # on the form rather than at the next push (which still checks). Only the profile's rules are read, never the
+        # secret. An undefined secret profile is reported by the push, as before.
+        if self._state.adding or self.pk is None or self.transport not in TransportChoices.values():
+            return  # nothing can name a new server yet; an unknown transport has its own error
+        profiles = get_setting("credentials")
+        names = (
+            self.failover_primary.exclude(shared_secret_profile="")
+            .order_by()
+            .values_list("shared_secret_profile", flat=True)
+            .distinct()
+        )
+        for name in sorted(set(names)):
+            if name not in profiles:
+                continue
+            try:
+                errors = connection_pin_errors(
+                    name,
+                    profiles[name],
+                    transport=self.transport,
+                    port=self.port or DEFAULT_PORTS.get((self.transport, self.winrm_https)),
+                    winrm_auth=self.winrm_auth,
+                    kerberos_realm=server_kerberos_realm(self),
+                    ssh_host_key=self.ssh_host_key,
+                    https=self.winrm_https,
+                    verify_tls=self.verify_tls,
+                )
+                if not errors:
+                    # The rules that only apply to a secret profile (a pinned SSH key, consent to insecure CredSSP).
+                    check_secret_connection(name, self, profiles)
+            except CredentialError as exc:
+                # The relationship is not named: the user may not be allowed to see it.
+                raise ValidationError(_("Failover shared secret: {error}").format(error=exc)) from None
+            if errors:
+                raise ValidationError(
+                    {
+                        field: _("Failover shared secret: {error}").format(error=message)
+                        for field, message in errors.items()
+                    }
+                )
 
     def _clean_allowed_hosts(self):
         # Stop a profile's credentials from being pointed at a host it does not cover. The connection code checks
