@@ -467,6 +467,8 @@ def make_runner(env: dict[str, str]) -> Any:
         kerberos_realm=env.get("WINDOWS_DHCP_LAB_REALM", ""),
         kerberos_spn=env.get("WINDOWS_DHCP_LAB_SPN", ""),
         cert_validation=env.get("WINDOWS_DHCP_LAB_INSECURE") != "1",
+        # "env" follows the proxy environment variables, as a profile with "proxy": "env" does (issue #105).
+        proxy=env.get("WINDOWS_DHCP_LAB_PROXY", "none"),
         timeout=120,
     )
     return _recording(env, WinRMRunner(cfg))

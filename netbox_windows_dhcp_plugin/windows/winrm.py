@@ -27,13 +27,30 @@ from typing import Any
 
 from .runner import MAX_OUTPUT, ExecResult, RunnerError, execute, raise_if_stopped
 
-__all__ = ["AUTH_BASIC", "AUTH_CREDSSP", "AUTH_KERBEROS", "AUTH_NTLM", "WinRMConfig", "WinRMRunner", "kerberos_user"]
+__all__ = [
+    "AUTH_BASIC",
+    "AUTH_CREDSSP",
+    "AUTH_KERBEROS",
+    "AUTH_NTLM",
+    "PROXY_ENV",
+    "PROXY_NONE",
+    "WinRMConfig",
+    "WinRMRunner",
+    "kerberos_user",
+]
 
 AUTH_NTLM = "ntlm"
 AUTH_BASIC = "basic"
 AUTH_KERBEROS = "kerberos"
 AUTH_CREDSSP = "credssp"
 AUTHS = (AUTH_NTLM, AUTH_BASIC, AUTH_KERBEROS, AUTH_CREDSSP)
+# Whether WinRM goes through the HTTP proxy named in the worker's environment (HTTP_PROXY, HTTPS_PROXY, ALL_PROXY and
+# their lower-case forms, minus NO_PROXY). "none" (the default, issue #105) connects straight to the server: NetBox
+# containers often have a proxy for internet access, and WinRM to an internal DHCP server should not silently take it.
+# "env" follows those variables, for sites that reach their DHCP servers through a proxy on purpose.
+PROXY_NONE = "none"
+PROXY_ENV = "env"
+PROXIES = (PROXY_NONE, PROXY_ENV)
 _STDIN_CHUNK = 64 * 1024
 # A command that never finishes is abandoned after this many times the per-wait timeout, and never sooner than the
 # minimum, so that slow but healthy commands (a large lease list, failover replication) still pass.
@@ -57,6 +74,7 @@ class WinRMConfig:
     auth: str = AUTH_NTLM  # ntlm, basic, kerberos or credssp
     kerberos_realm: str = ""  # appended to the user name as user@REALM
     kerberos_spn: str = ""  # e.g. HTTP/dhcp01.example.com; default WSMAN/<host> (pypsrp default)
+    proxy: str = PROXY_NONE  # "none": always connect directly; "env": follow the proxy environment variables
     timeout: int = 60  # seconds: connection/read timeout and WS-Man operation timeout (one wait for output)
     total_timeout: float = 0  # seconds one command may run in all; 0 means 10 x timeout, at least 10 minutes
     path: str = "wsman"
@@ -102,12 +120,20 @@ def refused_connect(exc: BaseException) -> bool:
     return False
 
 
-def _forbid_redirects(wsman: Any) -> None:
-    """Make an HTTP redirect an error instead of following it.
+def _prepare_session(wsman: Any, proxy: str) -> None:
+    """Build pypsrp's HTTP session now and lock it down before anything is sent.
 
-    The allowed_hosts check approved one host. The HTTP library would follow a redirect and answer the
+    Redirects: the allowed_hosts check approved one host. The HTTP library would follow a redirect and answer the
     authentication challenge of whatever host it points at; WinRM never redirects, so refusing costs nothing.
-    pypsrp builds its HTTP session on first use and offers no option for this, so build it now and set the limit.
+
+    Proxies: pypsrp's session reads the proxy environment variables, both when it is built and again on every request
+    (requests' ``trust_env``), and its own ``no_proxy`` option only clears the scheme in use. With ``proxy="none"``
+    the session stops reading the environment altogether and holds no proxy, so no request of this connection (the
+    logon rounds of NTLM, Kerberos or CredSSP included: they reuse the request's settings) goes to a proxy, whatever
+    HTTP_PROXY, HTTPS_PROXY or ALL_PROXY say. The CA bundle variables (REQUESTS_CA_BUNDLE) were read when the session
+    was built and still apply.
+
+    pypsrp builds its HTTP session on first use and offers no option for either, so build it now and set them.
     """
     transport = getattr(wsman, "transport", None)
     build = getattr(transport, "_build_session", None)
@@ -116,6 +142,9 @@ def _forbid_redirects(wsman: Any) -> None:
         raise RunnerError("winrm: this pypsrp version does not let the plugin forbid HTTP redirects")
     session = build()
     session.max_redirects = 0
+    if proxy != PROXY_ENV:
+        session.trust_env = False
+        session.proxies = {}
     transport.session = session
 
 
@@ -132,6 +161,9 @@ class WinRMRunner:
             raise ValueError(f"winrm: unsupported auth {cfg.auth!r} (want ntlm, basic, kerberos or credssp)")
         if auth == AUTH_KERBEROS and not cfg.kerberos_realm and "@" not in cfg.username:
             raise ValueError("winrm: kerberos_realm is required with kerberos auth (or give the user as user@REALM)")
+        if cfg.proxy not in PROXIES:
+            # Never repeat the value: a proxy URL often holds a password.
+            raise ValueError("winrm: unsupported proxy setting (want none or env; a proxy URL is not accepted)")
         cfg.auth = auth
         self.cfg = cfg
 
@@ -154,6 +186,9 @@ class WinRMRunner:
             "read_timeout": timeout + 10,
             "encryption": "auto",
         }
+        if cfg.proxy != PROXY_ENV:
+            # pypsrp's own switch only covers the scheme in use; _prepare_session closes the rest.
+            kwargs["no_proxy"] = True
         if cfg.auth == AUTH_BASIC and not cfg.https:
             # Basic cannot encrypt messages; over HTTP the server must allow unencrypted
             # traffic. Only sensible on an isolated lab network.
@@ -202,7 +237,7 @@ class WinRMRunner:
 
         wsman = WSMan(**self.wsman_kwargs())
         with wsman:
-            _forbid_redirects(wsman)
+            _prepare_session(wsman, self.cfg.proxy)
             with WinRS(wsman) as shell:
                 proc = Process(shell, argv[0], argv[1:])
                 # Until here only the logon and the shell creation went out, and a failed shell creation leaves

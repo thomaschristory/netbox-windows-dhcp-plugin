@@ -97,6 +97,19 @@ Restart the worker as well as the web service: the worker runs every job, and it
 Install the new version, run `migrate`, and restart NetBox and the worker. Read the [changelog](changelog.md) first:
 while the plugin is below 1.0, a minor version can change behaviour.
 
+### Upgrading from 0.6.x to 0.7.0
+
+No migration. WinRM now ignores the worker's proxy environment variables (`HTTP_PROXY`, `HTTPS_PROXY`,
+`ALL_PROXY`) and connects straight to each DHCP server. If your worker reaches the DHCP servers through such a proxy
+on purpose, add `"proxy": "env"` to the credential profiles concerned before upgrading (and to the failover shared
+secret profiles used with those servers); see [Configuration](configuration.md#proxy). If you had set `NO_PROXY`
+for the DHCP servers, it is no longer needed. SSH is unchanged.
+
+Credential profiles also take a new optional key, `require_verified_https` (see
+[Configuration](configuration.md#pinning-transport-port-realm-and-host-key)); without it nothing changes. NetBox now
+logs a warning at startup for profile keys the plugin does not know, and the plugin requires `requests` 2.32.4 or
+later (pip upgrades it with the plugin).
+
 ### Upgrading from 0.6.0 to 0.6.1
 
 No migration. A policy whose MAC address condition Windows refuses (colons) or reads as other devices (a byte after

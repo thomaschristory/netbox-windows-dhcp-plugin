@@ -21,6 +21,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **Behaviour change: WinRM no longer goes through the worker's proxy.** Until now WinRM followed the proxy
+  environment variables of the NetBox worker (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`), so traffic to internal DHCP
+  servers could silently take a proxy meant for internet access. WinRM now connects straight to the DHCP server,
+  whatever those variables say. A site that reaches its DHCP servers through a proxy on purpose sets
+  `"proxy": "env"` on the credential profile (the other accepted value is `"none"`, the default; anything else is
+  refused when a server using the profile is saved or connects). The server's own profile also decides for its
+  failover logon; a failover shared secret profile used with a server whose profile sets `"env"` must set it too.
+  SSH never used a proxy and is unchanged. See [Configuration](docs/configuration.md#proxy) and
+  [Upgrading from 0.6.x to 0.7.0](docs/installation.md#upgrading-from-06x-to-070) (#105).
 - The plugin now requires `requests` 2.32.4 or later (pypsrp uses it for WinRM; some older versions treated an empty
   `CURL_CA_BUNDLE` as turning certificate verification off, and 2.32.4 fixes CVE-2024-47081).
 

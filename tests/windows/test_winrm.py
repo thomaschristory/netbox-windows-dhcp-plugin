@@ -42,7 +42,11 @@ class FakePypsrp:
             session = None
 
             def _build_session(self) -> Any:
-                fake.sessions.append(types.SimpleNamespace(max_redirects=30))
+                # As pypsrp builds it while the worker has HTTPS_PROXY set.
+                session = types.SimpleNamespace(
+                    max_redirects=30, trust_env=True, proxies={"https": "http://proxy.example.com:3128"}
+                )
+                fake.sessions.append(session)
                 return fake.sessions[-1]
 
         class WSMan:

@@ -11,6 +11,7 @@ from .conf import (
     host_allowed,
     insecure_credssp_allowed,
     max_concurrency,
+    profile_proxy,
     profile_ssh_host_keys,
     server_kerberos_realm,
 )
@@ -129,6 +130,7 @@ def build_runner(server, auth=""):
 
     username = creds.username
     realm = server_kerberos_realm(server)
+    profile = get_setting("credentials")[server.credential_profile]
     if (
         auth == WinRMAuthChoices.CREDSSP
         and server.winrm_auth == WinRMAuthChoices.KERBEROS
@@ -149,6 +151,9 @@ def build_runner(server, auth=""):
             auth=auth or server.winrm_auth,
             kerberos_realm=realm,
             kerberos_spn=server.kerberos_spn,
+            # The server's own profile decides, for the failover client too: it is the same connection with the
+            # same credentials, only another logon method (issue #105).
+            proxy=profile_proxy(server.credential_profile, profile),
             timeout=timeout,
         )
     )

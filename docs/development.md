@@ -120,6 +120,7 @@ still load that file, so a secret typed there would work until someone commits i
 | `WINDOWS_DHCP_LAB_REALM` | Optional, Kerberos realm |
 | `WINDOWS_DHCP_LAB_SPN` | Optional, Kerberos SPN (default `WSMAN/<host>`), for example to connect by address |
 | `WINDOWS_DHCP_LAB_COMPUTER_NAME` | Optional: the DHCP server to reach through `WINDOWS_DHCP_LAB_HOST`, which is then a management host running the cmdlets with `-ComputerName` |
+| `WINDOWS_DHCP_LAB_PROXY` | Optional: `env` reaches the lab through the proxy in the environment (`HTTPS_PROXY`, `HTTP_PROXY`, `ALL_PROXY`), as a credential profile with `"proxy": "env"` does; default `none` connects directly. The dev stack's `lab` and `lab-failover` profiles follow it too |
 | `WINDOWS_DHCP_LAB_INSECURE` | `1` skips the certificate check (self-signed lab certificate); or keep the check and point `REQUESTS_CA_BUNDLE` at the certificate |
 | `WINDOWS_DHCP_LAB_TRANSPORT` | Optional: `winrm` (default) or `ssh` (OpenSSH Server on the lab server) |
 | `WINDOWS_DHCP_LAB_SSH_KEY_FILE` | Optional with `ssh`: a private key file (absolute, or relative to the repository; never a tracked file). The logon then uses the key alone, without the password |

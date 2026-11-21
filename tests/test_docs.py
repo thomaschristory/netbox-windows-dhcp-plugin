@@ -105,6 +105,7 @@ def test_config_snippets_are_valid(block):
         conf.profile_kerberos_realms(name, profile)
         conf.profile_ssh_host_keys(name, profile)
         conf.profile_require_verified_https(name, profile)
+        conf.profile_proxy(name, profile)
 
 
 def test_docs_build_input_is_tracked():
