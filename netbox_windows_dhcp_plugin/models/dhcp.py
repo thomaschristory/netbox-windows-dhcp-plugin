@@ -7,7 +7,7 @@ point at core NetBox objects (prefix, IP range, IP address, MAC address), so the
 
 import ipaddress
 import re
-from copy import copy
+from copy import copy, deepcopy
 
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
@@ -854,12 +854,26 @@ class WindowsPolicy(_ParentMoveValidationMixin, PrimaryModel):
                 or values[0].upper() not in ("EQ", "NE")
             ):
                 raise ValidationError({"criteria": error})
+        stored = getattr(self, "_stored_criteria", None)
+        if not self._state.adding and stored is not None and criteria == stored:
+            # Conditions saved before this check (0.6.0 and earlier) must not block editing another field of the
+            # policy: the push names them as "not pushed" until they are fixed (sync/push.py _unpushable).
+            return
         for value in (criteria.get("mac_address") or [])[1:]:
             mac_error = _mac_condition_error(value)
             if mac_error:
                 raise ValidationError(
                     {"criteria": _("MAC address {value!r}: {error}").format(value=value, error=mac_error)}
                 )
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        # The conditions as stored, so clean() only judges conditions written now. A deferred field is not
+        # remembered, and clean() then judges the conditions as new.
+        if "criteria" in instance.__dict__:
+            instance._stored_criteria = deepcopy(instance.criteria)
+        return instance
 
     def _clean_parent_move(self, changed):
         if self.option_values.exclude(server_id=self.server_id, scope_id=self.scope_id).exists():
@@ -1334,32 +1348,54 @@ _HEX_SEPARATORS = re.compile(r"[:\-. ]+")
 _MAC_CONDITION_BODY = re.compile(r"[0-9A-Fa-f-]*")
 
 
+def _mac_condition_problem(value):
+    """
+    Which rule a policy's MAC address condition breaks, or None. A copy of windows/normalize.mac_condition_problem,
+    which models must not import; tests_netbox check that the two agree.
+    """
+    text = str(value)
+    if text != text.strip():
+        return "spaces"
+    if "*" in text[:-1]:
+        return None  # a wildcard elsewhere is Windows' own rule (#18)
+    wildcard = text.endswith("*")
+    body = text[:-1].removesuffix("-") if wildcard else text
+    if not _MAC_CONDITION_BODY.fullmatch(body):
+        return "characters"
+    groups = body.split("-")
+    digits = "".join(groups)
+    if (len(groups) > 1 and any(len(g) != 2 for g in groups)) or (wildcard and text != "*" and not digits):
+        return "groups"
+    if not wildcard and len(digits) != 12:
+        return "length"
+    if wildcard and len(digits) % 2:
+        return "half"
+    return None
+
+
+_MAC_CONDITION_MESSAGES = {
+    "spaces": _("remove the spaces around it."),
+    "characters": _("use hex digits, with dashes or no separator (02-4e-42-ab-cd-ef); Windows refuses colons."),
+    "groups": _(
+        "write each byte as two hex digits, separated by dashes or with no separator; Windows ignores the dashes "
+        "and pads an odd number of digits on the left, so 02-4-42-* would match 00-24-42-*."
+    ),
+    "length": _("a MAC address has 12 hex digits; end it with * to match a prefix (02-4e-42-*)."),
+    "half": _("a prefix must be whole bytes; Windows would read 024e4* as 00-24-e4-*."),
+}
+
+
 def _mac_condition_error(value):
     """
-    Why a policy's MAC address condition would not reach Windows as written, or None when it does.
+    Why a policy's MAC address condition would not reach Windows as meant, or None.
 
-    Seen on Windows Server 2025 (#110; windows/normalize.mac_pattern_refused and canonical_mac_pattern, which models
-    must not import): Windows refuses colons and a full address without its 12 digits, and for a prefix it ignores
-    the dashes and joins the digits, padding an odd count with a zero on the left. So ``02-4e-42-a*`` would match
-    ``00-24-e4-2a-*`` and ``02-4-42-ab*`` would match ``00-24-42-ab-*``: other devices than the ones meant. A
-    wildcard anywhere but the end is left to Windows (it accepts one at the start of some conditions).
+    Seen on Windows Server 2025 (#110): Windows refuses colons and a full address without its 12 digits, and for a
+    prefix it ignores the dashes and joins the digits, padding an odd count with a zero on the left. So
+    ``02-4e-42-a*`` would match ``00-24-e4-2a-*`` and ``02-4-42-ab*`` would match ``00-24-42-ab-*``: other devices
+    than the ones meant. Each byte must therefore be two hex digits.
     """
-    text = str(value).strip()
-    if "*" in text[:-1]:
-        return None
-    wildcard = text.endswith("*")
-    body = text[:-1].rstrip("-") if wildcard else text
-    if not _MAC_CONDITION_BODY.fullmatch(body):
-        return _("use hex digits and dashes (02-4e-42-ab-cd-ef, or 02-4e-42-* for a prefix); Windows refuses colons.")
-    groups = body.split("-")
-    if len(groups) > 1 and any(len(g) != 2 for g in groups):
-        return _("write every byte as two hex digits; Windows ignores the dashes, so 02-4-42-* would match 00-24-42-*.")
-    digits = "".join(groups)
-    if not wildcard and len(digits) != 12:
-        return _("a MAC address has 12 hex digits; end it with * to match a prefix.")
-    if wildcard and len(digits) % 2:
-        return _("a prefix must be whole bytes; Windows would pad 02-4e-4* to 00-24-e4-*.")
-    return None
+    problem = _mac_condition_problem(value)
+    return _MAC_CONDITION_MESSAGES[problem] if problem else None
 
 
 def _canonical_hex(value):

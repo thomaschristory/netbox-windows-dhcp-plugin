@@ -21,6 +21,7 @@ __all__ = [
     "canonical_ipv6",
     "canonical_mac",
     "canonical_mac_pattern",
+    "mac_condition_problem",
     "mac_pattern_refused",
     "canonical_policy_criterion",
     "enum_of",
@@ -141,6 +142,7 @@ def canonical_mac_pattern(value: str) -> str:
     digits = (s[:-1] if wildcard else s).replace("-", "").lower()
     if not wildcard:
         return "-".join(digits[i : i + 2] for i in range(0, 12, 2))
+    # unverified: a prefix of 12 digits or more before the wildcard (read here like a shorter one).
     if not digits:
         return s
     if len(digits) % 2:
@@ -154,18 +156,50 @@ _MAC_PATTERN_RE = re.compile(r"[0-9A-Fa-f-]*\*?")
 def mac_pattern_refused(value: str) -> bool:
     """Whether Windows refuses this MAC address condition of a policy ("not in valid format").
 
-    Seen on Windows Server 2025 (#110): only hex digits and dashes, with an optional trailing
-    wildcard; colons are refused (``02:4e:42:ab*``), and a value without a wildcard needs all
-    12 digits (``2-4e-42-a-b-c`` is refused). A wildcard elsewhere is a separate rule (#18).
+    Seen on Windows Server 2025 (#110): colons are refused (``02:4e:42:ab*``), and a value
+    without a wildcard needs all 12 digits (``2-4e-42-a-b-c`` is refused). A wildcard before
+    the last character is not judged here: Windows refuses one in the middle (#18, the fake
+    checks that) and how it takes a leading one on a MAC condition is not known.
     """
     s = str(value).strip()
     if "*" in s[:-1]:
-        return False  # judged by the embedded wildcard rule, not here
+        return False
+    # unverified: dots, spaces and other characters (refused here, like colons).
     if not _MAC_PATTERN_RE.fullmatch(s):
         return True
     if not s.endswith("*"):
         return len(s.replace("-", "")) != 12
     return False
+
+
+def mac_condition_problem(value: str) -> str | None:
+    """Which rule a policy MAC condition breaks, so it would not reach Windows as meant, or None.
+
+    Stricter than ``mac_pattern_refused``: it also catches what Windows takes but reads as other
+    devices (#110). Windows ignores the dashes of a prefix and pads an odd number of digits on
+    the left, so every byte must be two hex digits. One of ``spaces`` (around the value),
+    ``characters`` (anything but hex digits and dashes), ``groups`` (a group that is not two
+    digits), ``length`` (a full address without 12 digits) or ``half`` (half a byte before the
+    wildcard). ``models/dhcp.py`` holds a copy (models must not import this module).
+    """
+    text = str(value)
+    if text != text.strip():
+        return "spaces"
+    if "*" in text[:-1]:
+        return None  # a wildcard elsewhere is Windows' own rule (#18)
+    wildcard = text.endswith("*")
+    body = text[:-1].removesuffix("-") if wildcard else text
+    if not re.fullmatch(r"[0-9A-Fa-f-]*", body):
+        return "characters"
+    groups = body.split("-")
+    digits = "".join(groups)
+    if (len(groups) > 1 and any(len(g) != 2 for g in groups)) or (wildcard and text != "*" and not digits):
+        return "groups"
+    if not wildcard and len(digits) != 12:
+        return "length"
+    if wildcard and len(digits) % 2:
+        return "half"
+    return None
 
 
 def canonical_policy_criterion(criterion: str, value: str) -> str:

@@ -274,6 +274,20 @@ def test_policy_needs_a_condition_and_memberships_a_scope(client):
     assert "at least one scope" in reasons["superscope", "x"]
 
 
+@pytest.mark.parametrize("value", ["02-4e-42-a*", "02-4-42-ab*", "02:4e:42:ab*", " 02-4e-42-ab* "])
+def test_policy_mac_condition_windows_would_misread_is_not_pushed(value):
+    """#110: a condition saved before the save check, or by a raw save, is named instead of pushed or refused."""
+    reasons = by_key(push.plan([scope(), policy(criteria={"mac_address": ["EQ", value]})], [], {}))
+    assert "would not reach Windows as meant" in reasons["policy", "10.1.0.0/printers"]
+
+
+def test_policy_mac_condition_in_windows_spelling_is_pushed():
+    for value in ("02-4e-42-ab*", "02-4e-42-ab-*", "024e42*", "02-4e-42-0a-0b-0c", "*"):
+        assert ("policy", "10.1.0.0/printers") not in by_key(
+            push.plan([scope(), policy(criteria={"mac_address": ["EQ", value]})], [], {})
+        ), value
+
+
 def test_values_of_vendor_options_need_a_vendor_definition(client):
     p = push.plan([option("server", 1, ["1"], vendor_class="MSFT")], [], {}, defined_options={"1", "6"})
     assert "no definition for vendor class MSFT option 1" in p.skipped[0].reason

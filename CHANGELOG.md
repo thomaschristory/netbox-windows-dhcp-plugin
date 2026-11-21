@@ -11,7 +11,8 @@ All notable changes to this project are documented here. The format follows
   prefix Windows ignores the dashes and pads an odd number of digits on the left (`02-4e-42-a*` reads back
   `00-24-e4-2a-*`). Saving a policy now refuses MAC conditions Windows refuses (colons, a full address without 12
   digits) or would read as other devices (a group that is not two hex digits, half a byte before the wildcard), with
-  a message saying how to write it (#110).
+  a message saying how to write it. A policy saved earlier with such a condition is shown as not pushed until its
+  condition is fixed; its other fields can still be edited (#110).
 
 ## [0.6.0] - 2026-11-21
 

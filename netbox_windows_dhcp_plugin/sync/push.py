@@ -31,6 +31,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..windows import normalize
 from ..windows.psscript import NotFound, WindowsLayerError
 from ..windows.runner import RunnerError
 from .diff import CREATE, DELETE, KIND_ORDER, UPDATE, Change, Record, diff, index
@@ -313,6 +314,15 @@ def _unpushable(
             f"policy {f.get('name')}: its stored IP ranges are not a list of [start, end] IPv4 address pairs; fix "
             "them in NetBox"
         )
+    if record.kind == "policy":
+        # A MAC condition Windows refuses, or reads as other devices (#110). Saving a policy refuses these, but one
+        # saved before that check (0.6.0 and earlier) or by a raw save (a branch merge, a script) can still be here.
+        for value in ((f.get("criteria") or {}).get("mac_address") or [])[1:]:
+            if normalize.mac_condition_problem(value):
+                return (
+                    f"policy {f.get('name')}: its MAC address condition {value!r} would not reach Windows as meant "
+                    "(write each byte as two hex digits, with dashes or no separator); fix it in NetBox"
+                )
     if record.kind == "scope":
         reason = _scope_range_problem(record)
         if reason:

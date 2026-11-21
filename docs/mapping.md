@@ -174,7 +174,8 @@ Write a MAC condition as two hex digits per byte, with dashes or no separator: `
 `02-4e-42-*` for a prefix. Windows refuses colons, and needs all 12 digits without a wildcard. For a prefix it
 ignores the dashes and pads an odd number of digits with a zero on the left, so `02-4e-42-a*` would match
 `00-24-e4-2a-*` and `02-4-42-*` would match `00-24-42-*`: other devices than the ones meant. NetBox refuses those
-spellings when a policy is saved.
+spellings when a policy's conditions are saved, and a push names a policy that still holds one (saved by an earlier
+version, or by a branch merge) as not pushed until it is fixed.
 
 A policy without criteria is not pushed (Windows requires at least one), nor are two policies with the same
 processing order at the same level. Windows numbers the policies of a level 1, 2, 3... without gaps, so give them
