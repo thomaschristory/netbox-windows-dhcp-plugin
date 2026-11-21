@@ -34,7 +34,7 @@ credential profile, and the profile says where the secrets come from. A profile 
 | `secret` | The shared secret of a [failover relationship](failover.md#shared-secret) |
 | `allowed_hosts` | The hosts the profile's credentials may be sent to, see [below](#allowed_hosts) |
 | `allow_insecure_credssp` | `True` lets CredSSP run over HTTP or without certificate verification. Labs only, see [Security](security.md#transport). A failover shared secret profile used with such a server needs it too |
-| `transports`, `ports`, `kerberos_realms`, `ssh_host_keys` | Optional limits on how the profile's servers connect, see [below](#pinning-transport-port-realm-and-host-key) |
+| `transports`, `ports`, `kerberos_realms`, `ssh_host_keys`, `require_verified_https` | Optional limits on how the profile's servers connect, see [below](#pinning-transport-port-realm-and-host-key) |
 
 Every secret (`username`, `password`, `private_key`, `secret`) can be given in three ways:
 
@@ -124,17 +124,19 @@ An SSH host key pinned on a Windows server is only as trustworthy as the people 
 ### Pinning transport, port, realm and host key
 
 Within the hosts `allowed_hosts` covers, whoever may edit a Windows server still chooses how the profile's credentials
-travel: the transport, the port, the Kerberos realm whose KDC the logon goes to (it receives a value derived from the
-password, which can be attacked offline), and the SSH host key that is trusted. When the people who write
+travel: the transport, the port, whether WinRM uses HTTPS and checks the certificate, the Kerberos realm whose KDC
+the logon goes to (it receives a value derived from the password, which can be attacked offline), and the SSH host
+key that is trusted. When the people who write
 `configuration.py` are not the people who edit servers, a profile can pin these too. Each key is optional: without it,
 nothing changes.
 
 | Key | Holds | A server using the profile must |
 |---|---|---|
 | `transports` | `"winrm"`, `"ssh"` | use one of these transports |
-| `ports` | port numbers (1 to 65535) | connect on one of these ports. A server without a port uses the default (5986 for WinRM over HTTPS, 5985 over HTTP, 22 for SSH), and that default must be listed. A port does not imply TLS: **WinRM over HTTPS** and **Verify host** stay the server editor's choice (Basic and CredSSP always need both) |
+| `ports` | port numbers (1 to 65535) | connect on one of these ports. A server without a port uses the default (5986 for WinRM over HTTPS, 5985 over HTTP, 22 for SSH), and that default must be listed. A port does not imply TLS: pin that with `require_verified_https` |
 | `kerberos_realms` | realm names, compared without case | with WinRM and Kerberos, name one of these realms. Other logons do not use the server's realm |
 | `ssh_host_keys` | host keys, written as the server's SSH host key field takes them (`ssh-ed25519 AAAA...`; `ssh-ed25519`, `ssh-rsa` and `ecdsa-sha2-nistp256/384/521`) | with SSH, either pin one of these keys, or pin none: the connection then trusts only these keys, never the worker's `known_hosts` |
+| `require_verified_https` | `True` or `False` (not a list) | with WinRM, turn on both **WinRM over HTTPS** and **Verify host**, whatever the logon (NTLM, Kerberos, Basic or CredSSP). `False`, or no key, leaves them to the server editor (Basic and CredSSP still need both). SSH is not affected: it checks host keys instead (`ssh_host_keys`) |
 
 ```python
 PLUGINS_CONFIG = {
@@ -147,6 +149,7 @@ PLUGINS_CONFIG = {
                 "transports": ["winrm"],
                 "ports": [5986],
                 "kerberos_realms": ["CORP.EXAMPLE"],
+                "require_verified_https": True,
             },
             "dhcp-ssh": {
                 "username": "svc-netbox-dhcp",
@@ -163,9 +166,10 @@ PLUGINS_CONFIG = {
 }
 ```
 
-Each value must be a list (a tuple works too). A bare string, `None`, a port given as text or `True`, an unknown
-transport name or a key that does not parse (or is of another type) is refused, naming the profile and the key: no
-server can use the profile until it is fixed. An empty list allows nothing it applies to: an empty `transports` or
+Each value must be a list (a tuple works too), except `require_verified_https`, which must be `True` or `False`
+itself (`"true"`, `1` or `None` are refused, whatever the transport). A bare string, `None`, a port given as text or
+`True`, an unknown transport name or a key that does not parse (or is of another type) is refused, naming the profile
+and the key: no server can use the profile until it is fixed. An empty list allows nothing it applies to: an empty `transports` or
 `ports` refuses every server using the profile, an empty `ssh_host_keys` every SSH server, and an empty
 `kerberos_realms` every WinRM server with Kerberos. When `kerberos_realms` is set, a Kerberos server without a realm is
 refused too, whatever the list holds.
@@ -177,9 +181,8 @@ The Kerberos SPN (**Kerberos SPN** on the server) is not pinned. The plugin asks
 another service name gives that service neither the password nor a ticket it can pass on. But an editor who sets the
 SPN to an account they control, on a server using WinRM over HTTP or HTTPS without verification, and who can also
 intercept the traffic, defeats Kerberos mutual authentication: they can then read what the plugin sends, including
-failover shared secrets, though not the password. WinRM over HTTPS with verification avoids it; a profile-level
-requirement for it is planned
-([#147](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/issues/147)).
+failover shared secrets, though not the password. WinRM over HTTPS with verification avoids it: set
+`require_verified_https` on the profile so that editors cannot turn either off.
 
 Connections also refuse a transport or authentication value outside the known choices (a record written straight to
 the database with `KERBEROS` or `Basic`, say), so the checks and the transport always read the same value.
@@ -193,10 +196,10 @@ A failover shared secret travels over the primary server's own connection, so th
 (`shared_secret_profile`) apply to that connection too, as well as those of the server's own profile. They are checked
 when a failover relationship is created or its secret profile or primary server changes (not for other edits, nor for
 imports, which record what Windows has), and again before each push sends the secret, which catches a later change to
-the server or the profile. When the secret's profile sets `ssh_host_keys`, a server reached over SSH must pin its own
+the server or the profile. When the secret's profile sets `require_verified_https`, the primary server must use WinRM
+over HTTPS with verification even if its own profile does not ask for it (or use SSH). When the secret's profile sets
+`ssh_host_keys`, a server reached over SSH must pin its own
 host key (one of those), since without it the connection trusts the server profile's keys or `known_hosts`. When the
 server uses CredSSP without verified HTTPS, the secret's profile must set `allow_insecure_credssp` too. Both rules are
 skipped when the secret's profile is the server's own profile: its keys and its consent already govern the connection.
-Like the server's profile, the secret's profile cannot require verified HTTPS for NTLM or Kerberos (see
-[#147](https://github.com/thomaschristory/netbox-windows-dhcp-plugin/issues/147)). A failover partner is only checked
-against `allowed_hosts`.
+A failover partner is only checked against `allowed_hosts`.

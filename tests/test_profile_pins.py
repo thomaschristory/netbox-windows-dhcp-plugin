@@ -1,4 +1,7 @@
-"""Credential profile pins (issue #103): transports, ports, Kerberos realms and SSH host keys. No NetBox needed."""
+"""
+Credential profile pins: transports, ports, Kerberos realms and SSH host keys (issue #103), and
+require_verified_https (issue #147). No NetBox needed.
+"""
 
 from __future__ import annotations
 
@@ -28,6 +31,8 @@ def errors(profile, **server):
         "winrm_auth": "ntlm",
         "kerberos_realm": "",
         "ssh_host_key": "",
+        "https": True,
+        "verify_tls": True,
     }
     base.update(server)
     return connection_pin_errors("p", profile, **base)
@@ -69,6 +74,13 @@ def test_transports_matches_the_choice_values():
         ({"ssh_host_keys": [_key("ssh-dss")]}, "invalid entry"),
         ({"ssh_host_keys": [_key("sk-ssh-ed25519@openssh.com")]}, "invalid entry"),
         ({"ssh_host_keys": [_key("ssh-foo")]}, "invalid entry"),
+        # Only a real boolean: "false" or 0 would read one way or the other, None is an unset environment variable.
+        ({"require_verified_https": "true"}, "require_verified_https must be true or false"),
+        ({"require_verified_https": "false"}, "require_verified_https must be true or false"),
+        ({"require_verified_https": 1}, "require_verified_https must be true or false"),
+        ({"require_verified_https": 0}, "require_verified_https must be true or false"),
+        ({"require_verified_https": None}, "require_verified_https must be true or false"),
+        ({"require_verified_https": []}, "require_verified_https must be true or false"),
     ],
 )
 def test_malformed_profiles_are_refused(profile, message):
@@ -129,9 +141,40 @@ def test_ssh_host_keys():
     assert errors(profile, ssh_host_key=ED2) == {}
 
 
+def test_require_verified_https_applies_to_winrm_only():
+    on = {"require_verified_https": True}
+    # Absent or false: today's behaviour.
+    for profile in ({}, {"require_verified_https": False}):
+        assert errors(profile, https=False, verify_tls=False) == {}
+    assert errors(on) == {}
+    # Whatever the logon: NTLM and Kerberos do not need HTTPS on their own.
+    for auth in ("ntlm", "kerberos", "basic", "credssp"):
+        assert errors(on, winrm_auth=auth, kerberos_realm="CORP.EXAMPLE", https=False, port=5985) == {
+            "winrm_https": "credential profile 'p' sets require_verified_https: WinRM must use HTTPS, not HTTP"
+        }
+        assert errors(on, winrm_auth=auth, kerberos_realm="CORP.EXAMPLE", verify_tls=False) == {
+            "verify_tls": "credential profile 'p' sets require_verified_https: WinRM must verify the server's "
+            "certificate"
+        }
+    # Plain HTTP is reported first; verification means nothing without HTTPS.
+    assert set(errors(on, https=False, verify_tls=False)) == {"winrm_https"}
+    # SSH pins host keys instead.
+    assert errors(on, transport="ssh", port=22, https=False, verify_tls=False) == {}
+
+
+def test_profile_require_verified_https():
+    assert conf.profile_require_verified_https("p", {}) is False
+    assert conf.profile_require_verified_https("p", {"require_verified_https": False}) is False
+    assert conf.profile_require_verified_https("p", {"require_verified_https": True}) is True
+    with pytest.raises(CredentialError, match="'p': require_verified_https must be true or false"):
+        conf.profile_require_verified_https("p", {"require_verified_https": "yes"})
+
+
 def test_several_errors_are_reported_together():
     profile = {"transports": ["winrm"], "ports": [5986], "ssh_host_keys": [ED]}
     assert set(errors(profile, transport="ssh", port=22, ssh_host_key=ED2)) == {"transport", "port", "ssh_host_key"}
+    profile = {"transports": ["ssh"], "ports": [5986], "require_verified_https": True}
+    assert set(errors(profile, port=5985, https=False)) == {"transport", "port", "winrm_https"}
 
 
 def test_ssh_host_key_types():

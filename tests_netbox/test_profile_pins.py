@@ -1,4 +1,7 @@
-"""Issue #103: a credential profile pins the transport, port, Kerberos realm and SSH host key its servers may use."""
+"""
+Issue #103: a credential profile pins the transport, port, Kerberos realm and SSH host key its servers may use.
+Issue #147: it can also require WinRM over HTTPS with certificate verification.
+"""
 
 import uuid
 from unittest import mock
@@ -91,6 +94,32 @@ class ServerCleanTest(TestCase):
         with override_settings(PLUGINS_CONFIG=config(ssh_host_keys=[])):
             self.assert_field_error("ssh_host_key", server(transport="ssh"), "trusts no SSH host key")
 
+    def test_require_verified_https(self):
+        # Issue #147: whatever the logon, WinRM with this profile must use HTTPS and check the certificate.
+        with override_settings(PLUGINS_CONFIG=config(require_verified_https=True)):
+            server().full_clean()
+            server(winrm_auth="kerberos", kerberos_realm="CORP.EXAMPLE").full_clean()
+            self.assert_field_error("winrm_https", server(winrm_https=False), "WinRM must use HTTPS, not HTTP")
+            self.assert_field_error(
+                "winrm_https",
+                server(winrm_https=False, winrm_auth="kerberos", kerberos_realm="CORP.EXAMPLE"),
+                "credential profile 'lab' sets require_verified_https",
+            )
+            self.assert_field_error("verify_tls", server(verify_tls=False), "must verify the server's certificate")
+            # The failover logon uses the same connection settings.
+            self.assert_field_error(
+                "winrm_https", server(winrm_https=False, failover_auth="credssp"), "require_verified_https"
+            )
+            # SSH pins host keys instead.
+            server(transport="ssh", winrm_https=False).full_clean()
+        with override_settings(PLUGINS_CONFIG=config(require_verified_https=False)):
+            server(winrm_https=False).full_clean()
+            server(verify_tls=False).full_clean()
+        with override_settings(PLUGINS_CONFIG=config(require_verified_https="yes")):
+            self.assert_field_error("credential_profile", server(), "require_verified_https must be true or false")
+            # Malformed is refused whatever the transport, like the other keys.
+            self.assert_field_error("credential_profile", server(transport="ssh"), "true or false")
+
     def test_malformed_profile_is_a_credential_profile_error(self):
         with override_settings(PLUGINS_CONFIG=config(transports="winrm")):
             self.assert_field_error("credential_profile", server(), "transports must be a list")
@@ -120,6 +149,14 @@ class ConnectionCheckTest(SimpleTestCase):
                 "Kerberos realm (none)",
             ),
             (config(ports=["5986"]), server(), "invalid entry '5986'"),
+            # Issue #147: a record saved before the profile asked for it, or written straight to the database.
+            (config(require_verified_https=True), server(winrm_https=False), "WinRM must use HTTPS, not HTTP"),
+            (
+                config(require_verified_https=True),
+                server(winrm_auth="kerberos", kerberos_realm="CORP.EXAMPLE", verify_tls=False),
+                "WinRM must verify the server's certificate",
+            ),
+            (config(require_verified_https=1), server(), "require_verified_https must be true or false"),
         ]
         for profile, srv, message in cases:
             with self.subTest(message=message), override_settings(PLUGINS_CONFIG=profile):
@@ -142,6 +179,40 @@ class ConnectionCheckTest(SimpleTestCase):
         self.assertEqual(runner.cfg.username, "admin@CORP.EXAMPLE")
         self.assertEqual(runner.cfg.kerberos_realm, "CORP.EXAMPLE")
         self.assertIsNotNone(build_failover_client(srv, runner=object()))
+
+    def test_require_verified_https_covers_the_failover_client(self):
+        for fields, message in (
+            ({"winrm_https": False}, "WinRM must use HTTPS, not HTTP"),
+            ({"verify_tls": False}, "WinRM must verify the server's certificate"),
+        ):
+            srv = server(failover_auth="credssp", **fields)
+            # The lab profile's own consent to insecure CredSSP does not lift require_verified_https.
+            profile = config(require_verified_https=True, allow_insecure_credssp=True)
+            with self.subTest(fields=fields), override_settings(PLUGINS_CONFIG=profile):
+                with self.assertRaisesMessage(CredentialError, message):
+                    build_failover_client(srv, runner=object())
+                with self.assertRaisesMessage(CredentialError, message):
+                    build_runner(srv, auth="credssp")
+        with override_settings(PLUGINS_CONFIG=config(require_verified_https=True)):
+            self.assertIsNotNone(build_failover_client(server(failover_auth="credssp"), runner=object()))
+
+    @override_settings(PLUGINS_CONFIG=config(require_verified_https=True))
+    def test_ssh_is_not_affected_by_require_verified_https(self):
+        srv = server(transport=TransportChoices.SSH, winrm_https=False, ssh_host_key=KEY)
+        check_connection_allowed(srv)
+        self.assertEqual(build_runner(srv).cfg.host_key, KEY)
+
+    @override_settings(PLUGINS_CONFIG=config(require_verified_https=True))
+    def test_allowed_hosts_is_checked_first(self):
+        # The host check runs before the profile's other rules, and neither message holds a secret.
+        srv = server(host="evil.example.org", winrm_https=False)
+        with self.assertRaisesMessage(CredentialError, "may not be used with host 'evil.example.org'") as ctx:
+            check_connection_allowed(srv)
+        self.assertNotIn("require_verified_https", str(ctx.exception))
+        with self.assertRaises(CredentialError) as ctx:
+            check_connection_allowed(server(winrm_https=False))
+        self.assertNotIn("lab\\admin", str(ctx.exception))
+        self.assertNotIn("password", str(ctx.exception))
 
     @override_settings(PLUGINS_CONFIG=config(kerberos_realms=["CORP.EXAMPLE"]))
     def test_values_outside_the_choices_are_refused(self):
@@ -208,6 +279,19 @@ class ConnectionJobTest(TestCase):
         self.assertEqual(self.fake.calls, [])
         self.assertIn("may not be used with port 8080", self.server.sync_runs.get().error)
 
+    def test_http_set_behind_the_form_never_connects(self):
+        # Issue #147: a raw save or a branch merge that turns HTTPS off is still refused when connecting.
+        WindowsServer.objects.filter(pk=self.server.pk).update(winrm_https=False)
+        self.server.refresh_from_db()
+        job = Job.objects.create(
+            object=self.server, name="test", status=JobStatusChoices.STATUS_RUNNING, job_id=uuid.uuid4()
+        )
+        profile = config(require_verified_https=True)
+        with override_settings(PLUGINS_CONFIG=profile), self.assertRaises(JobFailed):
+            TestConnectionJob(job).run()
+        self.assertEqual(self.fake.calls, [])
+        self.assertIn("sets require_verified_https", self.server.sync_runs.get().error)
+
 
 class FailoverSecretPinsTest(TestCase):
     """The shared secret travels over the primary server's own connection: the secret profile's pins apply to it."""
@@ -238,6 +322,45 @@ class FailoverSecretPinsTest(TestCase):
             self.assertEqual(self.lookup("ha"), "s3")
         self.assert_refused("credential profile 'ha' may not be used over winrm", transports=["ssh"])
         self.assert_refused("credential profile 'ha' may not be used with port 5986", ports=[5985])
+
+    def test_require_verified_https_applies_to_the_primary_connection(self):
+        # Issue #147: the secret profile's require_verified_https judges the primary's connection, even when the
+        # server's own profile does not ask for it.
+        with self.settings(require_verified_https=True):
+            self.assertEqual(self.lookup("ha"), "s3")
+        self.server.winrm_https = False
+        self.assert_refused(
+            "credential profile 'ha' sets require_verified_https: WinRM must use HTTPS, not HTTP",
+            require_verified_https=True,
+        )
+        self.server.winrm_https, self.server.verify_tls = True, False
+        self.assert_refused(
+            "credential profile 'ha' sets require_verified_https: WinRM must verify", require_verified_https=True
+        )
+        # Over CredSSP, allow_insecure_credssp on the secret profile does not lift it.
+        self.server.failover_auth = "credssp"
+        self.assert_refused(
+            "credential profile 'ha' sets require_verified_https",
+            require_verified_https=True,
+            allow_insecure_credssp=True,
+        )
+        self.assert_refused(
+            "credential profile 'ha': require_verified_https must be true or false", require_verified_https="true"
+        )
+        # SSH is not affected (the secret profile's ssh_host_keys covers it).
+        self.server.transport, self.server.failover_auth = "ssh", ""
+        with self.settings(require_verified_https=True):
+            self.assertEqual(self.lookup("ha"), "s3")
+
+    def test_server_profile_require_verified_https_blocks_the_secret_too(self):
+        # The secret goes out over the server's own connection, which its own profile refuses before anything.
+        FailoverRelationship.objects.filter(pk=self.relationship.pk).update(shared_secret_profile="lab")
+        self.server.winrm_https = False
+        with (
+            self.settings(lab={"require_verified_https": True}),
+            self.assertRaisesMessage(ValueError, "failover ha: credential profile 'lab' sets require_verified_https"),
+        ):
+            self.lookup("ha")
 
     def test_malformed_secret_profile(self):
         self.assert_refused("credential profile 'ha': ports must be a list", ports="5986")
@@ -398,6 +521,17 @@ class FailoverSecretPinsTest(TestCase):
         with self.settings(transports=["ssh"]), self.assertRaises(ValidationError) as ctx:
             relationship.full_clean()
         self.assertIn("may not be used over winrm", " ".join(ctx.exception.message_dict["shared_secret_profile"]))
+
+    def test_require_verified_https_checked_when_the_relationship_is_saved(self):
+        FailoverRelationship.objects.filter(pk=self.relationship.pk).update(shared_secret_profile="")
+        WindowsServer.objects.filter(pk=self.server.pk).update(verify_tls=False)
+        relationship = FailoverRelationship.objects.get(pk=self.relationship.pk)
+        relationship.shared_secret_profile = "ha"
+        with self.settings():
+            relationship.full_clean()
+        with self.settings(require_verified_https=True), self.assertRaises(ValidationError) as ctx:
+            relationship.full_clean()
+        self.assertIn("'ha' sets require_verified_https", " ".join(ctx.exception.message_dict["shared_secret_profile"]))
 
 
 class FailoverSecretAPITest(PluginAPIMixin, APITestCase):

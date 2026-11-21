@@ -5,6 +5,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Credential profiles can set `require_verified_https: True` (strictly `True` or `False`): every WinRM connection
+  using the profile must then use HTTPS with certificate verification, whatever the logon (NTLM and Kerberos
+  included), and `allow_insecure_credssp` no longer lifts it. Absent or `False` changes nothing. SSH is not affected
+  (it checks host keys instead). Checked when a server is saved (on the **WinRM over HTTPS** or **Verify host** field)
+  and before every connection, including the failover logon; on a failover shared secret's profile it applies to the
+  primary server's connection that carries the secret (#147).
+
 ## [0.6.1] - 2026-11-21
 
 0.6.1 compares a policy's MAC address condition the way Windows stores it and refuses spellings Windows would refuse

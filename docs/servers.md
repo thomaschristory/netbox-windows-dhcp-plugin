@@ -24,8 +24,8 @@ state and device](images/servers-list.webp)
 | Credential profile | | Name of a [credential profile](configuration.md#credential-profiles). Its `allowed_hosts` must cover the host |
 | WinRM authentication | NTLM | NTLM, Basic, Kerberos or CredSSP (failover), see [Preparing Windows](windows-setup.md#authentication-methods) |
 | Failover authentication | Same as WinRM authentication | CredSSP uses it for the failover writes and replication only, so the rest can stay on Kerberos or NTLM. WinRM only; see [Failover](failover.md#connecting-to-the-servers) |
-| WinRM over HTTPS | on | Off uses HTTP; NTLM, Kerberos and CredSSP messages are still encrypted |
-| Verify host | on | Check the TLS certificate (WinRM) or the host key (SSH). Cannot be turned off for SSH, nor for Basic |
+| WinRM over HTTPS | on | Off uses HTTP; NTLM, Kerberos and CredSSP messages are still encrypted. Cannot be turned off when the credential profile sets `require_verified_https` |
+| Verify host | on | Check the TLS certificate (WinRM) or the host key (SSH). Cannot be turned off for SSH, nor for Basic, nor when the credential profile sets `require_verified_https` |
 | Kerberos realm | empty | Required with Kerberos, for example `CORP.EXAMPLE` |
 | Kerberos SPN | empty | Empty means `WSMAN/<host>` |
 | SSH host key | empty | The server's host key in `authorized_keys` form; when empty, the worker's `~/.ssh/known_hosts` is used, unless the credential profile sets `ssh_host_keys` (then only those keys) |

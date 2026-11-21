@@ -321,7 +321,8 @@ class WindowsServer(JobsMixin, PrimaryModel):
 
     def _clean_profile_pins(self):
         # The credential profile may limit the transport, port, Kerberos realm and SSH host key a server uses with it
-        # (issue #103). The connection code checks again before connecting, in case the profile changed since.
+        # (issue #103), and require verified HTTPS for WinRM (issue #147). The connection code checks again before
+        # connecting, in case the profile changed since.
         profile = get_setting("credentials").get(self.credential_profile)
         if profile is None:
             return
@@ -335,6 +336,8 @@ class WindowsServer(JobsMixin, PrimaryModel):
                 winrm_auth=self.winrm_auth,
                 kerberos_realm=server_kerberos_realm(self),
                 ssh_host_key=self.ssh_host_key,
+                https=self.winrm_https,
+                verify_tls=self.verify_tls,
             )
         except CredentialError as exc:
             raise ValidationError({"credential_profile": str(exc)}) from exc
