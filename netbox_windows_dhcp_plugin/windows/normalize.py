@@ -21,6 +21,8 @@ __all__ = [
     "canonical_ipv6",
     "canonical_mac",
     "canonical_mac_pattern",
+    "mac_condition_problem",
+    "mac_pattern_refused",
     "canonical_policy_criterion",
     "enum_of",
     "format_duration",
@@ -88,7 +90,7 @@ _MAC_SEPARATORS = str.maketrans("", "", ":-. ")
 _MAC_SEPARATOR_RE = re.compile(r"[:\-. ]+")
 
 
-def canonical_mac(value: str, *, pad_groups: bool = True) -> str:
+def canonical_mac(value: str) -> str:
     """Canonicalise a MAC address or DHCP client identifier to ``aa-bb-cc-...``.
 
     Accepts ``:``, ``-``, ``.`` and space separators or bare hex, any even length
@@ -98,12 +100,11 @@ def canonical_mac(value: str, *, pad_groups: bool = True) -> str:
     value has separators and every group is one or two digits, each group is one byte and
     is padded to two digits. Groups of even width (``aabb.ccdd.eeff``) are read as written.
     Any other mix is refused, because joining the digits would give a different, shorter
-    client ID without any warning. ``pad_groups=False`` keeps the plain "drop the
-    separators" reading.
+    client ID without any warning.
     """
     text = str(value).strip()
     groups = [g for g in _MAC_SEPARATOR_RE.split(text) if g]
-    if pad_groups and len(groups) > 1 and any(len(g) % 2 for g in groups):
+    if len(groups) > 1 and any(len(g) % 2 for g in groups):
         if any(len(g) > 2 for g in groups):
             raise ValueError(f"invalid client ID {value!r}: ambiguous groups, write every byte as two hex digits")
         text = "-".join(g.zfill(2) for g in groups)
@@ -126,22 +127,84 @@ canonical_duid = canonical_mac
 def canonical_mac_pattern(value: str) -> str:
     """Return a MAC address condition of a policy the way Windows stores it.
 
-    Windows Server 2025 reads ``02-4e-42-ab*`` back as ``02-4e-42-ab-*``: whole bytes in
-    ``aa-bb`` form, then a separator before the trailing wildcard. Hex digits are compared
-    without case. Anything else (half a byte, a wildcard elsewhere) is returned as written,
-    since how Windows treats it is not known. For the same reason single-digit groups are
-    not padded here: in ``02-4e-42-a*`` the ``a`` is half a byte, not the byte ``0a``.
+    Seen on Windows Server 2025 (#110): Windows ignores the dashes, joins the hex digits and
+    lowercases them. A full address (12 digits) reads back as ``aa-bb-cc-dd-ee-ff``. A prefix
+    with a trailing wildcard reads back as whole bytes, then ``-*``; an odd number of digits is
+    padded with a zero on the LEFT, so ``02-4e-42-a*`` becomes ``00-24-e4-2a-*`` and
+    ``02-4-42-ab*`` becomes ``00-24-42-ab-*`` (not what the writer meant: NetBox refuses such
+    values on save). A value Windows refuses (see ``mac_pattern_refused``) or a wildcard
+    anywhere but the end is returned as written.
     """
     s = str(value).strip()
+    if mac_pattern_refused(s) or "*" in s[:-1]:
+        return s
     wildcard = s.endswith("*")
-    body = s[:-1].rstrip(":-. ") if wildcard else s
-    if not body:
+    digits = (s[:-1] if wildcard else s).replace("-", "").lower()
+    if not wildcard:
+        return "-".join(digits[i : i + 2] for i in range(0, 12, 2))
+    # unverified: a prefix of 12 digits or more before the wildcard (read here like a shorter one).
+    if not digits:
         return s
-    try:
-        mac = canonical_mac(body, pad_groups=False)
-    except ValueError:
-        return s
-    return f"{mac}-*" if wildcard else mac
+    if len(digits) % 2:
+        digits = "0" + digits
+    return "-".join(digits[i : i + 2] for i in range(0, len(digits), 2)) + "-*"
+
+
+_MAC_PATTERN_RE = re.compile(r"[0-9A-Fa-f-]*\*?")
+
+
+def mac_pattern_refused(value: str) -> bool:
+    """Whether Windows refuses this MAC address condition of a policy ("not in valid format").
+
+    Seen on Windows Server 2025 (#110): colons are refused (``02:4e:42:ab*``), and a value
+    without a wildcard needs all 12 digits (``2-4e-42-a-b-c`` is refused). A wildcard before
+    the last character is not judged here: Windows refuses one in the middle (#18, the fake
+    checks that) and how it takes a leading one on a MAC condition is not known.
+    """
+    s = str(value).strip()
+    if "*" in s[:-1]:
+        return False
+    # unverified: dots, spaces and other characters (refused here, like colons).
+    if not _MAC_PATTERN_RE.fullmatch(s):
+        return True
+    if not s.endswith("*"):
+        return len(s.replace("-", "")) != 12
+    return False
+
+
+def mac_condition_problem(value: str) -> str | None:
+    """Which rule a policy MAC condition breaks, so it would not reach Windows as meant, or None.
+
+    Stricter than ``mac_pattern_refused``: it also catches what Windows takes but reads as other
+    devices (#110). Windows ignores the dashes of a prefix and pads an odd number of digits on
+    the left, so every byte must be two hex digits. One of ``spaces`` (around the value),
+    ``characters`` (anything but hex digits and dashes), ``groups`` (a group that is not two
+    digits), ``length`` (a full address without 12 digits) or ``half`` (half a byte before the
+    wildcard). ``models/dhcp.py`` holds a copy (models must not import this module).
+    """
+    text = str(value)
+    # unverified: how Windows takes spaces around the value (refused here: say what is meant).
+    if text != text.strip():
+        return "spaces"
+    if "*" in text[:-1]:
+        return None  # a wildcard elsewhere is Windows' own rule (#18)
+    wildcard = text.endswith("*")
+    body = text[:-1].removesuffix("-") if wildcard else text
+    if not re.fullmatch(r"[0-9A-Fa-f-]*", body):
+        return "characters"
+    groups = body.split("-")
+    digits = "".join(groups)
+    if not wildcard and len(digits) != 12:
+        return "length"
+    # unverified: how Windows stores a full address of 12 digits grouped otherwise (024-e42-0a0b-0c): refused here.
+    # A prefix whose first group alone has one digit is read as meant: Windows pads it on the left (2-4e-42-ab* is
+    # stored as 02-4e-42-ab-*).
+    lead = groups[1:] if wildcard and len(groups) > 1 and len(groups[0]) == 1 else groups
+    if (len(groups) > 1 and any(len(g) != 2 for g in lead)) or (wildcard and text != "*" and not digits):
+        return "groups"
+    if wildcard and len(digits) % 2 and lead is groups:
+        return "half"
+    return None
 
 
 def canonical_policy_criterion(criterion: str, value: str) -> str:

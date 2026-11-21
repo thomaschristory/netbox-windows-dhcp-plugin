@@ -274,6 +274,122 @@ def test_policy_needs_a_condition_and_memberships_a_scope(client):
     assert "at least one scope" in reasons["superscope", "x"]
 
 
+@pytest.mark.parametrize("value", ["02-4e-42-a*", "02-4-42-ab*", "02:4e:42:ab*", " 02-4e-42-ab* "])
+def test_policy_mac_condition_windows_would_misread_is_not_pushed(value):
+    """Also when it is the second value of the condition."""
+    reasons = by_key(push.plan([scope(), policy(criteria={"mac_address": ["EQ", "02-4e-42-ab*", value]})], [], {}))
+    assert "not written the way Windows reads it" in reasons["policy", "10.1.0.0/printers"]
+    """#110: a condition saved before the save check, or by a raw save, is named instead of pushed or refused."""
+    reasons = by_key(push.plan([scope(), policy(criteria={"mac_address": ["EQ", value]})], [], {}))
+    assert "not written the way Windows reads it" in reasons["policy", "10.1.0.0/printers"]
+
+
+def test_policy_mac_condition_in_windows_spelling_is_pushed():
+    for value in ("02-4e-42-ab*", "02-4e-42-ab-*", "024e42*", "02-4e-42-0a-0b-0c", "*", "2-4e-42-ab*"):
+        assert ("policy", "10.1.0.0/printers") not in by_key(
+            push.plan([scope(), policy(criteria={"mac_address": ["EQ", value]})], [], {})
+        ), value
+
+
+def test_misread_mac_condition_windows_already_holds_pauses_deletes_until_fixed(client, fake):
+    """#110: a policy pushed earlier with a misread spelling is named, and its family's deletes wait until it is fixed.
+
+    A plain rule, like any policy that cannot be pushed: an exception for "Windows already holds it" could not tell a
+    renamed object from the one Windows holds.
+    """
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    # "00-15-5d-a*" is what 0.6.0 could store; Windows holds it as 00-15-5d-*, as it holds the policy pushed above.
+    source = [
+        policy(criteria={"mac_address": ["EQ", "00-15-5d-a*"]}) if r.kind == "policy" and r.fields["scope_id"] else r
+        for r in wanted()
+        if r.kind != "reservation" and not r.key.startswith("10.1.0.0/10.1.0.50")
+    ]
+    p, _ = run(client, source, managed)
+    reasons = by_key(p)
+    assert "not written the way Windows reads it" in reasons["policy", "10.1.0.0/printers"]
+    assert not [c for c in p.changes if c.action == "delete"], p.changes
+    assert any(s.waiting and "printers" in s.reason for s in p.skipped), reasons
+    # Fixed in NetBox, the deletes go ahead.
+    fixed = [policy() if r.kind == "policy" and r.fields["scope_id"] else r for r in source]
+    p2, _ = run(client, fixed, managed)
+    assert any(c.kind == "reservation" and c.action == "delete" for c in p2.changes), by_key(p2)
+
+
+def test_misread_mac_condition_of_a_new_policy_pauses_deletes(client, fake):
+    """A refused policy Windows does not hold may be a renamed one: the family's deletes wait, as for any refusal."""
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    source = [
+        policy(name="Printers2", criteria={"mac_address": ["EQ", "00-15-5d-a*"]})
+        if r.kind == "policy" and r.fields["scope_id"]
+        else r
+        for r in wanted()
+        # The old policy's option value goes too, or its own refusal (no such policy) would pause the deletes.
+        if r.kind != "reservation" and not r.key.startswith("10.1.0.0/10.1.0.50") and not r.fields.get("policy")
+    ]
+    p, _ = run(client, source, managed)
+    assert any(s.waiting for s in p.skipped), by_key(p)
+
+
+def test_changed_option_value_of_a_misread_policy_keeps_its_old_copy(client, fake):
+    """A policy value given a user class gets a new key: while it waits on the policy, the old one is not deleted."""
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    source = []
+    for r in wanted():
+        if r.kind == "policy" and r.fields["scope_id"]:
+            r = policy(criteria={"mac_address": ["EQ", "00-15-5d-a*"]})
+        elif r.kind == "option" and r.fields.get("policy"):
+            r = option("10.1.0.0", 6, ["10.1.0.2", "a,b"], user_class="Phones", policy="Printers")
+        source.append(r)
+    p, _ = run(client, source, managed)
+    old = ("option", "10.1.0.0/6;policy=printers")
+    assert old not in {(c.kind, c.key) for c in p.changes}, p.changes
+    assert any((s.change.kind, s.change.key) == old and s.waiting for s in p.skipped), by_key(p)
+
+
+def _misread_source(**policy_over):
+    """wanted() with the scope policy's MAC condition misread and the reservation (with its values) removed."""
+    out = []
+    for r in wanted():
+        if r.kind == "reservation" or r.key.startswith("10.1.0.0/10.1.0.50"):
+            continue
+        if r.kind == "policy" and r.fields["scope_id"]:
+            r = policy(**{"criteria": {"mac_address": ["EQ", "00-15-5d-a*"]}, **policy_over})
+        out.append(r)
+    return out
+
+
+def test_rename_onto_a_hand_made_windows_policy_pauses_deletes(client, fake):
+    """A Windows policy NetBox never pushed or adopted is not NetBox's object: the renamed one's deletes still wait."""
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    client.add_policy(Policy(name="Printers2", scope_id="10.1.0.0", criteria={"mac_address": ["EQ", "00-15-5d*"]}))
+    source = [r for r in _misread_source(name="Printers2") if not r.fields.get("policy")]
+    p, _ = run(client, source, managed)
+    deletes = {(c.kind, c.key) for c in p.changes if c.action == "delete"}
+    assert ("policy", "10.1.0.0/printers") not in deletes, deletes
+    assert any(s.waiting for s in p.skipped), by_key(p)
+
+
+def test_misread_policy_with_another_fault_pauses_deletes(client, fake):
+    """Bad stored IP ranges are checked before the MAC condition: such a policy is no mere notice."""
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    p, _ = run(client, _misread_source(ip_ranges=[["10.1.0.100"]]), managed)
+    assert "IP ranges" in by_key(p)["policy", "10.1.0.0/printers"]
+    assert any(s.waiting for s in p.skipped), by_key(p)
+
+
+def test_misread_policy_sharing_a_processing_order_pauses_deletes(client, fake):
+    _, first = run(client, wanted())
+    managed = state_after({}, first)
+    twin = policy(name="Scanners", processing_order=1, ip_ranges=[["10.1.0.130", "10.1.0.140"]])
+    p, _ = run(client, [*_misread_source(), twin], managed)
+    assert any(s.waiting for s in p.skipped), by_key(p)
+
+
 def test_values_of_vendor_options_need_a_vendor_definition(client):
     p = push.plan([option("server", 1, ["1"], vendor_class="MSFT")], [], {}, defined_options={"1", "6"})
     assert "no definition for vendor class MSFT option 1" in p.skipped[0].reason

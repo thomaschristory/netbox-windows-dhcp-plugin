@@ -218,3 +218,105 @@ class PrefixChangeWithUnreadablePolicyRangesTest(TestCase):
         with self.assertRaises(ValidationError) as caught:
             lan.full_clean()
         self.assertIn("policy Printers", str(caught.exception))
+
+
+@override_settings(PLUGINS_CONFIG=CREDENTIALS)
+class PolicyMacConditionTest(TestCase):
+    """Issue #110: a MAC condition Windows refuses, or would read as other devices, is refused on save."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.server = windows_server()
+        cls.lan = scope(cls.server)
+
+    def policy(self, value):
+        return WindowsPolicy(
+            server=self.server, scope=self.lan, name="Printers", criteria={"mac_address": ["EQ", value]}
+        )
+
+    def test_refused_spellings(self):
+        for value in (
+            "02:4e:42:ab*",
+            "02-4e-42-a*",
+            "02-4-42-ab*",
+            "2-4e-42-a-b-c",
+            "02-4e-42-0a-0b",
+            "zz-4e-42-*",
+            "024e4*",
+            "-*",
+            " 02-4e-42-ab* ",
+        ):
+            with self.subTest(value=value), self.assertRaises(ValidationError) as caught:
+                self.policy(value).full_clean()
+            self.assertIn("criteria", caught.exception.message_dict)
+
+    def test_messages_say_how_to_write_it(self):
+        cases = {
+            "02:4e:42:ab*": "Windows refuses colons",
+            "02-4-42-ab*": "two hex digits",
+            "02-4e-42-0a-0b": "12 hex digits",
+            "2-4e-42-a-b-c": "12 hex digits",
+            "024e4*": "whole bytes",
+        }
+        for value, text in cases.items():
+            with self.subTest(value=value), self.assertRaises(ValidationError) as caught:
+                self.policy(value).full_clean()
+            self.assertIn(text, " ".join(caught.exception.message_dict["criteria"]))
+
+    def test_model_and_push_agree(self):
+        # models/dhcp.py holds a copy of windows/normalize.mac_condition_problem (models must not import it).
+        from netbox_windows_dhcp_plugin.models.dhcp import _mac_condition_problem
+        from netbox_windows_dhcp_plugin.windows import normalize
+
+        for value in (
+            "02-4e-42-ab-cd-ef", "024e420a0b0c", "02-4E-42-AB*", "02-4e-42-ab-*", "024e42*", "*", "*.x", " 02-4e* ",
+            "02:4e:42:ab*", "02.4e.42.0a.0b.0c", "zz-4e-42-*", "02-4-42-ab*", "2-4e-42-ab*", "02-4e-42-a*",
+            "02--4e-42-ab*", "02-4e-42-0a-0b-0c-", "-*", "------*", "02-4e-42-0a-0b", "024e420a0b0c0d", "024e4*", "",
+        ):  # fmt: skip
+            with self.subTest(value=value):
+                self.assertEqual(_mac_condition_problem(value), normalize.mac_condition_problem(value))
+
+    def test_a_condition_saved_before_the_check_does_not_block_other_edits(self):
+        policy = self.policy("02-4e-42-ab*")
+        policy.save()
+        # As 0.6.0 could store it, or a branch merge: written without clean().
+        WindowsPolicy.objects.filter(pk=policy.pk).update(criteria={"mac_address": ["EQ", "02-4e-42-a*"]})
+        policy = WindowsPolicy.objects.get(pk=policy.pk)
+        policy.description = "printers on the second floor"
+        policy.full_clean()
+        # Changing the conditions is judged again.
+        policy.criteria = {"mac_address": ["EQ", "02-4-42-ab*"]}
+        with self.assertRaises(ValidationError):
+            policy.full_clean()
+
+    def test_a_branch_merge_or_revert_is_not_judged(self):
+        # Reverting a fix, or a deleted policy, puts an older condition back; the push names it instead.
+        from unittest import mock
+
+        policy = self.policy("02-4e-42-a*")
+        with mock.patch("netbox_windows_dhcp_plugin.integrations.branching.applying_branch", return_value=object()):
+            policy.full_clean()
+        with self.assertRaises(ValidationError):
+            policy.full_clean()
+
+    def test_a_save_that_leaves_the_conditions_out_does_not_mark_them_stored(self):
+        policy = self.policy("02-4e-42-ab*")
+        policy.save()
+        policy.criteria = {"mac_address": ["EQ", "02-4-42-ab*"]}
+        policy.description = "second floor"
+        policy.save(update_fields=["description"])
+        with self.assertRaises(ValidationError):
+            policy.full_clean()
+
+    def test_accepted_spellings(self):
+        for value in (
+            "02-4e-42-ab-*",
+            "02-4e-42-ab*",
+            "024e42*",
+            "02-4E-42-0A-0B-0C",
+            "024e420a0b0c",
+            "*",
+            "2-4e-42-ab*",
+        ):
+            with self.subTest(value=value):
+                self.policy(value).full_clean()

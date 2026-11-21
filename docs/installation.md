@@ -97,6 +97,15 @@ Restart the worker as well as the web service: the worker runs every job, and it
 Install the new version, run `migrate`, and restart NetBox and the worker. Read the [changelog](changelog.md) first:
 while the plugin is below 1.0, a minor version can change behaviour.
 
+### Upgrading from 0.6.0 to the next release
+
+No migration. A policy whose MAC address condition Windows refuses (colons) or reads as other devices (a byte after
+the first written as one digit, half a byte before the wildcard: `02-4e-42-a*` matches `00-24-e4-2a-*` on Windows)
+is shown as not pushed, and the deletes of its part of the configuration wait until it is fixed. A branch merge or
+revert that brings such a condition back still goes through; the push then names the policy. A dry run lists such policies:
+edit the condition so each byte is two hex digits (`02-4e-42-0a-*`, say) and push again. See
+[Mapping](mapping.md) for the rules.
+
 ### Upgrading from 0.5.x to 0.6.0
 
 No migration. Credential profiles take four new optional keys, `transports`, `ports`, `kerberos_realms` and

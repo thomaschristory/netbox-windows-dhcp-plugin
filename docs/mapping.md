@@ -170,6 +170,15 @@ reads back `02-4e-42-ab-*`, hex digits compared without case) and a host name (`
 compares criteria the way Windows stores them, so either spelling in NetBox is no change. Other criteria (classes,
 client ID, relay agent fields) compare exactly.
 
+Write a MAC condition as two hex digits per byte, with dashes or no separator: `02-4e-42-ab-cd-ef`, or
+`02-4e-42-*` for a prefix. Windows refuses colons, and needs all 12 digits without a wildcard. For a prefix it
+ignores the dashes and pads an odd number of digits with a zero on the left, so `02-4e-42-a*` would match
+`00-24-e4-2a-*` and `02-4-42-*` would match `00-24-42-*`: other devices than the ones meant. Only a one-digit first
+group comes out as meant (`2-4e-42-ab*` is stored as `02-4e-42-ab-*`). NetBox refuses the other spellings when a
+policy's conditions are saved (not while a branch merge or revert replays them), and a push names a policy that
+still holds one (saved by an earlier version, a branch, or a script) as not pushed until it is fixed; meanwhile the
+deletes of its part of the configuration wait, as for any policy that cannot be pushed.
+
 A policy without criteria is not pushed (Windows requires at least one), nor are two policies with the same
 processing order at the same level. Windows numbers the policies of a level 1, 2, 3... without gaps, so give them
 consecutive processing orders: a push creates them in that order, and refuses a number past the end of the list.

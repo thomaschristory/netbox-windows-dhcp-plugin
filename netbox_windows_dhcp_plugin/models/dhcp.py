@@ -7,7 +7,7 @@ point at core NetBox objects (prefix, IP range, IP address, MAC address), so the
 
 import ipaddress
 import re
-from copy import copy
+from copy import copy, deepcopy
 
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
@@ -854,6 +854,46 @@ class WindowsPolicy(_ParentMoveValidationMixin, PrimaryModel):
                 or values[0].upper() not in ("EQ", "NE")
             ):
                 raise ValidationError({"criteria": error})
+        stored = getattr(self, "_stored_criteria", None)
+        if not self._state.adding and stored is not None and criteria == stored:
+            # Conditions saved before this check (0.6.0 and earlier) must not block editing another field of the
+            # policy: the push names them as "not pushed" until they are fixed (sync/push.py _unpushable).
+            return
+        from ..integrations.branching import applying_branch
+
+        if applying_branch(self):
+            # A branch merge or revert replays what the branch (or main before it) held, and cannot be fixed half-way:
+            # reverting a fix, or a deleted policy, puts an older condition back. The push names it instead.
+            return
+        for value in (criteria.get("mac_address") or [])[1:]:
+            mac_error = _mac_condition_error(value)
+            if mac_error:
+                raise ValidationError(
+                    {"criteria": _("MAC address {value!r}: {error}").format(value=value, error=mac_error)}
+                )
+
+    @classmethod
+    def from_db(cls, db, field_names, values):
+        instance = super().from_db(db, field_names, values)
+        # The conditions as stored, so clean() only judges conditions written now. A deferred field is not
+        # remembered, and clean() then judges the conditions as new.
+        if "criteria" in instance.__dict__:
+            instance._stored_criteria = deepcopy(instance.criteria)
+        return instance
+
+    def save(self, *args, **kwargs):
+        result = super().save(*args, **kwargs)
+        # What was just written is the stored value now (not when the save left the conditions out).
+        update_fields = kwargs.get("update_fields")
+        if (update_fields is None or "criteria" in update_fields) and "criteria" in self.__dict__:
+            self._stored_criteria = deepcopy(self.criteria)
+        return result
+
+    def refresh_from_db(self, using=None, fields=None, from_queryset=None):
+        super().refresh_from_db(using=using, fields=fields, from_queryset=from_queryset)
+        # Only a field that was reread is the stored value again.
+        if (fields is None or "criteria" in fields) and "criteria" in self.__dict__:
+            self._stored_criteria = deepcopy(self.criteria)
 
     def _clean_parent_move(self, changed):
         if self.option_values.exclude(server_id=self.server_id, scope_id=self.scope_id).exists():
@@ -1325,6 +1365,60 @@ def _is_hex(value):
 
 
 _HEX_SEPARATORS = re.compile(r"[:\-. ]+")
+_MAC_CONDITION_BODY = re.compile(r"[0-9A-Fa-f-]*")
+
+
+def _mac_condition_problem(value):
+    """
+    Which rule a policy's MAC address condition breaks, or None. A copy of windows/normalize.mac_condition_problem,
+    which models must not import; tests_netbox check that the two agree.
+    """
+    text = str(value)
+    if text != text.strip():
+        return "spaces"
+    if "*" in text[:-1]:
+        return None  # a wildcard elsewhere is Windows' own rule (#18)
+    wildcard = text.endswith("*")
+    body = text[:-1].removesuffix("-") if wildcard else text
+    if not _MAC_CONDITION_BODY.fullmatch(body):
+        return "characters"
+    groups = body.split("-")
+    digits = "".join(groups)
+    if not wildcard and len(digits) != 12:
+        return "length"
+    # A prefix whose first group alone has one digit is read as meant: Windows pads it on the left (2-4e-42-ab* is
+    # stored as 02-4e-42-ab-*).
+    lead = groups[1:] if wildcard and len(groups) > 1 and len(groups[0]) == 1 else groups
+    if (len(groups) > 1 and any(len(g) != 2 for g in lead)) or (wildcard and text != "*" and not digits):
+        return "groups"
+    if wildcard and len(digits) % 2 and lead is groups:
+        return "half"
+    return None
+
+
+_MAC_CONDITION_MESSAGES = {
+    "spaces": _("remove the spaces or line breaks around it."),
+    "characters": _("use hex digits, with dashes or no separator (02-4e-42-ab-cd-ef); Windows refuses colons."),
+    "groups": _(
+        "write each byte as two hex digits, separated by dashes or with no separator; Windows ignores the dashes, "
+        "and pads a prefix with an odd number of digits on the left, so 02-4-42-* would match 00-24-42-*."
+    ),
+    "length": _("a MAC address has 12 hex digits; end it with * to match a prefix (02-4e-42-*)."),
+    "half": _("a prefix must be whole bytes; Windows would read 024e4* as 00-24-e4-*."),
+}
+
+
+def _mac_condition_error(value):
+    """
+    Why a policy's MAC address condition would not reach Windows as meant, or None.
+
+    Seen on Windows Server 2025 (#110): Windows refuses colons and a full address without its 12 digits, and for a
+    prefix it ignores the dashes and joins the digits, padding an odd count with a zero on the left. So
+    ``02-4e-42-a*`` would match ``00-24-e4-2a-*`` and ``02-4-42-ab*`` would match ``00-24-42-ab-*``: other devices
+    than the ones meant. Each byte must therefore be two hex digits.
+    """
+    problem = _mac_condition_problem(value)
+    return _MAC_CONDITION_MESSAGES[problem] if problem else None
 
 
 def _canonical_hex(value):

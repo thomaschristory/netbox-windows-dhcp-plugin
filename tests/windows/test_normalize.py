@@ -119,17 +119,46 @@ def test_parse_option_number() -> None:
         ("02-4e-42-ab-*", "02-4e-42-ab-*"),
         ("02-4E-42-AB*", "02-4e-42-ab-*"),
         ("024e42ab*", "02-4e-42-ab-*"),
-        ("02:4e:42:ab*", "02-4e-42-ab-*"),
         ("02-4e-42-ab-cd-ef", "02-4e-42-ab-cd-ef"),
         (" 02-4E-42-AB-CD-EF ", "02-4e-42-ab-cd-ef"),
-        # Not a whole number of bytes, or not a trailing wildcard: left exactly as written.
-        ("02-4e-4*", "02-4e-4*"),
+        ("024e420a0b0c", "02-4e-42-0a-0b-0c"),
+        # Windows joins the digits of a prefix and pads an odd count on the LEFT (lab, Windows Server 2025, #110).
+        ("02-4e-42-a*", "00-24-e4-2a-*"),
+        ("02-4-42-ab*", "00-24-42-ab-*"),
+        ("2-4e-42-ab*", "02-4e-42-ab-*"),
+        ("02-4e-4*", "00-24-e4-*"),
+        # Refused by Windows (colons, a full address without 12 digits) or a wildcard elsewhere: left as written.
+        ("02:4e:42:ab*", "02:4e:42:ab*"),
+        ("02:4e:42:0a:0b:0c", "02:4e:42:0a:0b:0c"),
+        ("2-4e-42-a-b-c", "2-4e-42-a-b-c"),
         ("02-*-42", "02-*-42"),
         ("*", "*"),
     ],
 )
 def test_canonical_mac_pattern(value: str, want: str) -> None:
     assert n.canonical_mac_pattern(value) == want
+
+
+@pytest.mark.parametrize(
+    ("value", "refused"),
+    [
+        # What Windows Server 2025 answers "not in valid format" to, and what it takes (#110).
+        ("02:4e:42:ab*", True),
+        ("02:4e:42:0a:0b:0c", True),
+        ("2:4e:42:a:b:c", True),
+        ("2-4e-42-a-b-c", True),
+        ("02.4e.42.0a.0b.0c", True),
+        ("zz-4e-42-0a-0b-0c", True),
+        ("02-4e-42-0a-0b-0c", False),
+        ("024e420a0b0c", False),
+        ("02-4e-42-a*", False),
+        ("02-4e-42-ab-*", False),
+        ("024e42*", False),
+        ("02-*-42", False),
+    ],
+)
+def test_mac_pattern_refused(value: str, refused: bool) -> None:
+    assert n.mac_pattern_refused(value) is refused
 
 
 def test_canonical_policy_criterion() -> None:
@@ -139,3 +168,40 @@ def test_canonical_policy_criterion() -> None:
     # Other conditions are compared exactly until a real server shows otherwise.
     for name in ("vendor_class", "user_class", "client_id", "relay_agent", "circuit_id", "remote_id", "subscriber_id"):
         assert n.canonical_policy_criterion(name, "AbC*") == "AbC*"
+
+
+@pytest.mark.parametrize(
+    ("value", "problem"),
+    [
+        ("02-4e-42-ab-cd-ef", None),
+        ("024e420a0b0c", None),
+        ("02-4E-42-AB*", None),
+        ("02-4e-42-ab-*", None),
+        ("024e42*", None),
+        ("*", None),
+        ("*.example.test", None),  # a wildcard elsewhere is Windows' own rule (#18)
+        (" 02-4e-42-ab* ", "spaces"),
+        ("02:4e:42:ab*", "characters"),
+        ("02.4e.42.0a.0b.0c", "characters"),
+        ("zz-4e-42-*", "characters"),
+        ("02-4-42-ab*", "groups"),
+        ("2-4e-42-ab*", None),  # a one-digit first group is padded on the left, as meant
+        ("0-15-5d*", None),
+        ("2-4*", "groups"),
+        ("2-4e-42-a*", "groups"),
+        ("2*", "half"),
+        ("02-4e-42-a*", "groups"),
+        ("02--4e-42-ab*", "groups"),
+        ("02-4e-42-0a-0b-0c-", "groups"),
+        ("2-4e-42-a-b-c", "length"),
+        ("024-e42-0a0b-0c", "groups"),
+        ("-*", "groups"),
+        ("------*", "groups"),
+        ("02-4e-42-0a-0b", "length"),
+        ("024e420a0b0c0d", "length"),
+        ("024e4*", "half"),
+    ],
+)
+def test_mac_condition_problem(value: str, problem: str | None) -> None:
+    """#110: what NetBox refuses on save and the push names as not pushed."""
+    assert n.mac_condition_problem(value) == problem

@@ -548,6 +548,50 @@ def test_policy_mac_prefix_case(lab: Lab, probe_out) -> None:
     assert p.criteria["mac_address"] == ["EQ", "02-4e-42-ab-*"]
 
 
+@pytest.mark.parametrize(
+    ("written", "stored"),
+    [
+        # What Windows Server 2025 answered (#110). None: refused ("not in valid format").
+        ("02-4e-42-0a-0b-0c", "02-4e-42-0a-0b-0c"),
+        ("024e420a0b0c", "02-4e-42-0a-0b-0c"),
+        ("2:4e:42:a:b:c", None),
+        ("2-4e-42-a-b-c", None),
+        ("02:4e:42:0a:0b:0c", None),
+        ("02:4e:42:ab*", None),
+        # A prefix: the dashes are ignored and an odd number of digits is padded on the left.
+        ("02-4e-42-ab-*", "02-4e-42-ab-*"),
+        ("024e42*", "02-4e-42-*"),
+        ("02-4e-42-a*", "00-24-e4-2a-*"),
+        ("2-4e-42-ab*", "02-4e-42-ab-*"),
+        ("02-4-42-ab*", "00-24-42-ab-*"),
+    ],
+)
+def test_policy_mac_condition_storage(lab: Lab, probe_out, written: str, stored: str | None) -> None:
+    """normalize.mac_pattern_refused and canonical_mac_pattern (#110): how Windows takes a policy MAC condition.
+
+    The canonical form of what was written must equal what Windows reads back, or every dry run would show a change
+    for the policy and every push would rewrite it. NetBox refuses the values Windows refuses or reads as other
+    devices (models/dhcp.py _mac_condition_error).
+    """
+    s = lab.scope("nbwd-test-macpad")
+    name = "nbwd-test-macpad"
+    assert normalize.mac_pattern_refused(written) is (stored is None)
+    if stored is None:
+        with pytest.raises(PSError, match="not in valid format"):
+            lab.policy(wc.Policy(name=name, scope_id=s.scope_id, criteria={"mac_address": ["EQ", written]}))
+        return
+    p = lab.policy(wc.Policy(name=name, scope_id=s.scope_id, criteria={"mac_address": ["EQ", written]}))
+    raw = lab.dump(
+        "probe.policy.macpad",
+        "Get-DhcpServerv4Policy -ScopeId $p.s -Name $p.n | Select-Object MacAddress",
+        {"s": s.scope_id, "n": name},
+    )
+    save_probe(probe_out, f"v4-policy-macpad-{written}", {"written": written, "read": p.to_dict(), "raw": raw})
+    assert p.criteria["mac_address"] == ["EQ", stored]
+    assert normalize.canonical_mac_pattern(written) == stored
+    assert windows_state.equal("policy", "criteria", {"mac_address": ["EQ", written]}, p.criteria)
+
+
 def test_secret_stays_out_of_the_script_block(lab: Lab, probe_out) -> None:
     """psscript.py BOOTSTRAP (#104): a secret reaches $p on Windows PowerShell 5.1 but not the compiled script.
 

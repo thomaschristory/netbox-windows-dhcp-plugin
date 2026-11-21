@@ -31,6 +31,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..windows import normalize
 from ..windows.psscript import NotFound, WindowsLayerError
 from ..windows.runner import RunnerError
 from .diff import CREATE, DELETE, KIND_ORDER, UPDATE, Change, Record, diff, index
@@ -289,6 +290,32 @@ def parents(kind: str, fields: Mapping[str, Any]) -> list[Key]:
 # -- planning ------------------------------------------------------------------------------------------------------
 
 
+_MAC_CONDITION_HINTS = {
+    "spaces": "remove the spaces or line breaks around it",
+    "characters": "use hex digits with dashes or no separator; Windows refuses colons",
+    "groups": "write each byte as two hex digits; Windows ignores the dashes and pads an odd prefix on the left",
+    "length": "a MAC address has 12 hex digits; end it with * to match a prefix",
+    "half": "a prefix must be whole bytes; Windows pads an odd number of digits on the left",
+}
+
+
+def _mac_condition_reason(record: Record) -> str | None:
+    """
+    Why a policy's MAC address condition is not pushed, or None (#110). Saving a policy refuses such a condition, but
+    one saved before that check (0.6.0 and earlier) or by a raw save (a branch merge, a script) can still be here.
+    """
+    if record.kind != "policy":
+        return None
+    for value in ((record.fields.get("criteria") or {}).get("mac_address") or [])[1:]:
+        problem = normalize.mac_condition_problem(value)
+        if problem:
+            return (
+                f"policy {record.fields.get('name')}: its MAC address condition {value!r} is not written the way "
+                f"Windows reads it ({_MAC_CONDITION_HINTS[problem]}); fix it in NetBox"
+            )
+    return None
+
+
 def _unpushable(
     record: Record, skipped_option_ids: set[int], defined: set[str] | None, current: Record | None = None
 ) -> str | None:
@@ -313,6 +340,9 @@ def _unpushable(
             f"policy {f.get('name')}: its stored IP ranges are not a list of [start, end] IPv4 address pairs; fix "
             "them in NetBox"
         )
+    reason = _mac_condition_reason(record)
+    if reason:
+        return reason
     if record.kind == "scope":
         reason = _scope_range_problem(record)
         if reason:

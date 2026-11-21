@@ -669,6 +669,27 @@ def test_policy_embedded_wildcard_is_refused(c: DhcpClient) -> None:
     assert c.get_policy("p", "10.1.20.0").criteria == {"fqdn": ["EQ", "*.example.test"]}
 
 
+# ---- issue #110: how Windows takes and stores a policy MAC condition ----
+
+
+@pytest.mark.parametrize("value", ["02:4e:42:ab*", "2-4e-42-a-b-c", "02:4e:42:0a:0b:0c"])
+def test_policy_mac_condition_refused_like_windows(c: DhcpClient, value: str) -> None:
+    c.add_scope(scope())
+    with pytest.raises(PSError, match="not in valid format") as ei:
+        c.add_policy(Policy(name="p", scope_id="10.1.20.0", criteria={"mac_address": ["EQ", value]}))
+    assert ei.value.category == "InvalidArgument"
+
+
+@pytest.mark.parametrize(
+    ("value", "stored"),
+    [("02-4e-42-a*", "00-24-e4-2a-*"), ("2-4e-42-ab*", "02-4e-42-ab-*"), ("024e420a0b0c", "02-4e-42-0a-0b-0c")],
+)
+def test_policy_mac_condition_stored_like_windows(c: DhcpClient, value: str, stored: str) -> None:
+    c.add_scope(scope())
+    p = c.add_policy(Policy(name="p", scope_id="10.1.20.0", criteria={"mac_address": ["EQ", value]}))
+    assert p.criteria == {"mac_address": ["EQ", stored]}
+
+
 # ---- issue #22: DHCPv6 leases have no state ----
 
 

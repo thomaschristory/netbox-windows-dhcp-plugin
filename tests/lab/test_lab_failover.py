@@ -101,9 +101,10 @@ def test_failover_lifecycle(lab: Lab, partner: Lab, probe_out) -> None:
     names = lab.client.get_server_names()
     save_probe(probe_out, "server-names", {"first": names, "partner": partner.client.get_server_names()})
     assert names
-    assert windows_state.resolve_partner(other.partner_server, [(lab_host(), names)]) == windows_state.host_name(
-        lab_host()
-    )
+    # Compared as the sync compares it: in a domain the partner reports the short computer name, which matches the
+    # server's fully qualified host (as dev/scripts/lab_e2e.py checks it).
+    seen = windows_state.resolve_partner(other.partner_server, [(lab_host(), names)])
+    assert windows_state.equal("failover", "partner_server", seen, lab_host()), (seen, lab_host())
 
     # pusher.py: later changes reach the partner only through replication of the listed scopes.
     lab.client.add_reservation(
