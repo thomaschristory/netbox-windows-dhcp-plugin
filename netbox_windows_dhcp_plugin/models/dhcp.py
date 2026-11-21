@@ -859,6 +859,12 @@ class WindowsPolicy(_ParentMoveValidationMixin, PrimaryModel):
             # Conditions saved before this check (0.6.0 and earlier) must not block editing another field of the
             # policy: the push names them as "not pushed" until they are fixed (sync/push.py _unpushable).
             return
+        from ..integrations.branching import applying_branch
+
+        if applying_branch(self):
+            # A branch merge or revert replays what the branch (or main before it) held, and cannot be fixed half-way:
+            # reverting a fix, or a deleted policy, puts an older condition back. The push names it instead.
+            return
         for value in (criteria.get("mac_address") or [])[1:]:
             mac_error = _mac_condition_error(value)
             if mac_error:
@@ -1380,9 +1386,12 @@ def _mac_condition_problem(value):
     digits = "".join(groups)
     if not wildcard and len(digits) != 12:
         return "length"
-    if (len(groups) > 1 and any(len(g) != 2 for g in groups)) or (wildcard and text != "*" and not digits):
+    # A prefix whose first group alone has one digit is read as meant: Windows pads it on the left (2-4e-42-ab* is
+    # stored as 02-4e-42-ab-*).
+    lead = groups[1:] if wildcard and len(groups) > 1 and len(groups[0]) == 1 else groups
+    if (len(groups) > 1 and any(len(g) != 2 for g in lead)) or (wildcard and text != "*" and not digits):
         return "groups"
-    if wildcard and len(digits) % 2:
+    if wildcard and len(digits) % 2 and lead is groups:
         return "half"
     return None
 

@@ -40,6 +40,11 @@ failover writes. Over WinRM HTTP (Kerberos, with CredSSP for the failover writes
 profiles) every step passed up to deleting the failover relationship, when the lab's nightly shutdown cut the run.
 The new credential profile pins (#103) are unit and NetBox tested; the lab profiles did not set them.
 
+Policy MAC conditions (#110, Windows Server 2025 only, 2026-11-21): colons and a full address without 12 digits are
+refused, and Windows joins the digits of a prefix and pads an odd count on the left (`02-4e-42-a*` is stored as
+`00-24-e4-2a-*`). Not tried: Windows Server 2022, dots or spaces in the value, a prefix of 12 digits or more, and a
+full address grouped other than in bytes; NetBox refuses those spellings.
+
 Not tried: Kerberos, SSH with a password or SSH with a key through a management host; classic (not resource-based)
 or unconstrained Kerberos delegation; a custom **Kerberos SPN**.
 

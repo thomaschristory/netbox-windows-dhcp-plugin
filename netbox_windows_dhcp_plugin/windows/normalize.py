@@ -197,9 +197,12 @@ def mac_condition_problem(value: str) -> str | None:
     if not wildcard and len(digits) != 12:
         return "length"
     # unverified: how Windows stores a full address of 12 digits grouped otherwise (024-e42-0a0b-0c): refused here.
-    if (len(groups) > 1 and any(len(g) != 2 for g in groups)) or (wildcard and text != "*" and not digits):
+    # A prefix whose first group alone has one digit is read as meant: Windows pads it on the left (2-4e-42-ab* is
+    # stored as 02-4e-42-ab-*).
+    lead = groups[1:] if wildcard and len(groups) > 1 and len(groups[0]) == 1 else groups
+    if (len(groups) > 1 and any(len(g) != 2 for g in lead)) or (wildcard and text != "*" and not digits):
         return "groups"
-    if wildcard and len(digits) % 2:
+    if wildcard and len(digits) % 2 and lead is groups:
         return "half"
     return None
 

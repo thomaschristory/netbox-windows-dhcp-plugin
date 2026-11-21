@@ -276,13 +276,16 @@ def test_policy_needs_a_condition_and_memberships_a_scope(client):
 
 @pytest.mark.parametrize("value", ["02-4e-42-a*", "02-4-42-ab*", "02:4e:42:ab*", " 02-4e-42-ab* "])
 def test_policy_mac_condition_windows_would_misread_is_not_pushed(value):
+    """Also when it is the second value of the condition."""
+    reasons = by_key(push.plan([scope(), policy(criteria={"mac_address": ["EQ", "02-4e-42-ab*", value]})], [], {}))
+    assert "not written the way Windows reads it" in reasons["policy", "10.1.0.0/printers"]
     """#110: a condition saved before the save check, or by a raw save, is named instead of pushed or refused."""
     reasons = by_key(push.plan([scope(), policy(criteria={"mac_address": ["EQ", value]})], [], {}))
     assert "not written the way Windows reads it" in reasons["policy", "10.1.0.0/printers"]
 
 
 def test_policy_mac_condition_in_windows_spelling_is_pushed():
-    for value in ("02-4e-42-ab*", "02-4e-42-ab-*", "024e42*", "02-4e-42-0a-0b-0c", "*"):
+    for value in ("02-4e-42-ab*", "02-4e-42-ab-*", "024e42*", "02-4e-42-0a-0b-0c", "*", "2-4e-42-ab*"):
         assert ("policy", "10.1.0.0/printers") not in by_key(
             push.plan([scope(), policy(criteria={"mac_address": ["EQ", value]})], [], {})
         ), value
@@ -296,9 +299,9 @@ def test_misread_mac_condition_windows_already_holds_pauses_deletes_until_fixed(
     """
     _, first = run(client, wanted())
     managed = state_after({}, first)
-    # "0-15-5d*" is what 0.6.0 could store; Windows holds it as 00-15-5d-*, as it holds the policy pushed above.
+    # "00-15-5d-a*" is what 0.6.0 could store; Windows holds it as 00-15-5d-*, as it holds the policy pushed above.
     source = [
-        policy(criteria={"mac_address": ["EQ", "0-15-5d*"]}) if r.kind == "policy" and r.fields["scope_id"] else r
+        policy(criteria={"mac_address": ["EQ", "00-15-5d-a*"]}) if r.kind == "policy" and r.fields["scope_id"] else r
         for r in wanted()
         if r.kind != "reservation" and not r.key.startswith("10.1.0.0/10.1.0.50")
     ]
@@ -318,7 +321,7 @@ def test_misread_mac_condition_of_a_new_policy_pauses_deletes(client, fake):
     _, first = run(client, wanted())
     managed = state_after({}, first)
     source = [
-        policy(name="Printers2", criteria={"mac_address": ["EQ", "0-15-5d*"]})
+        policy(name="Printers2", criteria={"mac_address": ["EQ", "00-15-5d-a*"]})
         if r.kind == "policy" and r.fields["scope_id"]
         else r
         for r in wanted()
@@ -336,7 +339,7 @@ def test_changed_option_value_of_a_misread_policy_keeps_its_old_copy(client, fak
     source = []
     for r in wanted():
         if r.kind == "policy" and r.fields["scope_id"]:
-            r = policy(criteria={"mac_address": ["EQ", "0-15-5d*"]})
+            r = policy(criteria={"mac_address": ["EQ", "00-15-5d-a*"]})
         elif r.kind == "option" and r.fields.get("policy"):
             r = option("10.1.0.0", 6, ["10.1.0.2", "a,b"], user_class="Phones", policy="Printers")
         source.append(r)
@@ -353,7 +356,7 @@ def _misread_source(**policy_over):
         if r.kind == "reservation" or r.key.startswith("10.1.0.0/10.1.0.50"):
             continue
         if r.kind == "policy" and r.fields["scope_id"]:
-            r = policy(**{"criteria": {"mac_address": ["EQ", "0-15-5d*"]}, **policy_over})
+            r = policy(**{"criteria": {"mac_address": ["EQ", "00-15-5d-a*"]}, **policy_over})
         out.append(r)
     return out
 

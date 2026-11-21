@@ -185,7 +185,11 @@ def test_canonical_policy_criterion() -> None:
         ("02.4e.42.0a.0b.0c", "characters"),
         ("zz-4e-42-*", "characters"),
         ("02-4-42-ab*", "groups"),
-        ("2-4e-42-ab*", "groups"),
+        ("2-4e-42-ab*", None),  # a one-digit first group is padded on the left, as meant
+        ("0-15-5d*", None),
+        ("2-4*", "groups"),
+        ("2-4e-42-a*", "groups"),
+        ("2*", "half"),
         ("02-4e-42-a*", "groups"),
         ("02--4e-42-ab*", "groups"),
         ("02-4e-42-0a-0b-0c-", "groups"),

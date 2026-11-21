@@ -289,6 +289,16 @@ class PolicyMacConditionTest(TestCase):
         with self.assertRaises(ValidationError):
             policy.full_clean()
 
+    def test_a_branch_merge_or_revert_is_not_judged(self):
+        # Reverting a fix, or a deleted policy, puts an older condition back; the push names it instead.
+        from unittest import mock
+
+        policy = self.policy("02-4e-42-a*")
+        with mock.patch("netbox_windows_dhcp_plugin.integrations.branching.applying_branch", return_value=object()):
+            policy.full_clean()
+        with self.assertRaises(ValidationError):
+            policy.full_clean()
+
     def test_a_save_that_leaves_the_conditions_out_does_not_mark_them_stored(self):
         policy = self.policy("02-4e-42-ab*")
         policy.save()
@@ -299,6 +309,14 @@ class PolicyMacConditionTest(TestCase):
             policy.full_clean()
 
     def test_accepted_spellings(self):
-        for value in ("02-4e-42-ab-*", "02-4e-42-ab*", "024e42*", "02-4E-42-0A-0B-0C", "024e420a0b0c", "*"):
+        for value in (
+            "02-4e-42-ab-*",
+            "02-4e-42-ab*",
+            "024e42*",
+            "02-4E-42-0A-0B-0C",
+            "024e420a0b0c",
+            "*",
+            "2-4e-42-ab*",
+        ):
             with self.subTest(value=value):
                 self.policy(value).full_clean()
