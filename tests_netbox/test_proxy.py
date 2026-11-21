@@ -151,3 +151,32 @@ class ProxyMessageTest(TestCase):
         errors = ctx.exception.message_dict
         self.assertIn("credential profile 'lab'", " ".join(errors["primary_server"]))
         self.assertNotIn("shared_secret_profile", errors)
+
+
+class ServerProfileSwitchTest(TestCase):
+    """A failover primary moving to a profile that sends WinRM through the proxy needs the secret profile's consent."""
+
+    def test_switching_the_primary_to_an_env_profile_is_refused(self):
+        primary = windows_server()
+        FailoverRelationship.objects.create(
+            name="ha", primary_server=primary, partner_server=windows_server("dhcp2"), shared_secret_profile="ha"
+        )
+        profiles = {
+            "lab": {"username": "lab\\admin", "password": "x", "allowed_hosts": ["*.example.com"]},
+            "lab-proxy": {
+                "username": "lab\\admin",
+                "password": "x",
+                "allowed_hosts": ["*.example.com"],
+                "proxy": "env",
+            },
+            "ha": {"secret": "s3", "allowed_hosts": ["*.example.com"]},
+        }
+        plugin = {"netbox_windows_dhcp_plugin": {"credentials": profiles}}
+        with override_settings(PLUGINS_CONFIG={**settings.PLUGINS_CONFIG, **plugin}):
+            primary = WindowsServer.objects.get(pk=primary.pk)
+            primary.credential_profile = "lab-proxy"
+            with self.assertRaises(ValidationError) as ctx:
+                primary.full_clean()
+            self.assertIn('does not set proxy "env"', str(ctx.exception))
+            profiles["ha"]["proxy"] = "env"
+            primary.full_clean()

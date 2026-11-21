@@ -154,8 +154,10 @@ PLUGINS_CONFIG = {
 | `"env"` | follow `HTTPS_PROXY` (WinRM over HTTPS) or `HTTP_PROXY` (over HTTP), else `ALL_PROXY`, except for hosts in `NO_PROXY` |
 
 Anything else (`True`, `"ENV"`, a proxy URL, `None` from a missing environment variable) is refused, naming the
-profile: no server can use the profile until it is fixed. The proxy itself is not named in the profile: it comes
-from the worker's environment, so set it where the worker runs.
+profile: no server can use the profile until it is fixed. The error gives only the type of the value, never the
+value, so credentials in a proxy URL put there by mistake never appear in messages. The proxy itself is not named in
+the profile: it comes from the worker's environment, so set it where the worker runs. With `"env"`, a connection
+error (an unreachable proxy, say) may name the proxy's host and port, never credentials written in its URL.
 
 - The server's own profile decides, for every WinRM call of that server: imports, pushes, dry runs, the connection
   test, live leases, and the failover logon (**Failover authentication: CredSSP**), which is the same connection
