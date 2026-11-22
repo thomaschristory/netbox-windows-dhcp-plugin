@@ -52,13 +52,15 @@ MAX_STDIN = 32 * 1024
 
 # When the server refuses one more session on the connection (sshd MaxSessions, 10 by default) while commands of
 # ours run on it, the refused open joins a first-come, first-served line and is tried again each time one of ours
-# closes, or after these waits at the latest (SESSION_RETRY_DELAYS first, then SESSION_RETRY_POLL), for as long as
-# ours keep running, up to the command timeout (at most SESSION_WAIT_MAX). Windows frees a session within a fraction
-# of a second of a command ending, but ten PowerShell starts at once take about 10 s on a small server (lab, Windows
-# Server 2025), so a few seconds of retries were not enough; and a line, not polling, keeps a command that finished
-# from taking the freed session again ahead of one that has waited.
-SESSION_RETRY_DELAYS = (0.2, 0.5, 1.0)
-SESSION_RETRY_POLL = 0.25
+# closes, or after these waits at the latest (SESSION_RETRY_DELAYS first, then every SESSION_RETRY_POLL), for as long
+# as ours keep running, up to the command timeout (at most SESSION_WAIT_MAX). Windows frees a session a fraction of a
+# second after a command ends (0.05 to 0.3 s), so just after a close it is tried every SESSION_FREED_RETRY. Ten
+# PowerShell starts at once take about 10 s on a small server (lab, Windows Server 2025), so a few seconds of retries
+# were not enough; and a line, not polling, keeps a command that finished from taking the freed session again ahead
+# of one that has waited.
+SESSION_RETRY_DELAYS = (0.2, 0.5)
+SESSION_RETRY_POLL = 1.0
+SESSION_FREED_RETRY = 0.1
 SESSION_WAIT_MAX = 300.0
 # Removing a leftover script file waits for a session this long at most: it runs even while the job is stopping.
 SESSION_CLEANUP_WAIT = 5.0
@@ -84,6 +86,16 @@ def _refused(paramiko: Any, e: Exception) -> bool:
     if isinstance(e, paramiko.ChannelException):
         return True
     return type(e) is paramiko.SSHException and str(e) == "Unable to open channel."
+
+
+@dataclass
+class _SessionWait:
+    """One open's place in the line for a session, kept across a reconnect: who waits, since when, until when."""
+
+    me: threading.Thread
+    started: float
+    deadline: float
+    hint: str  # what to change when the wait runs out
 
 
 class _Stale(Exception):  # noqa: N818 - internal control flow
@@ -213,7 +225,7 @@ class SSHRunner:
         self._last_closed = float("-inf")
         # Sessions being opened right now by other threads (not yet answered by the server).
         self._opening = 0
-        # Opens waiting for a free session, oldest first: only the first tries, the others wait their turn, and a
+        # Threads waiting for a free session, oldest first: only the first tries, the others wait their turn, and a
         # new open joins the end while any wait. Woken when one of ours closes.
         self._line: collections.deque[object] = collections.deque()
         self._freed = threading.Condition(self._lock)
@@ -361,20 +373,40 @@ class SSHRunner:
 
     def _open_channel(self, max_wait: float | None = None):
         addr = f"{self.cfg.host}:{self.port}"
-        limit = min(SESSION_WAIT_MAX, self.cfg.command_timeout) if max_wait is None else max_wait
-        # One deadline for both tries, so a reconnect does not start the wait again.
-        deadline = time.monotonic() + limit
-        t = self._connected(addr)
+        wait = self._session_wait(max_wait)
         try:
-            return self._open_session(t, deadline)
-        except _Stale:  # the connection died: reconnect once
-            self._drop(t)
-        t = self._connected(addr)
-        try:
-            return self._open_session(t, deadline)
-        except _Stale as e:
-            self._drop(t)
-            raise RunnerError(f"ssh: opening session: {e.__cause__}") from e.__cause__
+            with self._lock:
+                if self._line:  # others already wait for a session: behind them, not ahead
+                    self._line.append(wait.me)
+            t = self._connected(addr)
+            try:
+                return self._open_session(t, wait)
+            except _Stale:  # the connection died: reconnect once, keeping this open's place in line and its deadline
+                self._drop(t)
+            t = self._connected(addr)
+            try:
+                return self._open_session(t, wait)
+            except _Stale as e:
+                self._drop(t)
+                raise RunnerError(f"ssh: opening session: {e.__cause__}") from e.__cause__
+        finally:
+            with self._lock:
+                if wait.me in self._line:
+                    self._line.remove(wait.me)
+                    self._freed.notify_all()
+
+    def _session_wait(self, max_wait: float | None) -> _SessionWait:
+        now = time.monotonic()
+        if max_wait is not None:
+            return _SessionWait(threading.current_thread(), now, now + max_wait, "lower max_concurrency")
+        if self.cfg.command_timeout <= SESSION_WAIT_MAX:
+            return _SessionWait(
+                threading.current_thread(),
+                now,
+                now + self.cfg.command_timeout,
+                "raise command_timeout or lower max_concurrency",
+            )
+        return _SessionWait(threading.current_thread(), now, now + SESSION_WAIT_MAX, "lower max_concurrency")
 
     def _connected(self, addr: str):
         try:
@@ -384,99 +416,91 @@ class SSHRunner:
         except Exception as e:  # noqa: BLE001
             raise RunnerError(f"ssh: connecting to {addr}: {e}") from e
 
-    def _open_session(self, t, deadline: float):
+    def _open_session(self, t, wait: _SessionWait):
         """
         A new session on ``t``. Only a dead connection raises _Stale (dropped and opened again). A live one is never
         dropped here, since that would kill every command running on it: an open that fails on it fails this command
         only. When the server refuses a session while others of ours are open, it is probably full (sshd
         MaxSessions): the open waits in line (see SESSION_RETRY_DELAYS) while those run, and gives up once none of
-        ours is left to free a session or ``deadline`` passes. Windows OpenSSH refuses a session past MaxSessions with
-        a channel open failure ("Connect failed"), as OpenSSH does (lab, Windows Server 2025).
+        ours is left to free a session or the wait's deadline passes. Windows OpenSSH refuses a session past
+        MaxSessions with a channel open failure ("Connect failed"), as OpenSSH does (lab, Windows Server 2025).
         """
         paramiko = _paramiko()
-        started = time.monotonic()
-        me = object()
         delays = iter(SESSION_RETRY_DELAYS)
-        try:
+        while True:
+            self._wait_turn(wait)
+            # A parallel read that is stopping sends nothing more, even after waiting here.
+            raise_if_stopped()
+            # Counted while it opens: another thread refused meanwhile must see this one as ours, even before the
+            # server's answer reaches us.
+            chan, error = None, None
             with self._lock:
-                if self._line:  # others already wait for a session: behind them, not ahead
-                    self._line.append(me)
-            while True:
-                self._wait_turn(me, deadline, started)
-                # A parallel read that is stopping sends nothing more, even after waiting here.
-                raise_if_stopped()
-                # Counted while it opens: another thread refused meanwhile must see this one as ours, even before
-                # the server's answer reaches us.
-                chan, error = None, None
+                self._opening += 1
+            try:
+                # A stalled server must not hold the line much past the deadline.
+                remaining = wait.deadline - time.monotonic()
+                chan = t.open_session(timeout=min(self.cfg.timeout, max(remaining, 1.0)))
+            except Exception as e:  # noqa: BLE001 - paramiko raises SSHException, EOFError, socket errors...
+                error = e
+            finally:
+                # Also on an interrupt, or a leftover count would make every later refusal look like a full server.
                 with self._lock:
-                    self._opening += 1
-                try:
-                    chan = t.open_session(timeout=self.cfg.timeout)
-                except Exception as e:  # noqa: BLE001 - paramiko raises SSHException, EOFError, socket errors...
-                    error = e
-                finally:
-                    # Also on an interrupt, or a leftover count would make every later refusal look like a full
-                    # server.
-                    with self._lock:
-                        self._opening -= 1
-                        if chan is not None:
-                            self._sessions += 1
-                if chan is not None:
-                    return chan
-                # The connection itself is gone (paramiko may not have noticed yet when the socket reports it).
-                if not t.is_active() or isinstance(error, EOFError | OSError):
-                    raise _Stale from error
-                if not _refused(paramiko, error):
-                    raise RunnerError(f"ssh: opening session: {error}") from error
-                with self._lock:
-                    # Ours fill the server if any are open, being opened by another thread, or just closed (the
-                    # server frees a slot a moment after the close). Several threads refused at once see each other
-                    # opening, so a server that refuses every session takes a moment to report it.
-                    busy = (
-                        self._sessions > 0
-                        or self._opening > 0
-                        or time.monotonic() - self._last_closed < SESSION_CLOSE_GRACE
-                    )
-                    if not busy:
-                        # Nothing of ours to wait for: the reason first, the likely cause after.
-                        raise RunnerError(
-                            f"ssh: {self.cfg.host} refused to open a session: {error}. If it allows fewer sessions "
-                            "per connection (sshd MaxSessions, 10 by default) than the plugin runs at once "
-                            "(max_concurrency), lower max_concurrency or raise MaxSessions"
-                        ) from error
-                    if me not in self._line:
-                        self._line.append(me)
-                    delay = next(delays, SESSION_RETRY_POLL)
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise self._waited_too_long(started, error)
-                    # Woken early when one of ours closes; the server may need a moment more to free the slot, and
-                    # the next refusal simply waits again.
-                    self._freed.wait(min(delay, remaining))
-        finally:
+                    self._opening -= 1
+                    if chan is not None:
+                        self._sessions += 1
+                    elif wait.me not in self._line:
+                        # Joins the line before letting go of the lock, so no new open slips in ahead.
+                        self._line.append(wait.me)
+            if chan is not None:
+                return chan
+            # The connection itself is gone (paramiko may not have noticed yet when the socket reports it).
+            if not t.is_active() or isinstance(error, EOFError | OSError):
+                raise _Stale from error
+            if not _refused(paramiko, error):
+                raise RunnerError(f"ssh: opening session: {error}") from error
             with self._lock:
-                if me in self._line:
-                    self._line.remove(me)
-                    self._freed.notify_all()
+                # Ours fill the server if any are open, being opened by another thread, or just closed (the server
+                # frees a slot a moment after the close). Several threads refused at once see each other opening,
+                # so a server that refuses every session takes a moment to report it.
+                just_closed = time.monotonic() - self._last_closed < SESSION_CLOSE_GRACE
+                if not (self._sessions > 0 or self._opening > 0 or just_closed):
+                    # Nothing of ours to wait for: the reason first, the likely cause after.
+                    raise RunnerError(
+                        f"ssh: {self.cfg.host} refused to open a session: {error}. If it allows fewer sessions per "
+                        "connection (sshd MaxSessions, 10 by default) than the plugin runs at once "
+                        "(max_concurrency), lower max_concurrency or raise MaxSessions"
+                    ) from error
+                remaining = wait.deadline - time.monotonic()
+                if remaining <= 0:
+                    raise self._waited_too_long(wait, error)
+                # Just after a close the slot is about to be free: try again soon, without using up the back-off.
+                # Otherwise the back-off, then a steady wait; a close of ours wakes this early either way.
+                delay = SESSION_FREED_RETRY if just_closed else next(delays, SESSION_RETRY_POLL)
+                self._freed.wait(min(delay, remaining))
 
-    def _wait_turn(self, me: object, deadline: float, started: float) -> None:
+    def _wait_turn(self, wait: _SessionWait) -> None:
         """Wait while other opens are ahead of this one in line (it is first, or not in line, when this returns)."""
         with self._lock:
-            while self._line and self._line[0] is not me and me in self._line:
-                remaining = deadline - time.monotonic()
+            while self._line and self._line[0] is not wait.me and wait.me in self._line:
+                head = self._line[0]
+                if isinstance(head, threading.Thread) and not head.is_alive():
+                    # A thread killed before it could leave the line must not block it forever.
+                    self._line.popleft()
+                    continue
+                remaining = wait.deadline - time.monotonic()
                 if remaining <= 0:
-                    raise self._waited_too_long(started, None)
+                    raise self._waited_too_long(wait, None)
                 self._freed.wait(min(SESSION_RETRY_POLL, remaining))
                 # A job that is stopping leaves the line at once.
                 raise_if_stopped()
 
-    def _waited_too_long(self, started: float, error: Exception | None) -> RunnerError:
+    def _waited_too_long(self, wait: _SessionWait, error: Exception | None) -> RunnerError:
         # The other commands held every session for the whole wait: more likely one of them is stuck than the limit
         # being too low, so say what happened rather than repeat the MaxSessions hint.
         reason = f" ({str(error).rstrip('.')})" if error is not None else ""
         e = RunnerError(
-            f"ssh: {self.cfg.host} had no free session for {time.monotonic() - started:.0f} s while other commands "
-            f"of this job held them{reason}. If they ran that long, raise command_timeout or lower max_concurrency"
+            f"ssh: {self.cfg.host} had no free session for {time.monotonic() - wait.started:.0f} s while other "
+            f"commands of this job held them{reason}. If they ran that long, {wait.hint}"
         )
         if error is not None:
             e.__cause__ = error

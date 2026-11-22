@@ -614,6 +614,8 @@ def _with_transports(monkeypatch, *transports: _FakeTransport) -> SSHRunner:
     monkeypatch.setattr(ssh_mod, "SESSION_RETRY_DELAYS", (0.01, 0.01))
     # A session of ours that never ends would otherwise be waited for up to five minutes.
     monkeypatch.setattr(ssh_mod, "SESSION_WAIT_MAX", 0.1)
+    monkeypatch.setattr(ssh_mod, "SESSION_RETRY_POLL", 0.02)
+    monkeypatch.setattr(ssh_mod, "SESSION_FREED_RETRY", 0.01)
     return r
 
 
@@ -1037,50 +1039,90 @@ def test_a_waiter_gives_up_once_none_of_ours_is_left(monkeypatch) -> None:
     monkeypatch.setattr(ssh_mod, "SESSION_WAIT_MAX", 30.0)
     monkeypatch.setattr(ssh_mod, "SESSION_CLOSE_GRACE", 0.1)
     r._sessions = 1
-    threading.Timer(0.3, lambda: r._close_channel(_ClosableChannel())).start()
+    timer = threading.Timer(0.3, lambda: r._close_channel(_ClosableChannel()))
+    timer.start()
     started = time.monotonic()
-    with pytest.raises(RunnerError, match="MaxSessions"):
-        r._open_channel()
+    try:
+        with pytest.raises(RunnerError, match="MaxSessions"):
+            r._open_channel()
+    finally:
+        timer.cancel()
     assert time.monotonic() - started < 3
     assert not r._line
 
 
+class _Slots(_FakeTransport):
+    """A server with a number of free sessions; records which thread tried to open while none was free."""
+
+    def __init__(self) -> None:
+        super().__init__(active=True, refuse=0)
+        self.free = 0
+        self.lock = threading.Lock()
+        self.refused_by: list[str] = []
+
+    def open_session(self, timeout: float | None = None) -> str:
+        with self.lock:
+            if self.free <= 0:
+                self.refused_by.append(threading.current_thread().name)
+                raise paramiko.ChannelException(2, "Connect failed")
+            self.free -= 1
+            self.opened += 1
+            return "channel"
+
+
+def _until(condition: Callable[[], bool], seconds: float = 5.0) -> None:
+    end = time.monotonic() + seconds
+    while not condition():
+        assert time.monotonic() < end, "timed out"
+        time.sleep(0.01)
+
+
 def test_waiters_take_freed_sessions_in_the_order_they_were_refused(monkeypatch) -> None:
-    # Three opens refused in turn; then sessions free up one at a time: the first refused gets the first one.
-    class Slots(_FakeTransport):
-        def __init__(self) -> None:
-            super().__init__(active=True, refuse=0)
-            self.free = 0
-            self.lock = threading.Lock()
-
-        def open_session(self, timeout: float | None = None) -> str:
-            with self.lock:
-                if self.free <= 0:
-                    raise paramiko.ChannelException(2, "Connect failed")
-                self.free -= 1
-                return "channel"
-
-    live = Slots()
+    # Three opens refused in turn wait in line: only the first in line tries (polling every 0.02 s would let any of
+    # them take a freed session), and the sessions freed one at a time go to them in the order they were refused.
+    live = _Slots()
     r = _with_transports(monkeypatch, live)
     monkeypatch.setattr(ssh_mod, "SESSION_WAIT_MAX", 30.0)
     r._sessions = 3
     order: list[int] = []
-
-    def work(i: int) -> None:
-        r._open_channel()
-        order.append(i)
-
     threads = []
     for i in range(3):
-        th = threading.Thread(target=work, args=(i,))
+        th = threading.Thread(target=lambda i=i: (r._open_channel(), order.append(i)), name=f"w{i}")
         th.start()
         threads.append(th)
-        time.sleep(0.15)  # refused in this order
-    for _ in range(3):
+        _until(lambda i=i: len(r._line) == i + 1)
+    time.sleep(0.2)  # the line settles: only w0 keeps trying
+    assert set(live.refused_by[3:]) <= {"w0"}
+    for k in range(3):
         with live.lock:
             live.free += 1
         r._close_channel(_ClosableChannel())
-        time.sleep(0.4)
+        _until(lambda k=k: len(order) == k + 1)
     for th in threads:
         th.join(5)
+        assert not th.is_alive()
     assert order == [0, 1, 2]
+
+
+def test_a_close_of_ours_wakes_the_first_in_line_at_once(monkeypatch) -> None:
+    # The point of the line: a freed session is taken when one of ours closes, not at the next timed retry.
+    live = _Slots()
+    r = _with_transports(monkeypatch, live)
+    monkeypatch.setattr(ssh_mod, "SESSION_WAIT_MAX", 30.0)
+    monkeypatch.setattr(ssh_mod, "SESSION_RETRY_DELAYS", (5.0,))
+    monkeypatch.setattr(ssh_mod, "SESSION_RETRY_POLL", 5.0)
+    r._sessions = 1
+
+    def free() -> None:
+        with live.lock:
+            live.free += 1
+        r._close_channel(_ClosableChannel())
+
+    timer = threading.Timer(0.2, free)
+    timer.start()
+    started = time.monotonic()
+    try:
+        assert r._open_channel() == "channel"
+    finally:
+        timer.cancel()
+    assert time.monotonic() - started < 1
