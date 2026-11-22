@@ -23,6 +23,7 @@ __all__ = [
     "canonical_mac_pattern",
     "mac_condition_problem",
     "mac_pattern_refused",
+    "mac_prefix_too_long",
     "canonical_policy_criterion",
     "enum_of",
     "format_duration",
@@ -132,17 +133,17 @@ def canonical_mac_pattern(value: str) -> str:
     with a trailing wildcard reads back as whole bytes, then ``-*``; an odd number of digits is
     padded with a zero on the LEFT, so ``02-4e-42-a*`` becomes ``00-24-e4-2a-*`` and
     ``02-4-42-ab*`` becomes ``00-24-42-ab-*`` (not what the writer meant: NetBox refuses such
-    values on save). A value Windows refuses (see ``mac_pattern_refused``) or a wildcard
-    anywhere but the end is returned as written.
+    values on save). A full address keeps its 12 digits however the dashes group them
+    (``024-e42-0a0b-0c`` reads back as ``02-4e-42-0a-0b-0c``). A value Windows refuses (see
+    ``mac_pattern_refused``) or a wildcard anywhere but the end is returned as written.
     """
-    s = str(value).strip()
+    s = str(value)
     if mac_pattern_refused(s) or "*" in s[:-1]:
         return s
     wildcard = s.endswith("*")
     digits = (s[:-1] if wildcard else s).replace("-", "").lower()
     if not wildcard:
         return "-".join(digits[i : i + 2] for i in range(0, 12, 2))
-    # unverified: a prefix of 12 digits or more before the wildcard (read here like a shorter one).
     if not digits:
         return s
     if len(digits) % 2:
@@ -154,22 +155,39 @@ _MAC_PATTERN_RE = re.compile(r"[0-9A-Fa-f-]*\*?")
 
 
 def mac_pattern_refused(value: str) -> bool:
-    """Whether Windows refuses this MAC address condition of a policy ("not in valid format").
+    """Whether Windows refuses this MAC address condition of a policy.
 
-    Seen on Windows Server 2025 (#110): colons are refused (``02:4e:42:ab*``), and a value
-    without a wildcard needs all 12 digits (``2-4e-42-a-b-c`` is refused). A wildcard before
-    the last character is not judged here: Windows refuses one in the middle (#18, the fake
-    checks that) and how it takes a leading one on a MAC condition is not known.
+    Seen on Windows Server 2025 (#110 and the 0.7.x lab probes): "not in valid format" for
+    colons, dots and spaces anywhere, spaces around the value included (``02:4e:42:ab*``,
+    ``02.4e.42.ab*``, `` 02-4e-42-ab-*``), and for a value without a wildcard that does not
+    have all 12 digits (``2-4e-42-a-b-c``); "Failed to create policy" for a prefix that is a
+    whole address or longer (see ``mac_prefix_too_long``). A wildcard before the last
+    character is not judged here: Windows refuses one in the middle (#18, the fake checks that)
+    and how it takes a leading one on a MAC condition is not known.
     """
-    s = str(value).strip()
+    s = str(value)
     if "*" in s[:-1]:
         return False
-    # unverified: dots, spaces and other characters (refused here, like colons).
     if not _MAC_PATTERN_RE.fullmatch(s):
         return True
     if not s.endswith("*"):
         return len(s.replace("-", "")) != 12
-    return False
+    return mac_prefix_too_long(s)
+
+
+def mac_prefix_too_long(value: str) -> bool:
+    """Whether a MAC prefix condition (ending in ``*``) holds 6 bytes or more once padded.
+
+    Seen on Windows Server 2025: ``24e420a0b0c*``, ``024e420a0b0c*`` and ``024e420a0b0c0d*`` are refused with
+    "Failed to create policy" (InvalidData), so a prefix is at most 5 bytes (10 digits).
+    """
+    s = str(value)
+    # Only a prefix written with hex digits and dashes: anything else gets "not in valid format" first.
+    if not s.endswith("*") or not _MAC_PATTERN_RE.fullmatch(s):
+        return False
+    digits = s[:-1].replace("-", "")
+    # 11 digits are padded on the left to 6 bytes, and refused like 12 (seen too).
+    return len(digits) + len(digits) % 2 >= 12
 
 
 def mac_condition_problem(value: str) -> str | None:
@@ -177,13 +195,14 @@ def mac_condition_problem(value: str) -> str | None:
 
     Stricter than ``mac_pattern_refused``: it also catches what Windows takes but reads as other
     devices (#110). Windows ignores the dashes of a prefix and pads an odd number of digits on
-    the left, so every byte must be two hex digits. One of ``spaces`` (around the value),
-    ``characters`` (anything but hex digits and dashes), ``groups`` (a group that is not two
-    digits), ``length`` (a full address without 12 digits) or ``half`` (half a byte before the
-    wildcard). ``models/dhcp.py`` holds a copy (models must not import this module).
+    the left, so every byte of a prefix must be two hex digits. One of ``spaces`` (around the
+    value), ``characters`` (anything but hex digits and dashes), ``groups`` (a prefix group that
+    is not two digits, or an empty group), ``length`` (a full address without 12 digits),
+    ``long`` (a prefix of 6 bytes or more) or ``half`` (half a byte before the wildcard).
+    ``models/dhcp.py`` holds a copy (models must not import this module).
     """
     text = str(value)
-    # unverified: how Windows takes spaces around the value (refused here: say what is meant).
+    # Windows refuses spaces around the value too (seen on Server 2025): say so before it does.
     if text != text.strip():
         return "spaces"
     if "*" in text[:-1]:
@@ -196,13 +215,18 @@ def mac_condition_problem(value: str) -> str | None:
     digits = "".join(groups)
     if not wildcard and len(digits) != 12:
         return "length"
-    # unverified: how Windows stores a full address of 12 digits grouped otherwise (024-e42-0a0b-0c): refused here.
+    if wildcard and mac_prefix_too_long(text):
+        return "long"
+    # A full address keeps its 12 digits whatever the grouping (seen on Server 2025: 024-e42-0a0b-0c is stored as
+    # 02-4e-42-0a-0b-0c), but a stray dash at either end or a doubled one is still a typo worth naming.
+    if not wildcard:
+        return "groups" if "" in groups else None
     # A prefix whose first group alone has one digit is read as meant: Windows pads it on the left (2-4e-42-ab* is
     # stored as 02-4e-42-ab-*).
-    lead = groups[1:] if wildcard and len(groups) > 1 and len(groups[0]) == 1 else groups
-    if (len(groups) > 1 and any(len(g) != 2 for g in lead)) or (wildcard and text != "*" and not digits):
+    lead = groups[1:] if len(groups) > 1 and len(groups[0]) == 1 else groups
+    if (len(groups) > 1 and any(len(g) != 2 for g in lead)) or (text != "*" and not digits):
         return "groups"
-    if wildcard and len(digits) % 2 and lead is groups:
+    if len(digits) % 2 and lead is groups:
         return "half"
     return None
 

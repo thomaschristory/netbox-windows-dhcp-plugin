@@ -257,6 +257,8 @@ class PolicyMacConditionTest(TestCase):
             "02-4e-42-0a-0b": "12 hex digits",
             "2-4e-42-a-b-c": "12 hex digits",
             "024e4*": "whole bytes",
+            "024e420a0b0c*": "at most 5 bytes",
+            " 02-4e-42-ab-*": "remove the spaces",
         }
         for value, text in cases.items():
             with self.subTest(value=value), self.assertRaises(ValidationError) as caught:
@@ -272,6 +274,7 @@ class PolicyMacConditionTest(TestCase):
             "02-4e-42-ab-cd-ef", "024e420a0b0c", "02-4E-42-AB*", "02-4e-42-ab-*", "024e42*", "*", "*.x", " 02-4e* ",
             "02:4e:42:ab*", "02.4e.42.0a.0b.0c", "zz-4e-42-*", "02-4-42-ab*", "2-4e-42-ab*", "02-4e-42-a*",
             "02--4e-42-ab*", "02-4e-42-0a-0b-0c-", "-*", "------*", "02-4e-42-0a-0b", "024e420a0b0c0d", "024e4*", "",
+            "024-e42-0a0b-0c", "02--4e-42-0a-0b-0c", "024e420a0b0c*", "2-4e-42-0a-0b-0c*", "024e420a0b*",
         ):  # fmt: skip
             with self.subTest(value=value):
                 self.assertEqual(_mac_condition_problem(value), normalize.mac_condition_problem(value))
@@ -317,6 +320,8 @@ class PolicyMacConditionTest(TestCase):
             "024e420a0b0c",
             "*",
             "2-4e-42-ab*",
+            "024-e42-0a0b-0c",
+            "02-4e-42-0a-0b-*",
         ):
             with self.subTest(value=value):
                 self.policy(value).full_clean()

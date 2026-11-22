@@ -49,9 +49,14 @@ STDIN_INLINE_MAX = 32 * 1024
 # What the stdin line may still hold once the script is in a file: the path and the secrets, a few hundred bytes.
 MAX_STDIN = 32 * 1024
 
-# Waits between tries when the server refuses one more session on the connection (sshd MaxSessions, 10 by default):
-# the commands already running on it finish within seconds, freeing a session.
-SESSION_RETRY_DELAYS = (0.2, 0.5, 1.0, 2.0, 4.0)
+# Waits between tries when the server refuses one more session on the connection (sshd MaxSessions, 10 by default)
+# while commands of ours run on it: a quick back-off first, then a try every SESSION_RETRY_POLL seconds for as long
+# as ours keep running, up to SESSION_WAIT_MAX (or the command timeout, if shorter). Windows frees a session within a
+# fraction of a second of a command ending, but ten PowerShell starts at once take about 10 s on a small server (lab,
+# Windows Server 2025), so a few seconds of retries alone were not enough.
+SESSION_RETRY_DELAYS = (0.2, 0.5, 1.0, 2.0)
+SESSION_RETRY_POLL = 0.5
+SESSION_WAIT_MAX = 300.0
 
 # How long after one of our sessions closed a refusal still counts as the server being full: the server frees the
 # slot a moment after the channel closes, so a refusal in that gap is worth waiting out.
@@ -372,12 +377,13 @@ class SSHRunner:
         A new session on ``t``. Only a dead connection raises _Stale (dropped and opened again). A live one is never
         dropped here, since that would kill every command running on it: an open that fails on it fails this command
         only. When the server refuses a session while others of ours are open, it is probably full (sshd
-        MaxSessions), so the open is tried again a few times while those finish.
+        MaxSessions), so the open is tried again while those run, and given up once none of ours is left to free a
+        session or the wait passes SESSION_WAIT_MAX. Windows OpenSSH refuses a session past MaxSessions with a channel
+        open failure ("Connect failed"), as OpenSSH does (lab, Windows Server 2025).
         """
-        # unverified: Windows OpenSSH past MaxSessions answers with a channel open failure, as OpenSSH does (checked
-        # against paramiko's own server only).
         paramiko = _paramiko()
-        for delay in (*SESSION_RETRY_DELAYS, None):
+        deadline = time.monotonic() + min(SESSION_WAIT_MAX, self.cfg.command_timeout)
+        for delay in self._session_retry_delays(deadline):
             # A parallel read that is stopping sends nothing more, even after waiting here.
             raise_if_stopped()
             # Counted while it opens: another thread refused meanwhile must see this one as ours, even before the
@@ -420,6 +426,14 @@ class SSHRunner:
                 ) from error
             time.sleep(delay)
         raise AssertionError("not reached")
+
+    @staticmethod
+    def _session_retry_delays(deadline: float):
+        """The waits before each retry of a refused open, then None (give up): the back-off, then a steady poll."""
+        yield from SESSION_RETRY_DELAYS
+        while time.monotonic() + SESSION_RETRY_POLL < deadline:
+            yield SESSION_RETRY_POLL
+        yield None
 
     def _close_channel(self, chan) -> None:
         try:

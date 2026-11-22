@@ -529,9 +529,35 @@ def test_a_session_limit_waits_for_a_free_session_on_the_same_connection(ssh_ser
     assert srv.connections == 1
 
 
+def test_a_refused_open_keeps_waiting_while_ours_run_past_the_back_off(ssh_server, monkeypatch) -> None:
+    # Windows takes about 10 s to run ten PowerShell commands at once (lab, Server 2025): a refused open must keep
+    # trying while ours run, not give up when the short back-off ends.
+    monkeypatch.setattr(ssh_mod, "SESSION_RETRY_DELAYS", (0.01,))
+    monkeypatch.setattr(ssh_mod, "SESSION_RETRY_POLL", 0.05)
+    ref: list = []
+    srv = ssh_server(behaviour=Behaviour(max_sessions=1))
+    ref.append(srv)
+    srv.behaviour.respond = slow_fake(ref, 1.0)
+    r = runner(srv)
+    c = DhcpClient(r)
+    first: list[Any] = []
+    t = threading.Thread(target=lambda: first.append(c.list_scopes()))
+    try:
+        t.start()
+        time.sleep(0.3)
+        assert c.list_scopes() == []
+        t.join()
+    finally:
+        r.close()
+    assert first == [[]]
+    assert srv.refused > 0 and srv.connections == 1
+
+
 def test_a_session_still_refused_fails_that_command_only(ssh_server, monkeypatch) -> None:
-    # The refusal must not drop the connection: the command already running on it goes on and succeeds.
+    # Past the wait limit the refused command fails, with the likely cause; the refusal must not drop the connection:
+    # the command already running on it goes on and succeeds.
     monkeypatch.setattr(ssh_mod, "SESSION_RETRY_DELAYS", (0.05, 0.05))
+    monkeypatch.setattr(ssh_mod, "SESSION_WAIT_MAX", 0.2)
     ref: list = []
     srv = ssh_server(behaviour=Behaviour(max_sessions=1))
     ref.append(srv)
@@ -586,6 +612,8 @@ def _with_transports(monkeypatch, *transports: _FakeTransport) -> SSHRunner:
 
     monkeypatch.setattr(r, "_get_transport", get)
     monkeypatch.setattr(ssh_mod, "SESSION_RETRY_DELAYS", (0.01, 0.01))
+    # A session of ours that never ends would otherwise be waited for up to five minutes.
+    monkeypatch.setattr(ssh_mod, "SESSION_WAIT_MAX", 0.1)
     return r
 
 
@@ -623,6 +651,19 @@ def test_a_refusal_just_after_our_session_closed_is_tried_again(monkeypatch) -> 
     assert r._sessions == 0
     assert r._open_channel() == "channel"
     assert not live.closed and live.opened == 1
+
+
+def test_the_session_wait_ends_at_the_command_timeout_when_shorter(monkeypatch) -> None:
+    live = _FakeTransport(active=True, refuse=10_000)
+    r = _with_transports(monkeypatch, live)
+    monkeypatch.setattr(ssh_mod, "SESSION_RETRY_POLL", 0.02)
+    monkeypatch.setattr(ssh_mod, "SESSION_WAIT_MAX", 300.0)
+    r.cfg.command_timeout = 0.3
+    r._sessions = 1  # ours never finish here
+    started = time.monotonic()
+    with pytest.raises(RunnerError, match="refused to open a session"):
+        r._open_channel()
+    assert 0.2 < time.monotonic() - started < 2
 
 
 def test_a_refusal_long_after_the_last_close_fails_at_once(monkeypatch) -> None:

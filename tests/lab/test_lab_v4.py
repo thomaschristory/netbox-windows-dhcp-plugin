@@ -17,7 +17,9 @@ from netbox_windows_dhcp_plugin.sync.diff import Change
 from netbox_windows_dhcp_plugin.sync.windows_writer import WindowsWriter
 from netbox_windows_dhcp_plugin.windows import client as wc
 from netbox_windows_dhcp_plugin.windows import normalize
+from netbox_windows_dhcp_plugin.windows import ssh as ssh_mod
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
+from netbox_windows_dhcp_plugin.windows.ssh import SSHRunner
 
 from .conftest import save_probe
 from .labkit import MAC_PREFIX, Lab, lab_env
@@ -564,6 +566,20 @@ def test_policy_mac_prefix_case(lab: Lab, probe_out) -> None:
         ("02-4e-42-a*", "00-24-e4-2a-*"),
         ("2-4e-42-ab*", "02-4e-42-ab-*"),
         ("02-4-42-ab*", "00-24-42-ab-*"),
+        # Seen on Server 2025 (0.7.x probes): dots and spaces are refused, spaces around the value too; a full
+        # address keeps its digits whatever the grouping; a prefix of 6 bytes or more is refused ("Failed to create
+        # policy", InvalidData) and 5 bytes is taken.
+        ("02.4e.42.ab*", None),
+        ("024e.420a.0b0c", None),
+        ("02 4e 42 ab*", None),
+        (" 02-4e-42-ab-*", None),
+        ("02-4e-42-0a-0b-0c ", None),
+        ("024-e42-0a0b-0c", "02-4e-42-0a-0b-0c"),
+        ("024e420a0b0c*", None),
+        ("024e420a0b0c0d*", None),
+        ("024e420a0b*", "02-4e-42-0a-0b-*"),
+        # 11 digits: padded on the left to 6 bytes, so refused like 12.
+        ("24e420a0b0c*", None),
     ],
 )
 def test_policy_mac_condition_storage(lab: Lab, probe_out, written: str, stored: str | None) -> None:
@@ -575,18 +591,24 @@ def test_policy_mac_condition_storage(lab: Lab, probe_out, written: str, stored:
     """
     s = lab.scope("nbwd-test-macpad")
     name = "nbwd-test-macpad"
-    assert normalize.mac_pattern_refused(written) is (stored is None)
-    if stored is None:
-        with pytest.raises(PSError, match="not in valid format"):
-            lab.policy(wc.Policy(name=name, scope_id=s.scope_id, criteria={"mac_address": ["EQ", written]}))
+    # Windows answers first and the prediction is checked after, so a failure shows what Windows did.
+    try:
+        p = lab.policy(wc.Policy(name=name, scope_id=s.scope_id, criteria={"mac_address": ["EQ", written]}))
+    except PSError as e:
+        save_probe(probe_out, f"v4-policy-macpad-{written.strip()}", {"written": written, "refused": str(e)})
+        assert stored is None, f"Windows refused {written!r}: {e}"
+        long_prefix = normalize.mac_prefix_too_long(written)
+        assert ("Failed to create policy" if long_prefix else "not in valid format") in str(e)
+        assert normalize.mac_pattern_refused(written)
         return
-    p = lab.policy(wc.Policy(name=name, scope_id=s.scope_id, criteria={"mac_address": ["EQ", written]}))
     raw = lab.dump(
         "probe.policy.macpad",
         "Get-DhcpServerv4Policy -ScopeId $p.s -Name $p.n | Select-Object MacAddress",
         {"s": s.scope_id, "n": name},
     )
-    save_probe(probe_out, f"v4-policy-macpad-{written}", {"written": written, "read": p.to_dict(), "raw": raw})
+    save_probe(probe_out, f"v4-policy-macpad-{written.strip()}", {"written": written, "read": p.to_dict(), "raw": raw})
+    assert stored is not None, f"Windows took {written!r} and stored {p.criteria['mac_address']!r}"
+    assert not normalize.mac_pattern_refused(written)
     assert p.criteria["mac_address"] == ["EQ", stored]
     assert normalize.canonical_mac_pattern(written) == stored
     assert windows_state.equal("policy", "criteria", {"mac_address": ["EQ", written]}, p.criteria)
@@ -897,3 +919,68 @@ def test_long_script(lab: Lab, probe_out) -> None:
     save_probe(probe_out, "long-script", {"length": got, "seconds": round(took, 1), "left": left})
     assert got == 100_000
     assert not left
+
+
+@pytest.mark.parametrize("written", ["DWordDword", "dworddword"])
+def test_64bit_option_type_spelling(lab: Lab, probe_out, written: str) -> None:
+    """models/dhcp.py _OPTION_TYPES: how Windows spells the 64-bit option type when it reads one back, and that a
+    value of that type set on a scope reads back as written."""
+    oid = lab.free_option_id()
+    d = lab.option_definition(wc.OptionDefinition(option_id=oid, name="nbwd-test-dwdw", type=written))
+    raw = lab.dump("probe.od.dwdw", "Get-DhcpServerv4OptionDefinition -OptionId $p.o | Select-Object Type", {"o": oid})
+    s = lab.scope("nbwd-test-dwdw")
+    v = lab.client.set_option_value(wc.OptionKey(option_id=oid, scope_id=s.scope_id), ["4294967296"])
+    save_probe(probe_out, f"v4-optiondef-64bit-{written}", {"read": d.to_dict(), "raw": raw, "value": v.to_dict()})
+    assert d.type == "DWordDWord"
+    assert v.value == ["4294967296"]
+
+
+def _ssh_runner(lab: Lab):
+    runner = lab.client.runner
+    runner = getattr(runner, "inner", runner)  # RecordingRunner
+    if not isinstance(runner, SSHRunner):
+        pytest.skip("SSH only (WINDOWS_DHCP_LAB_TRANSPORT=ssh)")
+    return runner
+
+
+def test_ssh_session_refusal_past_max_sessions(lab: Lab, probe_out) -> None:
+    """ssh.py _open_session: how Windows OpenSSH answers a session past sshd MaxSessions (10 by default). The runner
+    waits and retries only when _refused() recognises the answer."""
+    import paramiko
+
+    runner = _ssh_runner(lab)
+    t = runner._get_transport()
+    chans, error = [], None
+    try:
+        for _ in range(64):
+            try:
+                chans.append(t.open_session(timeout=30))
+            except Exception as e:  # noqa: BLE001 - recorded, then judged below
+                error = e
+                break
+        alive = t.is_active()
+    finally:
+        for c in chans:
+            c.close()
+    save_probe(
+        probe_out,
+        "ssh-max-sessions",
+        {"opened": len(chans), "error": repr(error), "type": type(error).__name__, "alive": alive},
+    )
+    assert error is not None, f"Windows OpenSSH opened {len(chans)} sessions on one connection"
+    assert alive, "the connection died instead of refusing the session"
+    assert ssh_mod._refused(paramiko, error), repr(error)
+
+
+def test_ssh_more_commands_than_max_sessions(lab: Lab, probe_out) -> None:
+    """ssh.py: a few more short commands at once than sshd MaxSessions (10) all finish, as docs/workers.md says: a
+    session refused while others of ours run is tried again for a few seconds (SESSION_RETRY_DELAYS). Longer
+    commands that keep every session busy past that budget fail with the MaxSessions hint, by design."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    _ssh_runner(lab)
+    started = time.monotonic()
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        got = list(pool.map(lambda i: lab.raw("probe.short", "$out = $p.i", {"i": i}), range(12)))
+    save_probe(probe_out, "ssh-over-max-sessions", {"seconds": round(time.monotonic() - started, 1)})
+    assert got == list(range(12))

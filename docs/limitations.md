@@ -42,8 +42,9 @@ The new credential profile pins (#103) are unit and NetBox tested; the lab profi
 
 Policy MAC conditions (#110, Windows Server 2025 only, 2026-11-21): colons and a full address without 12 digits are
 refused, and Windows joins the digits of a prefix and pads an odd count on the left (`02-4e-42-a*` is stored as
-`00-24-e4-2a-*`). Not tried: Windows Server 2022, dots or spaces in the value, a prefix of 12 digits or more, and a
-full address grouped other than in bytes; NetBox refuses those spellings.
+`00-24-e4-2a-*`). Lab probes on 2026-11-22 (Windows Server 2025): dots and spaces are refused, spaces around the
+value too; a prefix of 6 bytes or more (`024e420a0b0c*`) is refused; a full address keeps its 12 digits whatever
+the dashes (`024-e42-0a0b-0c` is stored as `02-4e-42-0a-0b-0c`). Not tried: Windows Server 2022.
 
 Not tried: Kerberos, SSH with a password or SSH with a key through a management host; classic (not resource-based)
 or unconstrained Kerberos delegation; a custom **Kerberos SPN**.

@@ -1389,12 +1389,18 @@ def _mac_condition_problem(value):
     digits = "".join(groups)
     if not wildcard and len(digits) != 12:
         return "length"
+    # Windows refuses a prefix of 6 bytes or more (an odd digit count is padded on the left first).
+    if wildcard and len(digits) + len(digits) % 2 >= 12:
+        return "long"
+    # A full address keeps its 12 digits whatever the grouping; an empty group is still a typo worth naming.
+    if not wildcard:
+        return "groups" if "" in groups else None
     # A prefix whose first group alone has one digit is read as meant: Windows pads it on the left (2-4e-42-ab* is
     # stored as 02-4e-42-ab-*).
-    lead = groups[1:] if wildcard and len(groups) > 1 and len(groups[0]) == 1 else groups
-    if (len(groups) > 1 and any(len(g) != 2 for g in lead)) or (wildcard and text != "*" and not digits):
+    lead = groups[1:] if len(groups) > 1 and len(groups[0]) == 1 else groups
+    if (len(groups) > 1 and any(len(g) != 2 for g in lead)) or (text != "*" and not digits):
         return "groups"
-    if wildcard and len(digits) % 2 and lead is groups:
+    if len(digits) % 2 and lead is groups:
         return "half"
     return None
 
@@ -1403,10 +1409,12 @@ _MAC_CONDITION_MESSAGES = {
     "spaces": _("remove the spaces or line breaks around it."),
     "characters": _("use hex digits, with dashes or no separator (02-4e-42-ab-cd-ef); Windows refuses colons."),
     "groups": _(
-        "write each byte as two hex digits, separated by dashes or with no separator; Windows ignores the dashes, "
-        "and pads a prefix with an odd number of digits on the left, so 02-4-42-* would match 00-24-42-*."
+        "write each byte of a prefix as two hex digits, separated by single dashes or with no separator; Windows "
+        "ignores the dashes, and pads a prefix with an odd number of digits on the left, so 02-4-42-* would match "
+        "00-24-42-*."
     ),
     "length": _("a MAC address has 12 hex digits; end it with * to match a prefix (02-4e-42-*)."),
+    "long": _("a prefix has at most 5 bytes (10 hex digits); Windows refuses a longer one."),
     "half": _("a prefix must be whole bytes; Windows would read 024e4* as 00-24-e4-*."),
 }
 
@@ -1446,12 +1454,21 @@ def _canonical_hex(value):
     return "-".join(f"{b:02x}" for b in raw)
 
 
-# The spellings Windows reports for its option data types. The 64-bit type is left out on purpose: the code and
-# the documents disagree on its spelling.
-# unverified: how Windows spells the 64-bit option type (DWordDword or DWordDWord) when it reads one back.
+# The spellings Windows reports for its option data types. Windows Server 2025 reads the 64-bit type back as
+# DWordDWord, whatever case it was created with (the cmdlet documentation writes DWordDword).
 _OPTION_TYPES = {
     name.lower(): name
-    for name in ("Byte", "Word", "DWord", "IPv4Address", "IPv6Address", "String", "BinaryData", "EncapsulatedData")
+    for name in (
+        "Byte",
+        "Word",
+        "DWord",
+        "DWordDWord",
+        "IPv4Address",
+        "IPv6Address",
+        "String",
+        "BinaryData",
+        "EncapsulatedData",
+    )
 }
 
 

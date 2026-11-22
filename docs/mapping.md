@@ -108,7 +108,7 @@ reservation always belongs to that reservation's scope). This keeps the values' 
 ## Option definitions and values
 
 An **Option definition** belongs to a server and an address family, and optionally to a vendor class. It holds the
-code, name, exact Windows type (`Byte`, `Word`, `DWord`, `DWordDword`, `IPv4Address`, `String`, `BinaryData`,
+code, name, exact Windows type (`Byte`, `Word`, `DWord`, `DWordDWord`, `IPv4Address`, `String`, `BinaryData`,
 `EncapsulatedData`, ...), the multi-valued flag and the default value. Windows' own definitions of the standard
 options (codes RFC 2132 and its successors assign) are not imported: Windows ships them, and a push never touches
 them. The type is compared without case and stored in Windows' spelling (`string` is saved as `String`). The type
@@ -171,7 +171,8 @@ compares criteria the way Windows stores them, so either spelling in NetBox is n
 client ID, relay agent fields) compare exactly.
 
 Write a MAC condition as two hex digits per byte, with dashes or no separator: `02-4e-42-ab-cd-ef`, or
-`02-4e-42-*` for a prefix. Windows refuses colons, and needs all 12 digits without a wildcard. For a prefix it
+`02-4e-42-*` for a prefix (at most 5 bytes). Windows refuses colons, dots and spaces, and needs all 12 digits
+without a wildcard (it ignores how dashes group them). For a prefix it
 ignores the dashes and pads an odd number of digits with a zero on the left, so `02-4e-42-a*` would match
 `00-24-e4-2a-*` and `02-4-42-*` would match `00-24-42-*`: other devices than the ones meant. Only a one-digit first
 group comes out as meant (`2-4e-42-ab*` is stored as `02-4e-42-ab-*`). NetBox refuses the other spellings when a

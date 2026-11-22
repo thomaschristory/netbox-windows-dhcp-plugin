@@ -72,8 +72,9 @@ transaction-pooling proxy (pgbouncer in transaction mode). Session pooling is fi
   one host. Windows limits them: WinRM allows 30 shells per user by default (`MaxShellsPerUser`, and
   `MaxConcurrentOperationsPerUser`), and Windows OpenSSH allows 10 sessions per connection by default (`MaxSessions`
   in `sshd_config`, often lower on hardened servers). An SSH session refused while other commands of the job run
-  on the same connection is tried again for a few seconds; a refusal with nothing else running, or one that lasts,
-  fails that command with the server's reason. A refused WinRM shell fails the command. Keep the setting low (the
+  on the same connection is tried again for as long as those run (up to the command timeout, 5 minutes by default),
+  since ten PowerShell commands at once can take about 10 s on a small server; a refusal with nothing else of the
+  job's running fails that command at once with the server's reason. A refused WinRM shell fails the command. Keep the setting low (the
   default 4; above 10 a warning is logged, and above 30 it is cut down to 30), lower it (`1` reads one scope at a
   time) if a server, a firewall or a management host struggles, and raise it only when a server with many scopes
   reads too slowly and has sessions to spare. The time still grows with the number of scopes, divided by the setting at best.
