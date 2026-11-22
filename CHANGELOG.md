@@ -5,6 +5,23 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Policy MAC conditions follow what Windows Server 2025 showed in the lab: a full address with its 12 digits grouped
+  any way by dashes (`024-e42-0a0b-0c`) is now accepted, as Windows stores it as `02-4e-42-0a-0b-0c`; a prefix of
+  6 bytes or more (`024e420a0b0c*`) is refused on save, as Windows refuses it, and a push names one stored earlier
+  as not pushed.
+
+### Fixed
+
+- Over SSH, a command refused a session because the server's `MaxSessions` is full now waits in line, first come
+  first served, while the job's other commands run (up to `command_timeout`, 120 s by default, at most 5 minutes),
+  instead of failing after about 8 seconds: ten PowerShell commands at once take about 10 seconds on a small Windows
+  server, so the short wait rarely helped when `max_concurrency` is above `MaxSessions`. Checked in the lab on Windows Server 2025, which refuses the extra session the way the
+  plugin expects.
+- A 64-bit option definition (`DWordDWord`) is stored in the spelling Windows reads back, whatever case it was typed
+  in, so it no longer shows a different type from the server's.
+
 ## [0.7.0] - 2026-11-21
 
 0.7.0 changes a default: WinRM no longer follows the NetBox worker's proxy environment variables. A site that reaches

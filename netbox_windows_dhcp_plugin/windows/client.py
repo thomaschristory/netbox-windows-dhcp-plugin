@@ -194,7 +194,7 @@ class Lease(_Model):
 class OptionDefinition(_Model):
     option_id: int = 0
     name: str = ""
-    type: str = "String"  # Byte, Word, DWord, DWordDword, IPv4Address, String, BinaryData, EncapsulatedData, ...
+    type: str = "String"  # Byte, Word, DWord, DWordDWord, IPv4Address, String, BinaryData, EncapsulatedData, ...
     description: str = ""
     vendor_class: str = ""
     multi_valued: bool = False

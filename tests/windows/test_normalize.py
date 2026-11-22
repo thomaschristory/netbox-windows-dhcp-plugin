@@ -120,7 +120,7 @@ def test_parse_option_number() -> None:
         ("02-4E-42-AB*", "02-4e-42-ab-*"),
         ("024e42ab*", "02-4e-42-ab-*"),
         ("02-4e-42-ab-cd-ef", "02-4e-42-ab-cd-ef"),
-        (" 02-4E-42-AB-CD-EF ", "02-4e-42-ab-cd-ef"),
+        ("024-E42-0A0B-0C", "02-4e-42-0a-0b-0c"),
         ("024e420a0b0c", "02-4e-42-0a-0b-0c"),
         # Windows joins the digits of a prefix and pads an odd count on the LEFT (lab, Windows Server 2025, #110).
         ("02-4e-42-a*", "00-24-e4-2a-*"),
@@ -133,6 +133,9 @@ def test_parse_option_number() -> None:
         ("2-4e-42-a-b-c", "2-4e-42-a-b-c"),
         ("02-*-42", "02-*-42"),
         ("*", "*"),
+        # Also refused (lab probes, Server 2025): spaces around the value and a prefix of 6 bytes or more.
+        (" 02-4E-42-AB-CD-EF ", " 02-4E-42-AB-CD-EF "),
+        ("024e420a0b0c*", "024e420a0b0c*"),
     ],
 )
 def test_canonical_mac_pattern(value: str, want: str) -> None:
@@ -155,6 +158,16 @@ def test_canonical_mac_pattern(value: str, want: str) -> None:
         ("02-4e-42-ab-*", False),
         ("024e42*", False),
         ("02-*-42", False),
+        # Lab probes on Server 2025 (0.7.x): spaces anywhere, dots, and prefixes of 6 bytes or more.
+        (" 02-4e-42-ab-*", True),
+        ("02-4e-42-0a-0b-0c ", True),
+        ("02 4e 42 ab*", True),
+        ("02.4e.42.ab*", True),
+        ("024e420a0b0c*", True),
+        ("024e420a0b0c0d*", True),
+        ("24e420a0b0c*", True),
+        ("024e420a0b*", False),
+        ("024-e42-0a0b-0c", False),
     ],
 )
 def test_mac_pattern_refused(value: str, refused: bool) -> None:
@@ -192,9 +205,14 @@ def test_canonical_policy_criterion() -> None:
         ("2*", "half"),
         ("02-4e-42-a*", "groups"),
         ("02--4e-42-ab*", "groups"),
-        ("02-4e-42-0a-0b-0c-", "groups"),
+        ("02-4e-42-0a-0b-0c-", "dashes"),
         ("2-4e-42-a-b-c", "length"),
-        ("024-e42-0a0b-0c", "groups"),
+        ("024-e42-0a0b-0c", None),  # a full address: Windows ignores the dashes (Server 2025)
+        ("02--4e-42-0a-0b-0c", "dashes"),
+        ("024e420a0b0c*", "long"),
+        ("02-4e-42-0a-0b-0c-*", "long"),
+        ("2-4e-42-0a-0b-0c*", "long"),
+        ("02-4e-42-0a-0b-*", None),
         ("-*", "groups"),
         ("------*", "groups"),
         ("02-4e-42-0a-0b", "length"),

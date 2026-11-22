@@ -238,6 +238,9 @@ class F32OptionTypeTest(TestCase):
             ("IPV4ADDRESS", "IPv4Address"),
             (" binarydata ", "BinaryData"),
             ("encapsulateddata", "EncapsulatedData"),
+            # Windows Server 2025 reads the 64-bit type back as DWordDWord (lab, 2026-11-22).
+            ("DWordDword", "DWordDWord"),
+            ("dworddword", "DWordDWord"),
         ):
             with self.subTest(typed=typed):
                 obj = self._definition(typed)
@@ -245,7 +248,7 @@ class F32OptionTypeTest(TestCase):
                 self.assertEqual(obj.windows_type, stored)
 
     def test_an_unknown_type_is_kept_as_typed(self):
-        for typed in ("DWordDword", "DWordDWord", "SomethingNew"):
+        for typed in ("SomethingNew", "DWordDWordDWord"):
             with self.subTest(typed=typed):
                 obj = self._definition(typed)
                 obj.full_clean()

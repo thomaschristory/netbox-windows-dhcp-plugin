@@ -1005,8 +1005,12 @@ class FakeDhcpServer:
             for value in [str(x) for x in (v or [])[1:]]:
                 if "*" in value[1:-1]:
                     raise _invalid(cmd, "Wildcard is valid either at the beginning or at the end of the condition.")
-        # Windows refuses a MAC condition with colons, or a full address without its 12 digits (#110).
+        # Windows refuses a MAC condition with colons, or a full address without its 12 digits (#110), and a prefix
+        # of 6 bytes or more with a vaguer message.
         for value in [str(x) for x in ((p.get("criteria") or {}).get("mac_address") or [])[1:]]:
+            if normalize.mac_prefix_too_long(value):
+                # unverified: the Set-DhcpServerv4Policy wording (seen for Add only).
+                raise _err(cmd, 20000, "InvalidData", f"Failed to create policy {p.get('name', '')}.")
             if normalize.mac_pattern_refused(value):
                 raise _invalid(cmd, f"The value specified {value} for MacAddress is not in valid format.")
 

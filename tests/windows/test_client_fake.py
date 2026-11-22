@@ -672,7 +672,9 @@ def test_policy_embedded_wildcard_is_refused(c: DhcpClient) -> None:
 # ---- issue #110: how Windows takes and stores a policy MAC condition ----
 
 
-@pytest.mark.parametrize("value", ["02:4e:42:ab*", "2-4e-42-a-b-c", "02:4e:42:0a:0b:0c"])
+@pytest.mark.parametrize(
+    "value", ["02:4e:42:ab*", "2-4e-42-a-b-c", "02:4e:42:0a:0b:0c", " 02-4e-42-ab-*", "02.4e.42.ab*", "02 4e 42 ab*"]
+)
 def test_policy_mac_condition_refused_like_windows(c: DhcpClient, value: str) -> None:
     c.add_scope(scope())
     with pytest.raises(PSError, match="not in valid format") as ei:
@@ -682,12 +684,27 @@ def test_policy_mac_condition_refused_like_windows(c: DhcpClient, value: str) ->
 
 @pytest.mark.parametrize(
     ("value", "stored"),
-    [("02-4e-42-a*", "00-24-e4-2a-*"), ("2-4e-42-ab*", "02-4e-42-ab-*"), ("024e420a0b0c", "02-4e-42-0a-0b-0c")],
+    [
+        ("02-4e-42-a*", "00-24-e4-2a-*"),
+        ("2-4e-42-ab*", "02-4e-42-ab-*"),
+        ("024e420a0b0c", "02-4e-42-0a-0b-0c"),
+        ("024-e42-0a0b-0c", "02-4e-42-0a-0b-0c"),
+        ("024e420a0b*", "02-4e-42-0a-0b-*"),
+    ],
 )
 def test_policy_mac_condition_stored_like_windows(c: DhcpClient, value: str, stored: str) -> None:
     c.add_scope(scope())
     p = c.add_policy(Policy(name="p", scope_id="10.1.20.0", criteria={"mac_address": ["EQ", value]}))
     assert p.criteria == {"mac_address": ["EQ", stored]}
+
+
+@pytest.mark.parametrize("value", ["024e420a0b0c*", "024e420a0b0c0d*", "02-4e-42-0a-0b-0c-*"])
+def test_policy_mac_prefix_of_six_bytes_is_refused(c: DhcpClient, value: str) -> None:
+    """Windows Server 2025 refuses a MAC prefix as long as a whole address, with a vaguer message."""
+    c.add_scope(scope())
+    with pytest.raises(PSError, match="Failed to create policy") as ei:
+        c.add_policy(Policy(name="p", scope_id="10.1.20.0", criteria={"mac_address": ["EQ", value]}))
+    assert ei.value.category == "InvalidData"
 
 
 # ---- issue #22: DHCPv6 leases have no state ----

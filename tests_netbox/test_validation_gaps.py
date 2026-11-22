@@ -257,6 +257,8 @@ class PolicyMacConditionTest(TestCase):
             "02-4e-42-0a-0b": "12 hex digits",
             "2-4e-42-a-b-c": "12 hex digits",
             "024e4*": "whole bytes",
+            "024e420a0b0c*": "at most 5 bytes",
+            " 02-4e-42-ab-*": "remove the spaces",
         }
         for value, text in cases.items():
             with self.subTest(value=value), self.assertRaises(ValidationError) as caught:
@@ -272,9 +274,23 @@ class PolicyMacConditionTest(TestCase):
             "02-4e-42-ab-cd-ef", "024e420a0b0c", "02-4E-42-AB*", "02-4e-42-ab-*", "024e42*", "*", "*.x", " 02-4e* ",
             "02:4e:42:ab*", "02.4e.42.0a.0b.0c", "zz-4e-42-*", "02-4-42-ab*", "2-4e-42-ab*", "02-4e-42-a*",
             "02--4e-42-ab*", "02-4e-42-0a-0b-0c-", "-*", "------*", "02-4e-42-0a-0b", "024e420a0b0c0d", "024e4*", "",
+            "024-e42-0a0b-0c", "02--4e-42-0a-0b-0c", "024e420a0b0c*", "2-4e-42-0a-0b-0c*", "024e420a0b*",
         ):  # fmt: skip
             with self.subTest(value=value):
                 self.assertEqual(_mac_condition_problem(value), normalize.mac_condition_problem(value))
+
+    def test_every_problem_has_a_message_and_a_push_hint(self):
+        import itertools
+
+        from netbox_windows_dhcp_plugin.models.dhcp import _MAC_CONDITION_MESSAGES, _mac_condition_problem
+        from netbox_windows_dhcp_plugin.sync import push
+        from netbox_windows_dhcp_plugin.windows import normalize
+
+        self.assertEqual(set(_MAC_CONDITION_MESSAGES), set(push._MAC_CONDITION_HINTS))
+        for n in range(1, 7):
+            for chars in itertools.product("0a-*: ", repeat=n):
+                value = "".join(chars)
+                self.assertEqual(_mac_condition_problem(value), normalize.mac_condition_problem(value), value)
 
     def test_a_condition_saved_before_the_check_does_not_block_other_edits(self):
         policy = self.policy("02-4e-42-ab*")
@@ -317,6 +333,8 @@ class PolicyMacConditionTest(TestCase):
             "024e420a0b0c",
             "*",
             "2-4e-42-ab*",
+            "024-e42-0a0b-0c",
+            "02-4e-42-0a-0b-*",
         ):
             with self.subTest(value=value):
                 self.policy(value).full_clean()
