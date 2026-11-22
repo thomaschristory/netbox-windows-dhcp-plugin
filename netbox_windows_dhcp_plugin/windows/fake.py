@@ -461,6 +461,17 @@ class FakeDhcpServer:
             cid = normalize.canonical_mac(_s(p, "client_id"))
         except ValueError as e:
             raise _invalid(cmd, str(e)) from None
+        # Set refuses a client another reservation of the scope holds, as Add does (#155, lab, Windows Server 2025).
+        if cid != r["client_id"] and any(
+            o["scope_id"] == r["scope_id"] and o["client_id"] == cid and o is not r for o in self.reservations.values()
+        ):
+            raise _err(
+                cmd,
+                20022,
+                "ResourceExists",
+                f"Failed to reserve IP address {ip} for ClientID/ClientDUID {cid} in scope {r['scope_id']} on DHCP "
+                "server FAKE.",
+            )
         # A new client ID or a new type makes Windows drop the reservation's option values (#42, #56, lab, Windows
         # Server 2022).
         if self.reservation_set_drops_options or cid != r["client_id"] or _s(p, "type").lower() != r["type"].lower():
@@ -1303,6 +1314,18 @@ class FakeDhcpServer:
         if r is None:
             raise _err("Set-DhcpServerv6Reservation", 20018, "ObjectNotFound", f"Failed to get reservation {ip}")
         duid, iaid = normalize.canonical_duid(_s(p, "client_duid")), _n(p, "iaid")
+        # Set refuses a DUID and IAID another reservation of the scope holds, as Add does (#155, lab, Server 2025).
+        if (duid, iaid) != (r["client_duid"], r["iaid"]) and any(
+            o["prefix"] == r["prefix"] and o["client_duid"] == duid and o["iaid"] == iaid and o is not r
+            for o in self.v6_reservations.values()
+        ):
+            raise _err(
+                "Set-DhcpServerv6Reservation",
+                20022,
+                "ResourceExists",
+                f"Failed to reserve IP address {ip} for ClientID/ClientDUID {duid} in scope {r['prefix']} on DHCP "
+                "server FAKE.",
+            )
         # A new IAID or a new DUID makes Windows drop the reservation's option values (#42, #56, lab, Windows Server
         # 2022).
         if self.reservation_set_drops_options or duid != r["client_duid"] or iaid != r["iaid"]:

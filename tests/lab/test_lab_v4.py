@@ -189,6 +189,25 @@ def test_reservation_type_change_alone(lab: Lab, probe_out) -> None:
     assert left == []
 
 
+def test_reservation_set_to_a_client_held_elsewhere(lab: Lab, probe_out) -> None:
+    """fake.py (#155): whether Set-DhcpServerv4Reservation refuses a client another reservation of the scope holds."""
+    s = lab.scope("nbwd-test-res155")
+    base = s.scope_id.rsplit(".", 1)[0]
+    a = lab.client.add_reservation(wc.Reservation(s.scope_id, f"{base}.20", MAC_PREFIX + "01-55-01", "nbwd-test-a"))
+    lab.client.add_reservation(wc.Reservation(s.scope_id, f"{base}.21", MAC_PREFIX + "01-55-02", "nbwd-test-b"))
+    a.client_id = MAC_PREFIX + "01-55-02"
+    try:
+        lab.client.set_reservation(a)
+    except PSError as e:
+        save_probe(probe_out, "v4-reservation-set-held-client", {"refused": str(e)})
+        # Refused like Add (lab, Windows Server 2025).
+        assert "ResourceExists" in str(e)
+    else:
+        both = lab.client.list_reservations(s.scope_id)
+        save_probe(probe_out, "v4-reservation-set-held-client", {"taken": [r.to_dict() for r in both]})
+        pytest.fail("Windows took a second reservation for one client through Set")
+
+
 def test_policy_set_without_criteria(lab: Lab, probe_out) -> None:
     """client.py (#56): whether Set-DhcpServerv4Policy leaves the conditions it is not given unchanged."""
     s = lab.scope("nbwd-test-polset")

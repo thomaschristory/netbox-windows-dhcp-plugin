@@ -267,7 +267,15 @@ relationships, MAC filters, list switches.
   N more"); a delete outside the families that still holds a paused child waits with it; a create that would clash on
   Windows with a waiting delete (the same client's reservation in the scope, an exclusion or a scope over its addresses,
   a relationship taking a scope a waiting relationship holds) waits too, instead of failing at Windows on every push,
-  and so does whatever would be created under a waiting create. The job log's last line counts what waits.
+  and so does whatever would be created under a waiting create (a reservation update giving the client of a waiting
+  delete included). A reservation create, or an update giving another client, is left out (`_clients_held_on_windows`,
+  #155) when Windows would still hold that client in the scope at another address: under a reservation this push does
+  not delete (unmanaged, drifted, holding unmanaged children) or whose own change is left out, repeated until nothing
+  more is left out. Add and Set both refuse it (lab, Windows Server 2025: ResourceExists). An update freeing a client
+  runs before the change taking it (a dependency order, `Plan.client_needs`), and in `_pause_deletes` the change waits
+  when that update waits; a cycle of client swaps is left out (Windows cannot apply any of it first). A left-out
+  create is a refusal that pauses its family's deletes; a left-out update is not (the reservation stays on Windows as
+  it is, so no move is half done). The job log's last line counts what waits.
   Waiting entries come first in `not_pushed` and the job log, and `waiting_count` counts them whatever the 1000-entry
   cap. Paused objects stay in `SyncState`, so the first push with nothing refused deletes them; nothing churns (a second
   plan is empty). This replaced an address-matching heuristic (`_replaced`), which missed a DHCPv6 prefix move, a move

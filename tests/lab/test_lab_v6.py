@@ -205,6 +205,24 @@ def test_v6_reservation_duid_change_alone(lab: Lab, probe_out) -> None:
     assert left == []
 
 
+def test_v6_reservation_set_to_a_duid_held_elsewhere(lab: Lab, probe_out) -> None:
+    """fake.py (#155): whether Set-DhcpServerv6Reservation refuses a DUID and IAID another reservation holds."""
+    lab.v6_scope("nbwd-test-v6res155")
+    a = lab.client.add_v6_reservation(wc.ReservationV6(V6_PREFIX, "2001:db8:4e42::155", DUID, 7, "nbwd-test-v6a"))
+    lab.client.add_v6_reservation(wc.ReservationV6(V6_PREFIX, "2001:db8:4e42::156", DUID, 8, "nbwd-test-v6b"))
+    a.iaid = 8
+    try:
+        lab.client.set_v6_reservation(a)
+    except PSError as e:
+        save_probe(probe_out, "v6-reservation-set-held-client", {"refused": str(e)})
+        # Refused like Add (lab, Windows Server 2025).
+        assert "ResourceExists" in str(e)
+    else:
+        both = lab.client.list_v6_reservations(V6_PREFIX)
+        save_probe(probe_out, "v6-reservation-set-held-client", {"taken": [r.to_dict() for r in both]})
+        pytest.fail("Windows took a second reservation for one DUID and IAID through Set")
+
+
 def test_v6_scope_refuses_timers_out_of_order(lab: Lab, probe_out) -> None:
     """fake.py: Windows refuses T1 < T2 < preferred lifetime not holding, rather than storing the timers."""
     lab.v6_scope("nbwd-test-v6timers")

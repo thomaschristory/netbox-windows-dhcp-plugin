@@ -26,7 +26,7 @@ import itertools
 import json
 import logging
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -135,6 +135,9 @@ class Plan:
     order_refusals: set[Key] = field(default_factory=set)
     # Scopes moved from one relationship to another in this push: taker key -> [(releaser key, releaser name, scope)].
     moves: dict[str, list[tuple[str, str, str]]] = field(default_factory=dict)
+    # Reservation changes taking a client another reservation's update gives up in this push: key -> that update.
+    # The update runs first, and when it waits, so does the change (issue #155).
+    client_needs: dict[Key, Key] = field(default_factory=dict)
 
     def summary(self) -> dict[str, Any]:
         out: dict[str, Any] = {
@@ -822,6 +825,9 @@ def _pause_deletes(plan: Plan, changes: list[Change], refusals: set[Key]) -> lis
             why = f"waiting: needs {blocker[0]} {blocker[1]} gone from Windows first, and that delete waits"
         elif (parent := next((p for p in parents(c.kind, c.after or {}) if p in waiting), None)) is not None:
             why = f"waiting: needs {parent[0]} {parent[1]} first, which waits"
+        elif plan.client_needs.get((c.kind, c.key), ("", "")) in waiting:
+            freer = plan.client_needs[c.kind, c.key]
+            why = f"waiting: takes the client {freer[0]} {freer[1]} gives up, and that change waits"
         elif (parent := next((p for p in parents(c.kind, c.after or {}) if p in late), None)) is not None:
             # A parent refused after the first pass (a policy whose processing order does not fit): not a wait.
             late.add((c.kind, c.key))
@@ -885,9 +891,13 @@ class _PausedIndex:
                 return None
             ranges = self.exclusions.get(str(f.get("scope_id")), [])
             return next((k for k, s2, e2 in ranges if int(s) <= e2 and s2 <= int(e)), None)
-        if change.kind in ("reservation", "reservation6") and change.action == CREATE:
+        if change.kind in ("reservation", "reservation6") and change.action in (CREATE, UPDATE):
             client = _client_of(record)
-            return self.clients.get((change.kind, _scope_of(record), *client)) if client is not None else None
+            if client is None:
+                return None
+            if change.action == UPDATE and client == _client_of(Record(change.kind, change.key, change.before or {})):
+                return None  # keeps its own client: nothing to clash with
+            return self.clients.get((change.kind, _scope_of(record), *client))
         if change.kind == "failover":
             new = set(f.get("scope_ids") or []) - set((change.before or {}).get("scope_ids") or [])
             return next(
@@ -1111,15 +1121,153 @@ def plan(
             deleting.discard(key)
             continue
         result.changes.append(change)
+    # Before ``already``: a reservation update held back here stays on Windows as it is, so it is not a refusal that
+    # pauses deletes; a held-back create is (added below).
+    result.changes, held_creates = _clients_held_on_windows(result.changes, target_index, deleting, result)
     already = len(result.skipped)
     result.changes = _scopes_in_other_relationships(result.changes, target_index, result)
-    refusals = set(refused) | {(s.change.kind, s.change.key) for s in result.skipped[already:]}
+    refusals = set(refused) | held_creates | {(s.change.kind, s.change.key) for s in result.skipped[already:]}
     result.changes = _membership_updates_first(result.changes, target_index)
     result.changes = _order_policies(result.changes, source_index, target_index, result)
     result.changes = _pause_deletes(result, result.changes, refusals | result.order_refusals)
     # What waits comes first, so the capped summary and job log always show it.
     result.skipped.sort(key=lambda s: not s.waiting)
     return result
+
+
+def _clients_held_on_windows(
+    changes: list[Change], target: Mapping[Key, Record], deleting: set[Key], plan: Plan
+) -> tuple[list[Change], set[Key]]:
+    """
+    Leave out a reservation create, or an update giving a reservation another client, when Windows would still hold
+    that client in the scope at another address when it runs: Windows holds one reservation per client in a scope and
+    would refuse it (ResourceExists) on every push (issue #155). The reservation holding it was made outside NetBox,
+    or changed on Windows since the last push, or still holds objects NetBox does not manage, or cannot be pushed
+    itself.
+
+    A Windows reservation that this push deletes frees its client (deletes run first; a delete that waits is handled
+    by ``_pause_deletes``). One that this push gives another client frees it too, once that update has run: such
+    updates are moved ahead of the changes that need them, and a swap (each needing the other first) is held back,
+    as Windows could not apply either. Returns the changes and the keys of the creates held back.
+    """
+    kinds = ("reservation", "reservation6")
+
+    def client(kind: str, key: str, fields: Mapping[str, Any] | None) -> tuple[str, ...] | None:
+        record = Record(kind, key, dict(fields or {}))
+        c = _client_of(record)
+        return (kind, _scope_of(record), *c) if c is not None else None
+
+    moving = {
+        (c.kind, c.key): c
+        for c in changes
+        if c.kind in kinds and c.action == UPDATE and client(c.kind, c.key, c.before) != client(c.kind, c.key, c.after)
+    }
+    wanting = [c for c in changes if c.kind in kinds and (c.action == CREATE or (c.kind, c.key) in moving)]
+    if not wanting:
+        return changes, set()
+    # Every step below is linear in the number of reservations: a renumbering may hand clients along thousands of
+    # reservations in one push.
+    holders: dict[tuple[str, ...], Key] = {}
+    for key, record in target.items():
+        if key[0] in kinds and key not in deleting and (who := client(key[0], key[1], record.fields)):
+            holders.setdefault(who, key)
+    windows_reason = _HeldReasons(target, plan)
+    held_back: dict[Key, str] = {}
+    needs: dict[Key, Key] = {}  # a change -> the update that must run first to free its client
+    takers: defaultdict[Key, list[Key]] = defaultdict(list)  # the reverse of needs
+    by_wanting = {(c.kind, c.key): c for c in wanting}
+    for key, c in by_wanting.items():
+        other = holders.get(client(c.kind, c.key, c.after) or ())
+        if other is None or other == key:
+            continue
+        if other in moving:
+            needs[key] = other
+            takers[other].append(key)
+        else:
+            held_back[key] = windows_reason(c, other)
+    # Swaps: following what each change needs (one edge each) leads back to itself.
+    state: dict[Key, int] = {}  # 1 on the current path, 2 done
+    for start in needs:
+        path: list[Key] = []
+        at: Key | None = start
+        while at is not None and at in needs and state.get(at) is None:
+            state[at] = 1
+            path.append(at)
+            at = needs[at]
+        if at is not None and state.get(at) == 1:
+            cycle = path[path.index(at) :]
+            names = ", ".join(str(target[k].fields.get("ip_address") or k[1]) for k in cycle)
+            for k in cycle:
+                held_back.setdefault(
+                    k,
+                    f"reservations {names} swap clients, which Windows cannot apply in one push (one reservation per "
+                    "client in a scope); change them over two pushes",
+                )
+        for k in path:
+            state[k] = 2
+    # A change left out keeps its old client held: whatever needed that client is left out too, and so on.
+    queue = deque(held_back)
+    while queue:
+        other = queue.popleft()
+        for key in takers.get(other, ()):
+            if key not in held_back:
+                held_back[key] = windows_reason(by_wanting[key], other, own=True)
+                queue.append(key)
+    out = []
+    for c in changes:
+        key = (c.kind, c.key)
+        if key in held_back:
+            plan.skipped.append(Skip(c, held_back[key]))
+        else:
+            out.append(c)
+    # The updates that free a client run before the changes that take it, in dependency order (a chain of them may
+    # come in any address order). They exist on Windows already, so moving them earlier never puts them ahead of a
+    # parent; deletes stay first.
+    needs = {k: v for k, v in needs.items() if k not in held_back}
+    plan.client_needs.update(needs)
+    by_key = {(c.kind, c.key): c for c in out}
+    ordered: list[Change] = []
+    placed: set[Key] = set()
+    for c in out:
+        chain: list[Key] = []
+        at: Key | None = (c.kind, c.key)
+        while at is not None and at in by_key and at not in placed:
+            placed.add(at)
+            chain.append(at)
+            at = needs.get(at)
+        ordered.extend(by_key[k] for k in reversed(chain))
+    return ordered, {(c.kind, c.key) for c in changes if c.action == CREATE and (c.kind, c.key) in held_back}
+
+
+class _HeldReasons:
+    """Why a reservation change is left out because ``other`` holds its client on Windows (see
+    ``_clients_held_on_windows``)."""
+
+    def __init__(self, target: Mapping[Key, Record], plan: Plan) -> None:
+        self.target = target
+        self.unmanaged = set(plan.unmanaged)
+        self.skipped = {(s.change.kind, s.change.key): s for s in plan.skipped}
+
+    def __call__(self, c: Change, other: Key, own: bool = False) -> str:
+        where = self.target[other].fields.get("ip_address") or other[1]
+        what = "client" if c.kind == "reservation" else "DUID and IAID"
+        skip = self.skipped.get(other)
+        if own:
+            # Not the other one's reason: along a long chain that would repeat every reason before it.
+            how = "is NetBox's, but its own change cannot be pushed either (see that reservation)"
+        elif other in self.unmanaged:
+            how = "was made on Windows outside NetBox, so NetBox does not delete it: import it, or delete it on Windows"
+        elif skip is not None and skip.change.action == DELETE:
+            how = f"is kept on Windows: {skip.reason}"
+        elif skip is not None:
+            how = f"is NetBox's, but cannot be pushed itself ({skip.reason})"
+        else:
+            # Not expected (NetBox's own twin with the same client is refused by _conflicts): say what is known.
+            how = "stays on Windows"
+        return (
+            f"Windows already holds a reservation for this {what} in the scope, at {where}, and holds one reservation "
+            f"per client in a scope; that reservation {how}"
+        )
 
 
 def _missing_policy(record: Record, policies: set[str]) -> str | None:
