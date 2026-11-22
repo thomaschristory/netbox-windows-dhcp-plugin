@@ -197,7 +197,8 @@ def mac_condition_problem(value: str) -> str | None:
     devices (#110). Windows ignores the dashes of a prefix and pads an odd number of digits on
     the left, so every byte of a prefix must be two hex digits. One of ``spaces`` (around the
     value), ``characters`` (anything but hex digits and dashes), ``groups`` (a prefix group that
-    is not two digits, or an empty group), ``length`` (a full address without 12 digits),
+    is not two digits), ``dashes`` (a doubled dash, or one at either end, in a full address),
+    ``length`` (a full address without 12 digits),
     ``long`` (a prefix of 6 bytes or more) or ``half`` (half a byte before the wildcard).
     ``models/dhcp.py`` holds a copy (models must not import this module).
     """
@@ -220,7 +221,7 @@ def mac_condition_problem(value: str) -> str | None:
     # A full address keeps its 12 digits whatever the grouping (seen on Server 2025: 024-e42-0a0b-0c is stored as
     # 02-4e-42-0a-0b-0c), but a stray dash at either end or a doubled one is still a typo worth naming.
     if not wildcard:
-        return "groups" if "" in groups else None
+        return "dashes" if "" in groups else None
     # A prefix whose first group alone has one digit is read as meant: Windows pads it on the left (2-4e-42-ab* is
     # stored as 02-4e-42-ab-*).
     lead = groups[1:] if len(groups) > 1 and len(groups[0]) == 1 else groups

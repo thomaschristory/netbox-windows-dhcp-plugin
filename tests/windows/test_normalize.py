@@ -205,10 +205,10 @@ def test_canonical_policy_criterion() -> None:
         ("2*", "half"),
         ("02-4e-42-a*", "groups"),
         ("02--4e-42-ab*", "groups"),
-        ("02-4e-42-0a-0b-0c-", "groups"),
+        ("02-4e-42-0a-0b-0c-", "dashes"),
         ("2-4e-42-a-b-c", "length"),
         ("024-e42-0a0b-0c", None),  # a full address: Windows ignores the dashes (Server 2025)
-        ("02--4e-42-0a-0b-0c", "groups"),
+        ("02--4e-42-0a-0b-0c", "dashes"),
         ("024e420a0b0c*", "long"),
         ("02-4e-42-0a-0b-0c-*", "long"),
         ("2-4e-42-0a-0b-0c*", "long"),

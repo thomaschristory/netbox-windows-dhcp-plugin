@@ -973,9 +973,8 @@ def test_ssh_session_refusal_past_max_sessions(lab: Lab, probe_out) -> None:
 
 
 def test_ssh_more_commands_than_max_sessions(lab: Lab, probe_out) -> None:
-    """ssh.py: a few more short commands at once than sshd MaxSessions (10) all finish, as docs/workers.md says: a
-    session refused while others of ours run is tried again for a few seconds (SESSION_RETRY_DELAYS). Longer
-    commands that keep every session busy past that budget fail with the MaxSessions hint, by design."""
+    """ssh.py: more commands at once than sshd MaxSessions (10) all finish, as docs/workers.md says: a session
+    refused while others of ours run waits in line for one of them to end (up to the command timeout)."""
     from concurrent.futures import ThreadPoolExecutor
 
     _ssh_runner(lab)

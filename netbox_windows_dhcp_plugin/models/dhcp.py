@@ -1394,7 +1394,7 @@ def _mac_condition_problem(value):
         return "long"
     # A full address keeps its 12 digits whatever the grouping; an empty group is still a typo worth naming.
     if not wildcard:
-        return "groups" if "" in groups else None
+        return "dashes" if "" in groups else None
     # A prefix whose first group alone has one digit is read as meant: Windows pads it on the left (2-4e-42-ab* is
     # stored as 02-4e-42-ab-*).
     lead = groups[1:] if len(groups) > 1 and len(groups[0]) == 1 else groups
@@ -1414,6 +1414,7 @@ _MAC_CONDITION_MESSAGES = {
         "00-24-42-*."
     ),
     "length": _("a MAC address has 12 hex digits; end it with * to match a prefix (02-4e-42-*)."),
+    "dashes": _("remove the doubled dash or the dash at either end."),
     "long": _("a prefix has at most 5 bytes (10 hex digits); Windows refuses a longer one."),
     "half": _("a prefix must be whole bytes; Windows would read 024e4* as 00-24-e4-*."),
 }

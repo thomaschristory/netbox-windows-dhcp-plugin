@@ -4,7 +4,7 @@ from netbox_windows_dhcp_plugin.sync import push
 from netbox_windows_dhcp_plugin.sync import windows_state as ws
 from netbox_windows_dhcp_plugin.sync.diff import Record
 from netbox_windows_dhcp_plugin.sync.windows_writer import WindowsWriter
-from netbox_windows_dhcp_plugin.windows import DhcpClient
+from netbox_windows_dhcp_plugin.windows import DhcpClient, normalize
 from netbox_windows_dhcp_plugin.windows.client import OptionKey, Policy, Reservation, Scope
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 from netbox_windows_dhcp_plugin.windows.psscript import PSError
@@ -274,7 +274,18 @@ def test_policy_needs_a_condition_and_memberships_a_scope(client):
     assert "at least one scope" in reasons["superscope", "x"]
 
 
-@pytest.mark.parametrize("value", ["02-4e-42-a*", "02-4-42-ab*", "02:4e:42:ab*", " 02-4e-42-ab* "])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "02-4e-42-a*",
+        "02-4-42-ab*",
+        "02:4e:42:ab*",
+        " 02-4e-42-ab* ",
+        "024e420a0b0c*",
+        "02-4e-42-0a-0b-0c-*",
+        "02--4e-42-0a-0b-0c",
+    ],
+)
 def test_policy_mac_condition_windows_would_misread_is_not_pushed(value):
     """Also when it is the second value of the condition."""
     reasons = by_key(push.plan([scope(), policy(criteria={"mac_address": ["EQ", "02-4e-42-ab*", value]})], [], {}))
@@ -285,7 +296,8 @@ def test_policy_mac_condition_windows_would_misread_is_not_pushed(value):
 
 
 def test_policy_mac_condition_in_windows_spelling_is_pushed():
-    for value in ("02-4e-42-ab*", "02-4e-42-ab-*", "024e42*", "02-4e-42-0a-0b-0c", "*", "2-4e-42-ab*"):
+    pushed = ("02-4e-42-ab*", "02-4e-42-ab-*", "024e42*", "02-4e-42-0a-0b-0c", "*", "2-4e-42-ab*", "024-e42-0a0b-0c")
+    for value in pushed:
         assert ("policy", "10.1.0.0/printers") not in by_key(
             push.plan([scope(), policy(criteria={"mac_address": ["EQ", value]})], [], {})
         ), value
@@ -817,3 +829,16 @@ def test_reservation_option_updated_in_the_same_push_ends_with_the_new_value(cli
     assert not result.failed
     assert fake.options[(15, "", "10.1.0.50", "", "", "")]["value"] == ["new.example"]
     assert run(client, source, state_after(managed, result))[0].changes == []
+
+
+def test_every_mac_condition_problem_has_a_push_hint():
+    """A problem without a hint would crash the plan for the whole server (KeyError), not name the policy."""
+    import itertools
+
+    seen = set()
+    for n in range(1, 7):
+        for chars in itertools.product("0a-*: ", repeat=n):
+            problem = normalize.mac_condition_problem("".join(chars))
+            if problem:
+                seen.add(problem)
+    assert seen <= set(push._MAC_CONDITION_HINTS)

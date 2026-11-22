@@ -569,7 +569,7 @@ def test_a_session_still_refused_fails_that_command_only(ssh_server, monkeypatch
     try:
         t.start()
         time.sleep(0.3)
-        with pytest.raises(RunnerError, match="MaxSessions.*max_concurrency|max_concurrency.*MaxSessions"):
+        with pytest.raises(RunnerError, match="had no free session for .* while other commands of this job held them"):
             c.list_scopes()
         t.join()
     finally:
@@ -661,7 +661,7 @@ def test_the_session_wait_ends_at_the_command_timeout_when_shorter(monkeypatch) 
     r.cfg.command_timeout = 0.3
     r._sessions = 1  # ours never finish here
     started = time.monotonic()
-    with pytest.raises(RunnerError, match="refused to open a session"):
+    with pytest.raises(RunnerError, match="had no free session"):
         r._open_channel()
     assert 0.2 < time.monotonic() - started < 2
 
@@ -707,7 +707,7 @@ def test_a_refusal_taken_by_another_thread_still_keeps_the_connection(monkeypatc
     live = _FakeTransport(active=True, refuse=0, error=paramiko.SSHException("Unable to open channel."))
     r = _with_transports(monkeypatch, live)
     r._sessions = 1
-    with pytest.raises(RunnerError, match="MaxSessions"):
+    with pytest.raises(RunnerError, match="had no free session .*Unable to open channel"):
         r._open_channel()
     assert not live.closed
 
@@ -742,13 +742,14 @@ def test_a_stopping_read_does_not_open_a_session_after_waiting(monkeypatch) -> N
     live = _FakeTransport(active=True, refuse=1)
     r = _with_transports(monkeypatch, live)
     r._sessions = 1
-    stop = {"now": False}
+    checks = {"n": 0}
 
-    def sleep(seconds: float) -> None:
-        stop["now"] = True  # the read is told to stop while this thread waits
+    def stopping() -> bool:
+        # The first check, before the open, passes; the read is told to stop while this thread waits after the refusal.
+        checks["n"] += 1
+        return checks["n"] > 1
 
-    monkeypatch.setattr(ssh_mod.time, "sleep", sleep)
-    runner_mod.set_stop_check(lambda: stop["now"])
+    runner_mod.set_stop_check(stopping)
     try:
         with pytest.raises(runner_mod.Stopped):
             r._open_channel()
@@ -1003,3 +1004,83 @@ def test_validation(kw: dict[str, Any], match: str) -> None:
 def test_key_algorithms() -> None:
     assert key_algorithms("ssh-rsa") == ["rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"]
     assert key_algorithms("ssh-ed25519") == ["ssh-ed25519"]
+
+
+def test_a_stopping_read_leaves_the_line_while_waiting_its_turn(monkeypatch) -> None:
+    # Another open is ahead in line: a read told to stop must not wait for its turn.
+    live = _FakeTransport(active=True, refuse=0)
+    r = _with_transports(monkeypatch, live)
+    monkeypatch.setattr(ssh_mod, "SESSION_WAIT_MAX", 30.0)
+    r._line.append(object())  # an earlier refused open, still waiting
+    checks = {"n": 0}
+
+    def stopping() -> bool:
+        checks["n"] += 1
+        return checks["n"] > 1
+
+    runner_mod.set_stop_check(stopping)
+    started = time.monotonic()
+    try:
+        with pytest.raises(runner_mod.Stopped):
+            r._open_channel()
+    finally:
+        runner_mod.set_stop_check(None)
+    assert time.monotonic() - started < 2
+    assert live.opened == 0 and len(r._line) == 1
+
+
+def test_a_waiter_gives_up_once_none_of_ours_is_left(monkeypatch) -> None:
+    # Ours were running, so the refused open waits; when the last one closes and the server still refuses, the open
+    # fails with the MaxSessions hint instead of waiting out the deadline.
+    live = _FakeTransport(active=True, refuse=10_000)
+    r = _with_transports(monkeypatch, live)
+    monkeypatch.setattr(ssh_mod, "SESSION_WAIT_MAX", 30.0)
+    monkeypatch.setattr(ssh_mod, "SESSION_CLOSE_GRACE", 0.1)
+    r._sessions = 1
+    threading.Timer(0.3, lambda: r._close_channel(_ClosableChannel())).start()
+    started = time.monotonic()
+    with pytest.raises(RunnerError, match="MaxSessions"):
+        r._open_channel()
+    assert time.monotonic() - started < 3
+    assert not r._line
+
+
+def test_waiters_take_freed_sessions_in_the_order_they_were_refused(monkeypatch) -> None:
+    # Three opens refused in turn; then sessions free up one at a time: the first refused gets the first one.
+    class Slots(_FakeTransport):
+        def __init__(self) -> None:
+            super().__init__(active=True, refuse=0)
+            self.free = 0
+            self.lock = threading.Lock()
+
+        def open_session(self, timeout: float | None = None) -> str:
+            with self.lock:
+                if self.free <= 0:
+                    raise paramiko.ChannelException(2, "Connect failed")
+                self.free -= 1
+                return "channel"
+
+    live = Slots()
+    r = _with_transports(monkeypatch, live)
+    monkeypatch.setattr(ssh_mod, "SESSION_WAIT_MAX", 30.0)
+    r._sessions = 3
+    order: list[int] = []
+
+    def work(i: int) -> None:
+        r._open_channel()
+        order.append(i)
+
+    threads = []
+    for i in range(3):
+        th = threading.Thread(target=work, args=(i,))
+        th.start()
+        threads.append(th)
+        time.sleep(0.15)  # refused in this order
+    for _ in range(3):
+        with live.lock:
+            live.free += 1
+        r._close_channel(_ClosableChannel())
+        time.sleep(0.4)
+    for th in threads:
+        th.join(5)
+    assert order == [0, 1, 2]

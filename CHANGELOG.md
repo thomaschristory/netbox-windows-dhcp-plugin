@@ -14,10 +14,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
-- Over SSH, a command refused a session because the server's `MaxSessions` is full now waits while the job's other
-  commands run (up to the command timeout), instead of failing after about 8 seconds: ten PowerShell commands at
-  once take about 10 seconds on a small Windows server, so the short wait rarely helped when `max_concurrency` is
-  above `MaxSessions`. Checked in the lab on Windows Server 2025, which refuses the extra session the way the
+- Over SSH, a command refused a session because the server's `MaxSessions` is full now waits in line, first come
+  first served, while the job's other commands run (up to `command_timeout`, 120 s by default, at most 5 minutes),
+  instead of failing after about 8 seconds: ten PowerShell commands at once take about 10 seconds on a small Windows
+  server, so the short wait rarely helped when `max_concurrency` is above `MaxSessions`. Checked in the lab on Windows Server 2025, which refuses the extra session the way the
   plugin expects.
 - A 64-bit option definition (`DWordDWord`) is stored in the spelling Windows reads back, whatever case it was typed
   in, so it no longer shows a different type from the server's.

@@ -293,8 +293,11 @@ def parents(kind: str, fields: Mapping[str, Any]) -> list[Key]:
 _MAC_CONDITION_HINTS = {
     "spaces": "remove the spaces or line breaks around it",
     "characters": "use hex digits with dashes or no separator; Windows refuses colons",
-    "groups": "write each byte as two hex digits; Windows ignores the dashes and pads an odd prefix on the left",
+    "groups": "write each byte of a prefix as two hex digits; Windows ignores the dashes and pads an odd prefix on "
+    "the left",
+    "dashes": "remove the doubled dash or the dash at either end",
     "length": "a MAC address has 12 hex digits; end it with * to match a prefix",
+    "long": "a prefix has at most 5 bytes (10 hex digits); Windows refuses a longer one",
     "half": "a prefix must be whole bytes; Windows pads an odd number of digits on the left",
 }
 
