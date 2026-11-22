@@ -110,7 +110,7 @@ still load that file, so a secret typed there would work until someone commits i
 |---|---|
 | `WINDOWS_DHCP_LAB_HOST` | Host name or address of the lab server |
 | `WINDOWS_DHCP_USERNAME`, `WINDOWS_DHCP_PASSWORD` | The account |
-| `WINDOWS_DHCP_LAB_PORT` | Optional, default 5986 (5985 with `WINDOWS_DHCP_LAB_HTTPS=0`) |
+| `WINDOWS_DHCP_LAB_PORT` | Optional, default 5986 (5985 with `WINDOWS_DHCP_LAB_HTTPS=0`, 22 with `WINDOWS_DHCP_LAB_TRANSPORT=ssh`) |
 | `WINDOWS_DHCP_LAB_HTTPS` | `0` uses the HTTP listener |
 | `WINDOWS_DHCP_LAB_AUTH` | Optional: `ntlm` (default), `basic`, `kerberos` or `credssp` (needed by the failover tests) |
 | `WINDOWS_DHCP_LAB_PARTNER` | Optional: a second server, as the first reaches it; runs the failover tests (with `credssp`) |
@@ -132,7 +132,7 @@ still load that file, so a secret typed there would work until someone commits i
 Then:
 
 ```bash
-make test-lab        # the client over WinRM, one round trip per unverified cmdlet
+make test-lab        # the client over WinRM (or SSH), round trips that settle each Windows question
 make dev             # recreate the dev stack once, so it mounts the lab helpers
 make lab-e2e         # import, push creates, updates and deletes, leases, on the dev stack
 ```
@@ -199,7 +199,7 @@ make docs            # strict build into site/
 
 `make test` checks the docs too: no em dashes, the configuration table matches the plugin's defaults, every page is
 in the navigation, and the `PLUGINS_CONFIG` examples are valid. The site is published to GitHub Pages when a release
-is tagged.
+is tagged on main (release candidate tags, `v*rc*`, are skipped), or by starting the docs workflow by hand.
 
 ## Releasing
 
@@ -207,8 +207,9 @@ is tagged.
    version and date.
 2. `make dist`, merge to main.
 3. Tag `vX.Y.Z` on main and push the tag. The release workflow checks the tag is on main, runs lint and the unit
-   tests, builds with `make dist`, and publishes to PyPI through trusted publishing only when all of that passed
-   (the `pypi` environment only accepts `v*` tags, with no manual approval); the docs workflow publishes the site.
+   tests, builds with `make dist`, checks that the package version matches the tag, and publishes to PyPI through
+   trusted publishing only when all of that passed (the `pypi` environment only accepts `v*` tags, with no manual
+   approval); the docs workflow publishes the site.
    Started by hand, the workflow is a rehearsal: it checks and builds, and publishes nothing.
 
 `main` is the standalone line (0.2 and later). The `release/0.1` branch keeps bug fixes, and no new features, for those who stay on 0.1.x

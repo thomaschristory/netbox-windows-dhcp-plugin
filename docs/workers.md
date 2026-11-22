@@ -12,10 +12,12 @@ requests only queue jobs, so a slow or unreachable Windows server never holds up
 | Windows DHCP push | Sync now, saves, merges, reverts | Makes the server match NetBox |
 | Windows DHCP dry run | Dry run | Plans a push without writing |
 | Windows DHCP leases | Load leases | Reads the leases of one scope |
+| Windows DHCP import review | Apply all, Dismiss all, or a bulk apply or dismiss (UI or REST API) of more open proposal items than `review_job_threshold` (100) | Applies or dismisses those items as the user who asked (see [Import](import.md#without-branching-import-proposals)) |
 | Windows DHCP import scheduler | NetBox, every minute | Queues imports for servers whose import interval has passed, then deletes old sync runs |
 
-The jobs belong to their Windows server and appear under **Operations > Jobs**, with their log. Each one except the
-lease read and the scheduler also leaves a [sync run](servers.md#sync-runs).
+The jobs belong to their Windows server (an import review job belongs to its import proposal, and shows on its
+**Jobs** tab) and appear under **Operations > Jobs**, with their log. Each one except the lease read, the import
+review and the scheduler also leaves a [sync run](servers.md#sync-runs).
 
 ## What the worker needs
 
@@ -75,7 +77,9 @@ transaction-pooling proxy (pgbouncer in transaction mode). Session pooling is fi
   on the same connection waits in line, first come first served, for one of those to end, for as long as they run
   (up to `command_timeout`, 120 s by default, and at most 5 minutes), since ten PowerShell commands at once can take
   about 10 s on a small server; a refusal with nothing else of the job's running fails that command at once with
-  the server's reason. A refused WinRM shell fails the command. Keep the setting low (the
+  the server's reason. A refused WinRM shell fails the command. A WinRM connection refused before its command is
+  sent is tried again after 0.5, 1 and 2 seconds (once the command is sent nothing is tried again, so a write never
+  runs twice). Keep the setting low (the
   default 4; above 10 a warning is logged, and above 30 it is cut down to 30), lower it (`1` reads one scope at a
   time) if a server, a firewall or a management host struggles, and raise it only when a server with many scopes
   reads too slowly and has sessions to spare. The time still grows with the number of scopes, divided by the setting at best.

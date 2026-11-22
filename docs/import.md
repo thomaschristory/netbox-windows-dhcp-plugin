@@ -11,8 +11,9 @@ and brings the differences into NetBox **for review**. It never writes to Window
 - **On a schedule**, see [below](#scheduled-imports).
 
 Only one import per server runs at a time, and a new one is not queued while another is queued or running. An
-import and a push of the same server never run at the same time: an import that finds a push running fails (run it
-again later), while a push that finds an import running retries (see [Workers and jobs](workers.md#one-job-per-server)).
+import and a push of the same server never run at the same time: an import started by hand that finds a push running
+fails (run it again later), a scheduled one is queued again (see [below](#scheduled-imports)), and a push that finds
+an import running retries (see [Workers and jobs](workers.md#one-job-per-server)).
 
 ## What is compared
 
@@ -123,9 +124,11 @@ matches Windows, and the push records the imported objects as managed. With sync
 it on does that.
 
 Merging needs no Windows DHCP permission for the import's own changes, even when they move a prefix, range, address
-or MAC that a scope or reservation uses: they only bring NetBox in line with Windows. An edit someone adds to the
-import branch by hand is checked like any other, when it is made and again at merge, and so is every change of an
-object it touched (see
+or MAC that a scope or reservation uses: they only bring NetBox in line with Windows, and a sync of main's edits to
+other fields (description, tags), or a hand edit of those fields in the branch, does not change that. A change of the
+prefix, range, address or MAC that someone adds to the import branch by hand (or that a sync brings in from main) is
+checked like any other, when it is made and again at merge, and so is every change of that object. Reverting an
+import branch is always checked: it puts back values Windows no longer holds (see
 [Editing IPAM objects used by DHCP](ipam-edits.md#with-netbox-branching)).
 
 Writing into a branch needs a NetBox user: manual imports use the user who clicked, scheduled ones the `import_user`
@@ -218,7 +221,11 @@ review and links the server's open proposal.
 ## Scheduled imports
 
 Set **Import interval** (minutes) on a Windows server. A NetBox system job runs every minute and queues an import for
-each server whose last import started at least that long ago, unless one is already queued or running.
+each server whose last import started at least that long ago, unless one is already queued or running. A scheduled
+import that finds its server busy (another import or a push running) is queued again a minute later, for up to half
+an hour, instead of waiting a whole interval; the waiting attempts leave no failed sync run and send no notification.
+The same system job deletes old sync runs (`sync_run_retention_days`, 90 days by default, see
+[Workers and jobs](workers.md#sync-run-retention)).
 
 Scheduled imports run as the user named in `import_user`. With branching they fail without it: a branch and its
 change request need an owner. Create a dedicated user, give it the permissions an import needs, and set:

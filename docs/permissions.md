@@ -55,6 +55,7 @@ Actions that connect to Windows need more than viewing:
 | Load leases | `view` and `change` on the Windows server |
 | Apply or dismiss import proposal items | `change` on the items; for **Apply all** and **Dismiss all**, `change` on the proposal as well. To apply, also the permission for each NetBox object the item writes |
 | See sync runs, import proposals | `view` on them |
+| See the **DHCP reservations** panel of a device, virtual machine, interface, IP address or MAC address | `view` on the reservations it lists (only those are shown; for a device or virtual machine, only through interfaces the user may view) |
 
 Object permissions work as usual: a permission limited by constraints (for example to some Windows servers) only
 allows the action on the matching objects. In the REST API, a server the user may not change is reported as not

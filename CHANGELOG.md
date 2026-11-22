@@ -5,6 +5,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Documentation
+
+- Every page checked against 0.7.1. Added: an upgrade note for 0.7.0 to 0.7.1, the SSH `MaxSessions` wait line
+  (Windows setup, Configuration, Troubleshooting), the import review job (Workers), the sync run `triggers` field
+  (API), the reservations panel permission, the policy MAC condition and client hand-off rules (Push,
+  Reservations), the WinRM connect retry, and more troubleshooting messages. Corrected: the push applies deletes
+  first, not last; turning failover authentication off is never pushed (do it on Windows); a failover secret is
+  only sent when a relationship is created or authentication is turned on; a scheduled import waits for a busy
+  server instead of failing; clearing an option definition's default value is refused; DESIGN's SSH section
+  (scripts over 32 KB go over SFTP instead of being refused) and dependency table.
+
 ## [0.7.1] - 2026-11-22
 
 0.7.1 settles the remaining Windows behaviours a Windows Server 2025 lab can check and fixes what they showed: policy

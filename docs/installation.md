@@ -88,7 +88,8 @@ Restart the worker as well as the web service: the worker runs every job, and it
 
 - The navigation menu has a **Windows DHCP** entry.
 - The NetBox log has no line saying `credential profiles without allowed_hosts can be sent to any host`. If it has
-  one, add `allowed_hosts` to the profiles it lists (see [Configuration](configuration.md#allowed_hosts)).
+  one, add `allowed_hosts` to the profiles it lists (see [Configuration](configuration.md#allowed_hosts)). Nor a line
+  saying a credential profile `has keys the plugin does not know`: fix the spelling of the keys it names.
 - **Operations > Jobs** lists a job called "Windows DHCP import scheduler", which NetBox runs every minute and which
   queues the [scheduled imports](import.md#scheduled-imports).
 
@@ -96,6 +97,14 @@ Restart the worker as well as the web service: the worker runs every job, and it
 
 Install the new version, run `migrate`, and restart NetBox and the worker. Read the [changelog](changelog.md) first:
 while the plugin is below 1.0, a minor version can change behaviour.
+
+### Upgrading from 0.7.0 to 0.7.1
+
+No migration. A policy MAC address condition that is a prefix of 6 bytes or more (`024e420a0b0c*`) is now refused on
+save, as Windows refuses it, and a policy stored earlier with one is shown as not pushed (its part of the
+configuration then deletes nothing until it is fixed, as in 0.6.1). A full address with its 12 digits grouped another
+way by dashes (`024-e42-0a0b-0c`) is now accepted. Run a dry run after upgrading: it lists such policies. See
+[Mapping](mapping.md) for the rules.
 
 ### Upgrading from 0.6.x to 0.7.0
 

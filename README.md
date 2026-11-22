@@ -22,8 +22,9 @@ over WinRM or SSH.
 > domain lab (0.5.0), Kerberos, SSH key logons and `-ComputerName` (with CredSSP) passed, and so did a push with
 > Kerberos for normal calls and CredSSP only for failover writes (and again with 0.6.0, over HTTPS and HTTP);
 > failover writes need CredSSP or SSH with a password
-> (see the [limitations](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/limitations/)). Try it on a
-> lab server first.
+> (see the [limitations](https://thomaschristory.github.io/netbox-windows-dhcp-plugin/limitations/)). 0.7.1 passed
+> the domain lab's tests (`make test-lab`, 66 tests, Windows Server 2025); the long SSH script file, the SSH session wait
+> and the policy MAC condition rules are not yet checked on Windows Server 2022. Try it on a lab server first.
 
 ## Features
 
@@ -42,14 +43,15 @@ over WinRM or SSH.
 - A **Leases** tab on the scope page, read live from Windows in a background job.
 - WinRM (NTLM, Kerberos, Basic, CredSSP for failover; HTTPS by default) or SSH, as in
   [terraform-provider-windowsddi](https://github.com/thomaschristory/terraform-provider-windowsddi). Credentials
-  live in named profiles in the plugin configuration, limited to `allowed_hosts`, never in the database.
+  live in named profiles in the plugin configuration, limited to `allowed_hosts` (and optionally to set transports,
+  ports, Kerberos realms, SSH host keys or verified HTTPS), never in the database.
 - REST API and GraphQL for every model; all Windows I/O in background jobs.
 
 ## Compatibility
 
 | Plugin | NetBox | netbox-plugin-dhcp | netbox-branching | Python |
 |---|---|---|---|---|
-| 0.2.x to 0.4.x | 4.7 | not used | 1.2.2+ (optional) | 3.12 to 3.14 |
+| 0.2.x to 0.7.x | 4.7 | not used | 1.2.2+ (optional) | 3.12 to 3.14 |
 | 0.1.x | 4.7 | 0.2.x (required) | 1.2.2+ (optional) | 3.12 to 3.14 |
 
 `main` is the standalone line (0.2 and later). The 0.1.x line (latest 0.1.4, branch `release/0.1`) keeps getting

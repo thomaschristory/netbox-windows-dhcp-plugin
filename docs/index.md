@@ -11,8 +11,10 @@ over WinRM or SSH.
     ran in full against two Windows Server 2022 DHCP servers, over WinRM (HTTP and HTTPS) and SSH; release candidate
     testers ran Windows Server 2025. 0.2.0 passed the full lab tests on two Windows Server 2025 servers. Kerberos, SSH
     keys and `-ComputerName` (with CredSSP) passed in a domain lab, and so did Kerberos with CredSSP only for
-    failover writes (0.5.0, and 0.6.0 over HTTPS and HTTP); failover writes need CredSSP or SSH with a password (see [Limitations](limitations.md)). Try it on a lab server before
-    a production one.
+    failover writes (0.5.0, and 0.6.0 over HTTPS and HTTP); failover writes need CredSSP or SSH with a password
+    (see [Limitations](limitations.md)). 0.7.1 passed the domain lab's tests on Windows Server 2025; the long SSH
+    script file, the SSH session wait and the policy MAC condition rules are not yet checked on Windows Server 2022.
+    Try it on a lab server before a production one.
 
 ## What it does
 
@@ -86,7 +88,7 @@ pages for the rules that keep both sides safe.
 
 | Plugin | NetBox | netbox-plugin-dhcp | netbox-branching | netbox-change-control | Python |
 |---|---|---|---|---|---|
-| 0.2.x to 0.4.x | 4.7 | not used | 1.2.2 or later (optional) | 0.6 or later (optional) | 3.12 to 3.14 |
+| 0.2.x to 0.7.x | 4.7 | not used | 1.2.2 or later (optional) | 0.6 or later (optional) | 3.12 to 3.14 |
 | 0.1.x | 4.7 | 0.2.x (required) | 1.2.2 or later (optional) | 0.6 or later (optional) | 3.12 to 3.14 |
 
 The 0.1.x line (latest 0.1.4) keeps getting bug fixes, but no new features, for installs that stay on

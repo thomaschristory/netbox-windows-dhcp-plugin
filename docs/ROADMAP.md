@@ -158,3 +158,7 @@ netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
     address that NetBox does not delete is named as not pushed; client hand-offs run in dependency order and swaps
     are named (#155, #156; Set refuses a held client like Add). Domain lab, WinRM: `make test-lab` 66 passed; SSH lab
     tests 3/3. Left: Windows Server 2022 items (no lab).
+
+No milestone is in progress and no issue is open (2026-11-22). The two markers still `# unverified:` in the code are
+the SFTP script file on Windows Server 2022 (`windows/ssh.py`) and the `Set-DhcpServerv4Policy` wording for a MAC
+prefix of 6 bytes or more, seen for Add only (`windows/fake.py`).

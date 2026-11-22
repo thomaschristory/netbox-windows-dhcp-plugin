@@ -122,6 +122,14 @@ name renames the reservation on Windows. An update keeps the reservation's optio
 ID and type only when they change, and puts back any option value Windows drops (see
 [Push to Windows](push.md#order)).
 
+Windows knows a reservation by its address, so a new IP address shows in the push as a delete of the old reservation
+and a create of the new one. Windows also holds one reservation per client in a scope. Handing a MAC address from one
+reservation to another works in one push: the push frees it first. Two reservations swapping their MAC addresses do
+not: Windows cannot apply either change first, so the push leaves both out under **Not pushed**; change them over two
+pushes. A reservation whose client Windows already holds at another address, under a reservation NetBox does not
+delete (one made by hand on Windows, for example), is left out too, and the reason names that address (see
+[Push to Windows](push.md#refused-when-the-push-is-planned)).
+
 ## Deleting a device or address a reservation uses
 
 A reservation's IP address and MAC address are protected: NetBox refuses to delete them, or the device, virtual
