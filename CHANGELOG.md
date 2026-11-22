@@ -17,8 +17,14 @@ All notable changes to this project are documented here. The format follows
 - Over SSH, a command refused a session because the server's `MaxSessions` is full now waits in line, first come
   first served, while the job's other commands run (up to `command_timeout`, 120 s by default, at most 5 minutes),
   instead of failing after about 8 seconds: ten PowerShell commands at once take about 10 seconds on a small Windows
-  server, so the short wait rarely helped when `max_concurrency` is above `MaxSessions`. Checked in the lab on Windows Server 2025, which refuses the extra session the way the
-  plugin expects.
+  server, so the short wait rarely helped when `max_concurrency` is above `MaxSessions`. Checked in the lab on
+  Windows Server 2025, which refuses the extra session the way the plugin expects.
+- A push no longer fails on a reservation (new, or given another client) whose client Windows already holds in the
+  scope at another address that NetBox does not delete (made on Windows outside NetBox, changed there since the last
+  push, or holding objects NetBox does not manage). The plan names it as not pushed, with the address and why it
+  stays, instead of every push failing with `ResourceExists`. Reservations passing clients along in one push are
+  updated in the order Windows needs, and a swap of clients is named as not pushed (Windows cannot apply it in one
+  push) (#155).
 - A 64-bit option definition (`DWordDWord`) is stored in the spelling Windows reads back, whatever case it was typed
   in, so it no longer shows a different type from the server's.
 

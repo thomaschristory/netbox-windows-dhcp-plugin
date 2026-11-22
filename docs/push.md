@@ -276,6 +276,15 @@ still deletes it, and the others wait for the renumbering. The job log's last li
   one scope for the same client (MAC address or client ID, compared without separators or case; for DHCPv6 the same
   DUID and IAID, while another IAID is fine). When one of them is already on Windows as NetBox has it, that one keeps
   being pushed and only the others are left out;
+- a reservation (new, or given another client) whose client Windows already holds in the scope at another address,
+  under a reservation the push does not delete: one made on Windows outside NetBox, one changed on Windows since the
+  last push, one still holding objects NetBox does not manage, or one whose own change cannot be pushed. The reason
+  names the address and why it stays: import it, or delete it on Windows, and the next push writes the NetBox one.
+  A reservation NetBox made and still manages simply moves (the old one is deleted first), and a client given up by
+  another reservation in the same push is taken once that change is done (when that change waits, so does this one;
+  when it fails at Windows, this one fails too). Two or more reservations swapping clients are all left out, as
+  Windows cannot apply any of them first: change them over two pushes. A reservation left out keeps its other fields
+  as Windows has them until it can be pushed;
 - reservations and exclusion ranges of a second NetBox scope on one network address (two prefix lengths, or two
   VRFs), which Windows cannot hold;
 - a scope policy whose stored IP ranges are not a list of `[start, end]` IPv4 address pairs (only a raw save can store

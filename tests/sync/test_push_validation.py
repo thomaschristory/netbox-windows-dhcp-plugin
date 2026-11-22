@@ -10,6 +10,7 @@ from netbox_windows_dhcp_plugin.sync import windows_state as ws
 from netbox_windows_dhcp_plugin.sync.diff import CREATE, DELETE, Record
 from netbox_windows_dhcp_plugin.sync.windows_writer import WindowsWriter
 from netbox_windows_dhcp_plugin.windows import DhcpClient
+from netbox_windows_dhcp_plugin.windows.client import Reservation
 from netbox_windows_dhcp_plugin.windows.fake import FakeDhcpServer
 
 from .test_v6 import option6, reservation6, scope6
@@ -277,6 +278,232 @@ def test_two_v6_reservations_for_one_duid_and_iaid_are_left_out():
     # Another IAID is another identity association of the same client: fine.
     p = push.plan([scope6(), a, reservation6(ip="2001:db8:1::11", iaid=8)], [], {})
     assert p.skipped == []
+
+
+# -- issue #155: the client is reserved on Windows at another address NetBox does not delete ----------------------
+
+
+def test_a_client_reserved_by_hand_at_another_address_is_named_not_pushed(client, fake):
+    managed = pushed(client, [scope()])
+    client.add_reservation(Reservation(scope_id="10.1.0.0", ip_address="10.1.0.51", client_id="aa-bb-cc-00-11-22"))
+    p = push.plan([scope(), reservation("10.1.0.50")], windows_records(client), managed)
+    reason = reasons(p)["reservation", "10.1.0.0/10.1.0.50"]
+    assert "already holds a reservation for this client in the scope, at 10.1.0.51" in reason
+    assert "outside NetBox" in reason
+    result = push.execute(p, WindowsWriter(client))
+    assert not result.failed
+    assert set(fake.reservations) == {"10.1.0.51"}
+
+
+def test_a_reservation_moved_in_netbox_still_moves_when_netbox_made_it(client, fake):
+    managed = pushed(client, [scope(), reservation("10.1.0.51")])
+    p = push.plan([scope(), reservation("10.1.0.50")], windows_records(client), managed)
+    assert p.skipped == []
+    push.execute(p, WindowsWriter(client))
+    assert set(fake.reservations) == {"10.1.0.50"}
+
+
+def test_a_moved_reservation_whose_old_one_changed_on_windows_is_named_not_pushed(client, fake):
+    managed = pushed(client, [scope(), reservation("10.1.0.51")])
+    fake.reservations["10.1.0.51"]["description"] = "edited by hand"
+    p = push.plan([scope(), reservation("10.1.0.50")], windows_records(client), managed)
+    found = reasons(p)
+    assert "changed on Windows" in found["reservation", "10.1.0.0/10.1.0.51"]
+    assert "kept on Windows: changed on Windows" in found["reservation", "10.1.0.0/10.1.0.50"]
+    assert not push.execute(p, WindowsWriter(client)).failed
+
+
+def test_an_update_to_a_client_reserved_by_hand_elsewhere_is_named_not_pushed(client, fake):
+    managed = pushed(client, [scope(), reservation("10.1.0.50")])
+    client.add_reservation(Reservation(scope_id="10.1.0.0", ip_address="10.1.0.51", client_id="aa-bb-cc-00-00-99"))
+    p = push.plan([scope(), reservation("10.1.0.50", client="AA-BB-CC-00-00-99")], windows_records(client), managed)
+    assert "at 10.1.0.51" in reasons(p)["reservation", "10.1.0.0/10.1.0.50"]
+    assert not push.execute(p, WindowsWriter(client)).failed
+    # A description change of the same reservation, with its own client, still goes through.
+    p = push.plan([scope(), reservation("10.1.0.50", description="desk")], windows_records(client), managed)
+    assert p.skipped == [] and [c.action for c in p.changes] == ["update"]
+
+
+@pytest.mark.parametrize("taker", ["10.1.0.50", "10.1.0.52"])
+def test_a_client_freed_by_an_update_in_the_same_push_is_not_held(client, fake, taker):
+    # The update freeing the client runs first, whichever address sorts first.
+    managed = pushed(client, [scope(), reservation("10.1.0.51")])
+    source = [scope(), reservation("10.1.0.51", client="aa-bb-cc-00-00-99"), reservation(taker)]
+    p = push.plan(source, windows_records(client), managed)
+    assert p.skipped == []
+    assert not push.execute(p, WindowsWriter(client)).failed
+    assert fake.reservations[taker]["client_id"] == "aa-bb-cc-00-11-22"
+
+
+def test_a_held_back_update_keeps_its_client_held_for_the_others(client, fake):
+    # .10 would give X away to take Y, but Y is held by hand at .12: .10 keeps X, so the new .11 for X waits too.
+    managed = pushed(client, [scope(), reservation("10.1.0.10", client="aa-bb-cc-00-00-0a")])
+    client.add_reservation(Reservation(scope_id="10.1.0.0", ip_address="10.1.0.12", client_id="aa-bb-cc-00-00-0b"))
+    source = [
+        scope(),
+        reservation("10.1.0.10", client="aa-bb-cc-00-00-0b"),
+        reservation("10.1.0.11", client="aa-bb-cc-00-00-0a"),
+    ]
+    p = push.plan(source, windows_records(client), managed)
+    found = reasons(p)
+    assert "at 10.1.0.12" in found["reservation", "10.1.0.0/10.1.0.10"]
+    assert "at 10.1.0.10" in found["reservation", "10.1.0.0/10.1.0.11"]
+    assert "cannot be pushed itself" in found["reservation", "10.1.0.0/10.1.0.11"]
+    assert not push.execute(p, WindowsWriter(client)).failed
+
+
+def test_a_client_swap_is_held_back(client, fake):
+    managed = pushed(
+        client,
+        [
+            scope(),
+            reservation("10.1.0.10", client="aa-bb-cc-00-00-0a"),
+            reservation("10.1.0.11", client="aa-bb-cc-00-00-0b"),
+        ],
+    )
+    source = [
+        scope(),
+        reservation("10.1.0.10", client="aa-bb-cc-00-00-0b"),
+        reservation("10.1.0.11", client="aa-bb-cc-00-00-0a"),
+    ]
+    p = push.plan(source, windows_records(client), managed)
+    found = reasons(p)
+    assert "swap clients" in found["reservation", "10.1.0.0/10.1.0.10"]
+    assert "swap clients" in found["reservation", "10.1.0.0/10.1.0.11"]
+    assert not push.execute(p, WindowsWriter(client)).failed
+
+
+def test_a_held_back_update_does_not_pause_deletes(client, fake):
+    old = exclusion("10.1.0.150", "10.1.0.160")
+    managed = pushed(client, [scope(), old, reservation("10.1.0.50")])
+    client.add_reservation(Reservation(scope_id="10.1.0.0", ip_address="10.1.0.51", client_id="aa-bb-cc-00-00-99"))
+    p = push.plan([scope(), reservation("10.1.0.50", client="aa-bb-cc-00-00-99")], windows_records(client), managed)
+    assert set(reasons(p)) == {("reservation", "10.1.0.0/10.1.0.50")}
+    assert not push.execute(p, WindowsWriter(client)).failed
+    assert fake.exclusions == []
+
+
+def test_an_update_taking_the_client_of_a_waiting_delete_waits(client, fake):
+    # .12 (managed) leaves NetBox, so its client may go to .10; but the IPv4 deletes pause (a refused exclusion), so
+    # .12 stays on Windows and the update of .10 would clash: it waits with the delete.
+    managed = pushed(
+        client,
+        [
+            scope(),
+            reservation("10.1.0.10", client="aa-bb-cc-00-00-0a"),
+            reservation("10.1.0.12", client="aa-bb-cc-00-00-0b"),
+        ],
+    )
+    bad = exclusion("10.2.0.5", "10.2.0.9")  # outside its scope's prefix: refused
+    source = [scope(), reservation("10.1.0.10", client="aa-bb-cc-00-00-0b"), bad]
+    p = push.plan(source, windows_records(client), managed)
+    found = reasons(p)
+    assert found["reservation", "10.1.0.0/10.1.0.12"].startswith("waiting:")
+    assert found["reservation", "10.1.0.0/10.1.0.10"].startswith("waiting:")
+    assert not push.execute(p, WindowsWriter(client)).failed
+
+
+def test_the_values_of_a_held_back_reservation_wait_and_its_family_deletes_pause(client, fake):
+    old = exclusion("10.1.0.150", "10.1.0.160")
+    managed = pushed(client, [scope(), old])
+    client.add_reservation(Reservation(scope_id="10.1.0.0", ip_address="10.1.0.51", client_id="aa-bb-cc-00-11-22"))
+    value = option("10.1.0.0/10.1.0.50", 15, ["pc.example"])
+    p = push.plan([scope(), reservation("10.1.0.50"), value], windows_records(client), managed)
+    found = reasons(p)
+    assert "cannot be pushed" in found["option", value.key]
+    assert found["exclusion", old.key].startswith("waiting:")
+    assert not push.execute(p, WindowsWriter(client)).failed
+    assert len(fake.exclusions) == 1
+
+
+def test_a_v6_client_reserved_by_hand_at_another_address_is_named_not_pushed(client):
+    managed = pushed(client, [scope6()])
+    pushed(client, [scope6(), reservation6(ip="2001:db8:1::11")], managed)  # made outside this NetBox's state
+    p = push.plan([scope6(), reservation6()], windows_records(client), managed)
+    key = ("reservation6", reservation6().key)
+    assert "for this DUID and IAID in the scope, at 2001:db8:1::11" in reasons(p)[key]
+    assert not push.execute(p, WindowsWriter(client)).failed
+
+
+def _cl(n: int) -> str:
+    return f"aa-bb-cc-00-00-{n:02x}"
+
+
+def _res(last: int, n: int, **over) -> Record:
+    return reservation(f"10.1.0.{last}", client=_cl(n), **over)
+
+
+def _push_twice(managed_source, source, by_hand=()):
+    """Push ``managed_source``, add ``by_hand`` reservations on Windows, then push ``source`` twice: the plan for it,
+    whether either push failed at the fake, and the second plan (quiet when nothing is left to do)."""
+    client = DhcpClient(FakeDhcpServer())
+    managed = pushed(client, managed_source)
+    for last, n in by_hand:
+        client.add_reservation(Reservation(scope_id="10.1.0.0", ip_address=f"10.1.0.{last}", client_id=_cl(n)))
+    p = push.plan(source, windows_records(client), managed)
+    result = push.execute(p, WindowsWriter(client))
+    managed = {**managed, **result.upserts}
+    for k in result.removals:
+        managed.pop(k, None)
+    p2 = push.plan(source, windows_records(client), managed)
+    result2 = push.execute(p2, WindowsWriter(client))
+    return p, bool(result.failed or result2.failed), p2
+
+
+@pytest.mark.parametrize(
+    ("managed_source", "source", "by_hand"),
+    [
+        # A create takes the client of an update that waits on a paused delete: it waits too.
+        ([_res(10, 0xA), _res(12, 0xB)], [_res(10, 0xB), _res(11, 0xA), exclusion("10.2.0.5", "10.2.0.9")], ()),
+        # The same, paused by a held-back create (a client reserved by hand).
+        ([_res(10, 0xA), _res(12, 0xB)], [_res(10, 0xB), _res(11, 0xA), _res(13, 0xC)], [(14, 0xC)]),
+        # Chains of updates, in both address orders.
+        ([_res(10, 1), _res(11, 2), _res(12, 3)], [_res(10, 2), _res(11, 3), _res(12, 4), _res(9, 1)], ()),
+        ([_res(10, 3), _res(11, 2), _res(12, 1)], [_res(10, 4), _res(11, 3), _res(12, 2), _res(13, 1)], ()),
+        # A 3-cycle, with a create taking a member's client, and a chain running into a swap.
+        ([_res(10, 1), _res(11, 2), _res(12, 3)], [_res(10, 2), _res(11, 3), _res(12, 1), _res(13, 9)], ()),
+        ([_res(10, 1), _res(11, 2), _res(13, 4)], [_res(10, 2), _res(11, 1), _res(13, 1), _res(14, 4)], ()),
+    ],
+)
+def test_client_moves_never_fail_at_windows(managed_source, source, by_hand):
+    _, failed, _ = _push_twice([scope(), *managed_source], [scope(), *source], by_hand)
+    assert not failed
+
+
+def test_a_chain_of_updates_runs_in_dependency_order():
+    # Each update takes the client the next one gives up; whatever the address order, the last one runs first.
+    p, failed, p2 = _push_twice(
+        [scope(), _res(39, 4), _res(28, 2), _res(30, 5), _res(19, 3), _res(25, 7)],
+        [scope(), _res(39, 1), _res(28, 4), _res(30, 2), _res(19, 5), _res(25, 3)],
+    )
+    assert not failed and p.skipped == [] and p2.changes == []
+
+
+@pytest.mark.parametrize("seed", range(300))
+def test_random_client_moves_never_fail_at_windows(seed):
+    """Random managed reservations, NetBox edits, a hand-made reservation and a refusal pausing deletes: whatever the
+    plan leaves out, nothing it sends fails at the fake (which refuses a held client like Windows)."""
+    import random
+
+    rnd = random.Random(seed)
+    n = rnd.randint(2, 6)
+    lasts = rnd.sample(range(10, 40), n + 4)
+    clients = list(range(1, n + 4))
+    rnd.shuffle(clients)
+    managed_source = [scope()] + [_res(lasts[i], clients[i]) for i in range(n)]
+    by_hand = [(lasts[n], clients[n])] if rnd.random() < 0.3 else []
+    source, used = [scope()], set()
+    for i in [*range(n), *range(n + 1, n + 4)]:
+        if (i < n and rnd.random() < 0.2) or (i > n and rnd.random() < 0.5):
+            continue
+        c = rnd.choice(clients)
+        if c not in used:
+            used.add(c)
+            source.append(_res(lasts[i], c))
+    if rnd.random() < 0.3:
+        source.append(exclusion("10.2.0.5", "10.2.0.9"))
+    _, failed, _ = _push_twice(managed_source, source, by_hand)
+    assert not failed
 
 
 # -- item 4: policy ranges stored by a raw save ----------------------------------------------------------------------
