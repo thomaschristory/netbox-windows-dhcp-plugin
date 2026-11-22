@@ -348,7 +348,7 @@ def test_a_held_back_update_keeps_its_client_held_for_the_others(client, fake):
     found = reasons(p)
     assert "at 10.1.0.12" in found["reservation", "10.1.0.0/10.1.0.10"]
     assert "at 10.1.0.10" in found["reservation", "10.1.0.0/10.1.0.11"]
-    assert "cannot be pushed itself" in found["reservation", "10.1.0.0/10.1.0.11"]
+    assert "own change cannot be pushed either" in found["reservation", "10.1.0.0/10.1.0.11"]
     assert not push.execute(p, WindowsWriter(client)).failed
 
 
@@ -477,6 +477,37 @@ def test_a_chain_of_updates_runs_in_dependency_order():
         [scope(), _res(39, 1), _res(28, 4), _res(30, 2), _res(19, 5), _res(25, 3)],
     )
     assert not failed and p.skipped == [] and p2.changes == []
+
+
+@pytest.mark.parametrize("held", [False, True])
+def test_a_long_chain_of_client_hand_offs_plans_quickly(held):
+    """A renumbering shifting every client one reservation along a /21: planned in linear time, no recursion limit.
+    With the head's client held by hand, every link is left out."""
+    import time
+
+    def ip(i: int) -> str:
+        return f"10.1.{i // 250}.{i % 250 + 1}"
+
+    def res(i: int, n: int) -> Record:
+        mac = f"aa-bb-{n >> 16:02x}-{(n >> 8) & 255:02x}-{n & 255:02x}-00"
+        fields = {**reservation().fields, "ip_address": ip(i), "client_id": mac}
+        return Record("reservation", f"10.1.0.0/{ip(i)}", fields)
+
+    wide = scope_at("10.1.0.0", "255.255.248.0", "10.1.0.1", "10.1.7.250")
+    n = 1500
+    target = [wide] + [res(i, i) for i in range(n)]
+    managed = {(r.kind, r.key): push.fingerprint(r) for r in target}
+    source = [wide] + [res(i, i + 1) for i in range(n)]  # each takes the next one's client
+    if held:
+        target.append(res(n, n))  # the last link's client, reserved by hand
+    started = time.monotonic()
+    p = push.plan(source, target, managed)
+    assert time.monotonic() - started < 5
+    if held:
+        assert len(p.skipped) == n and p.changes == []
+    else:
+        assert p.skipped == [] and len(p.changes) == n
+        assert p.changes[0].key == f"10.1.0.0/{ip(n - 1)}"  # the end of the chain gives its client up first
 
 
 @pytest.mark.parametrize("seed", range(300))

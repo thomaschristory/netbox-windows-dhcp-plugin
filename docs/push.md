@@ -284,7 +284,8 @@ still deletes it, and the others wait for the renumbering. The job log's last li
   another reservation in the same push is taken once that change is done (when that change waits, so does this one;
   when it fails at Windows, this one fails too). Two or more reservations swapping clients are all left out, as
   Windows cannot apply any of them first: change them over two pushes. A reservation left out keeps its other fields
-  as Windows has them until it can be pushed;
+  as Windows has them until it can be pushed. A new reservation left out this way pauses the deletes of its tree
+  (IPv4 or DHCPv6), like any object that cannot be pushed; an update left out does not;
 - reservations and exclusion ranges of a second NetBox scope on one network address (two prefix lengths, or two
   VRFs), which Windows cannot hold;
 - a scope policy whose stored IP ranges are not a list of `[start, end]` IPv4 address pairs (only a raw save can store
