@@ -150,8 +150,11 @@ netbox-plugin-dhcp (latest 0.1.4, 2026-11-15).
     profile keys are logged at startup. Domain lab on Windows Server 2025, Kerberos over HTTPS: `make test-lab` 52
     passed on the #105 branch with every proxy variable pointing at a dead proxy, and `make lab-e2e` passed on main
     with CredSSP for failover writes.
-15. **In progress: 0.7.1.** Remaining `# unverified:` markers settled in the domain lab (Windows Server 2025): the
-    64-bit option type reads back as `DWordDWord`; policy MAC conditions with dots, spaces (around the value too) or a
-    prefix of 6 bytes or more are refused, and a full address keeps its digits whatever the dashes; Windows OpenSSH
-    refuses a session past `MaxSessions` with a channel open failure, and a refused SSH session now waits while the
-    job's other commands run. Left: Windows Server 2022 items (no lab).
+15. **Done: 0.7.1 (2026-11-22).** Remaining `# unverified:` markers settled in the domain lab (Windows Server
+    2025): the 64-bit option type reads back as `DWordDWord`; policy MAC conditions with dots, spaces (around the
+    value too) or a prefix of 6 bytes or more are refused, and a full address keeps its digits whatever the dashes;
+    Windows OpenSSH refuses a session past `MaxSessions` with a channel open failure, and a refused SSH session now
+    waits in line while the job's other commands run (#154). A reservation whose client Windows holds at another
+    address that NetBox does not delete is named as not pushed; client hand-offs run in dependency order and swaps
+    are named (#155, #156; Set refuses a held client like Add). Domain lab, WinRM: `make test-lab` 66 passed; SSH lab
+    tests 3/3. Left: Windows Server 2022 items (no lab).
