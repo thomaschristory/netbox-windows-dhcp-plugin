@@ -5,6 +5,13 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-22
+
+0.7.1 settles the remaining Windows behaviours a Windows Server 2025 lab can check and fixes what they showed: policy
+MAC conditions follow Windows' rules, the 64-bit option type is stored in Windows' spelling, SSH commands wait their
+turn for a session, and a push no longer fails on a reservation whose client Windows holds at another address. No
+migration.
+
 ### Changed
 
 - Policy MAC conditions follow what Windows Server 2025 showed in the lab: a full address with its 12 digits grouped
