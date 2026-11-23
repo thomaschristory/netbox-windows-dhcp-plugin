@@ -1,6 +1,6 @@
 # Windows DHCP sync plugin for NetBox: design
 
-Status: approved 2026-10-13; data model revised for 0.2.0 (standalone) on 2026-10-27. Package `netbox-windows-dhcp-plugin`, module and `PLUGINS` entry `netbox_windows_dhcp_plugin` (`netbox_windows_dhcp` is taken by another plugin).
+Status: approved 2026-10-13; data model revised for 0.2.0 (standalone) on 2026-10-27; checked against 0.7.1 on 2026-11-22. Package `netbox-windows-dhcp-plugin`, module and `PLUGINS` entry `netbox_windows_dhcp_plugin` (`netbox_windows_dhcp` is taken by another plugin).
 
 ## 1. Goal
 
@@ -16,12 +16,14 @@ Out of scope: DNS (the terraform provider handles it), and managing Windows serv
 
 | Package | Version | Why |
 |---|---|---|
-| NetBox | >= 4.7.0 | netbox-branching 1.2 requires 4.7 |
-| netbox-branching | >= 1.2.2, optional | Push on merge, import as branch |
-| netbox-change-control | >= 0.6, optional | Approval gate before merge. Requires branching |
-| pypsrp[credssp] | required | WinRM (NTLM, Basic, Kerberos, CredSSP), message encryption over HTTP. CredSSP (requests-credssp, pure Python) is what failover writes need: the server calls its partner as the caller |
-| paramiko | required | SSH transport |
-| pypsrp[kerberos] | optional extra | Kerberos needs system GSSAPI libs, so it stays an extra |
+| NetBox | 4.7.0 to 4.7.99 | netbox-branching 1.2 requires 4.7 |
+| Python | 3.12 to 3.14 | |
+| netbox-branching | >= 1.2.2, optional (`[branching]` extra) | Push on merge, import as branch |
+| netbox-change-control | >= 0.6, optional (`[branching]` extra) | Approval gate before merge. Requires branching |
+| pypsrp[credssp] | >= 0.9.1, required | WinRM (NTLM, Basic, Kerberos, CredSSP), message encryption over HTTP. CredSSP (requests-credssp, pure Python) is what failover writes need: the server calls its partner as the caller |
+| requests | >= 2.32.4, required | Used by pypsrp for WinRM; the floor is explained in section 4 |
+| paramiko | >= 3.5, required | SSH transport |
+| pypsrp[kerberos] | >= 0.9.1, optional (`[kerberos]` extra) | Kerberos needs system GSSAPI libs, so it stays an extra |
 
 Branching and change control are detected at runtime with `apps.is_installed(...)`. Their imports live in one lazily loaded module (`integrations/branching.py`) so the plugin works without them.
 
@@ -75,7 +77,7 @@ Same layering as the provider, so the two stay easy to compare:
 sync engine  ->  client (one function per cmdlet operation)  ->  psscript (envelope)  ->  runner (WinRM or SSH)
 ```
 
-- **psscript.** Same contract: each script runs in try/catch and prints one JSON envelope `{ok, data}` or `{ok: false, error}`. User values only enter as a single-quoted JSON literal `$p` with quotes doubled; nothing from NetBox is ever interpolated into PowerShell. Secrets (the failover shared secret) never enter the script text: they follow the script on the same stdin line (`<script>.<name>:<value>...<count>`, each part base64, the count of pairs last so a line cut short is refused), the bootstrap reads them into `$wdSecrets` with .NET calls only, and the preamble copies them onto `$p`, so script block logging (event 4104) does not record them (checked with pwsh 7, and with Windows PowerShell 5.1 on Windows Server 2025 by the lab test `test_secret_stays_out_of_the_script_block`) (issue #104). Same preamble, including `$PSDefaultParameterValues['*:ErrorAction']='Stop'`, and the same base64 stdin bootstrap, which reads the script as one line (Windows OpenSSH sometimes loses the end of stdin; over SSH, input above 64 KB is refused, as Windows OpenSSH stalls on it).
+- **psscript.** Same contract: each script runs in try/catch and prints one JSON envelope `{ok, data}` or `{ok: false, error}`. User values only enter as a single-quoted JSON literal `$p` with quotes doubled; nothing from NetBox is ever interpolated into PowerShell. Secrets (the failover shared secret) never enter the script text: they follow the script on the same stdin line (`<script>.<name>:<value>...<count>`, each part base64, the count of pairs last so a line cut short is refused), the bootstrap reads them into `$wdSecrets` with .NET calls only, and the preamble copies them onto `$p`, so script block logging (event 4104) does not record them (checked with pwsh 7, and with Windows PowerShell 5.1 on Windows Server 2025 by the lab test `test_secret_stays_out_of_the_script_block`) (issue #104). Same preamble, including `$PSDefaultParameterValues['*:ErrorAction']='Stop'`, and the same base64 stdin bootstrap, which reads the script as one line (Windows OpenSSH sometimes loses the end of stdin). Over SSH, Windows OpenSSH stalls on long stdin, so a stdin line over 32 KB (`ssh.STDIN_INLINE_MAX`) goes as a file instead (issue #63): the script part is uploaded over SFTP to the account's home folder under a random name (created exclusively, so an existing file is never reused), stdin carries only its path, a sha256 checksum and the secrets, and the bootstrap checks the checksum, deletes the file and runs it; the runner removes the file too when the script fails. The server needs the `sftp` subsystem.
 - **Not found** uses the same rules: `ObjectNotFound`, `DHCP 20005`, `20010`, `20018`, `20111` (policy not found, also filed under `ObjectNotFound`), or a null result. The reservation option reads alone (`list_option_values` with a reserved IP and `list_reservation_option_values`) also take `DHCP 20016` (InvalidType), Windows' answer for an IP that is not reserved, as not found (`client.RESERVATION_GONE_IDS`); everywhere else it stays a real error. DHCPv6 answers a missing reservation with `DHCP 20013` (a database error code), which stays a real error (issue #100). `DHCP 20007` (scope has leases) is a real error. A getter that finds nothing leaves `$out` holding AutomationNull, which Windows PowerShell 5.1 serialises as `{}` (pwsh 7 as `null`); the envelope turns it into `$null` before serialising, and the client also reads an empty object as not found (issue #15).
 - **Batched reads (issue #100).** A full read (`windows_state.read`, used by import, push and dry run) used to start
   PowerShell once per reservation (its option values) and twice per policy (IP ranges, option values). Three batched
@@ -286,7 +288,7 @@ relationships, MAC filters, list switches.
   (`_scopes_in_other_relationships` repeats until nothing more is refused). Moves that go round in a circle (two
   relationships swapping scopes) are refused, asking for one scope at a time; a scope held by a relationship NetBox does
   not manage, or one this push keeps, still refuses the taker. Both block the IPv4 deletes. What the writer refuses on a
-  relationship update (a new partner, a new hot standby role, turning authentication off) is refused in the plan
+  relationship update (a new partner, a new hot standby role; turning authentication off too, though NetBox never asks for it) is refused in the plan
   (`_failover_update_problem`), so such a taker never lets the other relationship release a scope for nothing. When the
   taker fails at Windows anyway (partner unreachable, secret missing, profile refusing the partner), `execute` puts the
   scopes back into the relationship that let them go (`WindowsWriter.restore_failover_scopes`, best effort, said in the
@@ -329,16 +331,16 @@ relationships, MAC filters, list switches.
   moves the others down. `diff` stays generic (same-kind changes sorted by key); `push._order_policies` reorders the
   policy creates and updates of each level by ascending processing order and simulates Windows' list as it goes:
   starting from the Windows policies of the level (hand-made ones included) minus the planned deletes (deletes run
-  first; Windows is assumed to close the gap, unverified), each policy is inserted or moved to its number. A policy
+  first; Windows closes the gap), each policy is inserted or moved to its number. A policy
   NetBox did not change that the simulation shows moved down gets a processing-order-only update in the same push;
   a number past the end is refused at plan time with a reason (and its policy values are then not attempted). When
   that policy is already on Windows (NetBox does not renumber after a delete, Windows closes the gap), every create
   and update of the level is refused with it: applying the rest alone would reverse the order clients are matched
   in (delete order 1 of 3, and setting 2 back to 2 puts it below 3). A new policy past the end is only left out. The
   fake server enforces the numbering on Add, Set and Remove, including DHCP 20110; the pwsh stub only on Add (its
-  Set copies the number without moving the others, and its Remove leaves the gap). Whether Set and Remove renumber
-  the same way on Windows (`# unverified:` in `push._order_level` and `fake._ordered`) is settled by the lab test
-  `test_policy_processing_order`. The policy fingerprint leaves the processing order out: Windows renumbers a level
+  Set copies the number without moving the others, and its Remove leaves the gap). On Windows, Set moves the others
+  and refuses a number past the end as Add does, and Remove closes the gap (lab test `test_policy_processing_order`,
+  Windows Server 2022). The policy fingerprint leaves the processing order out: Windows renumbers a level
   by itself on every add, move or remove, so a policy it moved (one held back with the rest of its level, say) is
   not taken for one edited by hand when NetBox later deletes it. Fingerprints recorded with the order (0.1.0rc1)
   still match while the policy keeps that number (`push.unchanged`).
@@ -358,7 +360,8 @@ relationships, MAC filters, list switches.
   (#103, and `require_verified_https`, #147) to that connection; unless the secret profile is the server's own, over SSH the server must pin a host key from
   the secret profile's `ssh_host_keys`, and CredSSP without verified HTTPS also needs the secret profile's
   `allow_insecure_credssp`, and a server profile with `"proxy": "env"` needs the same on the secret profile (#105); records only say whether authentication is on, so a rotated secret is not noticed. Changing
-  the partner or turning authentication off is refused (when the push is planned). A scope a
+  the partner or a hot standby role is refused (when the push is planned); NetBox never asks for authentication off
+  (`auth` is True or None), so turning it off is done by hand on Windows. A scope a
   managed relationship no longer lists may be deleted: it leaves the relationship first in the same push (after a
   lease check, so a refused delete changes nothing; a scope whose delete fails stays in the relationship). A scope
   only leaves a relationship that NetBox manages and that is unchanged on Windows since the last push, and never
@@ -398,9 +401,10 @@ values holding IPv6 addresses compare the same way.
   NetBox sets only one of them, the empty one is worked out against it (`push._derive_timers`): the default if it
   still falls on the right side, otherwise T1 = 5/8 of T2 or T2 halfway between T1 and the preferred lifetime. A timer
   NetBox sets is never changed. Two values both set in NetBox and out of order (T1 < T2 < preferred <= valid) are
-  refused on save; a half-set case that leaves no room is sent as is and Windows refuses it. What
-  Windows itself picks for a short preferred lifetime without timers is unverified (lab test
-  `test_v6_scope_timers_with_a_short_preferred_lifetime`); the push sends explicit values either way. The fake server
+  refused on save; a half-set case that leaves no room is sent as is and Windows refuses it. For a
+  short preferred lifetime without timers Windows picks the same ratios (2 days gives T1 1 day and T2 1 day 14:24;
+  lab test `test_v6_scope_timers_with_a_short_preferred_lifetime`, Windows Server 2022); the push sends explicit
+  values either way. The fake server
   refuses timers outside T1 < T2 < preferred (as Windows does, with WIN32 87), so tests catch a push that would send
   them; the pwsh stub does not check them;
   a scope without a name is named after its prefix. Deletes are never forced, so a scope with leases fails with
@@ -551,7 +555,7 @@ while queued) and `SyncRun.destination`. Without branching the only destination 
 
 ## 10. Repo setup
 
-Matches `netbox-ipam-treeview-plugin` and `netbox-opentelemetry-plugin`: hatchling `pyproject.toml` with uv, ruff (line length 120), `Makefile` (test, test-lab, lab-e2e, lab-seed, test-netbox, lint, format, dev, dist, docs), `dev/` docker compose stack with lab scripts, `tests/` and `tests_netbox/`, `ci.yml` and `release.yml` with SHA-pinned actions, grouped weekly Dependabot, issue and PR templates, CODEOWNERS, CHANGELOG, Apache-2.0 and `docs/`, built into a documentation site with Zensical (`make docs`, checked in CI, published to GitHub Pages from release tags). The dev stack includes branching and change control so both modes are tested.
+Matches `netbox-ipam-treeview-plugin` and `netbox-opentelemetry-plugin`: hatchling `pyproject.toml` with uv, ruff (line length 120), `Makefile` (test, test-lab, lab-e2e, lab-seed, lab-wipe, test-netbox, lint, format, dev, down, restart, logs, dist, docs, docs-serve), `dev/` docker compose stack with lab scripts, `tests/` and `tests_netbox/`, `ci.yml`, `release.yml` and `docs.yml` with SHA-pinned actions, grouped weekly Dependabot, issue and PR templates, CODEOWNERS, CHANGELOG, Apache-2.0 and `docs/`, built into a documentation site with Zensical (`make docs`, checked in CI, published to GitHub Pages from release tags). The dev stack includes branching and change control so both modes are tested.
 
 ## 11. Milestones
 

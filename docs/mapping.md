@@ -37,8 +37,11 @@ Parent edits must keep their existing children valid. A referenced class cannot 
 class type while its definitions or values would become inconsistent; the same rule applies to a policy's server
 or scope and a superscope's server. Pointing a scope at another prefix is refused unless the new prefix still
 contains its reservations, exclusions and policy ranges and keeps the address family its options and other
-dependencies need. Editing the IPAM prefix itself is not checked: keep its children inside it, or the next push
-fails on Windows.
+dependencies need. Changing the prefix itself, an IP range's start or end, an IP address or a MAC address needs
+`change` on the scopes or reservations that use it (see [IPAM edits](ipam-edits.md#what-counts-as-a-dhcp-change)),
+but its children are not checked against it: a range
+or reservation that ends up outside its scope's prefix is left out of the next push, with a reason, until NetBox is
+fixed (see [Limitations](limitations.md#windows-rules-the-plugin-will-not-work-around)).
 
 ## Names
 

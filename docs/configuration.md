@@ -16,10 +16,10 @@ environment variables and the files they name exist for both.
 | `import_direct` | `True` | With netbox-branching, offer **Import directly** (an import written straight into main). `False` allows branch imports only. Change control's `protect_main` applies either way |
 | `import_user` | `None` | User name [scheduled imports](import.md#scheduled-imports) run as. With branching, scheduled imports fail without it |
 | `review_job_threshold` | `100` | Applying or dismissing more open [import proposal](import.md#without-branching-import-proposals) items than this at once (Apply all, Dismiss all, a bulk selection, or the REST API) runs as a background job instead of in the web request, so a large first import cannot time out the browser or a reverse proxy. `None` keeps every review in the request |
-| `sync_run_retention_days` | `90` | Days to keep [sync runs](servers.md#sync-runs). The import scheduler deletes older runs, oldest first, except the ones the plugin still reads and runs with a journal entry (see [Workers](workers.md#sync-run-retention)). 1 to 36500; `0` or `None` keeps every run |
+| `sync_run_retention_days` | `90` | Days to keep [sync runs](servers.md#sync-runs). The import scheduler deletes older runs, oldest first, except the ones the plugin still reads and runs with a journal entry (see [Workers](workers.md#sync-run-retention)). 1 to 36500; `0` or `None` keeps every run. Any other value is logged as a warning at startup, and no run is deleted until it is fixed |
 | `push_debounce` | `10` | Seconds to wait after a save before pushing, so a burst of edits becomes one push (saves outside branching) |
 | `max_concurrency` | `4` | How many scopes one import, push or dry run reads at the same time, and the most PowerShell commands that job has running at once. Each command is its own WinRM connection (or SSH session). The cap is per job, so per Windows server record: jobs of other records, and lease views, add their own (see [Workers](workers.md#timeouts-and-concurrency)). 1 to 10 is sensible: above 10 a warning is logged, above 30 (the default WinRM `MaxShellsPerUser`) 30 is used. `1` reads one scope after another. A value that is not a whole number of at least 1 is logged and the default used. Changes are always sent one after another |
-| `command_timeout` | `120` | Seconds: the WinRM connection and operation timeout (one wait for output), and the longest silence allowed while an SSH command runs (SSH connects within 30 seconds). A WinRM command that never finishes is abandoned after ten times this long, and never before 10 minutes |
+| `command_timeout` | `120` | Seconds: the WinRM connection and operation timeout (one wait for output), and the longest silence allowed while an SSH command runs (SSH connects within 30 seconds). It is also how long an SSH command waits in line for a session when the server's `MaxSessions` is full (at most 5 minutes). A WinRM command that never finishes is abandoned after ten times this long, and never before 10 minutes |
 
 ## Credential profiles
 
@@ -36,6 +36,9 @@ credential profile, and the profile says where the secrets come from. A profile 
 | `allow_insecure_credssp` | `True` lets CredSSP run over HTTP or without certificate verification. Labs only, see [Security](security.md#transport). A failover shared secret profile used with such a server needs it too |
 | `transports`, `ports`, `kerberos_realms`, `ssh_host_keys`, `require_verified_https` | Optional limits on how the profile's servers connect, see [below](#pinning-transport-port-realm-and-host-key) |
 | `proxy` | `"none"` (the default) or `"env"`: whether WinRM follows the worker's proxy environment variables, see [below](#proxy) |
+
+Any other key is ignored, and NetBox logs a warning at startup naming the profile and the key (never its value), so
+a misspelt limit (`require_verified_http`, say) does not go unnoticed.
 
 Every secret (`username`, `password`, `private_key`, `secret`) can be given in three ways:
 

@@ -25,7 +25,7 @@ state and device](images/servers-list.webp)
 | WinRM authentication | NTLM | NTLM, Basic, Kerberos or CredSSP (failover), see [Preparing Windows](windows-setup.md#authentication-methods) |
 | Failover authentication | Same as WinRM authentication | CredSSP uses it for the failover writes and replication only, so the rest can stay on Kerberos or NTLM. WinRM only; see [Failover](failover.md#connecting-to-the-servers) |
 | WinRM over HTTPS | on | Off uses HTTP; NTLM, Kerberos and CredSSP messages are still encrypted. Cannot be turned off with WinRM when the credential profile sets `require_verified_https` |
-| Verify host | on | Check the TLS certificate (WinRM) or the host key (SSH). Cannot be turned off for SSH, nor for Basic, nor with WinRM when the credential profile sets `require_verified_https` |
+| Verify host | on | Check the TLS certificate (WinRM) or the host key (SSH). Cannot be turned off for SSH, nor for Basic, nor for CredSSP (as WinRM or failover authentication) unless the credential profile sets `allow_insecure_credssp`, nor with WinRM when the credential profile sets `require_verified_https` |
 | Kerberos realm | empty | Required with Kerberos, for example `CORP.EXAMPLE` |
 | Kerberos SPN | empty | Empty means `WSMAN/<host>` |
 | SSH host key | empty | The server's host key in `authorized_keys` form; when empty, the worker's `~/.ssh/known_hosts` is used, unless the credential profile sets `ssh_host_keys` (then only those keys) |
@@ -35,7 +35,10 @@ state and device](images/servers-list.webp)
 | Import interval | empty | Minutes between [scheduled imports](import.md#scheduled-imports); empty or 0 means none |
 
 The form refuses a device and a virtual machine together, a host the credential profile does not allow, Basic over HTTP or without verification, Kerberos
-without a realm, SSH without host verification, and a second Windows server for one DHCP server: keep one server per
+without a realm, SSH without host verification, CredSSP over HTTP or without verification (unless the credential profile
+sets `allow_insecure_credssp`), failover authentication with SSH, settings the credential profile's
+[limits](configuration.md#pinning-transport-port-realm-and-host-key) do not allow (transport, port, Kerberos realm, SSH
+host key, HTTPS and verification), and a second Windows server for one DHCP server: keep one server per
 DHCP server, since two would push conflicting changes to it. Two servers count as the same when host (ignoring case
 and a trailing dot, an IP address in any spelling), port and remote DHCP server match. The check cannot catch the
 same server reached another way: another DNS name or an address for it, another port or transport, or through a

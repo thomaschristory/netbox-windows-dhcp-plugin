@@ -33,7 +33,7 @@ flowchart TD
     lock -- "free" --> read["Read the whole<br/>Windows server"]
     read --> plan["Plan: compare with NetBox,<br/>refuse unsafe changes<br/>(not_pushed)"]
     plan -- "dry run" --> report(["Sync run lists planned<br/>and refused changes"])
-    plan -- "push" --> write["Apply one change at a time,<br/>parents first, deletes last"]
+    plan -- "push" --> write["One change at a time:<br/>deletes first, then creates<br/>and updates, parents first"]
     write --> state["Record what NetBox<br/>manages (sync state)"]
     state --> replicate["Failover primary:<br/>replicate changed scopes<br/>to the partner"]
     replicate --> run(["Sync run: applied,<br/>failed, not pushed"])
@@ -150,7 +150,7 @@ A Windows scope is a plugin **Scope** pointing at a prefix and, for IPv4, an IP 
 
 Creates and updates run parents first: classes, option definitions, scopes, superscopes, exclusion ranges,
 reservations, policies, option values, failover relationships, MAC filters, list switches (IPv4 and DHCPv6 kinds
-side by side). Deletes run in the reverse order. Changes run one at a time.
+side by side). Deletes run before them, in the reverse order (children before parents). Changes run one at a time.
 
 Policies are created and updated level by level (the server, then each scope) in ascending **processing order**,
 whatever their names. Windows numbers the policies of a level 1, 2, 3... without gaps: it refuses a number past the
@@ -164,7 +164,7 @@ and Windows holds the other two as 1 and 2 while NetBox still says 2 and 3. Orde
 other policy alone would put it below the third one, so the push leaves every policy at that level as it is (the
 delete itself still runs) and lists them under **Not pushed** until you renumber them 1, 2, 3... in NetBox. An
 import proposes the same renumbering. That Windows closes the gap on a delete, and renumbers on an update the way it
-does on a create, has not been checked on a real server yet (see [Limitations](limitations.md)).
+does on a create, was checked in the lab (Windows Server 2022).
 
 A reservation update keeps the reservation's option values. Windows Server 2025 was seen dropping them when a
 description change was sent with the client ID and type (#42), so the push sends the client ID and type (DHCPv6:
@@ -298,6 +298,11 @@ still deletes it, and the others wait for the renumbering. The job log's last li
   leave a gap at its level (order 3 where Windows would only hold two policies, counting those made by hand), the
   other policies of that level when the policy is already on Windows (see above), or a policy option value whose
   policy NetBox does not hold at the same level;
+- a policy whose MAC address condition is not written the way Windows reads it (colons or other characters than hex
+  digits and dashes, spaces around it, a full address without 12 digits or with a doubled or end dash, a prefix byte
+  not written as two hex digits (a one-digit first byte followed by a dash is fine), half a byte before the
+  wildcard, a prefix of 6 bytes or more). Saving a policy refuses these, so only a condition saved by an older
+  version or written by a branch merge or a script gets here. The reason says how to write it; fix it in NetBox;
 - a superscope or new failover relationship without scopes, a failover relationship whose partner has no Windows server
   in NetBox, or a hot standby relationship without the primary server's role;
 - a failover relationship that would take a scope Windows already holds in another relationship NetBox does not
@@ -305,9 +310,8 @@ still deletes it, and the others wait for the renumbering. The job log's last li
   remove the scope from it on Windows. A simple move between two relationships NetBox manages goes through in one
   push; scopes swapped between relationships are refused (move one scope at a time). If the relationship taking the
   scope then fails at Windows, the push puts the scope back where it was and says so;
-- a failover relationship whose partner or hot standby role changes, or whose authentication would be turned off:
-  Windows only allows it by deleting the relationship (delete it in NetBox and push, then create it again; see
-  [Failover](failover.md#how-it-syncs));
+- a failover relationship whose partner or hot standby role changes: Windows only allows it by deleting the
+  relationship (delete it in NetBox and push, then create it again; see [Failover](failover.md#how-it-syncs));
 - DHCPv6 vendor classes, and a DHCPv6 option value with a policy (Windows has no DHCPv6 policies).
 
 ### Refused while pushing
@@ -317,16 +321,19 @@ ordinary planned updates or deletes. The push refuses the change, goes on with t
 **failed** with the reason in its `errors`.
 
 - Changes Windows only allows by removing the object with everything in it: an option definition's type or array
-  flag, removing a policy condition. Make them on Windows by hand, then import. (A scope's subnet mask, a failover
-  relationship's partner or hot standby role, and turning its authentication off are refused earlier, when the push
-  is planned, see above.)
+  flag, clearing an option definition's default value, removing a policy condition. Make them on Windows by hand,
+  then import (for a default value: set another one, or delete the definition and create it again). A scope's
+  subnet mask and a failover relationship's partner or hot standby role are refused earlier, when the push is
+  planned (see above).
 - Policy conditions and contents Windows refuses: a wildcard anywhere but at the start or the end of a condition
   value, and IP ranges (DHCP 20135) or ordinary option values (DHCP 20136) on a policy with an FQDN condition.
 - Creating a failover relationship whose partner is outside the `allowed_hosts` of the primary server's
   credential profile: add the partner to that profile (see [Configuration](configuration.md#allowed_hosts)).
-- Creating an IPv4 scope whose IP range is not inside the scope's prefix: nothing is sent to Windows.
-- Turning failover message authentication on with a profile whose `allowed_hosts` does not cover both partners.
-  Without a shared secret profile, a push leaves authentication as Windows has it (on or off).
+- Sending the failover shared secret (creating a relationship with a shared secret profile, or setting one on a
+  relationship whose authentication is off) when the profile holds no secret, its `allowed_hosts` does not cover
+  both partners, or its other limits refuse the primary server's connection (see
+  [Failover](failover.md#shared-secret)). Without a shared secret profile, a push leaves authentication as Windows
+  has it (on or off); to turn it off, do it by hand on Windows.
 - Deleting a scope with active leases: Windows refuses it (error DHCP 20007), and the plugin never forces it. Its
   managed reservations and values are removed first; the scope itself goes on a later push, once its leases have
   expired.

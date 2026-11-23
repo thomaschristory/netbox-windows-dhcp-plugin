@@ -56,6 +56,8 @@ error names the step, the cmdlet and the PowerShell message.
 | `ssh: authentication failed: ...` | Wrong user name, password or key, or the key is not authorised on the server. The passphrase of an encrypted key is not tried as the account's password |
 | `ssh: parsing private_key: ...` | The key cannot be read: it must be an Ed25519, ECDSA or RSA key in PEM or OpenSSH format, and an encrypted key needs its passphrase as the profile's `password` |
 | `ssh: the script (N bytes) is too long for stdin ..., and uploading it over SFTP failed: ...` | A script over 32 KB goes to the server as a file over SFTP. Enable the `sftp` subsystem in `C:\ProgramData\ssh\sshd_config` (Windows OpenSSH has it by default) and check that the account can write to its home folder, or use WinRM for this server |
+| `ssh: x refused to open a session: ... If it allows fewer sessions per connection (sshd MaxSessions, ...)` | The server refused a session while none of the job's other commands held, was opening or had just closed one, so there was nothing to wait for. Often `MaxSessions` in `C:\ProgramData\ssh\sshd_config` is lower than `max_concurrency`: lower `max_concurrency` or raise `MaxSessions` (and restart sshd) |
+| `ssh: x had no free session for N s while other commands of this job held them` | A command waited in line for a session (see [Workers](workers.md#timeouts-and-concurrency)) for as long as it may (`command_timeout`, at most 5 minutes) while the job's other commands held every session. One of them is probably stuck; otherwise do what the message says (lower `max_concurrency`, or raise `command_timeout`) |
 | `ssh: timed out waiting for the exit status` | The command stayed silent longer than `command_timeout`; raise it for very large servers |
 | `The DhcpServer PowerShell module is not available on this host. ...` | The DHCP Server role or its management tools are missing: `Install-WindowsFeature RSAT-DHCP` |
 | `Access is denied` from a DHCP cmdlet | The account is not in **DHCP Administrators** (or the service was not restarted after creating the group) |
@@ -133,6 +135,9 @@ The usual reasons a change is in `not_pushed`:
 | `changed on Windows since NetBox last pushed it` | Someone edited it on Windows. Import it back, or delete it on Windows by hand |
 | `NetBox holds more than one object for this Windows object` | Delete the extra object in NetBox (for example a class or policy whose name differs only in case) |
 | `option 1 is the subnet mask on Windows` / `option 51 is the lease time on Windows` | Remove the option value from NetBox; the scope's prefix length and lease duration set them |
+| `Windows already holds a reservation for this client in the scope, at ...` (`DUID and IAID` for DHCPv6) | Windows keeps one reservation per client in a scope, and the reservation at that address stays (made on Windows outside NetBox, changed there, or itself not pushed). The rest of the reason says which: import it, delete it on Windows, or fix it first |
+| `reservations ... swap clients, which Windows cannot apply in one push` | Change one reservation, push, then the other |
+| `policy x: its MAC address condition ... is not written the way Windows reads it` | The condition was saved by an earlier version, a branch merge or a script. Rewrite it as the reason says (see [How objects map](mapping.md#policies)) |
 | `scope(s) ... are already in failover relationship ... on Windows` | Windows holds those scopes in a relationship NetBox does not have (made by hand, or renamed on Windows). Import it, or remove the scopes from it on Windows |
 
 **"unexpected error (<type>), see the worker log".** The push hit an error it did not expect on that change and

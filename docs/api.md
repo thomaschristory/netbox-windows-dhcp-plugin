@@ -32,6 +32,10 @@ Prefixes, IP ranges, IP addresses and MAC addresses stay at NetBox's own endpoin
 strings (`"value": ["10.1.0.53", "10.1.0.54"]`). [Reservations through the API](reservations-api.md) creates a
 reservation and an option value on it end to end, from the IP and MAC address objects to the push.
 
+Each sync run has `triggers`, the list of what queued a push: `source` (`edit`, `sync_now`, `merge` or `revert`),
+`user`, `request_id` (to find the edits in the change log), `branch` and `created`. It is empty for other kinds of
+run, dry runs included. See [IPAM edits](ipam-edits.md#following-a-change-from-netbox-to-windows).
+
 ## Creating a Windows server
 
 ```bash

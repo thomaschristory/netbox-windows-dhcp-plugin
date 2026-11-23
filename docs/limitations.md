@@ -40,6 +40,10 @@ failover writes. Over WinRM HTTP (Kerberos, with CredSSP for the failover writes
 profiles) every step passed up to deleting the failover relationship, when the lab's nightly shutdown cut the run.
 The new credential profile pins (#103) are unit and NetBox tested; the lab profiles did not set them.
 
+With 0.7.1 (Windows Server 2025, domain lab, 2026-11-22): `make test-lab` over WinRM passed in full (66 tests) and
+the SSH lab tests passed (3). Over SSH, Windows OpenSSH refused the session past `MaxSessions` the way the plugin
+expects, and 20 commands at once on a 10 session limit all ran, waiting their turn.
+
 Policy MAC conditions (#110, Windows Server 2025 only, 2026-11-21): colons and a full address without 12 digits are
 refused, and Windows joins the digits of a prefix and pads an odd count on the left (`02-4e-42-a*` is stored as
 `00-24-e4-2a-*`). Lab probes on 2026-11-22 (Windows Server 2025): dots and spaces are refused, spaces around the
@@ -76,10 +80,12 @@ Try the plugin on a lab server before a production one, and use **Dry run** befo
 ## Windows rules the plugin will not work around
 
 Some changes are only possible on Windows by removing an object with everything in it. The plugin refuses them
-rather than delete data: a scope's subnet mask, an option definition's type or array flag, removing a policy
-condition, a failover relationship's partner or authentication. The dry run shows a subnet mask change as not pushed
-(and it holds back the IPv4 deletes); for the others the push fails on them. Make them on Windows by hand, then
-import. See [Push](push.md#refused-while-pushing).
+rather than delete data: a scope's subnet mask, an option definition's type or array flag, clearing an option
+definition's default value, removing a policy condition, a failover relationship's partner or a hot standby server's
+role. The dry run shows the subnet mask and failover changes as not pushed (and they hold back the IPv4 deletes); for
+the others the push fails on them. Make them on Windows by hand, then import (for a default value: set another one,
+or delete the definition and create it again). Turning a failover relationship's message authentication off is
+never pushed either: do it by hand on Windows. See [Push](push.md#refused-while-pushing).
 
 Windows also refuses some policies outright: a condition value with a wildcard in the middle (`host*.example.com`;
 put it at the start or the end), and IP ranges or ordinary option values on a policy with an FQDN condition (errors
@@ -115,7 +121,9 @@ until the next push adds it where NetBox wants it.
 - The worker's database connection must not go through pgbouncer in transaction mode (advisory locks).
 - A DHCPv6 reservation deleted on Windows while a server is being read fails that read (import, push or dry run):
   Windows reports it with a database error code (DHCP 20013), which the plugin does not take for "deleted". The
-  next run works. An IPv4 reservation or a policy deleted during a read only makes its scope be read again.
+  next run works. A server-level policy deleted during a read fails it too (Windows reports it as not found, but
+  the server-wide lists are not read again); the next run works. An IPv4 reservation or a scope policy deleted
+  during a read only makes its scope be read again.
 - Reading a server takes a few PowerShell calls per scope, `max_concurrency` scopes at a time: the option values
   of a scope's reservations and the IP ranges and values of its policies are read in batches of up to 64 per call,
   so the number of calls grows 64 times slower with the number of reservations or policies. The server-wide lists

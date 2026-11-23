@@ -108,6 +108,11 @@ Keep the OpenSSH `sftp` subsystem enabled (`Subsystem sftp sftp-server.exe` in `
 the Windows default): a script over 32 KB, rare, goes to the account's home folder as a file over SFTP, since
 Windows OpenSSH stalls on long input (see [Limitations](limitations.md#checked-on-a-real-server)).
 
+Each PowerShell command is its own SSH session on one connection, and Windows OpenSSH allows 10 sessions per
+connection by default (`MaxSessions` in `sshd_config`). With `max_concurrency` (4 by default) above that, the extra
+commands wait in line for a free session, up to `command_timeout` and at most 5 minutes, rather than fail. See
+[Workers](workers.md#timeouts-and-concurrency).
+
 ## Managing a DHCP server through another host
 
 **Remote DHCP server** (`computer_name`) on the Windows server in NetBox runs the cmdlets against another server
