@@ -5,6 +5,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-23
+
+0.7.2 is a documentation release: every page was checked against 0.7.1 and brought up to date. No code change, no
+migration.
+
 ### Documentation
 
 - Every page checked against 0.7.1. Added: an upgrade note for 0.7.0 to 0.7.1, the SSH `MaxSessions` wait line
